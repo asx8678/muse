@@ -125,7 +125,8 @@ defmodule Muse.DevReloader do
       pending_changes: nil,
       debounce_ref: nil,
       mtimes: scan_mtimes(watch_globs),
-      file_line_counts: %{},
+      file_line_counts:
+        initial_line_counts(watch_globs, Keyword.get(opts, :exclude, @default_exclude)),
       recent_files: []
     }
 
@@ -343,7 +344,7 @@ defmodule Muse.DevReloader do
   def scan_file_stats(path) do
     try do
       content = File.read!(path)
-      line_count = content |> String.split("\n") |> length()
+      line_count = count_lines(content)
       %{line_count: line_count}
     rescue
       _ -> %{line_count: 0}
@@ -352,6 +353,25 @@ defmodule Muse.DevReloader do
     end
   end
 
+  @doc false
+  @spec line_counts_for_files([String.t()]) :: %{String.t() => non_neg_integer()}
+  def line_counts_for_files(paths) do
+    paths
+    |> Enum.reduce(%{}, fn path, acc ->
+      Map.put(acc, path, scan_file_stats(path).line_count)
+    end)
+  end
+
+  @doc false
+  @spec count_lines(String.t()) :: non_neg_integer()
+  def count_lines(content) when is_binary(content) do
+    case content do
+      "" -> 0
+      _ -> content |> String.split("\n") |> length()
+    end
+  end
+
+  @doc false
   defp update_file_stats(files, old_line_counts, recent_files) do
     now = DateTime.utc_now()
 
@@ -399,6 +419,15 @@ defmodule Muse.DevReloader do
       |> Enum.take(@max_recent_files)
 
     {new_line_counts, merged}
+  end
+
+  defp initial_line_counts(globs, exclude) do
+    exclude_set = MapSet.new(exclude)
+
+    globs
+    |> Enum.flat_map(&Path.wildcard/1)
+    |> Enum.reject(&MapSet.member?(exclude_set, &1))
+    |> line_counts_for_files()
   end
 
   # -- Module classification ----------------------------------------------------

@@ -254,7 +254,7 @@ defmodule MuseWeb.HomeLiveTest do
 
   test "reload status unavailable when DevReloader not running" do
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Unavailable"
+    assert html =~ "Reload unavailable"
   end
 
   test "does not render diagnostics popup when there are no diagnostics" do
@@ -594,6 +594,13 @@ defmodule MuseWeb.HomeLiveTest do
       assert html =~ "phx-click=\"toggle_window\""
     end
 
+    test "renders reload-status pill in header" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(id="reload-status")
+      assert html =~ "reload-pill"
+      assert html =~ "Reload unavailable"
+    end
+
     test "all six window icons are present" do
       {:ok, _view, html} = live(build_conn(), "/")
       assert html =~ ~s(phx-value-window="events")
@@ -635,7 +642,7 @@ defmodule MuseWeb.HomeLiveTest do
       {:ok, view, _html} = live(build_conn(), "/")
 
       view
-      |> element("[phx-click='toggle_window'][phx-value-window='reload']")
+      |> element(".dock-icon[phx-value-window='reload']")
       |> render_click()
 
       html = render(view)
@@ -717,11 +724,11 @@ defmodule MuseWeb.HomeLiveTest do
       refute html =~ ~s(id="window-statistics")
     end
 
-    test "reload window shows Unavailable when DevReloader not running" do
+    test "reload window shows Reload unavailable when DevReloader not running" do
       {:ok, view, _html} = live(build_conn(), "/")
 
       view
-      |> element("[phx-click='toggle_window'][phx-value-window='reload']")
+      |> element(".dock-icon[phx-value-window='reload']")
       |> render_click()
 
       html = render(view)

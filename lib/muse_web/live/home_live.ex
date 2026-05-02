@@ -311,6 +311,16 @@ defmodule MuseWeb.HomeLive do
             <button type="button" class={"dock-icon #{window_active?(@open_windows, "statistics")}"} phx-click="toggle_window" phx-value-window="statistics" title="Statistics" aria-label="Open statistics window">📊</button>
             <button type="button" class={"dock-icon #{window_active?(@open_windows, "agents")}"} phx-click="toggle_window" phx-value-window="agents" title="Agent tree" aria-label="Open agent tree window">🌳</button>
           </div>
+          <button
+            type="button"
+            id="reload-status"
+            class={"reload-pill " <> window_active?(@open_windows, "reload")}
+            phx-click="toggle_window"
+            phx-value-window="reload"
+            aria-label="Open recent files window"
+          >
+            <%= reload_pill_text(@reload_status) %>
+          </button>
           <%= if @diagnostics != [] and not @diagnostics_open? do %>
             <button
               type="button"
@@ -532,17 +542,28 @@ defmodule MuseWeb.HomeLive do
             <%= if @agent_snapshot == :unavailable do %>
               <p class="agent-placeholder">Agent registry unavailable</p>
             <% else %>
-              <%= for agent <- @agent_snapshot.agents do %>
-                <div class="agent-entry">
-                  <div>
+              <%= for agent <- sorted_agents(@agent_snapshot.agents) do %>
+                <div class={"agent-entry #{agent_indent_class(agent, @agent_snapshot.agents)}"}>
+                  <div class="agent-header-row">
                     <span class="agent-name"><%= agent.name %></span>
                     <span class={"agent-status #{agent.status}"}><%= agent.status %></span>
                   </div>
                   <%= if agent.task do %>
-                    <div class="agent-detail"><%= agent.task %></div>
+                    <div class="agent-detail">✦ <%= agent.task %></div>
+                  <% end %>
+                  <%= if agent.current_tool do %>
+                    <div class="agent-detail">🔧 <%= agent.current_tool %></div>
                   <% end %>
                   <%= if agent.current_file do %>
                     <div class="agent-detail">📂 <%= agent.current_file %></div>
+                  <% end %>
+                  <%= if agent.progress != nil do %>
+                    <div class="agent-progress-row">
+                      <div class="agent-progress-bar">
+                        <div class="agent-progress-fill" style={"width:#{round(agent.progress * 100)}%"}></div>
+                      </div>
+                      <span class="agent-progress-label"><%= round(agent.progress * 100) %>%</span>
+                    </div>
                   <% end %>
                 </div>
               <% end %>
@@ -575,47 +596,7 @@ defmodule MuseWeb.HomeLive do
         </section>
 
         <aside class="side-panel">
-          <section id="reload-status" class="panel status-panel">
-            <div class="panel-header">
-              <h2 class="panel-title">Reload status</h2>
-            </div>
-            <div class="panel-body">
-              <%= if @reload_status[:status] == :unavailable do %>
-                <p class="status-unavailable">Unavailable</p>
-              <% else %>
-                <div class="status-row">
-                  <span class="status-label">Generation</span>
-                  <span class="status-value"><%= @reload_status[:generation] %></span>
-                </div>
-                <%= if @reload_status[:last_error] do %>
-                  <div class="status-row">
-                    <span class="status-label">Last error</span>
-                    <span class="status-value"><%= @reload_status[:last_error] %></span>
-                  </div>
-                <% end %>
-                <%= if @reload_status[:last_reload_at] do %>
-                  <div class="status-row">
-                    <span class="status-label">Last reload</span>
-                    <span class="status-value"><%= @reload_status[:last_reload_at] %></span>
-                  </div>
-                <% end %>
-                <%= if @reload_status[:pending_changes] do %>
-                  <div class="status-row">
-                    <span class="status-label">Pending changes</span>
-                    <span class="status-value">Yes</span>
-                  </div>
-                <% end %>
-                <%= if @reload_status[:recent_file] do %>
-                  <div class="status-row">
-                    <span class="status-label">Last file</span>
-                    <span class="status-value"><%= @reload_status[:recent_file][:basename] %></span>
-                  </div>
-                <% end %>
-              <% end %>
-            </div>
-          </section>
-
-          <%= if Mix.env() != :prod do %>
+                    <%= if Mix.env() != :prod do %>
             <section id="dev-tools" class="panel dev-tools-panel">
               <div class="panel-header">
                 <h2 class="panel-title">Dev tools</h2>
@@ -648,6 +629,39 @@ defmodule MuseWeb.HomeLive do
 
   defp window_active?(open_windows, name) do
     if MapSet.member?(open_windows, name), do: "active", else: ""
+  end
+
+  defp reload_pill_text(%{status: :unavailable}), do: "Reload unavailable"
+
+  defp reload_pill_text(%{recent_file: %{basename: basename, lines_added: lines}})
+       when is_binary(basename) do
+    "#{basename} · +#{lines} lines"
+  end
+
+  defp reload_pill_text(%{generation: gen}) when is_integer(gen) and gen > 0 do
+    "Reload gen #{gen}"
+  end
+
+  defp reload_pill_text(_), do: "Watching files"
+
+  defp sorted_agents(agents) do
+    # Simple parent/child ordering: parent agents first, children indented under parent
+    # Build a lookup for parent_id -> children, then flatten
+    by_id = Map.new(agents, &{&1.id, &1})
+    roots = Enum.filter(agents, &(is_nil(&1.parent_id) or not Map.has_key?(by_id, &1.parent_id)))
+
+    Enum.flat_map(roots, fn root ->
+      children = Enum.filter(agents, &(&1.parent_id == root.id))
+      [root | children]
+    end)
+  end
+
+  defp agent_indent_class(agent, all_agents) do
+    if agent.parent_id != nil and Enum.any?(all_agents, &(&1.id == agent.parent_id)) do
+      "agent-child"
+    else
+      ""
+    end
   end
 
   defp format_bytes(bytes) when is_integer(bytes) and bytes >= 0 do

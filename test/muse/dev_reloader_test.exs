@@ -402,6 +402,50 @@ defmodule Muse.DevReloaderTest do
       assert stats.line_count == 0
     end
 
+    test "count_lines/1 counts lines correctly" do
+      assert DevReloader.count_lines("line1\nline2\nline3\n") == 4
+      assert DevReloader.count_lines("single line") == 1
+      assert DevReloader.count_lines("") == 0
+    end
+
+    test "line_counts_for_files/1 returns map of path to line count" do
+      tmp_dir = System.tmp_dir!()
+      file = Path.join(tmp_dir, "muse_lc_#{System.unique_integer([:positive])}.ex")
+      File.write!(file, "a\nb\nc\n")
+
+      try do
+        counts = DevReloader.line_counts_for_files([file])
+        assert counts[file] == 4
+      after
+        File.rm(file)
+      end
+    end
+
+    test "initial line counts are populated for watched files" do
+      tmp_dir = System.tmp_dir!()
+      file = Path.join(tmp_dir, "muse_init_lc_#{System.unique_integer([:positive])}.ex")
+      File.write!(file, "line1\nline2\n")
+
+      try do
+        stop_reloader()
+
+        start_reloader(
+          compile_fun: fn _files -> :ok end,
+          health_fun: fn -> :ok end,
+          watch_globs: [file]
+        )
+
+        # First reload should compute lines_added relative to initial count, not from 0
+        assert :ok = DevReloader.reload()
+        status = DevReloader.status()
+        entry = hd(status.recent_files)
+        # File had 3 lines initially, no lines added on first reload
+        assert entry.lines_added == 0
+      after
+        File.rm(file)
+      end
+    end
+
     test "successful reload tracks recent files with modified_count and lines_added" do
       tmp_dir = System.tmp_dir!()
       file = Path.join(tmp_dir, "muse_recent_#{System.unique_integer([:positive])}.ex")

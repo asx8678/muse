@@ -624,6 +624,36 @@ body {
   pointer-events: none;
 }
 
+/* ─── Reload pill (header) ─────────────────────────────────────── */
+
+.reload-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-family: "JetBrains Mono", SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.reload-pill:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.reload-pill.active {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 /* ─── Managed windows ───────────────────────────────────────────── */
 
 .managed-window {
@@ -641,6 +671,17 @@ body {
   display: flex;
   flex-direction: column;
 }
+
+/* Staggered default positions — each window gets a subtle offset
+   so multiple opened windows are not perfectly stacked.
+   DraggableWindow JS hook overrides these when a saved position exists. */
+
+#window-events    { top: 64px;  right: 420px; }
+#window-reload    { top: 64px;  right: 24px;  }
+#window-universal-agent { top: 96px; right: 440px; }
+#window-settings  { top: 96px; right: 44px; }
+#window-statistics { top: 128px; right: 460px; }
+#window-agents    { top: 128px; right: 64px; }
 
 .window-title-bar {
   display: flex;
@@ -810,6 +851,47 @@ body {
   font-style: italic;
   font-size: 12px;
   padding: 8px 0;
+}
+
+.agent-header-row {
+  display: flex;
+  align-items: center;
+}
+
+.agent-child {
+  padding-left: 16px;
+  border-left: 2px solid var(--border);
+  margin-left: 8px;
+}
+
+.agent-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.agent-progress-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel-strong);
+  overflow: hidden;
+}
+
+.agent-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+
+.agent-progress-label {
+  font-size: 10px;
+  font-family: "JetBrains Mono", SFMono-Regular, Consolas, monospace;
+  color: var(--text-subtle);
+  min-width: 28px;
+  text-align: right;
 }
 
 /* ─── Settings window ──────────────────────────────────────────── */
