@@ -375,4 +375,68 @@ defmodule Muse.DevReloaderTest do
       assert DevReloader.status().generation == 0
     end
   end
+
+  describe "recent_files tracking" do
+    test "status includes recent_files and recent_file keys" do
+      status = DevReloader.status()
+      assert Map.has_key?(status, :recent_files)
+      assert Map.has_key?(status, :recent_file)
+      assert is_list(status.recent_files)
+    end
+
+    test "scan_file_stats/1 returns line count for a file" do
+      tmp_dir = System.tmp_dir!()
+      file = Path.join(tmp_dir, "muse_stat_#{System.unique_integer([:positive])}.ex")
+      File.write!(file, "line1\nline2\nline3\n")
+
+      try do
+        stats = DevReloader.scan_file_stats(file)
+        assert stats.line_count == 4
+      after
+        File.rm(file)
+      end
+    end
+
+    test "scan_file_stats/1 handles missing file" do
+      stats = DevReloader.scan_file_stats("/nonexistent/file.ex")
+      assert stats.line_count == 0
+    end
+
+    test "successful reload tracks recent files with modified_count and lines_added" do
+      tmp_dir = System.tmp_dir!()
+      file = Path.join(tmp_dir, "muse_recent_#{System.unique_integer([:positive])}.ex")
+      File.write!(file, "line1\n")
+
+      try do
+        stop_reloader()
+
+        start_reloader(
+          compile_fun: fn _files -> :ok end,
+          health_fun: fn -> :ok end,
+          watch_globs: [file]
+        )
+
+        # First reload
+        assert :ok = DevReloader.reload()
+        status = DevReloader.status()
+        assert length(status.recent_files) == 1
+
+        entry = hd(status.recent_files)
+        assert entry.path == file
+        assert entry.basename == Path.basename(file)
+        assert entry.modified_count == 1
+        assert is_integer(entry.lines_added)
+        assert entry.lines_added >= 0
+        assert %DateTime{} = entry.last_modified_at
+
+        # second reload
+        assert :ok = DevReloader.reload()
+        status = DevReloader.status()
+        entry = hd(status.recent_files)
+        assert entry.modified_count == 2
+      after
+        File.rm(file)
+      end
+    end
+  end
 end

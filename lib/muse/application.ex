@@ -55,7 +55,8 @@ defmodule Muse.Application do
       Muse.Diagnostics,
       Muse.SelfHealingQueue,
       {Muse.Workspace, root: opts.workspace},
-      Muse.State
+      Muse.State,
+      Muse.AgentRegistry
     ]
 
     children =

@@ -3,6 +3,16 @@ defmodule MuseWeb.HomeLive do
 
   @collapse_timeout_ms 10_000
 
+  # Allowed window names — never convert arbitrary user strings to atoms
+  @window_names %{
+    "events" => "Events",
+    "reload" => "Recent files",
+    "universal-agent" => "Universal agent",
+    "settings" => "Settings",
+    "statistics" => "Statistics",
+    "agents" => "Agent tree"
+  }
+
   @impl true
   def mount(_params, _session, socket) do
     state = Muse.State.get()
@@ -18,6 +28,7 @@ defmodule MuseWeb.HomeLive do
       Muse.State.subscribe()
       safe_subscribe_diagnostics()
       safe_subscribe_self_healing()
+      safe_subscribe_agent_registry()
     end
 
     socket =
@@ -32,7 +43,11 @@ defmodule MuseWeb.HomeLive do
         diagnostics_collapse_ref: nil,
         diagnostics_collapse_timer_ref: nil,
         self_healing_issues: self_healing_issues,
-        diagnostic_issue_statuses: diagnostic_issue_statuses
+        diagnostic_issue_statuses: diagnostic_issue_statuses,
+        open_windows: MapSet.new(),
+        active_window: nil,
+        beam_stats: Muse.BeamStats.snapshot(),
+        agent_snapshot: safe_agent_snapshot()
       )
 
     # Schedule initial collapse if diagnostics exist on mount
@@ -91,6 +106,49 @@ defmodule MuseWeb.HomeLive do
   end
 
   @impl true
+  def handle_event("toggle_window", %{"window" => window_name}, socket) do
+    if Map.has_key?(@window_names, window_name) do
+      open = socket.assigns.open_windows
+
+      if MapSet.member?(open, window_name) do
+        new_open = MapSet.delete(open, window_name)
+
+        new_active =
+          if socket.assigns.active_window == window_name,
+            do: nil,
+            else: socket.assigns.active_window
+
+        {:noreply, assign(socket, open_windows: new_open, active_window: new_active)}
+      else
+        new_open = MapSet.put(open, window_name)
+        {:noreply, assign(socket, open_windows: new_open, active_window: window_name)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("close_window", %{"window" => window_name}, socket) do
+    new_open = MapSet.delete(socket.assigns.open_windows, window_name)
+
+    new_active =
+      if socket.assigns.active_window == window_name, do: nil, else: socket.assigns.active_window
+
+    {:noreply, assign(socket, open_windows: new_open, active_window: new_active)}
+  end
+
+  @impl true
+  def handle_event("focus_window", %{"window" => window_name}, socket) do
+    {:noreply, assign(socket, active_window: window_name)}
+  end
+
+  @impl true
+  def handle_event("refresh_stats", _params, socket) do
+    {:noreply, assign(socket, beam_stats: Muse.BeamStats.snapshot())}
+  end
+
+  @impl true
   def handle_event("queue_diagnostic_fix", %{"diagnostic_id" => id_str}, socket) do
     id = String.to_integer(id_str)
 
@@ -114,7 +172,6 @@ defmodule MuseWeb.HomeLive do
              )}
 
           {:error, :duplicate} ->
-            # Already in queue — update local status tracking
             statuses = Map.put(socket.assigns.diagnostic_issue_statuses, id, :queued)
             {:noreply, assign(socket, diagnostic_issue_statuses: statuses)}
 
@@ -127,7 +184,8 @@ defmodule MuseWeb.HomeLive do
   @impl true
   def handle_info({:muse_event, _event}, socket) do
     state = Muse.State.get()
-    {:noreply, assign(socket, state: state)}
+    reload_status = safe_reload_status()
+    {:noreply, assign(socket, state: state, reload_status: reload_status)}
   end
 
   @impl true
@@ -173,9 +231,13 @@ defmodule MuseWeb.HomeLive do
   end
 
   @impl true
+  def handle_info({:muse_agent_registry_updated, snapshot}, socket) do
+    {:noreply, assign(socket, agent_snapshot: snapshot)}
+  end
+
+  @impl true
   def handle_info({:self_healing_issue_added, issue}, socket) do
     if Enum.any?(socket.assigns.self_healing_issues, &(&1.id == issue.id)) do
-      # Already present from optimistic local update
       statuses = Map.put(socket.assigns.diagnostic_issue_statuses, issue.diagnostic_id, :queued)
       {:noreply, assign(socket, diagnostic_issue_statuses: statuses)}
     else
@@ -241,6 +303,14 @@ defmodule MuseWeb.HomeLive do
           <span class="brand-context">Backend console</span>
         </div>
         <div class="header-actions">
+          <div class="icon-dock">
+            <button type="button" class={"dock-icon #{window_active?(@open_windows, "events")}"} phx-click="toggle_window" phx-value-window="events" title="Events" aria-label="Open events window">📋</button>
+            <button type="button" class={"dock-icon #{window_active?(@open_windows, "reload")}"} phx-click="toggle_window" phx-value-window="reload" title="Recent files" aria-label="Open recent files window">📂</button>
+            <button type="button" class={"dock-icon #{window_active?(@open_windows, "universal-agent")}"} phx-click="toggle_window" phx-value-window="universal-agent" title="Universal agent" aria-label="Open universal agent window">🤖</button>
+            <button type="button" class={"dock-icon #{window_active?(@open_windows, "settings")}"} phx-click="toggle_window" phx-value-window="settings" title="Settings" aria-label="Open settings window">⚙️</button>
+            <button type="button" class={"dock-icon #{window_active?(@open_windows, "statistics")}"} phx-click="toggle_window" phx-value-window="statistics" title="Statistics" aria-label="Open statistics window">📊</button>
+            <button type="button" class={"dock-icon #{window_active?(@open_windows, "agents")}"} phx-click="toggle_window" phx-value-window="agents" title="Agent tree" aria-label="Open agent tree window">🌳</button>
+          </div>
           <%= if @diagnostics != [] and not @diagnostics_open? do %>
             <button
               type="button"
@@ -312,6 +382,178 @@ defmodule MuseWeb.HomeLive do
         </aside>
       <% end %>
 
+      <%= if MapSet.member?(@open_windows, "events") do %>
+        <div id="window-events" class="managed-window" phx-hook="DraggableWindow">
+          <div class="window-title-bar">
+            <span class="window-title">Events</span>
+            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="events" aria-label="Close events window">✕</button>
+          </div>
+          <div class="window-body">
+            <%= for event <- Enum.reverse(@state.events) |> Enum.take(20) do %>
+              <div class={event_row_class(event)}>
+                <span class="event-source"><%= event.source %></span>
+                <span class={event_badge_class(event)}><%= event.type %></span>
+                <span class="event-meta"><%= event_meta(event) %></span>
+              </div>
+            <% end %>
+            <%= if @state.events == [] do %>
+              <p class="agent-placeholder">No events yet</p>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
+
+      <%= if MapSet.member?(@open_windows, "reload") do %>
+        <div id="window-reload" class="managed-window" phx-hook="DraggableWindow">
+          <div class="window-title-bar">
+            <span class="window-title">Recent files</span>
+            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="reload" aria-label="Close recent files window">✕</button>
+          </div>
+          <div class="window-body">
+            <%= if @reload_status[:status] == :unavailable do %>
+              <p class="agent-placeholder">Reload unavailable</p>
+            <% else %>
+              <div class="stat-row">
+                <span class="stat-label">Generation</span>
+                <span class="stat-value"><%= @reload_status[:generation] %></span>
+              </div>
+              <%= if @reload_status[:last_error] do %>
+                <div class="stat-row">
+                  <span class="stat-label">Last error</span>
+                  <span class="stat-value"><%= @reload_status[:last_error] %></span>
+                </div>
+              <% end %>
+              <%= for file <- (@reload_status[:recent_files] || []) do %>
+                <div class="file-entry">
+                  <div class="file-path"><%= file[:basename] %></div>
+                  <div class="file-meta">
+                    <span><%= file[:modified_count] %> reload<%= if file[:modified_count] != 1, do: "s", else: "" %></span>
+                    <span>+<%= file[:lines_added] %> lines</span>
+                  </div>
+                </div>
+              <% end %>
+              <%= if (@reload_status[:recent_files] || []) == [] do %>
+                <p class="agent-placeholder">No recent file changes</p>
+              <% end %>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
+
+      <%= if MapSet.member?(@open_windows, "universal-agent") do %>
+        <div id="window-universal-agent" class="managed-window" phx-hook="DraggableWindow">
+          <div class="window-title-bar">
+            <span class="window-title">Universal agent</span>
+            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="universal-agent" aria-label="Close universal agent window">✕</button>
+          </div>
+          <div class="window-body">
+            <p class="agent-placeholder">No universal agent runtime connected</p>
+          </div>
+        </div>
+      <% end %>
+
+      <%= if MapSet.member?(@open_windows, "settings") do %>
+        <div id="window-settings" class="managed-window" phx-hook="DraggableWindow">
+          <div class="window-title-bar">
+            <span class="window-title">Settings</span>
+            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="settings" aria-label="Close settings window">✕</button>
+          </div>
+          <div class="window-body">
+            <div class="settings-row">
+              <span class="settings-label">Theme</span>
+              <span class="settings-value">Dark</span>
+            </div>
+            <div class="settings-row">
+              <span class="settings-label">Workspace</span>
+              <span class="settings-value"><%= @workspace %></span>
+            </div>
+            <div class="settings-row">
+              <span class="settings-label">Watch mode</span>
+              <span class="settings-value"><%= if @reload_status[:status] == :unavailable, do: "Off", else: "On" %></span>
+            </div>
+          </div>
+        </div>
+      <% end %>
+
+      <%= if MapSet.member?(@open_windows, "statistics") do %>
+        <div id="window-statistics" class="managed-window" phx-hook="DraggableWindow">
+          <div class="window-title-bar">
+            <span class="window-title">Statistics</span>
+            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="statistics" aria-label="Close statistics window">✕</button>
+          </div>
+          <div class="window-body">
+            <div class="stat-section-title">Memory</div>
+            <div class="stat-row">
+              <span class="stat-label">Total</span>
+              <span class="stat-value"><%= format_bytes(@beam_stats.total_memory) %></span>
+            </div>
+            <%= for {key, val} <- (Map.get(@beam_stats, :memory, %{}) |> Enum.sort()) do %>
+              <div class="stat-row">
+                <span class="stat-label"><%= format_mem_key(key) %></span>
+                <span class="stat-value"><%= format_bytes(val) %></span>
+              </div>
+            <% end %>
+            <div class="stat-section-title">Processes</div>
+            <div class="stat-row">
+              <span class="stat-label">Count</span>
+              <span class="stat-value"><%= @beam_stats.process_count %></span>
+            </div>
+            <div class="stat-row">
+              <span class="stat-label">Limit</span>
+              <span class="stat-value"><%= @beam_stats.process_limit %></span>
+            </div>
+            <div class="stat-section-title">Ports</div>
+            <div class="stat-row">
+              <span class="stat-label">Count / Limit</span>
+              <span class="stat-value"><%= @beam_stats.port_count %> / <%= @beam_stats.port_limit %></span>
+            </div>
+            <div class="stat-section-title">Schedulers</div>
+            <div class="stat-row">
+              <span class="stat-label">Total / Online</span>
+              <span class="stat-value"><%= @beam_stats.scheduler_count %> / <%= @beam_stats.schedulers_online %></span>
+            </div>
+            <div class="stat-section-title">Runtime</div>
+            <div class="stat-row">
+              <span class="stat-label">OTP Release</span>
+              <span class="stat-value"><%= @beam_stats.otp_release %></span>
+            </div>
+            <button type="button" class="secondary-button" phx-click="refresh_stats" style="margin-top:8px;width:100%">Refresh</button>
+          </div>
+        </div>
+      <% end %>
+
+      <%= if MapSet.member?(@open_windows, "agents") do %>
+        <div id="window-agents" class="managed-window" phx-hook="DraggableWindow">
+          <div class="window-title-bar">
+            <span class="window-title">Agent tree</span>
+            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="agents" aria-label="Close agent tree window">✕</button>
+          </div>
+          <div class="window-body">
+            <%= if @agent_snapshot == :unavailable do %>
+              <p class="agent-placeholder">Agent registry unavailable</p>
+            <% else %>
+              <%= for agent <- @agent_snapshot.agents do %>
+                <div class="agent-entry">
+                  <div>
+                    <span class="agent-name"><%= agent.name %></span>
+                    <span class={"agent-status #{agent.status}"}><%= agent.status %></span>
+                  </div>
+                  <%= if agent.task do %>
+                    <div class="agent-detail"><%= agent.task %></div>
+                  <% end %>
+                  <%= if agent.current_file do %>
+                    <div class="agent-detail">📂 <%= agent.current_file %></div>
+                  <% end %>
+                </div>
+              <% end %>
+              <%= if @agent_snapshot.agents == [] do %>
+                <p class="agent-placeholder">No agents registered</p>
+              <% end %>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
+
       <div class="dashboard-grid">
         <section id="events" class="panel events-panel">
           <div class="panel-header">
@@ -363,6 +605,12 @@ defmodule MuseWeb.HomeLive do
                     <span class="status-value">Yes</span>
                   </div>
                 <% end %>
+                <%= if @reload_status[:recent_file] do %>
+                  <div class="status-row">
+                    <span class="status-label">Last file</span>
+                    <span class="status-value"><%= @reload_status[:recent_file][:basename] %></span>
+                  </div>
+                <% end %>
               <% end %>
             </div>
           </section>
@@ -397,6 +645,27 @@ defmodule MuseWeb.HomeLive do
   end
 
   # -- Private helpers ----------------------------------------------------------
+
+  defp window_active?(open_windows, name) do
+    if MapSet.member?(open_windows, name), do: "active", else: ""
+  end
+
+  defp format_bytes(bytes) when is_integer(bytes) and bytes >= 0 do
+    cond do
+      bytes >= 1_073_741_824 -> "#{Float.round(bytes / 1_073_741_824, 1)} GB"
+      bytes >= 1_048_576 -> "#{Float.round(bytes / 1_048_576, 1)} MB"
+      bytes >= 1_024 -> "#{Float.round(bytes / 1_024, 1)} KB"
+      true -> "#{bytes} B"
+    end
+  end
+
+  defp format_bytes(_), do: "—"
+
+  defp format_mem_key(key) when is_atom(key) do
+    key |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
+  end
+
+  defp format_mem_key(key), do: to_string(key)
 
   defp event_display(%Muse.Event{data: %{text: text}}), do: text
   defp event_display(%Muse.Event{data: %{file: file}}), do: file
@@ -497,7 +766,6 @@ defmodule MuseWeb.HomeLive do
   end
 
   defp schedule_collapse(socket) do
-    # Cancel any existing timer
     cancel_timer(socket)
 
     ref = make_ref()
@@ -569,6 +837,33 @@ defmodule MuseWeb.HomeLive do
     _ -> :ok
   catch
     :exit, _ -> :ok
+  end
+
+  defp safe_subscribe_agent_registry do
+    _ = Muse.AgentRegistry.subscribe()
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp safe_agent_snapshot do
+    case Process.whereis(Muse.AgentRegistry) do
+      nil ->
+        :unavailable
+
+      pid ->
+        if Process.alive?(pid) do
+          Muse.AgentRegistry.snapshot()
+        else
+          :unavailable
+        end
+    end
+  rescue
+    _ -> :unavailable
+  catch
+    :exit, _ -> :unavailable
   end
 
   defp safe_queue_diagnostic(diagnostic) do

@@ -1,5 +1,30 @@
 # Muse — Minimal Core Setup Plan
 
+## Window Management System Plan
+
+MVP floating-window shell for the Muse LiveView UI.
+
+### Phases
+
+| # | Phase | Scope |
+|---|-------|-------|
+| 1 | Icon dock + window shell | Header icon bar; `open_windows` / `active_window` assigns; `toggle_window` / `close_window` / `focus_window` events; safe window-name allowlist |
+| 2 | Draggable JS hook | `DraggableWindow` LiveView hook in `app.js`; pointer-event drag by title-bar; localStorage position persistence |
+| 3 | BEAM stats window | `Muse.BeamStats.snapshot/0`; Statistics window rendering memory / process / scheduler info |
+| 4 | Reload / recent-files window | Enhance `Muse.DevReloader` status with `recent_files` list; `scan_file_stats/1` helper for line-count tracking; per-file `modified_count` + `lines_added` |
+| 5 | Agent registry + tree window | `Muse.AgentRegistry` GenServer with register/update/unregister/snapshot/subscribe; PubSub broadcast; Agents window with idle/unavailable UI |
+| 6 | Settings / universal-agent placeholders | Settings window shell; Universal Agent window placeholder |
+| 7 | CSS | `.icon-dock`, `.dock-icon`, `.managed-window`, `.window-title-bar`, `.window-body`, stats / file / agent-tree classes; floating fixed position; high z-index |
+| 8 | Tests + QA | `Muse.BeamStatsTest`, `Muse.AgentRegistryTest`, DevReloader recent-files tests, HomeLive window-interaction tests, JS hook source checks, `mix format && mix test` |
+
+### Constraints
+- All windows gracefully handle missing GenServers (DevReloader, AgentRegistry).
+- No real agent/tool activity — UI shows unavailable/idle.
+- Preserve existing IDs: `workspace`, `diagnostics-badge`, `diagnostics-popup`, `events`, `reload-status`.
+- Dark-only, subtle purple accent.
+
+---
+
 ## Overview
 
 Muse is a minimal Elixir CLI coding-agent foundation. This milestone creates the

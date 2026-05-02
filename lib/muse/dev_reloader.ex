@@ -28,6 +28,7 @@ defmodule Muse.DevReloader do
   @default_debounce_ms 300
   @default_watch_globs ~w(lib/muse.ex lib/muse/**/*.ex lib/muse_web/**/*.ex)
   @default_exclude ~w(lib/muse/dev_reloader.ex lib/muse/application.ex)
+  @max_recent_files 20
 
   # -- Public API ---------------------------------------------------------------
 
@@ -123,7 +124,9 @@ defmodule Muse.DevReloader do
       last_reload_at: nil,
       pending_changes: nil,
       debounce_ref: nil,
-      mtimes: scan_mtimes(watch_globs)
+      mtimes: scan_mtimes(watch_globs),
+      file_line_counts: %{},
+      recent_files: []
     }
 
     if state.poll?, do: schedule_poll(state.poll_interval)
@@ -136,7 +139,9 @@ defmodule Muse.DevReloader do
       generation: state.generation,
       last_error: state.last_error,
       last_reload_at: state.last_reload_at,
-      pending_changes: state.pending_changes
+      pending_changes: state.pending_changes,
+      recent_files: state.recent_files,
+      recent_file: List.first(state.recent_files)
     }
 
     {:reply, reply, state}
@@ -204,13 +209,20 @@ defmodule Muse.DevReloader do
       :ok ->
         case safe_health_check(health_fun) do
           :ok ->
+            new_mtimes = scan_mtimes(state.watch_globs)
+
+            {new_file_line_counts, new_recent_files} =
+              update_file_stats(files, state.file_line_counts, state.recent_files)
+
             new_state = %{
               state
               | generation: state.generation + 1,
                 last_good_snapshot: snapshot,
                 last_error: nil,
                 last_reload_at: DateTime.utc_now(),
-                mtimes: scan_mtimes(state.watch_globs)
+                mtimes: new_mtimes,
+                file_line_counts: new_file_line_counts,
+                recent_files: new_recent_files
             }
 
             try_append_event(:dev_reloader, :reload_success, %{
@@ -322,6 +334,71 @@ defmodule Muse.DevReloader do
     catch
       :exit, _ -> :ok
     end
+  end
+
+  # -- File stat tracking (recent files with modified_count & lines_added) ----
+
+  @doc false
+  @spec scan_file_stats(String.t()) :: %{line_count: non_neg_integer()}
+  def scan_file_stats(path) do
+    try do
+      content = File.read!(path)
+      line_count = content |> String.split("\n") |> length()
+      %{line_count: line_count}
+    rescue
+      _ -> %{line_count: 0}
+    catch
+      _, _ -> %{line_count: 0}
+    end
+  end
+
+  defp update_file_stats(files, old_line_counts, recent_files) do
+    now = DateTime.utc_now()
+
+    {new_line_counts, updated_entries} =
+      Enum.reduce(files, {old_line_counts, []}, fn path, {lc_acc, entries_acc} ->
+        old_lc = Map.get(lc_acc, path, 0)
+        new_stats = scan_file_stats(path)
+        new_lc = new_stats.line_count
+        lines_added = max(new_lc - old_lc, 0)
+
+        entry = %{
+          path: path,
+          basename: Path.basename(path),
+          modified_count: 1,
+          lines_added: lines_added,
+          last_modified_at: now
+        }
+
+        {Map.put(lc_acc, path, new_lc), [entry | entries_acc]}
+      end)
+
+    # Merge with existing recent_files — update modified_count if same path
+    merged =
+      Enum.reduce(updated_entries, recent_files, fn entry, acc ->
+        case Enum.find_index(acc, &(&1.path == entry.path)) do
+          nil ->
+            [entry | acc]
+
+          idx ->
+            List.update_at(acc, idx, fn existing ->
+              %{
+                existing
+                | modified_count: existing.modified_count + 1,
+                  lines_added: existing.lines_added + entry.lines_added,
+                  last_modified_at: entry.last_modified_at
+              }
+            end)
+        end
+      end)
+
+    # Sort newest-first and cap
+    merged =
+      merged
+      |> Enum.sort_by(& &1.last_modified_at, {:desc, DateTime})
+      |> Enum.take(@max_recent_files)
+
+    {new_line_counts, merged}
   end
 
   # -- Module classification ----------------------------------------------------

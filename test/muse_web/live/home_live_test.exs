@@ -56,6 +56,11 @@ defmodule MuseWeb.HomeLiveTest do
     {:ok, _} = Muse.SelfHealingQueue.start_link([])
   end
 
+  defp start_agent_registry do
+    stop_named(Muse.AgentRegistry)
+    {:ok, _} = Muse.AgentRegistry.start_link([])
+  end
+
   defp start_endpoint do
     stop_named(MuseWeb.Endpoint)
     {:ok, _} = MuseWeb.Endpoint.start_link()
@@ -150,11 +155,13 @@ defmodule MuseWeb.HomeLiveTest do
     start_state()
     start_diagnostics()
     start_self_healing_queue()
+    start_agent_registry()
     start_endpoint()
 
     on_exit(fn ->
       Muse.Diagnostics.LoggerHandler.remove()
       stop_named(MuseWeb.Endpoint)
+      stop_named(Muse.AgentRegistry)
       stop_named(Muse.SelfHealingQueue)
       stop_named(Muse.Diagnostics)
       stop_named(Muse.State)
@@ -554,6 +561,12 @@ defmodule MuseWeb.HomeLiveTest do
       assert conn.resp_body =~ ".diagnostic-notice.warning"
       assert conn.resp_body =~ ".diagnostic-notice.error"
       assert conn.resp_body =~ ".diagnostic-notice.critical"
+      # Window management CSS classes
+      assert conn.resp_body =~ ".icon-dock"
+      assert conn.resp_body =~ ".dock-icon"
+      assert conn.resp_body =~ ".managed-window"
+      assert conn.resp_body =~ ".window-title-bar"
+      assert conn.resp_body =~ ".window-body"
     end
 
     test "light mode background image is a fully valid PNG" do
@@ -568,6 +581,207 @@ defmodule MuseWeb.HomeLiveTest do
       assert conn.status == 200
       path = Path.join([:code.priv_dir(:muse), "static", "images", "muse-bg-dark.png"])
       assert_png_valid(File.read!(path), 800, 600)
+    end
+  end
+
+  # -- Window management tests --------------------------------------------------
+
+  describe "icon dock and window management" do
+    test "renders icon dock with window toggle buttons" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(class="icon-dock")
+      assert html =~ "dock-icon"
+      assert html =~ "phx-click=\"toggle_window\""
+    end
+
+    test "all six window icons are present" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(phx-value-window="events")
+      assert html =~ ~s(phx-value-window="reload")
+      assert html =~ ~s(phx-value-window="universal-agent")
+      assert html =~ ~s(phx-value-window="settings")
+      assert html =~ ~s(phx-value-window="statistics")
+      assert html =~ ~s(phx-value-window="agents")
+    end
+
+    test "clicking statistics icon opens window-statistics with BEAM info" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='statistics']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(id="window-statistics")
+      assert html =~ "class=\"managed-window\""
+      # BEAM stats content
+      assert html =~ "Total"
+      assert html =~ "Processes"
+      assert html =~ "Schedulers"
+    end
+
+    test "clicking events icon opens window-events" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='events']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(id="window-events")
+    end
+
+    test "clicking reload icon opens window-reload" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='reload']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(id="window-reload")
+    end
+
+    test "clicking agents icon opens window-agents" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='agents']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(id="window-agents")
+      assert html =~ "Agent tree"
+    end
+
+    test "clicking settings icon opens window-settings" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='settings']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(id="window-settings")
+      assert html =~ "Settings"
+    end
+
+    test "clicking universal-agent icon opens window-universal-agent" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='universal-agent']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(id="window-universal-agent")
+      assert html =~ "No universal agent runtime connected"
+    end
+
+    test "closing a window removes it from the DOM" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      # Open statistics window
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='statistics']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(id="window-statistics")
+
+      # Close it
+      view
+      |> element("[phx-click='close_window'][phx-value-window='statistics']")
+      |> render_click()
+
+      html = render(view)
+      refute html =~ ~s(id="window-statistics")
+    end
+
+    test "toggling an open window closes it" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='statistics']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(id="window-statistics")
+
+      # Toggle again closes it
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='statistics']")
+      |> render_click()
+
+      html = render(view)
+      refute html =~ ~s(id="window-statistics")
+    end
+
+    test "reload window shows Unavailable when DevReloader not running" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='reload']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "Reload unavailable"
+    end
+
+    test "managed windows use DraggableWindow hook" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='statistics']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(phx-hook="DraggableWindow")
+    end
+
+    test "agent window shows No agents registered when registry is empty" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='agents']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "No agents registered"
+    end
+
+    test "refresh_stats event updates BEAM stats" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='statistics']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ ~s(id="window-statistics")
+
+      view
+      |> element("[phx-click='refresh_stats']")
+      |> render_click()
+
+      html = render(view)
+      # Stats window still present after refresh
+      assert html =~ ~s(id="window-statistics")
+    end
+  end
+
+  describe "window management CSS" do
+    test "CSS includes managed window and dock classes" do
+      conn = build_conn() |> get("/assets/css/app.css")
+      assert conn.status == 200
+      assert conn.resp_body =~ ".icon-dock"
+      assert conn.resp_body =~ ".dock-icon"
+      assert conn.resp_body =~ ".managed-window"
+      assert conn.resp_body =~ ".window-title-bar"
+      assert conn.resp_body =~ ".window-body"
+      assert conn.resp_body =~ ".stat-row"
+      assert conn.resp_body =~ ".agent-entry"
+      assert conn.resp_body =~ ".file-entry"
     end
   end
 end
