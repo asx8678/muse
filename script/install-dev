@@ -1,0 +1,33 @@
+#!/usr/bin/env sh
+set -eu
+
+# script/install-dev — Generate a `muse` wrapper script that runs the
+# source version from any directory on the system.
+#
+# The generated wrapper embeds the absolute path to this checkout at
+# install time and preserves the caller's cwd as MUSE_WORKSPACE at
+# runtime.
+#
+# Usage:
+#   ./script/install-dev                  # default: ~/.local/bin/muse
+#   ./script/install-dev /usr/local/bin/muse
+
+MUSE_SRC="$(cd "$(dirname "$0")/.." && pwd)"
+TARGET="${1:-$HOME/.local/bin/muse}"
+
+# Ensure the target directory exists.
+mkdir -p "$(dirname "$TARGET")"
+
+# Heredoc: unquoted WRAPPER delimiter so that $MUSE_SRC is expanded at
+# install time.  Runtime variables are escaped with \$ so they land as
+# literal $ in the generated script.
+cat > "$TARGET" <<WRAPPER
+#!/usr/bin/env sh
+set -eu
+export MUSE_WORKSPACE="\${MUSE_WORKSPACE:-\$(pwd)}"
+cd "$MUSE_SRC"
+exec mix muse "\$@"
+WRAPPER
+
+chmod +x "$TARGET"
+echo "Installed muse dev wrapper → $TARGET"

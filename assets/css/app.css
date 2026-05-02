@@ -1,0 +1,628 @@
+/* ─── Design tokens (dark only) ─────────────────────────────────── */
+
+:root {
+  --bg: #0f1117;
+  --bg-soft: #131620;
+  --panel: rgba(255, 255, 255, 0.035);
+  --panel-strong: rgba(255, 255, 255, 0.06);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --text: #eef0f6;
+  --text-muted: #9ca3af;
+  --text-subtle: #6b7280;
+  --accent: #8b5cf6;
+  --accent-soft: rgba(139, 92, 246, 0.14);
+  --accent-border: rgba(139, 92, 246, 0.32);
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --radius-panel: 16px;
+  --radius-control: 10px;
+  --shadow-panel: 0 16px 40px rgba(0, 0, 0, 0.22);
+}
+
+/* ─── Reset & Base ───────────────────────────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: var(--text);
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(139, 92, 246, 0.12), transparent 34rem),
+    linear-gradient(180deg, #10121a 0%, var(--bg) 100%);
+}
+
+/* ─── App shell ──────────────────────────────────────────────────── */
+
+.app-shell {
+  width: min(1180px, calc(100vw - 64px));
+  margin: 0 auto;
+  padding: 32px 0 40px;
+}
+
+/* ─── Header ─────────────────────────────────────────────────────── */
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 0 24px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 24px;
+}
+
+.app-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.brand-mark {
+  font-size: 18px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.brand-context {
+  font-size: 13px;
+  color: var(--text-subtle);
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ─── Workspace chip ─────────────────────────────────────────────── */
+
+.workspace-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-family: "JetBrains Mono", SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  max-width: min(400px, 40vw);
+  overflow: hidden;
+}
+
+.workspace-label {
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-subtle);
+  flex-shrink: 0;
+}
+
+.workspace-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* ─── Panels ─────────────────────────────────────────────────────── */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-panel);
+  overflow: hidden;
+}
+
+.panel-header {
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-title {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0;
+  color: var(--text);
+}
+
+.panel-description {
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.panel-body {
+  padding: 16px 20px 20px;
+}
+
+/* ─── Dashboard grid ─────────────────────────────────────────────── */
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 20px;
+  align-items: start;
+  margin-bottom: 20px;
+}
+
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ─── Events panel ───────────────────────────────────────────────── */
+
+.events-panel .panel-body {
+  padding: 0;
+}
+
+.event-log {
+  list-style: none;
+  max-height: min(62vh, 640px);
+  overflow-y: auto;
+}
+
+.event-row {
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+  font-family: "JetBrains Mono", SFMono-Regular, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  transition: background 0.12s;
+}
+
+.event-row:hover {
+  background: var(--panel-strong);
+}
+
+.event-row-error {
+  border-left: 3px solid var(--danger);
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.event-row-error:hover {
+  background: rgba(239, 68, 68, 0.07);
+}
+
+.event-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.event-source {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.event-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.03em;
+}
+
+.event-badge-neutral {
+  background: var(--panel-strong);
+  color: var(--text-muted);
+}
+
+.event-badge-success {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--success);
+}
+
+.event-badge-danger {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--danger);
+}
+
+.event-badge-accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.event-meta {
+  font-size: 11px;
+  color: var(--text-subtle);
+  margin-left: auto;
+}
+
+.event-message {
+  margin-top: 6px;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+/* ─── Status panel ────────────────────────────────────────────────── */
+
+.status-panel .panel-body {
+  padding: 12px 20px 16px;
+}
+
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.status-row:last-child {
+  border-bottom: none;
+}
+
+.status-label {
+  color: var(--text-muted);
+}
+
+.status-value {
+  color: var(--text);
+  font-family: "JetBrains Mono", SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+}
+
+.status-unavailable {
+  color: var(--text-subtle);
+  font-style: italic;
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+/* ─── Dev tools panel ────────────────────────────────────────────── */
+
+.dev-tools-panel .panel-body {
+  padding: 12px 20px 16px;
+}
+
+.secondary-button {
+  padding: 8px 16px;
+  background: var(--panel-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.secondary-button:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+/* ─── Command panel ──────────────────────────────────────────────── */
+
+.command-panel {
+  margin-bottom: 0;
+}
+
+.command-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.command-input {
+  padding: 10px 16px;
+  background: var(--panel-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  color: var(--text);
+  font-size: 14px;
+  font-family: "JetBrains Mono", SFMono-Regular, Consolas, monospace;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.command-input:focus {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.command-input::placeholder {
+  color: var(--text-subtle);
+}
+
+.primary-button {
+  padding: 10px 24px;
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius-control);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.primary-button:hover {
+  opacity: 0.9;
+}
+
+.primary-button:active {
+  opacity: 0.8;
+}
+
+/* ─── Diagnostics popup ──────────────────────────────────────────── */
+
+.diagnostics-popup {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  z-index: 1000;
+  width: min(420px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  background: var(--bg-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-panel);
+  padding: 0;
+}
+
+.diagnostic-title-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.diagnostic-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.diagnostics-collapse-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.diagnostics-collapse-btn:hover {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.diagnostic-pill {
+  padding: 4px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--warning);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--warning);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.diagnostic-pill:hover {
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.diagnostic-notice {
+  margin: 10px 18px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.diagnostic-notice.warning {
+  border-left-color: var(--warning);
+  background: rgba(245, 158, 11, 0.04);
+}
+
+.diagnostic-notice.error {
+  border-left-color: var(--danger);
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.diagnostic-notice.critical {
+  border-left-color: #b91c1c;
+  background: rgba(185, 28, 28, 0.06);
+}
+
+.diagnostic-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.diagnostic-level {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+.diagnostic-timestamp {
+  font-size: 11px;
+  color: var(--text-subtle);
+  font-family: "JetBrains Mono", SFMono-Regular, Consolas, monospace;
+}
+
+.diagnostic-message {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-family: "JetBrains Mono", SFMono-Regular, Consolas, monospace;
+}
+
+.diagnostic-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.diagnostic-action-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.diagnostic-action-btn:hover {
+  background: rgba(139, 92, 246, 0.22);
+}
+
+.diagnostic-queued {
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--panel-strong);
+  color: var(--text-subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: default;
+}
+
+.diagnostic-queued:disabled {
+  opacity: 0.7;
+}
+
+.diagnostics-more {
+  margin: 8px 18px 12px;
+  font-size: 13px;
+  color: var(--text-subtle);
+}
+
+.diagnostics-popup-actions {
+  margin: 8px 18px 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.self-healing-summary {
+  margin: 8px 18px 14px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.self-healing-summary-title {
+  font-weight: 600;
+}
+
+/* ─── Event pill (legacy class kept for backward compat) ────────── */
+
+.event-pill {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--panel-strong);
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
+/* ─── Workspace indicator (legacy class kept for backward compat) ── */
+
+.workspace-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-family: "JetBrains Mono", SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.workspace-indicator-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+/* ─── Responsive ─────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .app-shell {
+    width: auto;
+    padding: 20px;
+  }
+
+  .app-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .header-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .side-panel {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+}
+
+@media (max-width: 560px) {
+  .app-shell {
+    padding: 16px;
+  }
+
+  .command-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .primary-button {
+    width: 100%;
+  }
+
+  .side-panel {
+    grid-template-columns: 1fr;
+  }
+}

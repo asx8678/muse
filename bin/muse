@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+set -eu
+
+# bin/muse — Dev wrapper for running Muse from source.
+#
+# Invoked from the repo checkout.  Resolves the Muse source directory
+# relative to this script, preserves the caller's cwd as the workspace,
+# then delegates to `mix muse`.
+#
+# Usage (from the repo root or any subdirectory):
+#   ./bin/muse [opts]
+#   ./bin/muse --workspace /other/project
+
+# Resolve the absolute path of the Muse source tree.
+# This script lives at <repo>/bin/muse, so dirname twice gives <repo>.
+MUSE_SRC="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Capture the caller's working directory before we `cd` away.
+export MUSE_WORKSPACE="${MUSE_WORKSPACE:-$(pwd)}"
+
+cd "$MUSE_SRC"
+exec mix muse "$@"
