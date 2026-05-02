@@ -12,6 +12,10 @@ import {LiveSocket} from "phoenix_live_view"
 // Makes a `.managed-window` element draggable by its `.window-title-bar`.
 // Uses pointer events so it works on touch and mouse.  Persists position
 // to localStorage keyed by the element's `id`.
+//
+// pointermove/pointerup are attached to `document` during an active drag
+// and removed on drag end, so dragging stays responsive even if the
+// pointer leaves the title-bar element.
 
 const DraggableWindow = {
   mounted() {
@@ -33,29 +37,20 @@ const DraggableWindow = {
     let offsetX = 0;
     let offsetY = 0;
 
-    handle.addEventListener("pointerdown", (e) => {
-      // Don't start drag from buttons or inputs inside the title bar
-      if (e.target.closest("button, input, select, textarea")) return;
-      dragging = true;
-      const rect = el.getBoundingClientRect();
-      offsetX = e.clientX - rect.left;
-      offsetY = e.clientY - rect.top;
-      handle.setPointerCapture(e.pointerId);
-      e.preventDefault();
-    });
-
-    handle.addEventListener("pointermove", (e) => {
+    const onPointerMove = (e) => {
       if (!dragging) return;
       const newLeft = Math.max(0, e.clientX - offsetX);
       const newTop = Math.max(0, e.clientY - offsetY);
       el.style.left = newLeft + "px";
       el.style.top = newTop + "px";
       el.style.right = "auto";
-    });
+    };
 
-    handle.addEventListener("pointerup", (e) => {
+    const onPointerUp = () => {
       if (!dragging) return;
       dragging = false;
+      document.removeEventListener("pointermove", onPointerMove);
+      document.removeEventListener("pointerup", onPointerUp);
       // Persist position
       try {
         localStorage.setItem("muse-win-" + el.id, JSON.stringify({
@@ -63,6 +58,18 @@ const DraggableWindow = {
           top: el.style.top
         }));
       } catch (_) { /* ignore */ }
+    };
+
+    handle.addEventListener("pointerdown", (e) => {
+      // Don't start drag from buttons or inputs inside the title bar
+      if (e.target.closest("button, input, select, textarea")) return;
+      dragging = true;
+      const rect = el.getBoundingClientRect();
+      offsetX = e.clientX - rect.left;
+      offsetY = e.clientY - rect.top;
+      document.addEventListener("pointermove", onPointerMove);
+      document.addEventListener("pointerup", onPointerUp);
+      e.preventDefault();
     });
   }
 };

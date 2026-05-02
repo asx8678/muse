@@ -639,6 +639,9 @@ body {
   color: var(--text-muted);
   cursor: pointer;
   white-space: nowrap;
+  max-width: min(220px, 30vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
 
@@ -670,6 +673,11 @@ body {
   box-shadow: var(--shadow-panel);
   display: flex;
   flex-direction: column;
+}
+
+.managed-window.active-window {
+  z-index: 950;
+  border-color: var(--accent-border);
 }
 
 /* Staggered default positions — each window gets a subtle offset

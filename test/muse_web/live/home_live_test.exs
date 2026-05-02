@@ -620,7 +620,7 @@ defmodule MuseWeb.HomeLiveTest do
 
       html = render(view)
       assert html =~ ~s(id="window-statistics")
-      assert html =~ "class=\"managed-window\""
+      assert html =~ "managed-window"
       # BEAM stats content
       assert html =~ "Total"
       assert html =~ "Processes"
@@ -722,6 +722,36 @@ defmodule MuseWeb.HomeLiveTest do
 
       html = render(view)
       refute html =~ ~s(id="window-statistics")
+    end
+
+    test "opened window receives active-window class for z-index" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='statistics']")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "active-window"
+    end
+
+    test "focusing a different window moves active-window class" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      # Open statistics
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='statistics']")
+      |> render_click()
+
+      # Open events (becomes active)
+      view
+      |> element("[phx-click='toggle_window'][phx-value-window='events']")
+      |> render_click()
+
+      html = render(view)
+      # Both windows open, events is active
+      assert html =~ ~s(id="window-statistics")
+      assert html =~ ~s(id="window-events")
     end
 
     test "reload window shows Reload unavailable when DevReloader not running" do

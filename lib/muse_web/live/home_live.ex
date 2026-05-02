@@ -393,7 +393,7 @@ defmodule MuseWeb.HomeLive do
       <% end %>
 
       <%= if MapSet.member?(@open_windows, "events") do %>
-        <div id="window-events" class="managed-window" phx-hook="DraggableWindow">
+        <div id="window-events" class={"managed-window " <> window_focused?(@active_window, "events")} phx-hook="DraggableWindow">
           <div class="window-title-bar">
             <span class="window-title">Events</span>
             <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="events" aria-label="Close events window">✕</button>
@@ -414,7 +414,7 @@ defmodule MuseWeb.HomeLive do
       <% end %>
 
       <%= if MapSet.member?(@open_windows, "reload") do %>
-        <div id="window-reload" class="managed-window" phx-hook="DraggableWindow">
+        <div id="window-reload" class={"managed-window " <> window_focused?(@active_window, "reload")} phx-hook="DraggableWindow">
           <div class="window-title-bar">
             <span class="window-title">Recent files</span>
             <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="reload" aria-label="Close recent files window">✕</button>
@@ -451,7 +451,7 @@ defmodule MuseWeb.HomeLive do
       <% end %>
 
       <%= if MapSet.member?(@open_windows, "universal-agent") do %>
-        <div id="window-universal-agent" class="managed-window" phx-hook="DraggableWindow">
+        <div id="window-universal-agent" class={"managed-window " <> window_focused?(@active_window, "universal-agent")} phx-hook="DraggableWindow">
           <div class="window-title-bar">
             <span class="window-title">Universal agent</span>
             <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="universal-agent" aria-label="Close universal agent window">✕</button>
@@ -463,7 +463,7 @@ defmodule MuseWeb.HomeLive do
       <% end %>
 
       <%= if MapSet.member?(@open_windows, "settings") do %>
-        <div id="window-settings" class="managed-window" phx-hook="DraggableWindow">
+        <div id="window-settings" class={"managed-window " <> window_focused?(@active_window, "settings")} phx-hook="DraggableWindow">
           <div class="window-title-bar">
             <span class="window-title">Settings</span>
             <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="settings" aria-label="Close settings window">✕</button>
@@ -486,7 +486,7 @@ defmodule MuseWeb.HomeLive do
       <% end %>
 
       <%= if MapSet.member?(@open_windows, "statistics") do %>
-        <div id="window-statistics" class="managed-window" phx-hook="DraggableWindow">
+        <div id="window-statistics" class={"managed-window " <> window_focused?(@active_window, "statistics")} phx-hook="DraggableWindow">
           <div class="window-title-bar">
             <span class="window-title">Statistics</span>
             <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="statistics" aria-label="Close statistics window">✕</button>
@@ -533,7 +533,7 @@ defmodule MuseWeb.HomeLive do
       <% end %>
 
       <%= if MapSet.member?(@open_windows, "agents") do %>
-        <div id="window-agents" class="managed-window" phx-hook="DraggableWindow">
+        <div id="window-agents" class={"managed-window " <> window_focused?(@active_window, "agents")} phx-hook="DraggableWindow">
           <div class="window-title-bar">
             <span class="window-title">Agent tree</span>
             <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="agents" aria-label="Close agent tree window">✕</button>
@@ -629,6 +629,10 @@ defmodule MuseWeb.HomeLive do
 
   defp window_active?(open_windows, name) do
     if MapSet.member?(open_windows, name), do: "active", else: ""
+  end
+
+  defp window_focused?(active_window, name) do
+    if active_window == name, do: "active-window", else: ""
   end
 
   defp reload_pill_text(%{status: :unavailable}), do: "Reload unavailable"
