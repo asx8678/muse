@@ -979,7 +979,7 @@ defmodule MuseWeb.HomeLiveTest do
     test "serves /assets/css/app.css with chat-first UI classes" do
       conn = build_conn() |> get("/assets/css/app.css")
       assert conn.status == 200
-      assert conn.resp_body =~ "--bg: #0f1117"
+      assert conn.resp_body =~ "--bg: #080a12"
       assert conn.resp_body =~ "--panel"
       assert conn.resp_body =~ ".app-shell"
       assert conn.resp_body =~ ".main-layout"
@@ -1080,6 +1080,42 @@ defmodule MuseWeb.HomeLiveTest do
       assert conn.resp_body =~ "--muse-stripe-blur:"
     end
 
+    test "CSS includes new readability and status design tokens" do
+      conn = build_conn() |> get("/assets/css/app.css")
+      assert conn.status == 200
+      # Readability tokens
+      assert conn.resp_body =~ "--text-secondary:"
+      assert conn.resp_body =~ "--text-placeholder:"
+      assert conn.resp_body =~ "--text-disabled:"
+      assert conn.resp_body =~ "--bg-elevated:"
+      assert conn.resp_body =~ "--panel-soft:"
+      assert conn.resp_body =~ "--panel-solid:"
+      assert conn.resp_body =~ "--input-bg:"
+      assert conn.resp_body =~ "--border-muted:"
+      # Focus tokens
+      assert conn.resp_body =~ "--focus-ring:"
+      assert conn.resp_body =~ "--focus-outline:"
+      # Status semantic tokens
+      assert conn.resp_body =~ "--status-ok:"
+      assert conn.resp_body =~ "--status-ok-bg:"
+      assert conn.resp_body =~ "--status-warn:"
+      assert conn.resp_body =~ "--status-warn-bg:"
+      assert conn.resp_body =~ "--status-error:"
+      assert conn.resp_body =~ "--status-error-bg:"
+      assert conn.resp_body =~ "--status-inactive:"
+      assert conn.resp_body =~ "--status-inactive-bg:"
+      # Shadow tokens
+      assert conn.resp_body =~ "--shadow-card:"
+      assert conn.resp_body =~ "--shadow-accent:"
+      # Placeholder rule
+      assert conn.resp_body =~ "input::placeholder"
+      # Focus ring styles
+      assert conn.resp_body =~ "--focus-ring"
+      # Status chip semantic styles
+      assert conn.resp_body =~ ".status-chip-label"
+      assert conn.resp_body =~ ".status-chip-value"
+    end
+
     test "CSS includes brand and logo styling" do
       conn = build_conn() |> get("/assets/css/app.css")
       assert conn.status == 200
@@ -1092,8 +1128,8 @@ defmodule MuseWeb.HomeLiveTest do
       assert conn.resp_body =~ ".muse-bg {"
       assert conn.resp_body =~ ".muse-bg--main"
       assert conn.resp_body =~ ".muse-bg--sidebar"
-      # mix-blend-mode screen
-      assert conn.resp_body =~ "mix-blend-mode: screen"
+      # mix-blend-mode normal for improved readability
+      assert conn.resp_body =~ "mix-blend-mode: normal"
       # z-index and pointer-events
       assert conn.resp_body =~ "z-index: 0"
       assert conn.resp_body =~ "pointer-events: none"
@@ -1114,15 +1150,15 @@ defmodule MuseWeb.HomeLiveTest do
       # Sidebar header spacing
       assert conn.resp_body =~ ".context-sidebar-header"
       # Updated responsive opacity values (sidebar + main)
-      assert conn.resp_body =~ "opacity: .28"
-      assert conn.resp_body =~ "opacity: .18"
+      assert conn.resp_body =~ "opacity: .14"
+      assert conn.resp_body =~ "opacity: .10"
     end
 
     test "static assets serve branding images with 200" do
       for path <- [
             "/images/muse-logo-header.png",
             "/images/muse-bg-main.png",
-            "/images/muse-bg-sidebar.jpg"
+            "/images/muse-bg-sidebar.png"
           ] do
         conn = build_conn() |> get(path)
         assert conn.status == 200, "Expected 200 for #{path}, got #{conn.status}"

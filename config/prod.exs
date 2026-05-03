@@ -5,8 +5,9 @@ config :muse, MuseWeb.Endpoint,
   # via env var: RELEASE_NODE, MUSE_SECRET_KEY_BASE, etc.
   server: true,
   http: [ip: {127, 0, 0, 1}, port: 4000],
-  secret_key_base: System.get_env("MUSE_SECRET_KEY_BASE") ||
-                     "production-secret-key-base-override-in-env-000000000000"
+  secret_key_base:
+    System.get_env("MUSE_SECRET_KEY_BASE") ||
+      "CHANGE-ME-64-byte-minimum-production-secret-key-base-placeholder-00000000"
 
 config :muse, :logger,
   buffer_level: :warning,

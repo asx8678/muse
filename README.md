@@ -37,7 +37,11 @@ mix test
 
 | Command | What it does |
 |---|---|
-| `mix muse` | Start CLI + web (default) |
+| `mix muse` | Start REPL + web (default) |
+| `mix muse --repl` | Explicit REPL CLI |
+| `mix muse --tui` | Full-screen ExRatatui TUI |
+| `mix muse --tui --no-web` | TUI without web server |
+| `mix muse --verbose` | Debug-level console logging (overrides TUI silence) |
 | `mix muse --no-web` | CLI only, no web server |
 | `mix muse --web-only` | Web only, no CLI (`--no-cli` is an alias) |
 | `mix muse --port 5000` | Web on port 5000 (`-p` shorthand) |
@@ -47,7 +51,7 @@ mix test
 | `mix muse --watch` | Enable source hot-reload (on by default in source mode) |
 | `mix muse --help` | Print usage (`-h`) |
 
-Flags can be combined: `mix muse --no-web --workspace ~/my_app`.
+Flags can be combined: `mix muse --tui --no-web --workspace ~/my_app`.
 
 ### Workspace resolution
 
@@ -89,6 +93,15 @@ to watch.
 
 All the same flags work: `./muse --no-web --port 3000`.
 
+### Escript TUI limitation
+
+**`./muse --tui` is not supported.** The TUI mode requires the ExRatatui
+native NIF (a compiled Rust shared library), which cannot be loaded from
+inside a single-file escript archive. If you run `./muse --tui`, Muse prints
+a clear error with alternatives and exits nonzero — it does not crash.
+
+For TUI, use `mix muse --tui` (source mode) or a Mix release (see below).
+
 ---
 
 ## Installing the Escript
@@ -115,6 +128,63 @@ Then run `muse` from anywhere:
 ```bash
 muse --workspace ~/projects/my_app
 ```
+
+---
+
+## Distribution — Mix Release (recommended for TUI)
+
+For production or TUI deployment, build a Mix release instead of an escript.
+Mix releases include native NIF libraries and support all modes:
+
+```bash
+MIX_ENV=prod mix release
+```
+
+This creates a self-contained release at `_build/prod/rel/muse/`. The release
+includes the ExRatatui native NIF, so **TUI mode works**:
+
+```bash
+# Show help
+_build/prod/rel/muse/bin/muse_cli --help
+
+# Run TUI
+_build/prod/rel/muse/bin/muse_cli --tui --no-web
+
+# Run REPL
+_build/prod/rel/muse/bin/muse_cli --repl --no-web
+
+# Run web + CLI
+_build/prod/rel/muse/bin/muse_cli
+```
+
+`bin/muse_cli` is a convenience wrapper that forwards all arguments to
+`Muse.CLI.ReleaseCommand.main/1` via `bin/muse eval`. You can also invoke
+the release directly:
+
+```bash
+_build/prod/rel/muse/bin/muse eval "Muse.CLI.ReleaseCommand.main(System.argv())" -- --tui --no-web
+```
+
+### Tar archive
+
+The release step also generates `_build/prod/muse-0.1.0.tar.gz`. Copy this
+to any machine with the same OS/architecture and Erlang/OTP installed, then:
+
+```bash
+mkdir -p /opt/muse && tar -xzf muse-0.1.0.tar.gz -C /opt/muse
+/opt/muse/bin/muse_cli --tui
+```
+
+### Release vs. escript vs. source
+
+| Feature | `mix muse` | `mix escript.build` | `mix release` |
+|---|---|---|---|
+| REPL | ✅ | ✅ | ✅ |
+| TUI | ✅ | ❌ NIF can't load | ✅ |
+| Web | ✅ | ✅ | ✅ |
+| Hot reload | ✅ | ❌ | ❌ |
+| Single file | ❌ | ✅ | ❌ |
+| Portable tar | ❌ | ❌ | ✅ |
 
 ---
 
@@ -264,6 +334,7 @@ separate Backend console, no dev tools panel.
 | `escript.install` puts binary in `~/.mix/escripts` but `muse` isn't on PATH | Add `~/.mix/escripts` to `$PATH` (see *Installing the Escript*) |
 | Hot reload not firing | Confirm you're in source mode (`mix muse`, not `./muse`), and `--no-watch` isn't set |
 | `/reload` says "DevReloader not available" | Same cause as above — escript mode disables the reloader |
+| `./muse --tui` fails with NIF error | Escript cannot load native NIFs — use `mix muse --tui` or build a release (`MIX_ENV=prod mix release`) |
 
 ---
 

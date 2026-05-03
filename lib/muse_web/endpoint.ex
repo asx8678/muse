@@ -42,7 +42,7 @@ defmodule MuseWeb.Endpoint do
     at: "/images",
     from: "assets/images",
     gzip: false,
-    only: ~w(muse-logo-header.png muse-bg-main.png muse-bg-sidebar.jpg)
+    only: ~w(muse-logo-header.png muse-bg-main.png muse-bg-sidebar.png)
   )
 
   plug(Plug.RequestId)

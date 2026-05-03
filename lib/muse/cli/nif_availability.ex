@@ -9,22 +9,45 @@ defmodule Muse.CLI.NifAvailability do
 
   This module provides `check!/0` which raises a clear, actionable error
   in that case, and `available?/0` which returns a boolean.
+
+  ## Detection strategy
+
+  * **`available?/0`** — resolves `Application.app_dir(:ex_ratatui, "priv/native")`,
+    lists files, and returns `true` when a native file (`.so`, `.dylib`, `.dll`)
+    exists and is a regular file on disk.
+  * **`escript_mode?/0`** — uses `:init.get_argument(:escript)` which is
+    `:error` outside escript mode and `{:ok, [...]}` inside. Falls back to
+    a heuristic when the argument is unavailable.
   """
+
+  @nif_extensions ~w(.so .dylib .dll)
+
+  # -- Public API ----------------------------------------------------------------
 
   @doc """
   Returns `true` if the ExRatatui NIF appears loadable, `false` otherwise.
 
-  Performs a lightweight probe: checks that the NIF shared library exists
-  at the expected path AND that the path is a real file on disk
-  (not inside an escript archive extraction).
+  Resolves the native directory, lists its files, and checks that at least
+  one native library file (`.so`, `.dylib`, or `.dll`) exists and is a
+  regular file on disk. Works correctly regardless of whether the path
+  contains `_build`, `releases`, or an arbitrary install prefix.
   """
   @spec available?() :: boolean()
   def available? do
-    case resolve_nif_path() do
-      {:ok, path} ->
-        File.exists?(path) and File.regular?(path)
+    case resolve_native_dir() do
+      {:ok, native_dir} ->
+        case File.ls(native_dir) do
+          {:ok, files} ->
+            case Enum.find(files, &nif_file?/1) do
+              nil -> false
+              f -> File.regular?(Path.join(native_dir, f))
+            end
 
-      {:error, _reason} ->
+          {:error, _} ->
+            false
+        end
+
+      {:error, _} ->
         false
     end
   end
@@ -56,13 +79,17 @@ defmodule Muse.CLI.NifAvailability do
   @doc """
   Whether the current runtime appears to be an escript.
 
-  Heuristic: `source_mode?` is `false` AND no `RELEASE_NAME` env var
-  (which Mix releases set automatically).
+  Uses `:init.get_argument(:escript)` which returns `:error` when not
+  running inside an escript. When running as an escript, it returns
+  `{:ok, [...]}`. Falls back to a heuristic (not in release, not in
+  source mode, no loadable NIF) if the argument is unavailable.
   """
   @spec escript_mode?() :: boolean()
   def escript_mode? do
-    not Application.get_env(:muse, :source_mode?, true) and
-      System.get_env("RELEASE_NAME") == nil
+    case :init.get_argument(:escript) do
+      :error -> escript_fallback?()
+      {:ok, _} -> true
+    end
   end
 
   @doc """
@@ -73,36 +100,18 @@ defmodule Muse.CLI.NifAvailability do
     System.get_env("RELEASE_NAME") != nil
   end
 
-  # -- Private ------------------------------------------------------------------
+  # -- Internal (exposed for testability) ---------------------------------------
 
-  defp resolve_nif_path do
+  @doc false
+  @spec resolve_native_dir() :: {:ok, String.t()} | {:error, atom()}
+  def resolve_native_dir do
     try do
       case Application.app_dir(:ex_ratatui, "priv") do
         nil ->
           {:error, :no_app_dir}
 
         priv_dir ->
-          # Escript extracts to a temp dir that does NOT contain "_build"
-          # or "releases".  In source mode and release mode, the path
-          # always contains "_build" or "releases" respectively.
-          # If neither is present, we're in escript archive land.
-          if String.contains?(priv_dir, "_build") or String.contains?(priv_dir, "releases") do
-            native_dir = Path.join(priv_dir, "native")
-
-            case File.ls(native_dir) do
-              {:ok, files} ->
-                case Enum.find(files, &nif_file?/1) do
-                  nil -> {:error, :no_nif_file}
-                  f -> {:ok, Path.join(native_dir, f)}
-                end
-
-              {:error, _} ->
-                {:error, :no_native_dir}
-            end
-          else
-            # Path doesn't look like _build or releases — escript archive
-            {:error, :escript_archive}
-          end
+          {:ok, Path.join(priv_dir, "native")}
       end
     rescue
       _ -> {:error, :app_dir_error}
@@ -111,8 +120,33 @@ defmodule Muse.CLI.NifAvailability do
     end
   end
 
-  defp nif_file?(name) do
-    String.ends_with?(name, ".so") or String.ends_with?(name, ".dylib")
+  @doc false
+  @spec nif_file?(String.t()) :: boolean()
+  def nif_file?(name) do
+    Enum.any?(@nif_extensions, &String.ends_with?(name, &1))
+  end
+
+  @doc false
+  @spec nif_extensions() :: [String.t()]
+  def nif_extensions, do: @nif_extensions
+
+  # -- Private -------------------------------------------------------------------
+
+  defp escript_fallback? do
+    # If :init.get_argument(:escript) returned :error but we're not in
+    # release mode and not in source mode and the NIF isn't available,
+    # it's likely an escript or broken install. Distinguish by checking
+    # source_mode? — if true, we're in `iex -S mix` or `mix test`, not escript.
+    cond do
+      source_mode?() -> false
+      release_mode?() -> false
+      not available?() -> true
+      true -> false
+    end
+  end
+
+  defp source_mode? do
+    Application.get_env(:muse, :source_mode?) == true
   end
 
   defp error_message do
