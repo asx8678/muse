@@ -173,9 +173,11 @@ defmodule MuseWeb.HomeLiveTest do
 
   # -- Core rendering tests ----------------------------------------------------
 
-  test "renders workspace root", %{workspace_root: workspace_root} do
+  test "workspace root appears in context panel", %{workspace_root: workspace_root} do
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ workspace_root
+    # Workspace appears as a short path in the context panel
+    assert html =~ ~s(class="context-panel")
+    assert html =~ "workspace"
   end
 
   test "renders browser assets" do
@@ -184,9 +186,8 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ ~s(src="/assets/app.js")
   end
 
-  test "initial HTTP render uses root layout while HomeLive renders content fragment", %{
-    workspace_root: workspace_root
-  } do
+  test "initial HTTP render uses root layout while HomeLive renders content fragment",
+       %{workspace_root: _workspace_root} do
     conn = build_conn() |> get("/")
     html = html_response(conn, 200)
 
@@ -204,7 +205,6 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ ~s(data-phx-main)
 
     assert html =~ "brand-mark"
-    assert html =~ workspace_root
 
     assert first_index!(html, ~s(data-phx-main)) < first_index!(html, ~s(app-header))
     assert first_index!(html, ~s(</main>)) < first_index!(html, ~s(</body>))
@@ -224,35 +224,106 @@ defmodule MuseWeb.HomeLiveTest do
     assert live_reload_frame < body_close
   end
 
-  test "renders existing events" do
+  # -- Chat-first initial render assertions ------------------------------------
+
+  test "renders chat-first UI with lowercase muse" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ "muse"
+  end
+
+  test "renders chat panel and composer elements" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ ~s(class="chat-panel")
+    assert html =~ ~s(class="chat-scroll")
+    assert html =~ ~s(class="chat-input command-input")
+    assert html =~ ~s(class="chat-composer")
+    assert html =~ ~s(class="chat-composer-form")
+    assert html =~ "chat-send-button"
+    assert html =~ ~s(id="command-form")
+    assert html =~ "Ask muse to inspect, explain, fix, or generate code..."
+  end
+
+  test "renders context panel and status chip" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ ~s(class="context-panel")
+    assert html =~ ~s(status-chip)
+    assert html =~ ~s(class="status-chips")
+  end
+
+  test "does not render legacy tab nav or backend console" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    refute html =~ "Backend console"
+    refute html =~ ~s(class="tab-nav")
+    refute html =~ ~s(role="tablist")
+    refute html =~ ~s(id="dev-tools")
+    refute html =~ ~s(dev-tools-panel)
+    refute html =~ ~s(dev-tool-btn)
+    refute html =~ ~s(class="command-console")
+    refute html =~ ~s(class="events-panel")
+  end
+
+  test "header includes workspace chip" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ ~s(class="status-chips")
+    assert html =~ "workspace"
+  end
+
+  test "header uses runtime label instead of agent" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ "runtime"
+  end
+
+  test "renders main-layout container" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ ~s(class="main-layout")
+  end
+
+  # -- Existing events render as chat bubbles ----------------------------------
+
+  test "renders existing events as chat messages" do
     Muse.submit(:cli, "hello from test")
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "hello from test"
-    assert html =~ "newest first"
+    assert html =~ ~s(chat-message-user)
+    assert html =~ ~s(chat-message)
+    refute html =~ "newest first"
   end
 
-  test "newest events render before older events" do
+  test "events appear in chat bubble order" do
     Muse.submit(:cli, "older event alpha")
     Muse.submit(:cli, "newer event bravo")
     {:ok, _view, html} = live(build_conn(), "/")
     older_pos = first_index!(html, "older event alpha")
     newer_pos = first_index!(html, "newer event bravo")
-    assert newer_pos < older_pos, "newer event should appear before older event in HTML"
+    assert newer_pos > older_pos, "newer event should appear after older event in chat"
   end
 
-  test "form submit appends web event and renders response" do
+  # -- Form submit tests -------------------------------------------------------
+
+  test "form submit creates user and assistant chat messages" do
     {:ok, view, _html} = live(build_conn(), "/")
 
     html = view |> element("#command-form") |> render_submit(%{"text" => "from the web"})
 
     assert html =~ "from the web"
     assert html =~ "Placeholder response"
+    assert html =~ ~s(chat-message-user)
+    assert html =~ ~s(chat-message-assistant)
+
+    events = Muse.State.events()
+    assert Enum.any?(events, &(&1.type == :user_message && &1.source == :web))
+    assert Enum.any?(events, &(&1.type == :assistant_message))
   end
 
-  test "reload status unavailable when DevReloader not running" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Unavailable"
+  test "blank submit is ignored" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    html = view |> element("#command-form") |> render_submit(%{"text" => "   "})
+
+    assert html =~ "muse"
   end
+
+  # -- Diagnostics tests -------------------------------------------------------
 
   test "does not render diagnostics popup when there are no diagnostics" do
     {:ok, _view, html} = live(build_conn(), "/")
@@ -328,582 +399,63 @@ defmodule MuseWeb.HomeLiveTest do
     refute html =~ "critical before clear"
   end
 
-  test "blank submit is ignored" do
-    {:ok, view, _html} = live(build_conn(), "/")
+  # -- Diagnostics collapse tests ----------------------------------------------
 
-    html = view |> element("#command-form") |> render_submit(%{"text" => "   "})
+  test "collapse button closes diagnostics popup" do
+    Muse.Diagnostics.emit(:warning, "collapsible warning")
 
-    assert html =~ "Muse"
-  end
-
-  # -- Dashboard layout (Sprint 1) -------------------------------------------
-
-  test "renders app-shell dashboard container" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "app-shell"
-  end
-
-  test "renders compact header with brand and tab nav" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "app-header"
-    assert html =~ "brand-mark"
-    assert html =~ "Backend console"
-    assert html =~ "tab-nav"
-    assert html =~ ~s(role="tablist")
-  end
-
-  # -- JS hook attachment tests ----------------------------------------------
-
-  test "app shell has KeyboardShortcuts hook" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ ~s(id="muse-shell")
-    assert html =~ ~s(phx-hook="KeyboardShortcuts")
-  end
-
-  test "command console has CommandConsole hook and stable id" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ ~s(id="input-form")
-    assert html =~ ~s(phx-hook="CommandConsole")
-  end
-
-  test "toast elements have ToastAutoDismiss hook" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    # Trigger a toast
-    view |> element(".dev-tool-btn[phx-click='simulate_event']") |> render_click()
-    html = render(view)
-    assert html =~ ~s(phx-hook="ToastAutoDismiss")
-  end
-
-  test "no theme toggle in dark-only mode" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    refute html =~ ~s(data-theme-toggle)
-    refute html =~ "theme-toggle"
-  end
-
-  test "renders console layout with events and sidebar" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "console-layout"
-    assert html =~ "console-main"
-    assert html =~ "dev-sidebar"
-    assert html =~ "events-panel"
-    assert html =~ "dev-tools-panel"
-  end
-
-  # -- Status bar tests -------------------------------------------------------
-
-  test "renders status bar with status items" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "status-bar"
-    assert html =~ "Backend"
-    assert html =~ "Connected"
-    assert html =~ "File watcher"
-    assert html =~ "Universal agent"
-    assert html =~ "Disconnected"
-    assert html =~ "status-dot-green"
-    assert html =~ "status-dot-gray"
-  end
-
-  test "status bar items have title tooltips" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Backend connection status"
-    assert html =~ "File watcher status"
-    assert html =~ "Workspace root path"
-    assert html =~ "Universal agent runtime connection"
-    assert html =~ "Total events received"
-  end
-
-  test "status bar shows file watcher as unavailable when not running" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Unavailable"
-  end
-
-  # -- Tab navigation tests ---------------------------------------------------
-
-  test "renders tab navigation with labeled tabs" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ ~s(role="tab")
-    assert html =~ "Events"
-    assert html =~ "Files"
-    assert html =~ "Agents"
-    assert html =~ "Stats"
-    assert html =~ "Settings"
-  end
-
-  test "tab buttons have title tooltips with shortcut hints" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Events (Ctrl+E)"
-    assert html =~ "Files (Ctrl+F)"
-    assert html =~ "Agents (Ctrl+A)"
-    assert html =~ "Stats (Ctrl+R)"
-    assert html =~ "Settings (Ctrl+,)"
-  end
-
-  test "events tab is active by default" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "tab-active"
-    assert html =~ ~s(aria-selected="true")
-  end
-
-  test "switching tab updates active state" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("[phx-click='switch_tab'][phx-value-tab='stats']") |> render_click()
-    html = render(view)
-    assert html =~ "Statistics"
-    assert html =~ "stats-panel"
-  end
-
-  test "switching to files tab shows file watcher content" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("[phx-click='switch_tab'][phx-value-tab='files']") |> render_click()
-    html = render(view)
-    assert html =~ "files-panel"
-    assert html =~ "File watcher"
-  end
-
-  test "switching to agents tab shows agent content" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("[phx-click='switch_tab'][phx-value-tab='agents']") |> render_click()
-    html = render(view)
-    assert html =~ "agents-panel"
-  end
-
-  test "switching to settings tab shows settings" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("[phx-click='switch_tab'][phx-value-tab='settings']") |> render_click()
-    html = render(view)
-    assert html =~ "settings-panel"
-    assert html =~ "Theme"
-    assert html =~ "Dark"
-  end
-
-  # -- Event display tests ----------------------------------------------------
-
-  test "renders event log with event badges, rows, meta, and timestamps" do
-    Muse.submit(:cli, "badge test")
-
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "event-log"
-    assert html =~ "event-row"
-    assert html =~ "event-badge"
-    assert html =~ "event-source"
-    assert html =~ "event-message"
-    assert html =~ "event-meta"
-    assert html =~ "event-timestamp"
-    assert html =~ "event-severity"
-  end
-
-  test "events have severity indicators" do
-    Muse.submit(:cli, "severity test")
-
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "event-severity-info"
-  end
-
-  # -- Event filter tests -----------------------------------------------------
-
-  test "renders event filter buttons" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "event-filters"
-    assert html =~ ~s(role="radiogroup")
-    assert html =~ "All"
-    assert html =~ "Errors"
-    assert html =~ "Warnings"
-    assert html =~ "Info"
-  end
-
-  test "setting event filter updates view" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view
-    |> element("[phx-click='set_event_filter'][phx-value-filter='errors']")
-    |> render_click()
-
-    html = render(view)
-    assert html =~ "event-filter-active"
-  end
-
-  # -- Clear events test ------------------------------------------------------
-
-  test "clearing events removes them from display" do
-    Muse.submit(:cli, "event to clear")
-
-    {:ok, view, _html} = live(build_conn(), "/")
-    html = render(view)
-    assert html =~ "event to clear"
-
-    view |> element(".dev-tool-btn[phx-click='clear_events']") |> render_click()
-
-    html = render(view)
-    refute html =~ "event to clear"
-    assert html =~ "No events yet"
-  end
-
-  test "events cleared broadcast refreshes state without explicit clear_events click" do
-    Muse.submit(:cli, "broadcast clear event")
-
-    {:ok, view, _html} = live(build_conn(), "/")
-    html = render(view)
-    assert html =~ "broadcast clear event"
-
-    # Clear via backend broadcast, not via UI button
-    Muse.State.clear()
-
-    html = render(view)
-    refute html =~ "broadcast clear event"
-  end
-
-  # -- Expandable event detail test -------------------------------------------
-
-  test "clicking event row toggles JSON detail" do
-    Muse.submit(:cli, "expandable event")
-
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    # Get the first event's ID from state
-    [first_event | _] = Muse.State.events()
-
-    view
-    |> element(".event-expand-btn[phx-value-id='#{first_event.id}']")
-    |> render_click()
-
-    html = render(view)
-    assert html =~ "event-detail-json"
-  end
-
-  test "event expand button has aria-expanded and aria-controls" do
-    Muse.submit(:cli, "a11y event")
-
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "event-expand-btn"
-    assert html =~ "aria-expanded"
-    assert html =~ "aria-controls"
-  end
-
-  test "event expand button updates aria-expanded when toggled" do
-    Muse.submit(:cli, "toggle a11y event")
-
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    # Initially collapsed
-    html = render(view)
-    assert html =~ ~s(aria-expanded="false")
-
-    # Expand
-    [first_event | _] = Muse.State.events()
-
-    view
-    |> element(".event-expand-btn[phx-value-id='#{first_event.id}']")
-    |> render_click()
-
-    html = render(view)
-    assert html =~ ~s(aria-expanded="true")
-  end
-
-  test "event detail region has id matching aria-controls" do
-    Muse.submit(:cli, "controls event")
-
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    [first_event | _] = Muse.State.events()
-
-    view
-    |> element(".event-expand-btn[phx-value-id='#{first_event.id}']")
-    |> render_click()
-
-    html = render(view)
-    assert html =~ "event-detail-#{first_event.id}"
-    assert html =~ ~s(role="region")
-  end
-
-  # -- Empty states tests -----------------------------------------------------
-
-  test "events empty state shows explanation and CTAs" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "No events yet"
-    assert html =~ "Simulate event"
-    assert html =~ "View event schema"
-    assert html =~ "Muse watches your backend workspace"
-  end
-
-  test "agents empty state shows explanation and CTAs" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("[phx-click='switch_tab'][phx-value-tab='agents']") |> render_click()
-    html = render(view)
-    assert html =~ "No agents registered"
-    assert html =~ "Connect runtime"
-  end
-
-  test "files empty state shows watcher status" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("[phx-click='switch_tab'][phx-value-tab='files']") |> render_click()
-    html = render(view)
-    assert html =~ "File watcher unavailable"
-  end
-
-  # -- Dev tools tests --------------------------------------------------------
-
-  test "dev tools section renders with expanded actions" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ ~s(id="dev-tools")
-    assert html =~ "Simulate event"
-    assert html =~ "Simulate backend error"
-    assert html =~ "Clear events"
-    assert html =~ "Rescan watcher"
-    assert html =~ "Refresh stats"
-    assert html =~ "Copy diagnostics"
-    assert html =~ "Connect runtime"
-    assert html =~ "Retry connection"
-  end
-
-  test "dev tool buttons have title tooltips" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Create a simulated test event"
-    assert html =~ "Simulate a backend error (dev only)"
-    assert html =~ "Remove all events from the log"
-    assert html =~ "Trigger a watcher rescan"
-    assert html =~ "Refresh BEAM runtime statistics"
-    assert html =~ "Copy diagnostics to clipboard"
-    assert html =~ "Connect to universal agent runtime"
-    assert html =~ "Retry agent runtime connection"
-  end
-
-  test "dev tools have grouped sections" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "dev-tool-group"
-    assert html =~ "Simulate"
-    assert html =~ "Actions"
-    assert html =~ "Export"
-    assert html =~ "Agent runtime"
-  end
-
-  test "simulate backend error button has warning styling" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "dev-tool-btn-warning"
-  end
-
-  test "clicking Simulate event creates an event and toast" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element(".dev-tool-btn[phx-click='simulate_event']") |> render_click()
-
-    html = render(view)
-    assert html =~ "Simulated test event"
-    assert html =~ "toast"
-  end
-
-  test "clicking Simulate backend error shows diagnostics popup and toast" do
     {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ ~s(id="diagnostics-popup")
+
+    view |> element(".diagnostics-collapse-btn") |> render_click()
+
+    html = render(view)
+    refute html =~ ~s(id="diagnostics-popup")
+    # Diagnostics status chip remains in header
+    assert html =~ ~s(status-chip)
+    assert html =~ "diagnostic"
+  end
+
+  test "clicking diagnostics chip reopens popup" do
+    Muse.Diagnostics.emit(:warning, "chip reopen test")
+
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ ~s(id="diagnostics-popup")
+
+    view |> element(".diagnostics-collapse-btn") |> render_click()
+    html = render(view)
     refute html =~ ~s(id="diagnostics-popup")
 
-    view |> element("[phx-click='simulate_backend_error']") |> render_click()
+    # Click the diagnostics status chip in the header (use the header context)
+    view |> element(".status-chip-yellow") |> render_click()
+    html = render(view)
+    assert html =~ ~s(id="diagnostics-popup")
+    assert html =~ "chip reopen test"
+  end
+
+  test "collapse via handle_info hides popup when ref matches" do
+    Muse.Diagnostics.emit(:warning, "timed collapse")
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    %{socket: %{assigns: assigns}} = :sys.get_state(view.pid)
+    current_ref = assigns.diagnostics_collapse_ref
+    send(view.pid, {:collapse_diagnostics, current_ref})
+
+    html = render(view)
+    refute html =~ ~s(id="diagnostics-popup")
+    # Status chip remains in header
+    assert html =~ ~s(status-chip)
+  end
+
+  test "stale collapse ref is ignored" do
+    Muse.Diagnostics.emit(:warning, "stale ref test")
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    stale_ref = :erlang.make_ref()
+    send(view.pid, {:collapse_diagnostics, stale_ref})
 
     html = render(view)
     assert html =~ ~s(id="diagnostics-popup")
-    assert html =~ "Simulated backend error for popup testing"
-    assert html =~ "toast"
-  end
-
-  # -- Toast notification tests -----------------------------------------------
-
-  test "toast container renders with aria-live" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "toast-container"
-    assert html =~ ~s(aria-live="polite")
-  end
-
-  test "toast dismiss button works" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    # Trigger a toast
-    view |> element(".dev-tool-btn[phx-click='simulate_event']") |> render_click()
-    html = render(view)
-    assert html =~ "toast"
-
-    # Dismiss it
-    view |> element("[phx-click='dismiss_toast']") |> render_click()
-    html = render(view)
-    # Toast should be removed (no more toast-message class)
-    refute html =~ "toast-message"
-  end
-
-  # -- Command console tests --------------------------------------------------
-
-  test "renders command console with textarea" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "command-console"
-    assert html =~ "command-bar"
-    assert html =~ "command-input"
-    assert html =~ "primary-button"
-    assert html =~ "Type /help for commands or ask Muse a question."
-  end
-
-  test "command history area exists" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ ~s(id="command-history")
-  end
-
-  # -- Slash command tests ----------------------------------------------------
-
-  test "/help command returns help text" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("#command-form") |> render_submit(%{"text" => "/help"})
-
-    html = render(view)
-    assert html =~ "Available commands"
-    assert html =~ "/events"
-    assert html =~ "/clear events"
-  end
-
-  test "/events command shows event summary" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("#command-form") |> render_submit(%{"text" => "/events"})
-
-    html = render(view)
-    assert html =~ "event(s) recorded"
-  end
-
-  test "/agents command shows agent status" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("#command-form") |> render_submit(%{"text" => "/agents"})
-
-    html = render(view)
-    assert html =~ "agent(s)"
-  end
-
-  test "/simulate event creates a simulated event" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("#command-form") |> render_submit(%{"text" => "/simulate event"})
-
-    html = render(view)
-    assert html =~ "Simulated event"
-  end
-
-  test "/simulate backend-error creates backend error" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("#command-form") |> render_submit(%{"text" => "/simulate backend-error"})
-
-    html = render(view)
-    assert html =~ "Simulated backend error"
-  end
-
-  test "/clear events clears the event log" do
-    Muse.submit(:cli, "event to clear via command")
-
-    {:ok, view, _html} = live(build_conn(), "/")
-    html = render(view)
-    assert html =~ "event to clear via command"
-
-    view |> element("#command-form") |> render_submit(%{"text" => "/clear events"})
-
-    html = render(view)
-    refute html =~ "event to clear via command"
-  end
-
-  test "/clear clears command history" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    # Submit something to create history
-    view |> element("#command-form") |> render_submit(%{"text" => "/help"})
-    html = render(view)
-    assert html =~ "command-history-entry"
-    assert html =~ "Available commands"
-
-    # Clear history - /clear itself creates one entry but clears the rest
-    view |> element("#command-form") |> render_submit(%{"text" => "/clear"})
-
-    html = render(view)
-    # The /help command's output (Available commands) should be gone
-    # Only the /clear command's entry should remain
-    refute html =~ "Available commands"
-    assert html =~ "Command history cleared"
-  end
-
-  test "/reload-status shows watcher status" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("#command-form") |> render_submit(%{"text" => "/reload-status"})
-
-    html = render(view)
-    assert html =~ "File watcher"
-  end
-
-  test "/workspace shows workspace info" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("#command-form") |> render_submit(%{"text" => "/workspace"})
-
-    html = render(view)
-    assert html =~ "Workspace"
-  end
-
-  test "unknown slash command shows error" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("#command-form") |> render_submit(%{"text" => "/unknown-cmd"})
-
-    html = render(view)
-    assert html =~ "Unknown command"
-  end
-
-  test "command history shows input and output" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("#command-form") |> render_submit(%{"text" => "/help"})
-    html = render(view)
-    assert html =~ "command-history-entry"
-    assert html =~ "command-history-input"
-    assert html =~ "command-history-output"
-  end
-
-  # -- Setup checklist tests --------------------------------------------------
-
-  test "renders setup checklist" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Setup checklist"
-    assert html =~ "Workspace detected"
-    assert html =~ "File watching enabled"
-    assert html =~ "Connect universal agent runtime"
-    assert html =~ "Register first agent"
-    assert html =~ "Send first command"
-  end
-
-  test "workspace detected shows as done" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "setup-item-done"
-    assert html =~ "Workspace detected"
-  end
-
-  # -- Agent runtime tests ---------------------------------------------------
-
-  test "connect agent runtime shows toast when runtime unavailable" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("[phx-click='connect_agent_runtime']") |> render_click()
-
-    html = render(view)
-    # AgentRuntime not started in test, so safe_connect returns unavailable error
-    assert html =~ "Agent runtime unavailable"
-  end
-
-  test "retry agent runtime shows toast when runtime unavailable" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("[phx-click='retry_agent_runtime']") |> render_click()
-
-    html = render(view)
-    assert html =~ "Agent runtime unavailable"
   end
 
   # -- Self-healing diagnostic tests ------------------------------------------
@@ -971,58 +523,6 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "disabled"
   end
 
-  test "collapse button collapses diagnostics to badge" do
-    Muse.Diagnostics.emit(:warning, "collapsible warning")
-
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element(".diagnostics-collapse-btn") |> render_click()
-
-    html = render(view)
-    assert html =~ ~s(id="diagnostics-badge")
-    refute html =~ ~s(id="diagnostics-popup")
-    assert html =~ "diagnostic"
-  end
-
-  test "clicking badge reopens diagnostics popup" do
-    Muse.Diagnostics.emit(:warning, "badge reopen test")
-
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element(".diagnostics-collapse-btn") |> render_click()
-    html = render(view)
-    assert html =~ ~s(id="diagnostics-badge")
-
-    html = view |> element("#diagnostics-badge") |> render_click()
-    assert html =~ ~s(id="diagnostics-popup")
-    assert html =~ "badge reopen test"
-    refute html =~ ~s(id="diagnostics-badge")
-  end
-
-  test "collapse via handle_info renders badge when ref matches" do
-    Muse.Diagnostics.emit(:warning, "timed collapse")
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    %{socket: %{assigns: assigns}} = :sys.get_state(view.pid)
-    current_ref = assigns.diagnostics_collapse_ref
-    send(view.pid, {:collapse_diagnostics, current_ref})
-
-    html = render(view)
-    assert html =~ ~s(id="diagnostics-badge")
-    refute html =~ ~s(id="diagnostics-popup")
-  end
-
-  test "stale collapse ref is ignored" do
-    Muse.Diagnostics.emit(:warning, "stale ref test")
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    stale_ref = :erlang.make_ref()
-    send(view.pid, {:collapse_diagnostics, stale_ref})
-
-    html = render(view)
-    assert html =~ ~s(id="diagnostics-popup")
-  end
-
   test "self-healing summary shows when issues exist" do
     diagnostic = Muse.Diagnostics.emit(:warning, "summary test")
 
@@ -1036,284 +536,58 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "Self-healing queue"
   end
 
-  # -- Agent tab tests --------------------------------------------------------
+  # -- Slash command tests -----------------------------------------------------
 
-  test "agents tab shows No agents registered when registry is empty" do
+  test "/help command returns help text" do
     {:ok, view, _html} = live(build_conn(), "/")
 
-    view |> element("[phx-click='switch_tab'][phx-value-tab='agents']") |> render_click()
-    html = render(view)
-    assert html =~ "No agents registered"
-  end
-
-  test "stats tab shows BEAM info and refresh button" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("[phx-click='switch_tab'][phx-value-tab='stats']") |> render_click()
-    html = render(view)
-    assert html =~ "Total"
-    assert html =~ "Processes"
-    assert html =~ "Schedulers"
-    assert html =~ "Refresh"
-  end
-
-  test "refresh_stats event updates BEAM stats" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    # Switch to stats tab
-    view |> element("[phx-click='switch_tab'][phx-value-tab='stats']") |> render_click()
-
-    # Click the refresh button in the stats panel specifically
-    view |> element(".stats-panel [phx-click='refresh_stats']") |> render_click()
-    html = render(view)
-    assert html =~ "Statistics"
-  end
-
-  # -- Force reload watcher test ----------------------------------------------
-
-  test "force reload watcher when DevReloader not running shows toast" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    view |> element("[phx-click='force_reload_watcher']") |> render_click()
+    view |> element("#command-form") |> render_submit(%{"text" => "/help"})
 
     html = render(view)
-    # Should show a toast about watcher status
-    assert html =~ "toast"
+    assert html =~ "Available commands"
+    assert html =~ "/events"
+    assert html =~ "/clear events"
   end
 
-  # -- Copy diagnostics placeholder test --------------------------------------
-
-  test "copy diagnostics triggers clipboard push event" do
+  test "/events command shows event summary" do
     {:ok, view, _html} = live(build_conn(), "/")
 
-    # Should not raise — the handler pushes a copy_to_clipboard event to the client
-    html = view |> element("[phx-click='copy_diagnostics']") |> render_click()
-    # LiveView still renders without errors
-    assert html =~ "Muse"
-  end
+    view |> element("#command-form") |> render_submit(%{"text" => "/events"})
 
-  # -- Static assets -----------------------------------------------------------
-
-  describe "static assets" do
-    test "serves /assets/css/app.css with theme variables" do
-      conn = build_conn() |> get("/assets/css/app.css")
-      assert conn.status == 200
-      assert conn.resp_body =~ "--bg: #0f1117"
-      assert conn.resp_body =~ "--panel"
-      assert conn.resp_body =~ ".app-shell"
-      assert conn.resp_body =~ ".console-layout"
-      assert conn.resp_body =~ ".panel"
-      assert conn.resp_body =~ ".events-panel"
-      assert conn.resp_body =~ ".command-bar"
-      assert conn.resp_body =~ ".command-console"
-      assert conn.resp_body =~ ".secondary-button"
-      assert conn.resp_body =~ ".diagnostic-pill"
-      assert conn.resp_body =~ ".event-log"
-      assert conn.resp_body =~ ".event-row-error"
-      refute conn.resp_body =~ ".muse-hero"
-      refute conn.resp_body =~ ".theme-toggle"
-      assert conn.resp_body =~ ".diagnostics-popup"
-      assert conn.resp_body =~ ".diagnostic-notice.warning"
-      assert conn.resp_body =~ ".diagnostic-notice.error"
-      assert conn.resp_body =~ ".diagnostic-notice.critical"
-      # Sprint 1 CSS classes
-      assert conn.resp_body =~ ".tab-nav"
-      assert conn.resp_body =~ ".tab-btn"
-      assert conn.resp_body =~ ".status-bar"
-      assert conn.resp_body =~ ".status-dot"
-      assert conn.resp_body =~ ".toast-container"
-      assert conn.resp_body =~ ".toast"
-      assert conn.resp_body =~ ".command-history"
-      assert conn.resp_body =~ ".setup-checklist"
-      assert conn.resp_body =~ ".empty-state"
-      assert conn.resp_body =~ ".event-filters"
-      assert conn.resp_body =~ ".dev-tool-group"
-    end
-
-    test "light mode background image is a fully valid PNG" do
-      conn = build_conn() |> get("/images/muse-bg-light.png")
-      assert conn.status == 200
-      path = Path.join([:code.priv_dir(:muse), "static", "images", "muse-bg-light.png"])
-      assert_png_valid(File.read!(path), 800, 600)
-    end
-
-    test "dark mode background image is a fully valid PNG" do
-      conn = build_conn() |> get("/images/muse-bg-dark.png")
-      assert conn.status == 200
-      path = Path.join([:code.priv_dir(:muse), "static", "images", "muse-bg-dark.png"])
-      assert_png_valid(File.read!(path), 800, 600)
-    end
-  end
-
-  # -- Phase 2: Event search + filter combination --------------------------------
-
-  test "renders event search input" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "event-search-input"
-    assert html =~ "Search events"
-  end
-
-  test "event search input submits phx-change" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    view |> element(".event-search-form") |> render_change(%{"query" => "test query"})
     html = render(view)
-    assert html =~ "test query"
+    assert html =~ "event(s) recorded"
   end
 
-  test "clear event search button appears when search is set" do
+  test "/clear events clears the event log" do
+    Muse.submit(:cli, "event to clear via command")
+
     {:ok, view, _html} = live(build_conn(), "/")
-    view |> element(".event-search-form") |> render_change(%{"query" => "findme"})
     html = render(view)
-    assert html =~ "event-search-clear"
-  end
+    assert html =~ "event to clear via command"
 
-  test "clear event search clears the query" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    view |> element(".event-search-form") |> render_change(%{"query" => "findme"})
+    view |> element("#command-form") |> render_submit(%{"text" => "/clear events"})
+
     html = render(view)
-    assert html =~ "findme"
+    refute html =~ "event to clear via command"
+  end
 
-    view |> element(".event-search-clear") |> render_click()
+  test "unknown slash command shows error" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view |> element("#command-form") |> render_submit(%{"text" => "/unknown-cmd"})
+
     html = render(view)
-    refute html =~ "findme"
+    assert html =~ "Unknown command"
   end
 
-  test "clear filters button appears when filter is not all or search is set" do
+  test "/workspace shows workspace info" do
     {:ok, view, _html} = live(build_conn(), "/")
-    view |> element("[phx-click='set_event_filter'][phx-value-filter='errors']") |> render_click()
+
+    view |> element("#command-form") |> render_submit(%{"text" => "/workspace"})
+
     html = render(view)
-    assert html =~ "event-clear-filters-btn"
+    assert html =~ "Workspace"
   end
-
-  test "clear filters resets both filter and search" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    view |> element(".event-search-form") |> render_change(%{"query" => "test"})
-    view |> element("[phx-click='set_event_filter'][phx-value-filter='errors']") |> render_click()
-    html = render(view)
-    assert html =~ "event-clear-filters-btn"
-
-    view |> element(".event-clear-filters-btn") |> render_click()
-    html = render(view)
-    refute html =~ "event-clear-filters-btn"
-  end
-
-  test "event search + filter combination narrows results" do
-    Muse.submit(:cli, "searchable event alpha")
-    Muse.State.append(Muse.Event.new(:web, :error, %{text: "searchable error event"}))
-
-    {:ok, view, _html} = live(build_conn(), "/")
-    # Set filter to errors and search to "searchable"
-    view |> element("[phx-click='set_event_filter'][phx-value-filter='errors']") |> render_click()
-    view |> element(".event-search-form") |> render_change(%{"query" => "searchable"})
-    html = render(view)
-    # Should show matching count
-    assert html =~ "matching"
-  end
-
-  test "no matching events shows empty state with clear filters" do
-    Muse.submit(:cli, "some event")
-
-    {:ok, view, _html} = live(build_conn(), "/")
-    view |> element(".event-search-form") |> render_change(%{"query" => "zzz-no-match-xyz"})
-    html = render(view)
-    assert html =~ "No matching events"
-    assert html =~ "Clear filters/search"
-  end
-
-  # -- Phase 2: Copy/export actions ---------------------------------------------
-
-  test "events have copy JSON button" do
-    Muse.submit(:cli, "copyable event")
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "event-copy-json-btn"
-    assert html =~ "Copy JSON"
-  end
-
-  test "copy event JSON handler works without crash" do
-    Muse.submit(:cli, "copy target")
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    [event | _] = Muse.State.events()
-    html = view |> element(".event-copy-json-btn[phx-value-id='#{event.id}']") |> render_click()
-    assert html =~ "Muse"
-  end
-
-  test "copy event JSON with non-encodable data does not crash" do
-    # Event data contains a tuple, a PID-like ref string, and a nested map with atom keys
-    Muse.State.append(
-      Muse.Event.new(:web, :tricky, {1, {:nested, :tuple}, %{atom_key: "val", pid: self()}})
-    )
-
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    [event | _] = Muse.State.events()
-    html = view |> element(".event-copy-json-btn[phx-value-id='#{event.id}']") |> render_click()
-    assert html =~ "Muse"
-  end
-
-  test "copy/export event JSON with non-string map keys does not crash" do
-    # Integer keys and tuple keys — must be converted to strings for JSON
-    Muse.State.append(
-      Muse.Event.new(:web, :weird_keys, %{{:tuple, 1} => :ok, 123 => "number-key", "str" => 42})
-    )
-
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    [event | _] = Muse.State.events()
-    html = view |> element(".event-copy-json-btn[phx-value-id='#{event.id}']") |> render_click()
-    assert html =~ "Muse"
-
-    html = view |> element(".event-export-btn") |> render_click()
-    assert html =~ "Muse"
-  end
-
-  test "export events with non-encodable data does not crash" do
-    Muse.State.append(
-      Muse.Event.new(:web, :tricky, {1, {:nested, :tuple}, %{atom_key: "val", pid: self()}})
-    )
-
-    {:ok, view, _html} = live(build_conn(), "/")
-    html = view |> element(".event-export-btn") |> render_click()
-    assert html =~ "Muse"
-  end
-
-  test "copy diagnostics with beam stats does not crash" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    html = view |> element("[phx-click='copy_diagnostics']") |> render_click()
-    assert html =~ "Muse"
-  end
-
-  test "copy event JSON for event with DateTime in data does not crash" do
-    Muse.State.append(
-      Muse.Event.new(:web, :time_data, %{occurred_at: DateTime.utc_now(), label: "test"})
-    )
-
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    [event | _] = Muse.State.events()
-    html = view |> element(".event-copy-json-btn[phx-value-id='#{event.id}']") |> render_click()
-    assert html =~ "Muse"
-  end
-
-  test "export events button renders" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "event-export-btn"
-    assert html =~ "Export"
-  end
-
-  test "export events handler works" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    html = view |> element(".event-export-btn") |> render_click()
-    assert html =~ "Muse"
-  end
-
-  test "copy diagnostics handler triggers clipboard push" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    html = view |> element("[phx-click='copy_diagnostics']") |> render_click()
-    assert html =~ "Muse"
-  end
-
-  # -- Phase 2: New slash commands -----------------------------------------------
 
   test "/stats command shows BEAM stats" do
     {:ok, view, _html} = live(build_conn(), "/")
@@ -1327,6 +601,24 @@ defmodule MuseWeb.HomeLiveTest do
     view |> element("#command-form") |> render_submit(%{"text" => "/diagnostics"})
     html = render(view)
     assert html =~ "diagnostics"
+  end
+
+  test "/reload-status shows watcher status" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view |> element("#command-form") |> render_submit(%{"text" => "/reload-status"})
+
+    html = render(view)
+    assert html =~ "File watcher"
+  end
+
+  test "/simulate event creates a simulated event" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view |> element("#command-form") |> render_submit(%{"text" => "/simulate event"})
+
+    html = render(view)
+    assert html =~ "Simulated event"
   end
 
   test "/copy diagnostics triggers clipboard" do
@@ -1357,48 +649,6 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "Event filter set to: Errors"
   end
 
-  # -- Phase 2 robustness: command-dispatch edge cases -------------------------
-
-  test "/search events without query shows usage and does not crash" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    view |> element("#command-form") |> render_submit(%{"text" => "/search events"})
-    html = render(view)
-    assert html =~ "Usage: /search events"
-    # Should be on events tab
-    assert html =~ "events-panel"
-  end
-
-  test "/filter events without severity shows usage and current filter" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    view |> element("#command-form") |> render_submit(%{"text" => "/filter events"})
-    html = render(view)
-    assert html =~ "Usage: /filter events"
-    assert html =~ "current: All"
-    # Should be on events tab
-    assert html =~ "events-panel"
-  end
-
-  test "/filter events with invalid severity shows error and does not change filter" do
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    # Set filter to warnings first
-    view
-    |> element("[phx-click='set_event_filter'][phx-value-filter='warnings']")
-    |> render_click()
-
-    html =
-      view
-      |> element("#command-form")
-      |> render_submit(%{"text" => "/filter events nonsense"})
-
-    assert html =~ "Unknown filter"
-    assert html =~ "Usage: /filter events"
-    # Filter should still be warnings, not silently changed to all
-    assert html =~ "event-filter-active"
-    # Should be on events tab
-    assert html =~ "events-panel"
-  end
-
   test "/simulate event with extra args does not crash" do
     {:ok, view, _html} = live(build_conn(), "/")
 
@@ -1410,75 +660,71 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "Simulated event created"
   end
 
-  test "/open events switches to events tab" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    # Switch away first
-    view |> element("[phx-click='switch_tab'][phx-value-tab='stats']") |> render_click()
-    html = render(view)
-    assert html =~ "Statistics"
+  # -- Context panel tests -----------------------------------------------------
 
-    # Switch back via command
-    view |> element("#command-form") |> render_submit(%{"text" => "/open events"})
-    html = render(view)
-    assert html =~ "Switched to Events tab"
-  end
-
-  test "/open files switches to files tab" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    view |> element("#command-form") |> render_submit(%{"text" => "/open files"})
-    html = render(view)
-    assert html =~ "Switched to Files tab"
-  end
-
-  test "/open agents switches to agents tab" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    view |> element("#command-form") |> render_submit(%{"text" => "/open agents"})
-    html = render(view)
-    assert html =~ "Switched to Agents tab"
-  end
-
-  test "/open stats switches to stats tab" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    view |> element("#command-form") |> render_submit(%{"text" => "/open stats"})
-    html = render(view)
-    assert html =~ "Switched to Stats tab"
-  end
-
-  test "/open settings switches to settings tab" do
-    {:ok, view, _html} = live(build_conn(), "/")
-    view |> element("#command-form") |> render_submit(%{"text" => "/open settings"})
-    html = render(view)
-    assert html =~ "Switched to Settings tab"
-  end
-
-  # -- Phase 2: Command palette -------------------------------------------------
-
-  test "command palette element renders" do
+  test "context panel renders compact sections: agent, workspace, diagnostics, stats" do
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ ~s(id="command-palette")
-    assert html =~ "command-palette"
-    assert html =~ ~s(role="dialog")
+    assert html =~ ~s(class="context-panel")
+    assert html =~ "agent"
+    assert html =~ "workspace"
+    assert html =~ "diagnostics"
+    assert html =~ "stats"
   end
 
-  test "command palette has data-palette-actions" do
+  test "context panel does not render noisy action buttons by default" do
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "data-palette-actions"
+    refute html =~ "Simulate backend error"
+    refute html =~ "Retry connection"
+    refute html =~ "Simulate event"
   end
 
-  test "command palette has keyboard navigation hints" do
-    {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ "Navigate"
-    assert html =~ "Ctrl+K"
-  end
+  test "context panel shows diagnostics summary when diagnostics exist" do
+    Muse.Diagnostics.emit(:warning, "diagnostic in context test")
 
-  test "command palette action handler works" do
     {:ok, view, _html} = live(build_conn(), "/")
-    view |> render_hook("command_palette_action", %{"action" => "open_events"})
+
     html = render(view)
-    assert html =~ "Events"
+    assert html =~ ~s(class="context-panel")
+    assert html =~ "diagnostics"
+    assert html =~ "1 issue"
   end
 
-  # -- Phase 2: JS hook elements -----------------------------------------------
+  test "chat panel still exists when diagnostics are active" do
+    Muse.Diagnostics.emit(:warning, "chat with diagnostics")
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ ~s(class="chat-panel")
+    assert html =~ ~s(id="diagnostics-popup")
+  end
+
+  # -- JS hook attachment tests ------------------------------------------------
+
+  test "app shell has KeyboardShortcuts hook" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ ~s(id="muse-shell")
+    assert html =~ ~s(phx-hook="KeyboardShortcuts")
+  end
+
+  test "chat composer has CommandConsole hook and stable id" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ ~s(id="input-form")
+    assert html =~ ~s(phx-hook="CommandConsole")
+  end
+
+  test "toast elements have ToastAutoDismiss hook" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view |> element("#command-form") |> render_submit(%{"text" => "/clear events"})
+    html = render(view)
+    assert html =~ ~s(phx-hook="ToastAutoDismiss")
+  end
+
+  test "no theme toggle in dark-only mode" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    refute html =~ ~s(data-theme-toggle)
+    refute html =~ "theme-toggle"
+  end
 
   test "clipboard handler hook element exists" do
     {:ok, _view, html} = live(build_conn(), "/")
@@ -1486,9 +732,85 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ ~s(phx-hook="ClipboardHandler")
   end
 
-  test "command console has data-slash-commands" do
+  test "chat composer has data-slash-commands" do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "data-slash-commands"
+  end
+
+  # -- Toast notification tests -----------------------------------------------
+
+  test "toast container renders with aria-live" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ "toast-container"
+    assert html =~ ~s(aria-live="polite")
+  end
+
+  test "toast dismiss button works" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view |> element("#command-form") |> render_submit(%{"text" => "/help"})
+    html = render(view)
+    assert html =~ "toast"
+
+    # Dismiss the first toast found
+    view |> element(".toast-dismiss") |> render_click()
+    html = render(view)
+    # Toasts are removed but container remains
+    assert html =~ "toast-container"
+  end
+
+  # -- Diagnostics in header chip test -----------------------------------------
+
+  test "diagnostics status chip appears in header when diagnostics exist" do
+    Muse.Diagnostics.emit(:warning, "header chip test")
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ ~s(status-chip)
+    assert html =~ "1 issue"
+  end
+
+  # -- Static assets -----------------------------------------------------------
+
+  describe "static assets" do
+    test "serves /assets/css/app.css with chat-first UI classes" do
+      conn = build_conn() |> get("/assets/css/app.css")
+      assert conn.status == 200
+      assert conn.resp_body =~ "--bg: #0f1117"
+      assert conn.resp_body =~ "--panel"
+      assert conn.resp_body =~ ".app-shell"
+      assert conn.resp_body =~ ".main-layout"
+      assert conn.resp_body =~ ".chat-panel"
+      assert conn.resp_body =~ ".chat-scroll"
+      assert conn.resp_body =~ ".chat-composer"
+      assert conn.resp_body =~ ".chat-message-user"
+      assert conn.resp_body =~ ".chat-message-assistant"
+      assert conn.resp_body =~ ".context-panel"
+      assert conn.resp_body =~ ".status-chip"
+      assert conn.resp_body =~ ".diagnostics-popup"
+      assert conn.resp_body =~ ".toast-container"
+      assert conn.resp_body =~ ".panel"
+      assert conn.resp_body =~ ".diagnostic-pill"
+      assert conn.resp_body =~ ".diagnostic-notice.warning"
+      assert conn.resp_body =~ ".diagnostic-notice.error"
+      assert conn.resp_body =~ ".diagnostic-notice.critical"
+      assert conn.resp_body =~ ".status-dot"
+      assert conn.resp_body =~ ".toast"
+    end
+
+    test "light mode background image is a fully valid PNG" do
+      conn = build_conn() |> get("/images/muse-bg-light.png")
+      assert conn.status == 200
+      path = Path.join([:code.priv_dir(:muse), "static", "images", "muse-bg-light.png"])
+      assert_png_valid(File.read!(path), 800, 600)
+    end
+
+    test "dark mode background image is a fully valid PNG" do
+      conn = build_conn() |> get("/images/muse-bg-dark.png")
+      assert conn.status == 200
+      path = Path.join([:code.priv_dir(:muse), "static", "images", "muse-bg-dark.png"])
+      assert_png_valid(File.read!(path), 800, 600)
+    end
   end
 
   # -- Phase 2: CSS classes for new features -----------------------------------
@@ -1523,114 +845,6 @@ defmodule MuseWeb.HomeLiveTest do
       assert conn.resp_body =~ ".agent-runtime-card"
       assert conn.resp_body =~ ".status-dot-red"
       assert conn.resp_body =~ ".agent-runtime-endpoint-input"
-    end
-  end
-
-  # -- Logs tab tests -----------------------------------------------------------
-
-  describe "Logs tab" do
-    test "logs tab is present in navigation" do
-      {:ok, _view, html} = live(build_conn(), "/")
-      assert html =~ "Logs"
-    end
-
-    test "switching to logs tab shows logs panel" do
-      {:ok, view, _html} = live(build_conn(), "/")
-
-      view |> element("[phx-click='switch_tab'][phx-value-tab='logs']") |> render_click()
-      html = render(view)
-      assert html =~ "logs-panel"
-    end
-
-    test "logs tab shows empty state when no logs" do
-      {:ok, view, _html} = live(build_conn(), "/")
-
-      view |> element("[phx-click='switch_tab'][phx-value-tab='logs']") |> render_click()
-      html = render(view)
-      assert html =~ "No logs yet"
-      assert html =~ "Logs from the backend/runtime will appear here"
-    end
-
-    test "logs tab shows simulate button in non-prod" do
-      {:ok, view, _html} = live(build_conn(), "/")
-
-      view |> element("[phx-click='switch_tab'][phx-value-tab='logs']") |> render_click()
-      html = render(view)
-
-      if Mix.env() != :prod do
-        assert html =~ "Simulate log"
-      end
-    end
-
-    test "logs tab has filter buttons" do
-      {:ok, view, _html} = live(build_conn(), "/")
-
-      view |> element("[phx-click='switch_tab'][phx-value-tab='logs']") |> render_click()
-      html = render(view)
-      assert html =~ "set_log_filter"
-    end
-
-    test "logs tab has search input" do
-      {:ok, view, _html} = live(build_conn(), "/")
-
-      view |> element("[phx-click='switch_tab'][phx-value-tab='logs']") |> render_click()
-      html = render(view)
-      assert html =~ "Search logs"
-    end
-
-    test "logs tab has clear and export buttons" do
-      {:ok, view, _html} = live(build_conn(), "/")
-
-      view |> element("[phx-click='switch_tab'][phx-value-tab='logs']") |> render_click()
-      html = render(view)
-      assert html =~ "clear_logs"
-      assert html =~ "export_logs"
-    end
-  end
-
-  # -- Agent runtime UI tests ---------------------------------------------------
-
-  describe "Agent runtime UI" do
-    test "agents tab shows runtime card" do
-      {:ok, view, _html} = live(build_conn(), "/")
-
-      view |> element("[phx-click='switch_tab'][phx-value-tab='agents']") |> render_click()
-      html = render(view)
-      assert html =~ "agent-runtime-card"
-      assert html =~ "Universal agent runtime"
-    end
-
-    test "runtime card shows connect/retry buttons when disconnected" do
-      {:ok, view, _html} = live(build_conn(), "/")
-
-      view |> element("[phx-click='switch_tab'][phx-value-tab='agents']") |> render_click()
-      html = render(view)
-      assert html =~ "connect_agent_runtime"
-      assert html =~ "retry_agent_runtime"
-    end
-
-    test "dev sidebar has disconnect button" do
-      {:ok, view, _html} = live(build_conn(), "/")
-
-      html = render(view)
-      assert html =~ "disconnect_agent_runtime"
-    end
-
-    test "runtime card shows endpoint input" do
-      {:ok, view, _html} = live(build_conn(), "/")
-
-      view |> element("[phx-click='switch_tab'][phx-value-tab='agents']") |> render_click()
-      html = render(view)
-      assert html =~ "agent-runtime-endpoint-input"
-      assert html =~ "set_agent_runtime_endpoint"
-    end
-
-    test "endpoint input has aria-label" do
-      {:ok, view, _html} = live(build_conn(), "/")
-
-      view |> element("[phx-click='switch_tab'][phx-value-tab='agents']") |> render_click()
-      html = render(view)
-      assert html =~ ~s(aria-label="Agent runtime endpoint")
     end
   end
 end

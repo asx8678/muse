@@ -3,19 +3,15 @@ defmodule MuseWeb.HomeLive do
 
   import MuseWeb.ConsoleComponents,
     only: [
-      events_tab: 1,
-      logs_tab: 1,
-      files_tab: 1,
-      agents_tab: 1,
-      stats_tab: 1,
-      settings_tab: 1,
       app_header: 1,
-      status_bar: 1,
+      chat_panel: 1,
+      context_panel: 1,
       diagnostics_popup: 1,
-      dev_sidebar: 1,
-      command_console: 1,
       toast_container: 1
     ]
+
+  # Agent 2 exports events_to_messages but spec requires chat_messages/1
+  # which filters only :user_message and :assistant_message event types.
 
   import MuseWeb.EventFormatter,
     only: [
@@ -33,7 +29,6 @@ defmodule MuseWeb.HomeLive do
     ]
 
   import MuseWeb.ExportJSON, only: [json_safe: 1, build_diagnostics_payload: 1]
-  import MuseWeb.ConsoleCommand, only: [palette_actions: 0]
 
   alias MuseWeb.BackendBridge
   alias MuseWeb.ConsoleCommand
@@ -134,27 +129,21 @@ defmodule MuseWeb.HomeLive do
           try do
             Muse.submit(:web, msg)
             state = Muse.State.get()
-            socket = assign(socket, state: state, input: "")
-            entry = make_history_entry(msg, "Message sent to Muse.", :success)
-            {:noreply, assign(socket, command_history: socket.assigns.command_history ++ [entry])}
+            {:noreply, assign(socket, state: state, input: "")}
           rescue
             e ->
-              entry = make_history_entry(msg, "Error: #{Exception.message(e)}", :error)
               socket = socket |> assign(input: text) |> add_toast(Exception.message(e), :error)
-
-              {:noreply,
-               assign(socket, command_history: socket.assigns.command_history ++ [entry])}
+              {:noreply, socket}
           end
 
         {:command, action} ->
           {output, socket} = ConsoleCommand.dispatch_command(action, socket)
 
-          entry =
-            make_history_entry(
-              text,
-              output,
-              if(String.starts_with?(output, "Error"), do: :error, else: :success)
-            )
+          toast_type =
+            if(String.starts_with?(output, "Error"), do: :error, else: :success)
+
+          entry = make_history_entry(text, output, toast_type)
+          socket = add_toast(socket, output, toast_type)
 
           {:noreply,
            assign(socket, command_history: socket.assigns.command_history ++ [entry], input: "")}
@@ -162,28 +151,29 @@ defmodule MuseWeb.HomeLive do
         {:command, action, args} ->
           {output, socket} = ConsoleCommand.dispatch_command_with_args(action, args, socket)
 
-          entry =
-            make_history_entry(
-              text,
-              output,
-              if(String.starts_with?(output, "Error"), do: :error, else: :success)
-            )
+          toast_type =
+            if(String.starts_with?(output, "Error"), do: :error, else: :success)
+
+          entry = make_history_entry(text, output, toast_type)
+          socket = add_toast(socket, output, toast_type)
 
           {:noreply,
            assign(socket, command_history: socket.assigns.command_history ++ [entry], input: "")}
 
         {:unknown, cmd} ->
-          entry =
-            make_history_entry(
-              text,
-              "Unknown command: #{cmd}. Type /help for available commands.",
-              :error
-            )
+          msg = "Unknown command: #{cmd}. Type /help for available commands."
+          entry = make_history_entry(text, msg, :error)
+          socket = socket |> add_toast(msg, :error)
 
           {:noreply,
            assign(socket, command_history: socket.assigns.command_history ++ [entry], input: "")}
       end
     end
+  end
+
+  @impl true
+  def handle_event("use_prompt", %{"prompt" => prompt}, socket) do
+    {:noreply, assign(socket, input: prompt)}
   end
 
   @impl true
@@ -731,45 +721,12 @@ defmodule MuseWeb.HomeLive do
     ~H"""
     <main id="muse-shell" class="app-shell" phx-hook="KeyboardShortcuts">
       <div id="clipboard-handler" phx-hook="ClipboardHandler" style="display:none" aria-hidden="true"></div>
-      <.app_header tabs={@tabs} active_tab={@active_tab} />
-      <.status_bar state={@state} reload_status={@reload_status} workspace={@workspace} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} />
+      <.app_header workspace={@workspace} reload_status={@reload_status} state={@state} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} />
+      <main class="main-layout">
+        <.chat_panel messages={chat_messages(@state.events)} input={@input} />
+        <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} agent_snapshot={@agent_snapshot} beam_stats={@beam_stats} logs={@logs} />
+      </main>
       <.diagnostics_popup diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
-      <div class="console-layout">
-        <main class="console-main">
-          <%= case @active_tab do %>
-            <% "events" -> %>
-              <.events_tab events={@state.events} filter={@event_filter} search={@event_search} expanded_id={@expanded_event_id} />
-            <% "logs" -> %>
-              <.logs_tab logs={@logs} filter={@log_filter} search={@log_search} expanded_id={@expanded_log_id} />
-            <% "files" -> %>
-              <.files_tab reload_status={@reload_status} />
-            <% "agents" -> %>
-              <.agents_tab agent_snapshot={@agent_snapshot} agent_runtime={@agent_runtime} />
-            <% "stats" -> %>
-              <.stats_tab beam_stats={@beam_stats} />
-            <% "settings" -> %>
-              <.settings_tab workspace={@workspace} reload_status={@reload_status} />
-          <% end %>
-        </main>
-        <.dev_sidebar reload_status={@reload_status} command_history={@command_history} />
-      </div>
-      <.command_console input={@input} command_history={@command_history} />
-      <div id="command-palette" class="command-palette" role="dialog" aria-label="Command palette" aria-modal="true" phx-hook="CommandPalette" data-palette-actions={Jason.encode!(palette_actions())} style="display:none">
-        <div class="command-palette-backdrop" data-action="close"></div>
-        <div class="command-palette-inner">
-          <input
-            type="text"
-            class="command-palette-input"
-            placeholder="Type a command or action…"
-            aria-label="Search commands and actions"
-          />
-          <ul id="command-palette-list" class="command-palette-list" role="listbox" aria-label="Suggestions" phx-update="ignore"></ul>
-          <div class="command-palette-footer">
-            <span class="palette-hint">↑↓ Navigate · ↵ Select · Esc Close</span>
-            <span class="palette-shortcut">Ctrl+K</span>
-          </div>
-        </div>
-      </div>
       <.toast_container toasts={@toasts} />
     </main>
     """
@@ -817,4 +774,31 @@ defmodule MuseWeb.HomeLive do
   defp compute_issue_statuses(issues) do
     Map.new(issues, fn issue -> {issue.diagnostic_id, issue.status} end)
   end
+
+  # -- Chat-first helpers -----------------------------------------------------
+
+  defp chat_messages(events) do
+    events
+    |> Enum.filter(&(&1.type in [:user_message, :assistant_message]))
+    |> Enum.map(fn event ->
+      %{
+        id: event.id,
+        role: chat_role(event),
+        text: chat_text(event),
+        timestamp: format_timestamp(event.timestamp),
+        source: event.source
+      }
+    end)
+  end
+
+  defp chat_role(%{type: :assistant_message}), do: :assistant
+  defp chat_role(%{type: :user_message}), do: :user
+  defp chat_role(_), do: :system
+
+  defp chat_text(%{data: data}) when is_map(data),
+    do: Map.get(data, :text) || Map.get(data, "text") || ""
+
+  defp chat_text(%{data: data}) when is_binary(data), do: data
+  defp chat_text(%{data: nil}), do: ""
+  defp chat_text(%{data: data}), do: inspect(data)
 end

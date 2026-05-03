@@ -221,14 +221,17 @@ issues are atomically claimed and attached as an event in the state log.
 
 ## UI
 
-Muse uses a dark-only modern developer-tool app shell with calm neutral
-panels and a subtle purple accent.  The layout is left-aligned with a
-sidebar for status/dev tools and a primary event log panel.
+Muse uses a dark-only modern chat-first agent workspace with calm neutral
+panels and a subtle purple accent.  The layout is a two-column split with a
+primary conversation area on the left and a compact context panel on the right.
 
 - Dark mode only — no theme toggle.
-- Events are the primary panel; diagnostic/status info lives in the
-  sidebar.
-- Backend diagnostics appear as a compact pill in the header when
+- The main area is a conversation sourced from `Muse.State` `:user_message`
+  and `:assistant_message` events, rendered as chat bubbles.
+- Runtime status, diagnostics, workspace info, recent files, and BEAM stats
+  live in the compact optional context panel on the right — not as primary
+  tabs.
+- Backend diagnostics appear as a compact chip in the header when
   collapsed, and expand into a fixed overlay when open.
 
 ---

@@ -400,16 +400,7 @@ const KeyboardShortcuts = {
           }
         }
       }
-      // Tab shortcuts: Ctrl+E, Ctrl+F, Ctrl+A, Ctrl+R, Ctrl+,, Ctrl+L
-      if (e.ctrlKey || e.metaKey) {
-        const tabMap = { e: "events", f: "files", a: "agents", r: "stats", ",": "settings", l: "logs" };
-        const tab = tabMap[e.key];
-        if (tab) {
-          e.preventDefault();
-          const btn = document.querySelector(`[phx-click='switch_tab'][phx-value-tab='${tab}']`);
-          if (btn) btn.click();
-        }
-      }
+
     };
     document.addEventListener("keydown", this._handler);
   },

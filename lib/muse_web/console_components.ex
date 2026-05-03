@@ -33,6 +33,10 @@ defmodule MuseWeb.ConsoleComponents do
       format_log_json: 1
     ]
 
+  # -- Legacy/advanced tab components (not rendered by default) -----------------
+  # The following tab components are preserved for future/advanced use.
+  # They are NOT rendered in the chat-first HomeLive layout.
+
   # -- Events tab -------------------------------------------------------------
 
   attr(:events, :list, required: true)
@@ -570,38 +574,234 @@ defmodule MuseWeb.ConsoleComponents do
 
   def format_mem_key(key), do: to_string(key)
 
-  # -- Shell-level components --------------------------------------------------
+  # -- Chat-first shell components --------------------------------------------
 
-  attr(:tabs, :list, required: true)
-  attr(:active_tab, :string, required: true)
+  attr(:workspace, :string, required: true)
+  attr(:reload_status, :map, required: true)
+  attr(:state, :map, required: true)
+  attr(:diagnostics, :list, required: true)
+  attr(:diagnostics_open?, :boolean, required: true)
+  attr(:agent_runtime, :map, default: nil)
 
   def app_header(assigns) do
     ~H"""
     <header class="app-header">
       <div class="app-brand">
-        <span class="brand-mark">Muse</span>
-        <span class="brand-subtitle">Backend console</span>
+        <span class="brand-mark">muse</span>
       </div>
-      <nav class="tab-nav" role="tablist" aria-label="Console navigation">
-        <%= for {id, icon, label} <- @tabs do %>
-          <button
-            type="button"
-            role="tab"
-            class={"tab-btn #{if @active_tab == id, do: "tab-active", else: ""}"}
-            aria-selected={if @active_tab == id, do: "true", else: "false"}
-            phx-click="switch_tab"
-            phx-value-tab={id}
-            aria-label={label}
-            title={tab_tooltip(id, label)}
-          >
-            <span class="tab-icon"><%= icon %></span>
-            <span class="tab-label"><%= label %></span>
-          </button>
+      <div class="status-chips">
+        <.status_chip label="backend" tone="green" dot={true} value="connected" />
+        <.status_chip label="watcher" tone={watcher_tone(@reload_status)} dot={true} value={watcher_label(@reload_status)} />
+        <.status_chip
+          label="runtime"
+          tone={runtime_tone(@agent_runtime)}
+          dot={true}
+          value={runtime_status_label((@agent_runtime || %{status: :disconnected}).status)}
+        />
+        <.status_chip label="workspace" tone="neutral" dot={false} value={short_path(@workspace)} />
+        <%= if @diagnostics != [] do %>
+          <.status_chip
+            label="diagnostics"
+            tone="yellow"
+            dot={true}
+            value={"#{length(@diagnostics)} issue#{if length(@diagnostics) != 1, do: "s", else: ""}"}
+            click="open_diagnostics"
+          />
         <% end %>
-      </nav>
+      </div>
     </header>
     """
   end
+
+  attr(:label, :string, required: true)
+  attr(:tone, :string, required: true)
+  attr(:dot, :boolean, default: false)
+  attr(:value, :string, required: true)
+  attr(:click, :string, default: nil)
+
+  def status_chip(assigns) do
+    ~H"""
+    <%= if @click do %>
+      <button type="button" class={"status-chip status-chip-#{@tone}"} phx-click={@click}>
+        <%= if @dot do %><span class={"status-dot #{chip_dot_class(@tone)}"}></span><% end %>
+        <span class="status-chip-label"><%= @label %></span>
+        <span class="status-chip-value"><%= @value %></span>
+      </button>
+    <% else %>
+      <span class={"status-chip status-chip-#{@tone}"}>
+        <%= if @dot do %><span class={"status-dot #{chip_dot_class(@tone)}"}></span><% end %>
+        <span class="status-chip-label"><%= @label %></span>
+        <span class="status-chip-value"><%= @value %></span>
+      </span>
+    <% end %>
+    """
+  end
+
+  attr(:messages, :list, required: true)
+  attr(:input, :string, required: true)
+
+  def chat_panel(assigns) do
+    ~H"""
+    <section class="chat-panel" aria-label="muse conversation">
+      <div class="chat-scroll" id="chat-scroll">
+        <%= if @messages == [] do %>
+          <div class="chat-empty">
+            <h1>muse</h1>
+            <p>Ask muse to inspect, explain, fix, or generate code in this workspace.</p>
+            <div class="prompt-chips">
+              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Explain this project">Explain this project</button>
+              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Check recent backend errors">Check recent backend errors</button>
+              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Review changed files">Review changed files</button>
+              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Help me connect the agent runtime">Help me connect the agent runtime</button>
+            </div>
+          </div>
+        <% else %>
+          <.chat_messages messages={@messages} />
+        <% end %>
+      </div>
+      <.chat_composer input={@input} />
+    </section>
+    """
+  end
+
+  attr(:messages, :list, required: true)
+
+  def chat_messages(assigns) do
+    ~H"""
+    <div class="chat-messages">
+      <%= for msg <- @messages do %>
+        <.chat_message message={msg} />
+      <% end %>
+    </div>
+    """
+  end
+
+  attr(:message, :map, required: true)
+
+  def chat_message(assigns) do
+    ~H"""
+    <div class={"chat-message #{chat_message_role_class(@message.role)}"}>
+      <div class="chat-message-header">
+        <span class="chat-message-role"><%= chat_message_role_label(@message.role) %></span>
+        <%= if @message[:timestamp] do %>
+          <time class="chat-message-time"><%= @message.timestamp %></time>
+        <% end %>
+        <%= if @message[:source] do %>
+          <span class="chat-message-source">· <%= @message.source %></span>
+        <% end %>
+      </div>
+      <div class="chat-bubble"><%= @message.text %></div>
+    </div>
+    """
+  end
+
+  attr(:input, :string, required: true)
+
+  def chat_composer(assigns) do
+    ~H"""
+    <div id="input-form" class="chat-composer" phx-hook="CommandConsole" data-slash-commands={Jason.encode!(Muse.Commands.slash_commands_json())}>
+      <form id="command-form" phx-submit="submit" class="chat-composer-form">
+        <textarea
+          name="text"
+          class="chat-input command-input"
+          placeholder="Ask muse to inspect, explain, fix, or generate code..."
+          rows="1"
+          aria-label="Chat input"
+        ><%= @input %></textarea>
+        <button type="submit" class="primary-button chat-send-button" aria-label="Send message">Send</button>
+      </form>
+    </div>
+    """
+  end
+
+  attr(:workspace, :string, required: true)
+  attr(:reload_status, :map, required: true)
+  attr(:diagnostics, :list, required: true)
+  attr(:diagnostics_open?, :boolean, default: false)
+  attr(:agent_runtime, :map, default: nil)
+  attr(:agent_snapshot, :any, default: nil)
+  attr(:beam_stats, :map, default: %{})
+  attr(:logs, :list, default: [])
+
+  def context_panel(assigns) do
+    ~H"""
+    <aside class="context-panel" aria-label="Workspace context">
+      <.mini_card title="agent">
+        <% runtime = @agent_runtime || %{status: :disconnected} %>
+        <div class="mini-card-row">
+          <span class={"status-dot #{runtime_status_dot(runtime.status)}"}></span>
+          <span><%= runtime_status_label(runtime.status) %></span>
+        </div>
+        <%= if runtime[:endpoint] && runtime[:endpoint] != "" do %>
+          <div class="mini-card-row"><span class="mini-card-label">endpoint</span> <span><%= runtime.endpoint %></span></div>
+        <% end %>
+        <%= if runtime[:last_error] do %>
+          <div class="mini-card-row mini-card-error"><span class="mini-card-label">last error</span> <span><%= runtime.last_error %></span></div>
+        <% end %>
+        <%= if agent_count(runtime) do %>
+          <div class="mini-card-row"><span class="mini-card-label">agents</span> <span><%= agent_count(runtime) %></span></div>
+        <% end %>
+      </.mini_card>
+
+      <.mini_card title="workspace">
+        <div class="mini-card-row"><span class="mini-card-label">path</span> <span class="mini-card-path"><%= short_path(@workspace) %></span></div>
+        <div class="mini-card-row">
+          <span class={"status-dot #{if @reload_status[:status] == :unavailable, do: "status-dot-gray", else: "status-dot-green"}"}></span>
+          <span><%= watcher_label(@reload_status) %></span>
+        </div>
+        <%= if @reload_status[:generation] do %>
+          <div class="mini-card-row"><span class="mini-card-label">gen</span> <span><%= @reload_status[:generation] %></span></div>
+        <% end %>
+      </.mini_card>
+
+      <.mini_card title="diagnostics">
+        <div class="mini-card-row">
+          <span><%= length(@diagnostics) %> issue<%= if length(@diagnostics) != 1, do: "s", else: "" %></span>
+        </div>
+        <%= if @diagnostics != [] do %>
+          <div class="mini-card-row mini-card-subtle"><%= diagnostic_summary(List.first(@diagnostics)) %></div>
+          <button type="button" class="mini-card-btn" phx-click="open_diagnostics">open details</button>
+        <% end %>
+      </.mini_card>
+
+      <.mini_card title="recent files">
+        <%= for file <- recent_files(@reload_status) do %>
+          <div class="mini-card-row mini-card-path"><%= file %></div>
+        <% end %>
+        <%= if recent_files(@reload_status) == [] do %>
+          <div class="mini-card-row mini-card-subtle">none yet</div>
+        <% end %>
+      </.mini_card>
+
+      <.mini_card title="stats">
+        <div class="mini-card-row">
+          <span class="mini-card-label">memory</span>
+          <span><%= format_bytes(@beam_stats[:total_memory] || 0) %></span>
+        </div>
+        <div class="mini-card-row">
+          <span class="mini-card-label">processes</span>
+          <span><%= @beam_stats[:process_count] || "—" %></span>
+        </div>
+      </.mini_card>
+    </aside>
+    """
+  end
+
+  attr(:title, :string, required: true)
+  slot(:inner_block, required: true)
+
+  def mini_card(assigns) do
+    ~H"""
+    <div class="mini-card">
+      <h3 class="mini-card-title"><%= @title %></h3>
+      <div class="mini-card-body"><%= render_slot(@inner_block) %></div>
+    </div>
+    """
+  end
+
+  # -- Legacy/advanced shell components (not rendered by default) --------------
+  # The following shell components are preserved for future/advanced use.
+  # They are NOT rendered in the chat-first HomeLive layout.
 
   attr(:state, :map, required: true)
   attr(:reload_status, :map, required: true)
@@ -716,6 +916,8 @@ defmodule MuseWeb.ConsoleComponents do
     """
   end
 
+  # Legacy dev sidebar – not rendered by default in chat-first layout
+
   attr(:reload_status, :map, required: true)
   attr(:command_history, :list, required: true)
 
@@ -790,6 +992,8 @@ defmodule MuseWeb.ConsoleComponents do
     """
   end
 
+  # Legacy command console – replaced by chat_composer in chat-first layout
+
   attr(:input, :string, required: true)
   attr(:command_history, :list, required: true)
 
@@ -836,22 +1040,106 @@ defmodule MuseWeb.ConsoleComponents do
 
   # -- Helper for status bar ------------------------------------------------
 
+  # -- Chat-first data helpers -----------------------------------------------
+
+  @doc """
+  Transforms a list of Event structs into chat message maps
+  suitable for rendering in `chat_panel`.
+  """
+  def events_to_messages(events) when is_list(events) do
+    Enum.map(events, fn event ->
+      %{
+        role: event_source_to_role(event.source),
+        text: format_event_data(event.data),
+        timestamp: event.timestamp,
+        source: event.source
+      }
+    end)
+  end
+
+  defp event_source_to_role(:user), do: :user
+  defp event_source_to_role(_), do: :assistant
+
+  defp format_event_data(%{text: text}), do: text
+  defp format_event_data(%{file: file}), do: file
+  defp format_event_data(%{files: files}) when is_list(files), do: Enum.join(files, ", ")
+  defp format_event_data(%{issues: issues}) when is_list(issues), do: "#{length(issues)} issues"
+  defp format_event_data(data), do: inspect(data)
+
+  # -- Chat-first private helpers -------------------------------------------
+
+  defp short_path(path) when is_binary(path) do
+    path |> String.split("/") |> Enum.take(-2) |> Enum.join("/")
+  end
+
+  defp short_path(_), do: "—"
+
+  defp watcher_label(%{status: :unavailable}), do: "unavailable"
+  defp watcher_label(_), do: "active"
+
+  defp watcher_tone(%{status: :unavailable}), do: "gray"
+  defp watcher_tone(_), do: "green"
+
+  defp runtime_tone(nil), do: "gray"
+  defp runtime_tone(%{status: :connected}), do: "green"
+  defp runtime_tone(%{status: :connecting}), do: "yellow"
+  defp runtime_tone(%{status: :error}), do: "red"
+  defp runtime_tone(_), do: "gray"
+
+  defp diagnostic_summary(nil), do: ""
+
+  defp diagnostic_summary(%{message: msg}) when is_binary(msg) do
+    if String.length(msg) > 80 do
+      String.slice(msg, 0, 80) <> "…"
+    else
+      msg
+    end
+  end
+
+  defp diagnostic_summary(d), do: String.slice(to_string(d), 0, 80)
+
+  defp recent_files(%{recent_files: files}) when is_list(files) and files != [] do
+    files |> Enum.take(3) |> Enum.map(&(&1[:basename] || &1[:path] || to_string(&1)))
+  end
+
+  defp recent_files(reload_status) when is_map(reload_status) do
+    case reload_status[:recent_file] do
+      nil -> []
+      f -> [f]
+    end
+  end
+
+  defp recent_files(_), do: []
+
+  defp agent_count(%{agent_count: count}) when is_integer(count), do: count
+  defp agent_count(_), do: nil
+
+  defp chip_dot_class("green"), do: "status-dot-green"
+  defp chip_dot_class("success"), do: "status-dot-green"
+  defp chip_dot_class("yellow"), do: "status-dot-yellow"
+  defp chip_dot_class("warning"), do: "status-dot-yellow"
+  defp chip_dot_class("red"), do: "status-dot-red"
+  defp chip_dot_class("danger"), do: "status-dot-red"
+  defp chip_dot_class("accent"), do: "status-dot-yellow"
+  defp chip_dot_class("neutral"), do: "status-dot-gray"
+  defp chip_dot_class("gray"), do: "status-dot-gray"
+  defp chip_dot_class(_), do: "status-dot-gray"
+
+  defp chat_message_role_class(:user), do: "chat-message-user"
+  defp chat_message_role_class(:assistant), do: "chat-message-assistant"
+  defp chat_message_role_class(role), do: "chat-message-#{role}"
+
+  defp chat_message_role_label(:user), do: "you"
+  defp chat_message_role_label(:assistant), do: "muse"
+  defp chat_message_role_label(role), do: to_string(role)
+
+  # -- Legacy private helpers -------------------------------------------------
+
   defp status_dot_color(0), do: "status-dot-gray"
   defp status_dot_color(count) when count > 10, do: "status-dot-green"
   defp status_dot_color(_), do: "status-dot-green"
 
-  @tab_tooltips %{
-    "events" => "Events (Ctrl+E)",
-    "logs" => "Logs (Ctrl+L)",
-    "files" => "Files (Ctrl+F)",
-    "agents" => "Agents (Ctrl+A)",
-    "stats" => "Stats (Ctrl+R)",
-    "settings" => "Settings (Ctrl+,)"
-  }
-
-  defp tab_tooltip(id, label) do
-    Map.get(@tab_tooltips, id, label)
-  end
+  # tab_tooltip removed – tab nav no longer rendered by default
 
   # -- Agent runtime helpers --------------------------------------------------
 
