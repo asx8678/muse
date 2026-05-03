@@ -4,7 +4,15 @@ config :muse, MuseWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   server: false
 
-config :muse, :logger, level: :warning
+config :muse, :logger,
+  buffer_level: :warning,
+  console_level: :warning
+
+config :logger, :default_handler, level: :warning
+
+config :logger, :default_formatter,
+  format: "$time [$level] $message\n",
+  metadata: []
 
 # Prevent the Application supervisor from starting runtime children
 # (Workspace, State, CLI.Repl, Endpoint, DevReloader) during mix test.

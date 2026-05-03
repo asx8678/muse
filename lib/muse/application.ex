@@ -13,7 +13,8 @@ defmodule Muse.Application do
 
   use Application
 
-  alias Muse.{Argv, BootOptions, StartupBanner}
+  alias Muse.{Argv, BootOptions, Logging, StartupBanner}
+  alias Muse.CLI.NifAvailability
 
   # -- Application callback -----------------------------------------------------
 
@@ -27,6 +28,7 @@ defmodule Muse.Application do
         halt_fun().(0)
       end
 
+      Logging.configure(if opts.verbose?, do: :verbose, else: opts.cli_ui)
       maybe_configure_endpoint(opts)
       children = runtime_children(opts)
       StartupBanner.io_puts(banner_opts(opts))
@@ -49,12 +51,15 @@ defmodule Muse.Application do
   @doc false
   @spec runtime_children(BootOptions.t()) :: [Supervisor.child_spec()]
   def runtime_children(opts) do
+    logger_level =
+      Application.get_env(:muse, :logger, []) |> Keyword.get(:buffer_level, :info)
+
     children = [
       {Task.Supervisor, name: Muse.TaskSupervisor},
       {Phoenix.PubSub, name: Muse.PubSub},
       Muse.Diagnostics,
       Muse.SelfHealingQueue,
-      {Muse.LogBuffer, [install_logger_handler?: true]},
+      {Muse.LogBuffer, [install_logger_handler?: true, logger_level: logger_level]},
       Muse.AgentRuntime,
       {Muse.Workspace, root: opts.workspace},
       Muse.State,
@@ -62,10 +67,28 @@ defmodule Muse.Application do
     ]
 
     children =
-      if opts.cli? do
-        children ++ [{Muse.CLI.Repl, [halt?: true]}]
-      else
-        children
+      case opts.cli_ui do
+        :repl ->
+          children ++ [{Muse.CLI.Repl, [halt?: true]}]
+
+        :tui ->
+          # Guard: ExRatatui NIF must be loadable for TUI mode.
+          # Escripts cannot load native NIFs from the archive path,
+          # so we fail early with an actionable error message.
+          NifAvailability.check!()
+
+          web_url =
+            if opts.web? do
+              "http://#{opts.host}:#{opts.port}"
+            else
+              nil
+            end
+
+          children ++
+            [{Muse.CLI.Tui, [halt?: true, workspace: opts.workspace, web_url: web_url]}]
+
+        :none ->
+          children
       end
 
     children =
@@ -90,13 +113,21 @@ defmodule Muse.Application do
   @doc false
   @spec banner_opts(BootOptions.t()) :: keyword()
   def banner_opts(opts) do
+    logs_level =
+      if opts.verbose? do
+        :debug
+      else
+        Application.get_env(:muse, :logger, []) |> Keyword.get(:console_level, :warning)
+      end
+
     [
       workspace: opts.workspace,
-      cli?: opts.cli?,
       web?: opts.web?,
       host: opts.host,
       port: opts.port,
-      watch?: effective_watch?(opts)
+      watch?: effective_watch?(opts),
+      ui: opts.cli_ui,
+      logs: logs_level
     ]
   end
 
@@ -126,6 +157,8 @@ defmodule Muse.Application do
     Usage: muse [options]
 
     Options:
+      --repl            Use REPL CLI (default)
+      --tui             Use TUI CLI (ExRatatui)
       --no-web          Disable web interface
       --web-only        Disable CLI, enable web only
       --no-cli          Alias for --web-only
@@ -133,6 +166,7 @@ defmodule Muse.Application do
       --host HOST       HTTP host (default: 127.0.0.1)
       --workspace PATH  Workspace directory
       --no-watch        Disable hot reload
+      --verbose         Enable debug-level console logging (overrides TUI silence)
       --help, -h        Show this help
     """
   end
@@ -147,14 +181,31 @@ defmodule Muse.Application do
       # not from start_link options.  We must set it here so the
       # actual bind address/port matches what the banner advertises.
       current = Application.get_env(:muse, MuseWeb.Endpoint, [])
+
       http = Keyword.get(current, :http, [])
       http = Keyword.put(http, :ip, parse_host(opts.host))
       http = Keyword.put(http, :port, opts.port)
-      Application.put_env(:muse, MuseWeb.Endpoint, Keyword.put(current, :http, http))
+
+      current =
+        current
+        |> Keyword.put(:http, http)
+        |> suppress_noisy_endpoint_opts(opts)
+
+      Application.put_env(:muse, MuseWeb.Endpoint, current)
     end
 
     :ok
   end
+
+  # In TUI mode, disable watchers (esbuild stdout) and live-reload
+  # patterns so they don't print over the terminal.
+  defp suppress_noisy_endpoint_opts(current, %{cli_ui: :tui}) do
+    current
+    |> Keyword.put(:watchers, [])
+    |> Keyword.delete(:live_reload)
+  end
+
+  defp suppress_noisy_endpoint_opts(current, _opts), do: current
 
   # -- Configurable helpers (test-injectable) ------------------------------------
 

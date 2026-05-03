@@ -1,0 +1,39 @@
+#!/usr/bin/env sh
+set -eu
+
+# bin/muse_cli — Convenience wrapper for Muse Mix release.
+#
+# Usage:
+#   bin/muse_cli [options]
+#
+# All options are forwarded to Muse.CLI.ReleaseCommand.main/1:
+#   --repl            Use REPL CLI (default)
+#   --tui             Use TUI CLI (ExRatatui)
+#   --no-web          Disable web interface
+#   --web-only        Disable CLI, enable web only
+#   --no-cli          Alias for --web-only
+#   --port PORT       HTTP port (default: 4000)
+#   --host HOST       HTTP host (default: 127.0.0.1)
+#   --workspace PATH  Workspace directory
+#   --no-watch        Disable hot reload
+#   --verbose         Enable debug-level console logging
+#   --help, -h        Show this help
+#
+# The script resolves the release directory relative to itself and
+# invokes the Muse application via `bin/muse eval`.
+
+# Resolve the release directory (same directory this script lives in).
+RELEASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Build the Elixir argument list from shell args.
+# Each arg is quoted to preserve spaces and special chars.
+ELIXIR_ARGS=""
+for arg in "$@"; do
+  if [ -z "$ELIXIR_ARGS" ]; then
+    ELIXIR_ARGS="\"$arg\""
+  else
+    ELIXIR_ARGS="$ELIXIR_ARGS, \"$arg\""
+  fi
+done
+
+exec "$RELEASE_DIR/muse" eval "Muse.CLI.ReleaseCommand.main([$ELIXIR_ARGS])"

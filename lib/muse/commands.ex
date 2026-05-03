@@ -35,7 +35,9 @@ defmodule Muse.Commands do
     {"/filter logs", :filter_logs, "Filter logs by severity (e.g. /filter logs errors)"},
     {"/runtime", :runtime, "Show agent runtime status"},
     {"/connect runtime", :connect_runtime, "Attempt agent runtime connection"},
-    {"/disconnect runtime", :disconnect_runtime, "Disconnect agent runtime"}
+    {"/disconnect runtime", :disconnect_runtime, "Disconnect agent runtime"},
+    {"/reload", :reload, "Force dev reload"},
+    {"/rollback", :rollback, "Roll back to last good generation"}
   ]
 
   # Sort longest-prefix-first so "/simulate backend-error" matches before "/simulate"
@@ -47,6 +49,7 @@ defmodule Muse.Commands do
           | {:message, String.t()}
           | :empty
           | {:unknown, String.t()}
+          | {:quit, String.t()}
   def parse(text) do
     case String.trim(text) do
       "" -> :empty

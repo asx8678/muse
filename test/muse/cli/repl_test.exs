@@ -30,20 +30,14 @@ defmodule Muse.CLI.ReplTest do
   # -- /help --------------------------------------------------------------------
 
   describe "handle_input/2 — /help" do
-    test "prints help text and returns :ok" do
+    test "prints help text via CommandDispatcher and returns :ok" do
       output =
         ExUnit.CaptureIO.capture_io(fn ->
           assert Repl.handle_input("/help", halt?: false) == :ok
         end)
 
+      assert output =~ "Available commands"
       assert output =~ "/help"
-      assert output =~ "/events"
-      assert output =~ "/workspace"
-      assert output =~ "/reload"
-      assert output =~ "/rollback"
-      assert output =~ "/reload-status"
-      assert output =~ "/quit"
-      assert output =~ ":quit"
     end
   end
 
@@ -92,7 +86,7 @@ defmodule Muse.CLI.ReplTest do
   # -- /events ------------------------------------------------------------------
 
   describe "handle_input/2 — /events" do
-    test "prints the event log" do
+    test "prints event count via CommandDispatcher" do
       ExUnit.CaptureIO.capture_io(fn ->
         Repl.handle_input("seed event", halt?: false)
       end)
@@ -102,15 +96,14 @@ defmodule Muse.CLI.ReplTest do
           assert Repl.handle_input("/events", halt?: false) == :ok
         end)
 
-      assert output =~ "[cli]"
-      assert output =~ "[muse]"
+      assert output =~ "event(s) recorded"
     end
   end
 
   # -- /workspace ---------------------------------------------------------------
 
   describe "handle_input/2 — /workspace" do
-    test "prints current workspace root", %{root: root} do
+    test "prints current workspace root via CommandDispatcher", %{root: root} do
       output =
         ExUnit.CaptureIO.capture_io(fn ->
           assert Repl.handle_input("/workspace", halt?: false) == :ok
@@ -153,38 +146,39 @@ defmodule Muse.CLI.ReplTest do
     end
   end
 
-  # -- /reload, /rollback, /reload-status (DevReloader not loaded) -------------
+  # -- /reload, /rollback, /reload-status (DevReloader not running) ------------
 
   describe "handle_input/2 — /reload (DevReloader unavailable)" do
-    test "prints unavailable message and returns :ok" do
+    test "prints reload failed message and returns :ok" do
       output =
         ExUnit.CaptureIO.capture_io(fn ->
           assert Repl.handle_input("/reload", halt?: false) == :ok
         end)
 
-      assert output =~ "DevReloader not available"
+      # Goes through CommandDispatcher which reports reload failure
+      assert output =~ "Reload failed" or output =~ "not_running"
     end
   end
 
   describe "handle_input/2 — /rollback (DevReloader unavailable)" do
-    test "prints unavailable message and returns :ok" do
+    test "prints rollback failed message and returns :ok" do
       output =
         ExUnit.CaptureIO.capture_io(fn ->
           assert Repl.handle_input("/rollback", halt?: false) == :ok
         end)
 
-      assert output =~ "DevReloader not available"
+      assert output =~ "Rollback failed" or output =~ "not_running"
     end
   end
 
   describe "handle_input/2 — /reload-status (DevReloader unavailable)" do
-    test "prints unavailable message and returns :ok" do
+    test "prints unavailable status and returns :ok" do
       output =
         ExUnit.CaptureIO.capture_io(fn ->
           assert Repl.handle_input("/reload-status", halt?: false) == :ok
         end)
 
-      assert output =~ "DevReloader not available"
+      assert output =~ "Unavailable" or output =~ "unavailable"
     end
   end
 

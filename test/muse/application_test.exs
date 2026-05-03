@@ -12,11 +12,13 @@ defmodule Muse.ApplicationTest do
     defaults = [
       workspace: "/tmp/muse_test",
       cli?: true,
+      cli_ui: :repl,
       web?: true,
       host: "127.0.0.1",
       port: 4000,
       watch?: true,
-      help?: false
+      help?: false,
+      verbose?: false
     ]
 
     struct!(BootOptions, Keyword.merge(defaults, overrides))
@@ -101,10 +103,25 @@ defmodule Muse.ApplicationTest do
 
     test "Endpoint child_spec has server: true" do
       with_env(:source_mode?, false, fn ->
-        children = @app_mod.runtime_children(boot_opts(cli?: false, host: "0.0.0.0", port: 8080))
+        children =
+          @app_mod.runtime_children(
+            boot_opts(cli?: false, cli_ui: :none, host: "0.0.0.0", port: 8080)
+          )
+
         endpoint_spec = Enum.find(children, &match?({MuseWeb.Endpoint, _}, &1))
         assert {MuseWeb.Endpoint, opts} = endpoint_spec
         assert Keyword.get(opts, :server) == true
+      end)
+    end
+
+    test "LogBuffer child receives configured buffer logger level" do
+      with_env(:logger, [buffer_level: :debug, console_level: :warning], fn ->
+        children = @app_mod.runtime_children(boot_opts())
+        log_buffer_spec = Enum.find(children, &match?({Muse.LogBuffer, _}, &1))
+
+        assert {Muse.LogBuffer, opts} = log_buffer_spec
+        assert Keyword.get(opts, :install_logger_handler?) == true
+        assert Keyword.get(opts, :logger_level) == :debug
       end)
     end
   end
@@ -119,7 +136,7 @@ defmodule Muse.ApplicationTest do
       end)
     end
 
-    test "still includes CLI" do
+    test "still includes CLI.Repl by default" do
       with_env(:source_mode?, true, fn ->
         children = @app_mod.runtime_children(boot_opts(web?: false))
         ids = child_ids(children)
@@ -130,21 +147,54 @@ defmodule Muse.ApplicationTest do
   end
 
   describe "runtime_children/1 --web-only / --no-cli" do
-    test "excludes CLI.Repl" do
+    test "excludes CLI children (none ui)" do
       with_env(:source_mode?, true, fn ->
-        children = @app_mod.runtime_children(boot_opts(cli?: false))
+        children = @app_mod.runtime_children(boot_opts(cli?: false, cli_ui: :none))
         ids = child_ids(children)
 
         assert Muse.CLI.Repl not in ids
+        assert Muse.CLI.Tui not in ids
       end)
     end
 
     test "includes Endpoint" do
       with_env(:source_mode?, true, fn ->
-        children = @app_mod.runtime_children(boot_opts(cli?: false, web?: true))
+        children = @app_mod.runtime_children(boot_opts(cli?: false, cli_ui: :none, web?: true))
         ids = child_ids(children)
 
         assert MuseWeb.Endpoint in ids
+      end)
+    end
+  end
+
+  describe "runtime_children/1 — --tui" do
+    test "includes CLI.Tui instead of CLI.Repl" do
+      with_env(:source_mode?, true, fn ->
+        children = @app_mod.runtime_children(boot_opts(cli_ui: :tui))
+        ids = child_ids(children)
+
+        assert Muse.CLI.Tui in ids
+        assert Muse.CLI.Repl not in ids
+      end)
+    end
+
+    test "Tui child_spec has halt?, workspace, and web_url" do
+      with_env(:source_mode?, false, fn ->
+        children = @app_mod.runtime_children(boot_opts(cli_ui: :tui, workspace: "/tmp/proj"))
+        tui_spec = Enum.find(children, &match?({Muse.CLI.Tui, _}, &1))
+        assert {Muse.CLI.Tui, opts} = tui_spec
+        assert Keyword.get(opts, :halt?) == true
+        assert Keyword.get(opts, :workspace) == "/tmp/proj"
+        assert Keyword.get(opts, :web_url) == "http://127.0.0.1:4000"
+      end)
+    end
+
+    test "Tui child_spec web_url is nil when web? is false" do
+      with_env(:source_mode?, false, fn ->
+        children = @app_mod.runtime_children(boot_opts(cli_ui: :tui, web?: false))
+        tui_spec = Enum.find(children, &match?({Muse.CLI.Tui, _}, &1))
+        assert {Muse.CLI.Tui, opts} = tui_spec
+        assert Keyword.get(opts, :web_url) == nil
       end)
     end
   end
@@ -235,18 +285,48 @@ defmodule Muse.ApplicationTest do
     test "lists --help flag" do
       assert @app_mod.help_text() =~ "--help"
     end
+
+    test "lists --tui flag" do
+      assert @app_mod.help_text() =~ "--tui"
+    end
+
+    test "lists --verbose flag" do
+      assert @app_mod.help_text() =~ "--verbose"
+    end
   end
 
   # -- banner_opts/1 -------------------------------------------------------------
 
   describe "banner_opts/1" do
-    test "returns keyword list with all BootOptions fields" do
+    test "returns keyword list with workspace, web?, ui, and logs" do
       opts = boot_opts(workspace: "/tmp/test-proj")
       banner = @app_mod.banner_opts(opts)
 
       assert Keyword.get(banner, :workspace) == "/tmp/test-proj"
-      assert Keyword.get(banner, :cli?) == true
       assert Keyword.get(banner, :web?) == true
+      assert Keyword.get(banner, :ui) == :repl
+      assert Keyword.get(banner, :logs) in [:debug, :warning]
+    end
+
+    test "ui is :none when cli_ui is :none" do
+      opts = boot_opts(cli?: false, cli_ui: :none)
+      banner = @app_mod.banner_opts(opts)
+
+      assert Keyword.get(banner, :ui) == :none
+    end
+
+    test "ui is :repl when cli_ui is :repl" do
+      opts = boot_opts(cli?: true, cli_ui: :repl)
+      banner = @app_mod.banner_opts(opts)
+
+      assert Keyword.get(banner, :ui) == :repl
+    end
+
+    test "ui is :tui when cli_ui is :tui" do
+      opts = boot_opts(cli?: true, cli_ui: :tui)
+      banner = @app_mod.banner_opts(opts)
+
+      assert Keyword.get(banner, :ui) == :tui
     end
 
     test "watch? reflects effective state (watch? AND source_mode?)" do
@@ -266,6 +346,26 @@ defmodule Muse.ApplicationTest do
 
       with_env(:source_mode?, true, fn ->
         assert @app_mod.banner_opts(opts)[:watch?] == false
+      end)
+    end
+
+    test "logs is :debug when verbose? is true" do
+      opts = boot_opts(verbose?: true)
+      assert @app_mod.banner_opts(opts)[:logs] == :debug
+    end
+
+    test "logs falls back to console_level when verbose? is false" do
+      with_env(:logger, [console_level: :error], fn ->
+        opts = boot_opts(verbose?: false)
+        assert @app_mod.banner_opts(opts)[:logs] == :error
+      end)
+    end
+
+    test "verbose? true overrides console_level to :debug even with :tui" do
+      with_env(:logger, [console_level: :warning], fn ->
+        opts = boot_opts(verbose?: true, cli_ui: :tui)
+        assert @app_mod.banner_opts(opts)[:logs] == :debug
+        assert @app_mod.banner_opts(opts)[:ui] == :tui
       end)
     end
   end
@@ -295,50 +395,70 @@ defmodule Muse.ApplicationTest do
   # -- Banner integration with StartupBanner -------------------------------------
 
   describe "banner integration" do
-    test "banner_opts with --no-web produces 'Web: disabled'" do
+    test "banner_opts with --no-web produces 'web=off'" do
       opts = boot_opts(web?: false)
       banner_kw = @app_mod.banner_opts(opts)
       banner = StartupBanner.format(banner_kw)
 
-      assert banner =~ "Web: disabled"
+      refute banner =~ "\n"
+      assert banner =~ "web=off"
     end
 
-    test "banner_opts with --no-cli produces 'CLI: disabled'" do
-      opts = boot_opts(cli?: false)
+    test "banner_opts with --no-cli produces 'ui=none'" do
+      opts = boot_opts(cli?: false, cli_ui: :none)
       banner_kw = @app_mod.banner_opts(opts)
       banner = StartupBanner.format(banner_kw)
 
-      assert banner =~ "CLI: disabled"
+      assert banner =~ "ui=none"
     end
 
-    test "banner_opts with --no-watch produces 'Hot reload: disabled'" do
+    test "banner_opts with --tui produces 'ui=tui'" do
+      opts = boot_opts(cli_ui: :tui)
+      banner_kw = @app_mod.banner_opts(opts)
+      banner = StartupBanner.format(banner_kw)
+
+      assert banner =~ "ui=tui"
+    end
+
+    test "banner_opts with --verbose --tui produces 'ui=tui' and 'logs=debug+'" do
+      opts = boot_opts(verbose?: true, cli_ui: :tui)
+      banner_kw = @app_mod.banner_opts(opts)
+      banner = StartupBanner.format(banner_kw)
+
+      assert banner =~ "ui=tui"
+      assert banner =~ "logs=debug+"
+    end
+
+    test "banner_opts with --no-watch produces 'reload=off'" do
       opts = boot_opts(watch?: false)
       banner_kw = @app_mod.banner_opts(opts)
       banner = StartupBanner.format(banner_kw)
 
-      assert banner =~ "Hot reload: disabled"
+      assert banner =~ "reload=off"
     end
 
-    test "banner_opts with source_mode false shows 'Hot reload: disabled'" do
+    test "banner_opts with source_mode false shows 'reload=off'" do
       opts = boot_opts(watch?: true)
 
       with_env(:source_mode?, false, fn ->
         banner_kw = @app_mod.banner_opts(opts)
         banner = StartupBanner.format(banner_kw)
 
-        assert banner =~ "Hot reload: disabled"
+        assert banner =~ "reload=off"
       end)
     end
 
-    test "banner_opts default shows full enabled banner" do
+    test "banner_opts default shows full enabled one-line banner" do
       with_env(:source_mode?, true, fn ->
         opts = boot_opts()
         banner_kw = @app_mod.banner_opts(opts)
         banner = StartupBanner.format(banner_kw)
 
-        assert banner =~ "CLI: enabled"
-        assert banner =~ "Web: http://127.0.0.1:4000"
-        assert banner =~ "Hot reload: enabled"
+        refute banner =~ "\n"
+        assert banner =~ "ui=repl"
+        assert banner =~ "web=http://127.0.0.1:4000"
+        assert banner =~ "reload=on"
+        assert banner =~ "logs="
       end)
     end
   end
@@ -368,6 +488,53 @@ defmodule Muse.ApplicationTest do
 
       http = Elixir.Application.get_env(:muse, MuseWeb.Endpoint)[:http]
       assert http == original_http
+    end
+
+    test "in REPL mode preserves watchers and live_reload" do
+      current = [
+        http: [ip: {127, 0, 0, 1}, port: 4000],
+        watchers: [esbuild: {Esbuild, :install_and_run, [:default, ["--watch"]]}],
+        live_reload: [patterns: [~r"assets/.*(js|css)$"]]
+      ]
+
+      Elixir.Application.put_env(:muse, MuseWeb.Endpoint, current)
+      opts = boot_opts(cli_ui: :repl, web?: true)
+      @app_mod.maybe_configure_endpoint(opts)
+
+      endpoint = Elixir.Application.get_env(:muse, MuseWeb.Endpoint)
+      assert Keyword.get(endpoint, :watchers) != []
+      assert Keyword.get(endpoint, :live_reload) != nil
+    end
+
+    test "in TUI mode clears watchers and deletes live_reload" do
+      current = [
+        http: [ip: {127, 0, 0, 1}, port: 4000],
+        watchers: [esbuild: {Esbuild, :install_and_run, [:default, ["--watch"]]}],
+        live_reload: [patterns: [~r"assets/.*(js|css)$"]]
+      ]
+
+      Elixir.Application.put_env(:muse, MuseWeb.Endpoint, current)
+      opts = boot_opts(cli_ui: :tui, web?: true)
+      @app_mod.maybe_configure_endpoint(opts)
+
+      endpoint = Elixir.Application.get_env(:muse, MuseWeb.Endpoint)
+      assert Keyword.get(endpoint, :watchers) == []
+      assert Keyword.get(endpoint, :live_reload) == nil
+    end
+
+    test "in TUI mode still sets http ip and port" do
+      current = [
+        http: [ip: {0, 0, 0, 0}, port: 3000],
+        watchers: [esbuild: {Esbuild, :install_and_run, [:default, ["--watch"]]}]
+      ]
+
+      Elixir.Application.put_env(:muse, MuseWeb.Endpoint, current)
+      opts = boot_opts(cli_ui: :tui, host: "0.0.0.0", port: 8080, web?: true)
+      @app_mod.maybe_configure_endpoint(opts)
+
+      http = Elixir.Application.get_env(:muse, MuseWeb.Endpoint)[:http]
+      assert Keyword.get(http, :ip) == {0, 0, 0, 0}
+      assert Keyword.get(http, :port) == 8080
     end
   end
 

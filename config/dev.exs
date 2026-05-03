@@ -16,4 +16,12 @@ config :muse, MuseWeb.Endpoint,
     ]
   ]
 
-config :muse, :logger, level: :debug
+config :muse, :logger,
+  buffer_level: :debug,
+  console_level: :warning
+
+config :logger, :default_handler, level: :warning
+
+config :logger, :default_formatter,
+  format: "$time [$level] $message\n",
+  metadata: []

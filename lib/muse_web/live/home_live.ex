@@ -118,7 +118,7 @@ defmodule MuseWeb.HomeLive do
           try do
             Muse.submit(:web, msg)
             state = Muse.State.get()
-            {:noreply, assign(socket, state: state, input: "")}
+            {:noreply, socket |> assign(state: state, input: "") |> push_clear_command_input()}
           rescue
             e ->
               socket = socket |> assign(input: text) |> add_toast(Exception.message(e), :error)
@@ -135,7 +135,9 @@ defmodule MuseWeb.HomeLive do
           socket = add_toast(socket, output, toast_type)
 
           {:noreply,
-           assign(socket, command_history: socket.assigns.command_history ++ [entry], input: "")}
+           socket
+           |> assign(command_history: socket.assigns.command_history ++ [entry], input: "")
+           |> push_clear_command_input()}
 
         {:command, action, args} ->
           {output, socket} = ConsoleCommand.dispatch_command_with_args(action, args, socket)
@@ -147,7 +149,9 @@ defmodule MuseWeb.HomeLive do
           socket = add_toast(socket, output, toast_type)
 
           {:noreply,
-           assign(socket, command_history: socket.assigns.command_history ++ [entry], input: "")}
+           socket
+           |> assign(command_history: socket.assigns.command_history ++ [entry], input: "")
+           |> push_clear_command_input()}
 
         {:unknown, cmd} ->
           msg = "Unknown command: #{cmd}. Type /help for available commands."
@@ -155,7 +159,9 @@ defmodule MuseWeb.HomeLive do
           socket = socket |> add_toast(msg, :error)
 
           {:noreply,
-           assign(socket, command_history: socket.assigns.command_history ++ [entry], input: "")}
+           socket
+           |> assign(command_history: socket.assigns.command_history ++ [entry], input: "")
+           |> push_clear_command_input()}
       end
     end
   end
@@ -761,6 +767,10 @@ defmodule MuseWeb.HomeLive do
       type: type,
       timestamp: format_timestamp(DateTime.utc_now())
     }
+  end
+
+  defp push_clear_command_input(socket) do
+    push_event(socket, "clear_command_input", %{})
   end
 
   defp add_toast(socket, message, type) do

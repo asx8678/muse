@@ -209,7 +209,7 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ ~s(src="/assets/app.js")
     assert html =~ ~s(data-phx-main)
 
-    assert html =~ "brand-mark"
+    assert html =~ "muse-brand"
 
     assert first_index!(html, ~s(data-phx-main)) < first_index!(html, ~s(app-header))
     assert first_index!(html, ~s(</main>)) < first_index!(html, ~s(</body>))
@@ -430,6 +430,30 @@ defmodule MuseWeb.HomeLiveTest do
     html = view |> element("#command-form") |> render_submit(%{"text" => "   "})
 
     assert html =~ "muse"
+  end
+
+  test "successful message submit pushes clear_command_input event" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view |> element("#command-form") |> render_submit(%{"text" => "hello clear test"})
+
+    assert_push_event(view, "clear_command_input", %{})
+  end
+
+  test "unknown slash command pushes clear_command_input event" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view |> element("#command-form") |> render_submit(%{"text" => "/nope"})
+
+    assert_push_event(view, "clear_command_input", %{})
+  end
+
+  test "valid slash command pushes clear_command_input event" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view |> element("#command-form") |> render_submit(%{"text" => "/help"})
+
+    assert_push_event(view, "clear_command_input", %{})
   end
 
   # -- Diagnostics tests -------------------------------------------------------
@@ -1010,6 +1034,99 @@ defmodule MuseWeb.HomeLiveTest do
       assert conn.resp_body =~ ".palette-item"
       assert conn.resp_body =~ ".command-palette-input"
       assert conn.resp_body =~ ".events-search-row"
+    end
+  end
+
+  describe "Muse branding – logo, backgrounds, tokens" do
+    test "header renders logo image without visible text label" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(class="muse-brand__logo")
+      assert html =~ ~s(src="/images/muse-logo-header.png")
+      assert html =~ ~s(alt="Muse CLI Coding Agent")
+      # Visible label span removed — brand area has logo only
+      refute html =~ ~s(class="brand-mark muse-brand__label")
+    end
+
+    test "chat-panel contains muse-bg muse-bg--main background layer" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(class="muse-bg muse-bg--main")
+      # Background layer appears before chat-scroll (first child)
+      bg_pos = first_index!(html, "muse-bg--main")
+      scroll_pos = first_index!(html, "chat-scroll")
+      assert bg_pos < scroll_pos, "muse-bg--main should appear before chat-scroll"
+    end
+
+    test "context-sidebar contains muse-bg muse-bg--sidebar background layer" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(class="muse-bg muse-bg--sidebar")
+    end
+
+    test "background layers are aria-hidden" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(class="muse-bg muse-bg--main" aria-hidden="true")
+      assert html =~ ~s(class="muse-bg muse-bg--sidebar" aria-hidden="true")
+    end
+
+    test "CSS includes exact Muse violet design tokens" do
+      conn = build_conn() |> get("/assets/css/app.css")
+      assert conn.status == 200
+      assert conn.resp_body =~ "--muse-violet-1:"
+      assert conn.resp_body =~ "--muse-violet-2:"
+      assert conn.resp_body =~ "--muse-violet-soft:"
+      assert conn.resp_body =~ "--muse-violet-glow:"
+      assert conn.resp_body =~ "--muse-violet-border:"
+      assert conn.resp_body =~ "--muse-stripe-opacity-main:"
+      assert conn.resp_body =~ "--muse-stripe-opacity-sidebar:"
+      assert conn.resp_body =~ "--muse-stripe-blur:"
+    end
+
+    test "CSS includes brand and logo styling" do
+      conn = build_conn() |> get("/assets/css/app.css")
+      assert conn.status == 200
+      assert conn.resp_body =~ ".muse-brand__logo"
+    end
+
+    test "CSS includes background layer classes with layering" do
+      conn = build_conn() |> get("/assets/css/app.css")
+      assert conn.status == 200
+      assert conn.resp_body =~ ".muse-bg {"
+      assert conn.resp_body =~ ".muse-bg--main"
+      assert conn.resp_body =~ ".muse-bg--sidebar"
+      # mix-blend-mode screen
+      assert conn.resp_body =~ "mix-blend-mode: screen"
+      # z-index and pointer-events
+      assert conn.resp_body =~ "z-index: 0"
+      assert conn.resp_body =~ "pointer-events: none"
+      # Readability overlay pseudo-elements on panels
+      assert conn.resp_body =~ ".chat-panel::after"
+      assert conn.resp_body =~ ".context-sidebar::after"
+      # Content z-index above overlays
+      assert conn.resp_body =~ ".chat-panel > :not(.muse-bg)"
+      assert conn.resp_body =~ ".context-sidebar > :not(.muse-bg)"
+      # Rail dim rule
+      assert conn.resp_body =~ ".context-sidebar-rail .muse-bg--sidebar"
+      # Responsive breakpoints
+      assert conn.resp_body =~ "max-width: 900px"
+      assert conn.resp_body =~ "max-width: 640px"
+      # Responsive logo widths
+      assert conn.resp_body =~ "width: 112px"
+      assert conn.resp_body =~ "width: 96px"
+      # Sidebar header spacing
+      assert conn.resp_body =~ ".context-sidebar-header"
+      # Updated responsive opacity values (sidebar + main)
+      assert conn.resp_body =~ "opacity: .28"
+      assert conn.resp_body =~ "opacity: .18"
+    end
+
+    test "static assets serve branding images with 200" do
+      for path <- [
+            "/images/muse-logo-header.png",
+            "/images/muse-bg-main.png",
+            "/images/muse-bg-sidebar.jpg"
+          ] do
+        conn = build_conn() |> get(path)
+        assert conn.status == 200, "Expected 200 for #{path}, got #{conn.status}"
+      end
     end
   end
 

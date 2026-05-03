@@ -80,45 +80,84 @@ defmodule Muse.CLI.Repl do
 
   defp do_handle("", _opts), do: :ok
 
-  defp do_handle("/help", _opts) do
-    print_help()
-    :ok
-  end
-
-  defp do_handle("/events", _opts) do
-    print_events()
-    :ok
-  end
-
-  defp do_handle("/workspace", _opts) do
-    print_workspace()
-    :ok
-  end
-
-  defp do_handle("/reload", _opts) do
-    dev_call(Muse.DevReloader, :reload, [], "DevReloader not available")
-    :ok
-  end
-
-  defp do_handle("/rollback", _opts) do
-    dev_call(Muse.DevReloader, :rollback, [], "DevReloader not available")
-    :ok
-  end
-
-  defp do_handle("/reload-status", _opts) do
-    dev_call(Muse.DevReloader, :status, [], "DevReloader not available")
-    :ok
-  end
-
   defp do_handle("/quit", opts), do: shutdown(opts)
   defp do_handle(":quit", opts), do: shutdown(opts)
 
+  defp do_handle("/" <> _ = text, opts) do
+    case Muse.Commands.parse(text) do
+      {:command, action} ->
+        dispatch_and_print(action, nil, opts)
+
+      {:command, action, args} ->
+        dispatch_and_print(action, args, opts)
+
+      {:unknown, cmd} ->
+        IO.puts("Unknown command: #{cmd}")
+        :ok
+
+      :empty ->
+        :ok
+
+      {:message, msg} ->
+        # Not a slash command — shouldn't reach here, but handle gracefully
+        submit_message(msg)
+    end
+  end
+
   defp do_handle(text, _opts) do
+    submit_message(text)
+  end
+
+  defp submit_message(text) do
     Muse.submit(:cli, text)
     |> widen_result()
     |> print_submit_result()
 
     :ok
+  end
+
+  defp dispatch_and_print(action, args, _opts) do
+    context = build_repl_context()
+    {_status, output, _effects} = Muse.CommandDispatcher.dispatch(action, args, context)
+    IO.puts(output)
+    :ok
+  end
+
+  defp build_repl_context do
+    %{
+      events: safe_state_events(),
+      logs: safe_log_buffer_list(),
+      diagnostics: Muse.Backend.safe_diagnostics(),
+      agent_snapshot: Muse.Backend.safe_agent_snapshot(),
+      workspace: Muse.Backend.safe_workspace_root(),
+      reload_status: Muse.Backend.safe_reload_status(),
+      agent_runtime: Muse.Backend.safe_agent_runtime_snapshot(),
+      beam_stats: Muse.BeamStats.snapshot(),
+      event_filter: "all",
+      event_search: "",
+      log_filter: "all",
+      log_search: ""
+    }
+  end
+
+  defp safe_state_events do
+    try do
+      Muse.State.events()
+    rescue
+      _ -> []
+    catch
+      :exit, _ -> []
+    end
+  end
+
+  defp safe_log_buffer_list do
+    try do
+      Muse.LogBuffer.list()
+    rescue
+      _ -> []
+    catch
+      :exit, _ -> []
+    end
   end
 
   # Breaks type inference so the {:error, _} clause of print_submit_result/1
@@ -133,80 +172,23 @@ defmodule Muse.CLI.Repl do
   defp print_submit_result({:error, text}), do: IO.puts("[error] #{text}")
   defp print_submit_result(other), do: IO.puts("[error] #{inspect(other)}")
 
-  defp print_help do
-    IO.puts("""
-    Commands:
-      /help          Show this help
-      /events        Print event log
-      /workspace     Print current workspace
-      /reload        Force dev reload
-      /rollback      Roll back to last good generation
-      /reload-status Show reload generation and last error
-      /quit          Stop Muse
-      :quit          Stop Muse
-    """)
-  end
-
-  defp print_events do
-    Muse.State.events()
-    |> Enum.each(fn event ->
-      IO.puts("[#{event.source}] #{inspect(event.data)}")
-    end)
-  end
-
-  defp print_workspace do
-    IO.puts("Workspace: #{Muse.Workspace.root()}")
-  end
-
-  # -- Optional DevReloader helpers ---------------------------------------------
-
-  defp dev_call(module, function, args, fallback_msg) do
-    if Code.ensure_loaded?(module) and function_exported?(module, function, length(args)) and
-         process_alive?(module) do
-      result = apply(module, function, args)
-      print_dev_result(result)
-    else
-      IO.puts(fallback_msg)
-    end
-  end
-
-  defp process_alive?(module) do
-    case Process.whereis(module) do
-      nil -> false
-      pid -> Process.alive?(pid)
-    end
-  end
-
-  defp print_dev_result(:ok), do: IO.puts("ok")
-  defp print_dev_result({:ok, _}), do: IO.puts("ok")
-  defp print_dev_result({:error, reason}), do: IO.puts("[error] #{inspect(reason)}")
-
-  defp print_dev_result(status) when is_map(status) do
-    if generation = Map.get(status, :generation), do: IO.puts("Generation: #{generation}")
-
-    if last_error = Map.get(status, :last_error) do
-      IO.puts("Last error: #{inspect(last_error)}")
-    end
-
-    if last_reload_at = Map.get(status, :last_reload_at) do
-      IO.puts("Last reload: #{last_reload_at}")
-    end
-  end
-
-  defp print_dev_result(other), do: IO.puts(inspect(other))
+  # -- DevReloader rollback (used in error recovery) ----------------------------
 
   defp maybe_rollback do
-    try do
-      module = Muse.DevReloader
+    case Process.whereis(Muse.DevReloader) do
+      nil ->
+        :ok
 
-      if Code.ensure_loaded?(module) and function_exported?(module, :rollback, 0) and
-           process_alive?(module) do
-        apply(module, :rollback, [])
-      end
-    rescue
-      _ -> :ok
-    catch
-      :exit, _ -> :ok
+      pid ->
+        if Process.alive?(pid) do
+          try do
+            Muse.DevReloader.rollback()
+          rescue
+            _ -> :ok
+          catch
+            :exit, _ -> :ok
+          end
+        end
     end
   end
 

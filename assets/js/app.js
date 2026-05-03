@@ -199,6 +199,10 @@ const CommandConsole = {
         this._updateSuggestions();
       });
     }
+
+    this.handleEvent("clear_command_input", () => {
+      this._clearTextarea();
+    });
   },
 
   destroyed() {
@@ -291,6 +295,14 @@ const CommandConsole = {
     const div = document.createElement("div");
     div.textContent = str;
     return div.innerHTML;
+  },
+
+  _clearTextarea() {
+    if (!this._textarea) return;
+    this._textarea.value = "";
+    this._textarea.style.height = "auto";
+    this._closeSuggestions();
+    this._historyIndex = -1;
   },
 
   _navigateHistory(direction) {

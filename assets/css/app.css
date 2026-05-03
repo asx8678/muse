@@ -13,6 +13,27 @@
   --accent: #8b5cf6;
   --accent-soft: rgba(139, 92, 246, 0.14);
   --accent-border: rgba(139, 92, 246, 0.32);
+
+  /* ─── Muse violet branding tokens ─────────────────────────────── */
+  --muse-violet-1: #7c3cff;
+  --muse-violet-2: #5b2cff;
+  --muse-violet-soft: rgba(124, 60, 255, 0.16);
+  --muse-violet-glow: rgba(124, 60, 255, 0.28);
+  --muse-violet-border: rgba(124, 60, 255, 0.34);
+  --muse-stripe-opacity-main: 0.34;
+  --muse-stripe-opacity-sidebar: 0.38;
+  --muse-stripe-blur: 18px;
+  --muse-violet-50: #f5f3ff;
+  --muse-violet-100: #ede9fe;
+  --muse-violet-200: #ddd6fe;
+  --muse-violet-300: #c4b5fd;
+  --muse-violet-400: #a78bfa;
+  --muse-violet-500: #8b5cf6;
+  --muse-violet-600: #7c3aed;
+  --muse-violet-700: #6d28d9;
+  --muse-violet-800: #5b21b6;
+  --muse-violet-900: #4c1d95;
+  --muse-violet-950: #2e1065;
   --success: #22c55e;
   --warning: #f59e0b;
   --danger: #ef4444;
@@ -2254,7 +2275,7 @@ textarea:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 2px 8px;
+  padding: 10px 16px 12px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 8px;
 }
@@ -2283,8 +2304,135 @@ textarea:focus-visible {
 }
 
 .muse-brand {
-  letter-spacing: 0.01em;
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  min-width: 0;
 }
+
+.muse-brand__label {
+  color: inherit;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  flex-shrink: 0;
+}
+
+.muse-brand__logo {
+  width: clamp(120px, 9vw, 160px);
+  height: auto;
+  display: block;
+  object-fit: contain;
+  opacity: .96;
+  filter: drop-shadow(0 0 10px rgba(124, 60, 255, .18));
+  border-radius: 0;
+}
+
+/* ─── Muse background layers ─────────────────────────────────────── */
+/*
+  Purely visual background images — isolated behind content via z-index,
+  pointer-events none, mix-blend-mode screen, and readability overlays.
+*/
+
+.chat-panel,
+.context-sidebar {
+  position: relative;
+  isolation: isolate;
+}
+
+.muse-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-repeat: no-repeat;
+  mix-blend-mode: screen;
+  border-radius: inherit;
+}
+
+.muse-bg--main {
+  background-image: url('/images/muse-bg-main.png');
+  background-position: right bottom;
+  background-size: cover;
+  opacity: var(--muse-stripe-opacity-main);
+  filter: blur(0) saturate(1.05);
+}
+
+.muse-bg--sidebar {
+  background-image: url('/images/muse-bg-sidebar.jpg');
+  background-position: left bottom;
+  background-size: cover;
+  opacity: var(--muse-stripe-opacity-sidebar);
+  filter: blur(0) saturate(1.05);
+}
+
+/* Readability overlays */
+.chat-panel::after,
+.context-sidebar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.chat-panel::after {
+  background: linear-gradient(
+    180deg,
+    rgba(15, 17, 23, 0.34) 0%,
+    rgba(15, 17, 23, 0.62) 100%
+  );
+}
+
+.context-sidebar::after {
+  background: linear-gradient(
+    180deg,
+    rgba(15, 17, 23, 0.26) 0%,
+    rgba(15, 17, 23, 0.58) 100%
+  );
+}
+
+/* Content sits above overlays */
+.chat-panel > :not(.muse-bg),
+.context-sidebar > :not(.muse-bg) {
+  position: relative;
+  z-index: 2;
+}
+
+/* Rail mode dims the sidebar background further */
+.context-sidebar-rail .muse-bg--sidebar {
+  opacity: .16;
+}
+
+/* Responsive: fade backgrounds and shrink logo on narrower viewports */
+@media (max-width: 900px) {
+  .muse-brand__logo {
+    width: 112px;
+  }
+
+  .muse-bg--main {
+    opacity: .24;
+  }
+
+  .muse-bg--sidebar {
+    opacity: .28;
+  }
+}
+
+@media (max-width: 640px) {
+  .muse-brand__logo {
+    width: 96px;
+  }
+
+  .muse-bg--main {
+    opacity: .18;
+  }
+
+  .muse-bg--sidebar {
+    opacity: .22;
+  }
+}
+
 
 .brand-mark-elegant {
   font-weight: 300;

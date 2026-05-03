@@ -10,7 +10,7 @@ defmodule Mix.Tasks.Muse do
 
   ## Usage
 
-      mix muse [--no-web] [--web-only] [--port 4100] [--host 0.0.0.0] [--workspace /path]
+      mix muse [--repl] [--tui] [--no-web] [--web-only] [--verbose] [--port 4100] [--host 0.0.0.0] [--workspace /path]
 
   Delegates to `Muse.CLI.Main.boot/3` so the core boot logic is tested
   in one place.

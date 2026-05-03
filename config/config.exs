@@ -3,6 +3,8 @@ import Config
 # --- Phoenix Endpoint (Bandit adapter) ---
 # MuseWeb.Endpoint module will be added in a later step.
 # Config is safe to declare now — it only sets application env at runtime.
+config :phoenix, :filter_parameters, ["_csrf_token", "csrf_token", "token", "secret", "password"]
+
 config :muse, MuseWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],

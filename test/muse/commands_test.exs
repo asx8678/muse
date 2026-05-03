@@ -137,6 +137,14 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/disconnect runtime") == {:command, :disconnect_runtime}
     end
 
+    test "parses /reload" do
+      assert Commands.parse("/reload") == {:command, :reload}
+    end
+
+    test "parses /rollback" do
+      assert Commands.parse("/rollback") == {:command, :rollback}
+    end
+
     test "returns :empty for blank input" do
       assert Commands.parse("") == :empty
       assert Commands.parse("   ") == :empty
@@ -194,6 +202,8 @@ defmodule Muse.CommandsTest do
       assert text =~ "/clear"
       assert text =~ "/clear events"
       assert text =~ "/reload-status"
+      assert text =~ "/reload"
+      assert text =~ "/rollback"
       assert text =~ "/workspace"
       assert text =~ "/stats"
       assert text =~ "/diagnostics"
@@ -218,7 +228,7 @@ defmodule Muse.CommandsTest do
     test "returns list of {command, description} tuples" do
       cmds = Commands.slash_commands()
       assert is_list(cmds)
-      assert length(cmds) == 29
+      assert length(cmds) == 31
 
       for {cmd, desc} <- cmds do
         assert is_binary(cmd)
@@ -232,7 +242,7 @@ defmodule Muse.CommandsTest do
     test "returns list of maps with command and description keys" do
       cmds = Commands.slash_commands_json()
       assert is_list(cmds)
-      assert length(cmds) == 29
+      assert length(cmds) == 31
 
       for cmd <- cmds do
         assert Map.has_key?(cmd, :command)

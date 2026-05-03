@@ -10,20 +10,26 @@ defmodule Muse.BootOptions do
   @enforce_keys []
   defstruct cli?: true,
             web?: true,
+            cli_ui: :repl,
             host: "127.0.0.1",
             port: 4000,
             workspace: nil,
             watch?: true,
-            help?: false
+            help?: false,
+            verbose?: false
+
+  @type cli_ui :: :repl | :tui | :none
 
   @type t :: %__MODULE__{
           cli?: boolean(),
           web?: boolean(),
+          cli_ui: cli_ui(),
           host: String.t(),
           port: pos_integer(),
           workspace: String.t() | nil,
           watch?: boolean(),
-          help?: boolean()
+          help?: boolean(),
+          verbose?: boolean()
         }
 
   # -- OptionParser strict spec ------------------------------------------------
@@ -34,9 +40,12 @@ defmodule Muse.BootOptions do
     no_web: :boolean,
     web_only: :boolean,
     no_cli: :boolean,
+    tui: :boolean,
+    repl: :boolean,
     port: :integer,
     host: :string,
     workspace: :string,
+    verbose: :boolean,
     watch: :boolean,
     help: :boolean
   ]
@@ -72,27 +81,84 @@ defmodule Muse.BootOptions do
     |> apply_port(parsed)
     |> apply_workspace(parsed)
     |> apply_watch(parsed)
+    |> apply_verbose(parsed)
     |> apply_help(parsed)
     |> resolve_workspace!()
   end
 
-  # -- Mode flags (cli? / web?) -------------------------------------------------
+  # -- Mode flags (cli? / web? / cli_ui) ---------------------------------------
 
   defp apply_mode_flags(opts, parsed) do
+    opts
+    |> apply_tui_flag(parsed)
+    |> apply_repl_flag(parsed)
+    |> apply_no_cli_flags(parsed)
+    |> apply_no_web_flag(parsed)
+    |> validate_mode_combination!(parsed)
+  end
+
+  defp apply_tui_flag(opts, parsed) do
+    if parsed[:tui] == true, do: %{opts | cli_ui: :tui, cli?: true}, else: opts
+  end
+
+  defp apply_repl_flag(opts, parsed) do
+    if parsed[:repl] == true, do: %{opts | cli_ui: :repl, cli?: true}, else: opts
+  end
+
+  defp apply_no_cli_flags(opts, parsed) do
     cond do
-      parsed[:web_only] ->
-        %{opts | cli?: false, web?: true}
-
-      parsed[:no_cli] ->
-        %{opts | cli?: false, web?: true}
-
-      parsed[:no_web] ->
-        %{opts | cli?: true, web?: false}
-
-      true ->
-        opts
+      parsed[:web_only] == true -> %{opts | cli?: false, cli_ui: :none, web?: true}
+      parsed[:no_cli] == true -> %{opts | cli?: false, cli_ui: :none, web?: true}
+      true -> opts
     end
   end
+
+  defp apply_no_web_flag(opts, parsed) do
+    if parsed[:no_web] == true, do: %{opts | web?: false}, else: opts
+  end
+
+  # -- Contradiction validation -------------------------------------------------
+
+  defp validate_mode_combination!(opts, parsed) do
+    tui? = is_true(parsed[:tui])
+    repl? = is_true(parsed[:repl])
+    web_only? = is_true(parsed[:web_only])
+    no_cli? = is_true(parsed[:no_cli])
+    no_web? = is_true(parsed[:no_web])
+
+    # --tui conflicts with --repl
+    if tui? and repl? do
+      raise ArgumentError, "--tui and --repl cannot be used together"
+    end
+
+    # --tui conflicts with --web-only / --no-cli
+    if tui? and web_only? do
+      raise ArgumentError, "--tui and --web-only cannot be used together"
+    end
+
+    if tui? and no_cli? do
+      raise ArgumentError, "--tui and --no-cli cannot be used together"
+    end
+
+    # --repl conflicts with --web-only / --no-cli
+    if repl? and web_only? do
+      raise ArgumentError, "--repl and --web-only cannot be used together"
+    end
+
+    if repl? and no_cli? do
+      raise ArgumentError, "--repl and --no-cli cannot be used together"
+    end
+
+    # --web-only / --no-cli conflicts with --no-web
+    if (web_only? or no_cli?) and no_web? do
+      raise ArgumentError, "--web-only and --no-web cannot be used together"
+    end
+
+    opts
+  end
+
+  defp is_true(nil), do: false
+  defp is_true(val), do: val == true
 
   # -- Individual field appliers ------------------------------------------------
 
@@ -130,6 +196,10 @@ defmodule Muse.BootOptions do
       true ->
         opts
     end
+  end
+
+  defp apply_verbose(opts, parsed) do
+    if parsed[:verbose] == true, do: %{opts | verbose?: true}, else: opts
   end
 
   defp apply_help(opts, parsed) do

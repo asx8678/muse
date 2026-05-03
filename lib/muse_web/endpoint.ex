@@ -7,7 +7,9 @@ defmodule MuseWeb.Endpoint do
     signing_salt: "dev-salt"
   ]
 
-  socket("/live", Phoenix.LiveView.Socket, websocket: [connect_info: [session: @session_options]])
+  socket("/live", Phoenix.LiveView.Socket,
+    websocket: [connect_info: [session: @session_options], log: false]
+  )
 
   if code_reloading? do
     socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
@@ -33,7 +35,14 @@ defmodule MuseWeb.Endpoint do
     at: "/images",
     from: {:muse, "priv/static/images"},
     gzip: false,
-    only: ~w(muse-bg-light.png muse-bg-dark.png)
+    only: ~w(muse-bg-light.png muse-bg-dark.png muse-purple-wave-background-1920x1080.webp)
+  )
+
+  plug(Plug.Static,
+    at: "/images",
+    from: "assets/images",
+    gzip: false,
+    only: ~w(muse-logo-header.png muse-bg-main.png muse-bg-sidebar.jpg)
   )
 
   plug(Plug.RequestId)

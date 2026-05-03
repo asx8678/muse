@@ -21,6 +21,7 @@ defmodule Muse.BootOptionsTest do
 
       assert opts.cli? == true
       assert opts.web? == true
+      assert opts.cli_ui == :repl
       assert opts.host == "127.0.0.1"
       assert opts.port == 4000
       assert opts.watch? == true
@@ -78,26 +79,106 @@ defmodule Muse.BootOptionsTest do
   # -- Mode flags ----------------------------------------------------------------
 
   describe "--no-web" do
-    test "sets cli true, web false" do
+    test "sets web false, keeps default cli_ui" do
       opts = BootOptions.parse!(["--no-web"])
+      assert opts.cli? == true
+      assert opts.web? == false
+      assert opts.cli_ui == :repl
+    end
+  end
+
+  describe "--web-only" do
+    test "sets cli false, cli_ui none, web true" do
+      opts = BootOptions.parse!(["--web-only"])
+      assert opts.cli? == false
+      assert opts.web? == true
+      assert opts.cli_ui == :none
+    end
+  end
+
+  describe "--no-cli" do
+    test "is an alias for --web-only: cli false, cli_ui none, web true" do
+      opts = BootOptions.parse!(["--no-cli"])
+      assert opts.cli? == false
+      assert opts.web? == true
+      assert opts.cli_ui == :none
+    end
+  end
+
+  # -- TUI / REPL flags ----------------------------------------------------------
+
+  describe "--tui" do
+    test "sets cli_ui to :tui and cli? to true" do
+      opts = BootOptions.parse!(["--tui"])
+      assert opts.cli_ui == :tui
+      assert opts.cli? == true
+    end
+
+    test "--tui --no-web is valid" do
+      opts = BootOptions.parse!(["--tui", "--no-web"])
+      assert opts.cli_ui == :tui
       assert opts.cli? == true
       assert opts.web? == false
     end
   end
 
-  describe "--web-only" do
-    test "sets cli false, web true" do
-      opts = BootOptions.parse!(["--web-only"])
-      assert opts.cli? == false
-      assert opts.web? == true
+  describe "--repl" do
+    test "sets cli_ui to :repl and cli? to true" do
+      opts = BootOptions.parse!(["--repl"])
+      assert opts.cli_ui == :repl
+      assert opts.cli? == true
     end
   end
 
-  describe "--no-cli" do
-    test "is an alias for --web-only: cli false, web true" do
-      opts = BootOptions.parse!(["--no-cli"])
-      assert opts.cli? == false
-      assert opts.web? == true
+  # -- Contradiction validation --------------------------------------------------
+
+  describe "invalid combinations" do
+    test "--tui --repl raises" do
+      assert_raise ArgumentError, ~r/--tui and --repl cannot be used together/, fn ->
+        BootOptions.parse!(["--tui", "--repl"])
+      end
+    end
+
+    test "--repl --tui raises" do
+      assert_raise ArgumentError, ~r/--tui and --repl cannot be used together/, fn ->
+        BootOptions.parse!(["--repl", "--tui"])
+      end
+    end
+
+    test "--tui --web-only raises" do
+      assert_raise ArgumentError, ~r/--tui and --web-only cannot be used together/, fn ->
+        BootOptions.parse!(["--tui", "--web-only"])
+      end
+    end
+
+    test "--tui --no-cli raises" do
+      assert_raise ArgumentError, ~r/--tui and --no-cli cannot be used together/, fn ->
+        BootOptions.parse!(["--tui", "--no-cli"])
+      end
+    end
+
+    test "--repl --web-only raises" do
+      assert_raise ArgumentError, ~r/--repl and --web-only cannot be used together/, fn ->
+        BootOptions.parse!(["--repl", "--web-only"])
+      end
+    end
+
+    test "--repl --no-cli raises" do
+      assert_raise ArgumentError, ~r/--repl and --no-cli cannot be used together/, fn ->
+        BootOptions.parse!(["--repl", "--no-cli"])
+      end
+    end
+
+    test "--web-only --no-web raises" do
+      assert_raise ArgumentError, ~r/--web-only and --no-web cannot be used together/, fn ->
+        BootOptions.parse!(["--web-only", "--no-web"])
+      end
+    end
+
+    test "--no-cli --no-web raises" do
+      assert_raise ArgumentError, ~r/--web-only and --no-web cannot be used together/, fn ->
+        BootOptions.parse!(["--no-cli", "--no-web"])
+      end
     end
   end
 
@@ -159,6 +240,36 @@ defmodule Muse.BootOptionsTest do
 
   # -- Help flag -----------------------------------------------------------------
 
+  describe "--verbose" do
+    test "sets verbose? to true" do
+      opts = BootOptions.parse!(["--verbose"])
+      assert opts.verbose? == true
+    end
+
+    test "verbose defaults to false" do
+      opts = BootOptions.parse!([])
+      assert opts.verbose? == false
+    end
+
+    test "--verbose --tui is valid (verbose is orthogonal to UI mode)" do
+      opts = BootOptions.parse!(["--verbose", "--tui"])
+      assert opts.verbose? == true
+      assert opts.cli_ui == :tui
+    end
+
+    test "--verbose --repl is valid" do
+      opts = BootOptions.parse!(["--verbose", "--repl"])
+      assert opts.verbose? == true
+      assert opts.cli_ui == :repl
+    end
+
+    test "--verbose --no-web is valid" do
+      opts = BootOptions.parse!(["--verbose", "--no-web"])
+      assert opts.verbose? == true
+      assert opts.web? == false
+    end
+  end
+
   describe "--help" do
     test "sets help to true" do
       opts = BootOptions.parse!(["--help"])
@@ -197,6 +308,7 @@ defmodule Muse.BootOptionsTest do
 
       assert opts.cli? == true
       assert opts.web? == false
+      assert opts.cli_ui == :repl
       assert opts.port == 4100
       assert opts.host == "0.0.0.0"
     end
@@ -207,8 +319,19 @@ defmodule Muse.BootOptionsTest do
 
       assert opts.cli? == false
       assert opts.web? == true
+      assert opts.cli_ui == :none
       assert opts.port == 3000
       assert opts.host == "example.com"
+    end
+
+    test "--tui --no-web with custom port" do
+      opts =
+        BootOptions.parse!(["--tui", "--no-web", "--port", "5000"])
+
+      assert opts.cli_ui == :tui
+      assert opts.cli? == true
+      assert opts.web? == false
+      assert opts.port == 5000
     end
   end
 

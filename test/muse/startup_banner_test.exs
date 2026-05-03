@@ -1,121 +1,129 @@
 defmodule Muse.StartupBannerTest do
   use ExUnit.Case, async: true
 
-  alias Muse.{BootOptions, StartupBanner}
+  alias Muse.StartupBanner
 
-  # -- Default (all enabled) ----------------------------------------------------
-
-  describe "format/1 — default (CLI + Web + hot reload)" do
-    test "produces the canonical 5-line banner" do
-      banner =
-        StartupBanner.format(
-          workspace: "/tmp/proj",
-          cli?: true,
-          web?: true,
-          host: "127.0.0.1",
-          port: 4000,
-          watch?: true
-        )
-
-      assert banner =~ "Muse started"
-      assert banner =~ "Workspace: /tmp/proj"
-      assert banner =~ "CLI: enabled"
-      assert banner =~ "Web: http://127.0.0.1:4000"
-      assert banner =~ "Hot reload: enabled"
-    end
-
-    test "returns exactly 5 newline-separated lines" do
-      banner =
-        StartupBanner.format(
-          workspace: "/tmp/proj",
-          cli?: true,
-          web?: true,
-          host: "127.0.0.1",
-          port: 4000,
-          watch?: true
-        )
-
-      lines = String.split(banner, "\n")
-      assert length(lines) == 5
+  defp app_version do
+    case Application.spec(:muse, :vsn) do
+      vsn when is_binary(vsn) -> vsn
+      vsn when is_list(vsn) -> List.to_string(vsn)
+      _ -> "0.1.0"
     end
   end
 
-  # -- No-web mode (--no-web) ---------------------------------------------------
+  # -- Default (web + repl + hot reload) ----------------------------------------
 
-  describe "format/1 — no-web mode" do
-    test "shows Web: disabled" do
+  describe "format/1 — default (web + repl + hot reload)" do
+    test "produces a single-line banner" do
       banner =
         StartupBanner.format(
           workspace: "/tmp/proj",
-          cli?: true,
+          web?: true,
+          host: "127.0.0.1",
+          port: 4000,
+          watch?: true,
+          ui: :repl,
+          logs: :warning
+        )
+
+      # Single line — no newlines
+      refute banner =~ "\n"
+
+      assert banner =~ "Muse "
+      assert banner =~ "workspace=/tmp/proj"
+      assert banner =~ "web=http://127.0.0.1:4000"
+      assert banner =~ "ui=repl"
+      assert banner =~ "reload=on"
+      assert banner =~ "logs=warning+"
+    end
+  end
+
+  # -- No-web mode --------------------------------------------------------------
+
+  describe "format/1 — no-web mode" do
+    test "shows web=off" do
+      banner =
+        StartupBanner.format(
+          workspace: "/tmp/proj",
           web?: false,
           host: "127.0.0.1",
           port: 4000,
-          watch?: true
+          watch?: true,
+          ui: :repl,
+          logs: :warning
         )
 
-      assert banner =~ "CLI: enabled"
-      assert banner =~ "Web: disabled"
+      assert banner =~ "web=off"
       refute banner =~ "http://"
+      assert banner =~ "ui=repl"
     end
   end
 
-  # -- No-cli mode (--no-cli / --web-only) ---------------------------------------
+  # -- UI modes -----------------------------------------------------------------
 
-  describe "format/1 — no-cli mode" do
-    test "shows CLI: disabled, web URL present" do
+  describe "format/1 — UI modes" do
+    test "ui=repl when UI is repl" do
       banner =
         StartupBanner.format(
           workspace: "/tmp/proj",
-          cli?: false,
-          web?: true,
-          host: "0.0.0.0",
-          port: 8080,
-          watch?: true
-        )
-
-      assert banner =~ "CLI: disabled"
-      assert banner =~ "Web: http://0.0.0.0:8080"
-    end
-  end
-
-  # -- No hot-reload (--no-watch / source_mode) ---------------------------------
-
-  describe "format/1 — no hot reload" do
-    test "shows Hot reload: disabled" do
-      banner =
-        StartupBanner.format(
-          workspace: "/tmp/proj",
-          cli?: true,
           web?: true,
           host: "127.0.0.1",
           port: 4000,
-          watch?: false
+          watch?: true,
+          ui: :repl,
+          logs: :warning
         )
 
-      assert banner =~ "Hot reload: disabled"
+      assert banner =~ "ui=repl"
+    end
+
+    test "ui=tui when UI is tui" do
+      banner =
+        StartupBanner.format(
+          workspace: "/tmp/proj",
+          web?: true,
+          host: "127.0.0.1",
+          port: 4000,
+          watch?: true,
+          ui: :tui,
+          logs: :warning
+        )
+
+      assert banner =~ "ui=tui"
+    end
+
+    test "ui=none when CLI is disabled (web-only)" do
+      banner =
+        StartupBanner.format(
+          workspace: "/tmp/proj",
+          web?: true,
+          host: "0.0.0.0",
+          port: 8080,
+          watch?: true,
+          ui: :none,
+          logs: :warning
+        )
+
+      assert banner =~ "ui=none"
     end
   end
 
-  # -- Accepts BootOptions struct ------------------------------------------------
+  # -- No hot-reload ------------------------------------------------------------
 
-  describe "format/1 — BootOptions struct input" do
-    test "works with a real BootOptions struct" do
-      opts = %BootOptions{
-        cli?: true,
-        web?: true,
-        host: "127.0.0.1",
-        port: 4000,
-        workspace: "/tmp/proj",
-        watch?: true,
-        help?: false
-      }
+  describe "format/1 — no hot reload" do
+    test "shows reload=off" do
+      banner =
+        StartupBanner.format(
+          workspace: "/tmp/proj",
+          web?: true,
+          host: "127.0.0.1",
+          port: 4000,
+          watch?: false,
+          ui: :repl,
+          logs: :warning
+        )
 
-      banner = StartupBanner.format(opts)
-
-      assert banner =~ "Muse started"
-      assert banner =~ "Workspace: /tmp/proj"
-      assert banner =~ "Web: http://127.0.0.1:4000"
+      assert banner =~ "reload=off"
     end
   end
 
@@ -127,33 +135,101 @@ defmodule Muse.StartupBannerTest do
         ExUnit.CaptureIO.capture_io(fn ->
           assert StartupBanner.io_puts(
                    workspace: "/tmp/proj",
-                   cli?: true,
                    web?: true,
                    host: "127.0.0.1",
                    port: 4000,
-                   watch?: true
+                   watch?: true,
+                   ui: :repl,
+                   logs: :warning
                  ) == :ok
         end)
 
-      assert output =~ "Muse started"
+      assert output =~ "Muse #{app_version()}"
     end
   end
 
-  # -- Edge cases ---------------------------------------------------------------
+  # -- Custom port --------------------------------------------------------------
 
   describe "format/1 — custom port" do
     test "uses the specified port number" do
       banner =
         StartupBanner.format(
           workspace: "/tmp/proj",
-          cli?: true,
           web?: true,
           host: "127.0.0.1",
           port: 9999,
-          watch?: true
+          watch?: true,
+          ui: :repl,
+          logs: :debug
         )
 
-      assert banner =~ "Web: http://127.0.0.1:9999"
+      assert banner =~ "web=http://127.0.0.1:9999"
+    end
+  end
+
+  # -- Logs level ---------------------------------------------------------------
+
+  describe "format/1 — logs level" do
+    test "reflects the console log level" do
+      banner =
+        StartupBanner.format(
+          workspace: "/tmp/proj",
+          web?: true,
+          host: "127.0.0.1",
+          port: 4000,
+          watch?: true,
+          ui: :repl,
+          logs: :debug
+        )
+
+      assert banner =~ "logs=debug+"
+    end
+
+    test "shows logs=error+ for error level" do
+      banner =
+        StartupBanner.format(
+          workspace: "/tmp/proj",
+          web?: true,
+          host: "127.0.0.1",
+          port: 4000,
+          watch?: true,
+          ui: :repl,
+          logs: :error
+        )
+
+      assert banner =~ "logs=error+"
+    end
+  end
+
+  # -- Version ------------------------------------------------------------------
+
+  describe "format/1 — version" do
+    test "includes version from Application.spec" do
+      banner =
+        StartupBanner.format(
+          workspace: "/tmp/proj",
+          web?: true,
+          host: "127.0.0.1",
+          port: 4000,
+          watch?: true,
+          ui: :repl,
+          logs: :warning
+        )
+
+      # Should start with "Muse " followed by a version-like string
+      assert banner =~ ~r/^Muse \d+\.\d+\.\d+ /
+    end
+
+    test "does not hard-code the application version" do
+      assert Muse.StartupBanner.format(
+               workspace: "/tmp/proj",
+               web?: true,
+               host: "127.0.0.1",
+               port: 4000,
+               watch?: true,
+               ui: :repl,
+               logs: :warning
+             ) =~ "Muse #{app_version()}"
     end
   end
 end

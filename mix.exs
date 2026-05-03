@@ -9,7 +9,9 @@ defmodule Muse.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      escript: escript()
+      escript: escript(),
+      releases: releases(),
+      listeners: [Phoenix.CodeReloader]
     ]
   end
 
@@ -30,7 +32,8 @@ defmodule Muse.MixProject do
       {:bandit, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:lazy_html, ">= 0.1.0", only: :test},
-      {:esbuild, "~> 0.9", runtime: Mix.env() == :dev}
+      {:esbuild, "~> 0.9", runtime: Mix.env() == :dev},
+      {:ex_ratatui, "~> 0.8"}
     ]
   end
 
@@ -39,5 +42,16 @@ defmodule Muse.MixProject do
 
   defp escript do
     [main_module: Muse.CLI.Main, name: "muse"]
+  end
+
+  defp releases do
+    [
+      muse: [
+        applications: [muse: :permanent],
+        include_executables_for: [:unix],
+        overlays: ["rel/overlays"],
+        steps: [:assemble, :tar]
+      ]
+    ]
   end
 end

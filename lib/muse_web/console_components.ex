@@ -587,8 +587,8 @@ defmodule MuseWeb.ConsoleComponents do
   def app_header(assigns) do
     ~H"""
     <header class="app-header">
-      <div class="app-brand">
-        <span class="brand-mark muse-brand">muse</span>
+      <div class="app-brand muse-brand">
+        <img src="/images/muse-logo-header.png" alt="Muse CLI Coding Agent" class="muse-brand__logo" />
       </div>
       <div class="status-chips">
         <.status_chip label="backend" tone="green" dot={true} value="connected" />
@@ -649,6 +649,7 @@ defmodule MuseWeb.ConsoleComponents do
   def chat_panel(assigns) do
     ~H"""
     <section class="chat-panel" aria-label="muse conversation">
+      <div class="muse-bg muse-bg--main" aria-hidden="true"></div>
       <div class="chat-scroll" id="chat-scroll">
         <%= if @messages == [] do %>
           <div class="chat-empty">
@@ -735,6 +736,7 @@ defmodule MuseWeb.ConsoleComponents do
   def context_panel(assigns) do
     ~H"""
     <aside class={"context-sidebar context-panel context-sidebar-#{@sidebar_state}"} aria-label="Workspace context">
+      <div class="muse-bg muse-bg--sidebar" aria-hidden="true"></div>
       <%= case @sidebar_state do %>
         <% :rail -> %>
           <div class="context-rail">
