@@ -3,20 +3,20 @@
 :root {
   /* ─── Core backgrounds ────────────────────────────────────────── */
   --bg: #080a12;
-  --bg-soft: #0e1020;
-  --bg-elevated: #121629;
-  --sidebar-bg: rgba(10, 12, 24, 0.94);
-  --sidebar-bg-strong: rgba(13, 16, 32, 0.98);
+  --bg-soft: #0e0f12;
+  --bg-elevated: #16171c;
+  --sidebar-bg: rgba(12, 12, 14, 0.52);
+  --sidebar-bg-strong: rgba(14, 14, 17, 0.60);
 
   /* ─── Panels ───────────────────────────────────────────────────── */
-  --panel: rgba(18, 21, 38, 0.86);
-  --panel-soft: rgba(16, 19, 34, 0.76);
-  --panel-strong: rgba(27, 31, 56, 0.92);
-  --panel-solid: #15192d;
+  --panel: rgba(22, 22, 26, 0.50);
+  --panel-soft: rgba(20, 20, 24, 0.38);
+  --panel-strong: rgba(30, 30, 36, 0.60);
+  --panel-solid: rgba(26, 26, 32, 0.72);
 
   /* ─── Input backgrounds ────────────────────────────────────────── */
-  --input-bg: rgba(7, 9, 18, 0.94);
-  --input-bg-focus: rgba(11, 13, 26, 0.98);
+  --input-bg: rgba(8, 8, 12, 0.55);
+  --input-bg-focus: rgba(10, 10, 14, 0.68);
 
   /* ─── Text ─────────────────────────────────────────────────────── */
   --text: #f5f7ff;
@@ -27,40 +27,59 @@
   --text-disabled: #728096;
 
   /* ─── Borders ──────────────────────────────────────────────────── */
-  --border: rgba(167, 139, 250, 0.24);
-  --border-strong: rgba(196, 181, 253, 0.42);
-  --border-muted: rgba(148, 163, 184, 0.20);
+  --border: rgba(255, 255, 255, 0.16);
+  --border-strong: rgba(255, 255, 255, 0.26);
+  --border-muted: rgba(136, 6, 206, 0.18);
 
-  /* ─── Accent / violet ──────────────────────────────────────────── */
-  --accent: #8b5cf6;
-  --accent-hover: #9f7aea;
-  --accent-text: #c4b5fd;
-  --accent-soft: rgba(124, 58, 237, 0.22);
-  --accent-border: rgba(196, 181, 253, 0.48);
-  --accent-glow: rgba(139, 92, 246, 0.32);
+  /* ─── Accent / French violet ──────────────────────────────────── */
+  --accent: #8806CE;
+  --accent-hover: #9B2FFF;
+  --accent-text: #d8b4fe;
+  --accent-soft: rgba(136, 6, 206, 0.16);
+  --accent-border: rgba(176, 38, 255, 0.36);
+  --accent-glow: rgba(136, 6, 206, 0.26);
+  --accent-on: #ffffff;
+
+  /* ─── HDR violet accent (header chrome only) ────────────────── */
+  --hdr-violet: #8806CE;
+  --hdr-violet-hot: #B026FF;
+  --hdr-violet-soft: rgba(136, 6, 206, 0.14);
+  --hdr-violet-border: rgba(136, 6, 206, 0.32);
+  --hdr-violet-glow: rgba(176, 38, 255, 0.26);
+
+  /* ─── HDR gradient border tokens ─────────────────────────────── */
+  --hdr-border-gradient: linear-gradient(
+    90deg,
+    rgba(176, 38, 255, 0.28) 0%,
+    rgba(255, 255, 255, 0.18) 18%,
+    rgba(255, 255, 255, 0.06) 40%,
+    rgba(255, 255, 255, 0.06) 60%,
+    rgba(255, 255, 255, 0.18) 82%,
+    rgba(176, 38, 255, 0.24) 100%
+  );
 
   /* ─── Focus ────────────────────────────────────────────────────── */
-  --focus-ring: rgba(167, 139, 250, 0.42);
-  --focus-outline: #c4b5fd;
+  --focus-ring: rgba(176, 38, 255, 0.24);
+  --focus-outline: #B026FF;
 
   /* ─── Status semantic tokens ───────────────────────────────────── */
   --status-ok: #34d399;
-  --status-ok-bg: rgba(52, 211, 153, 0.12);
-  --status-ok-border: rgba(52, 211, 153, 0.30);
+  --status-ok-bg: rgba(52, 211, 153, 0.08);
+  --status-ok-border: rgba(52, 211, 153, 0.20);
   --status-warn: #fbbf24;
-  --status-warn-bg: rgba(251, 191, 36, 0.12);
-  --status-warn-border: rgba(251, 191, 36, 0.30);
+  --status-warn-bg: rgba(251, 191, 36, 0.08);
+  --status-warn-border: rgba(251, 191, 36, 0.18);
   --status-error: #f87171;
-  --status-error-bg: rgba(248, 113, 113, 0.12);
-  --status-error-border: rgba(248, 113, 113, 0.30);
+  --status-error-bg: rgba(248, 113, 113, 0.08);
+  --status-error-border: rgba(248, 113, 113, 0.20);
   --status-inactive: #94a3b8;
-  --status-inactive-bg: rgba(148, 163, 184, 0.10);
-  --status-inactive-border: rgba(148, 163, 184, 0.20);
+  --status-inactive-bg: rgba(148, 163, 184, 0.08);
+  --status-inactive-border: rgba(148, 163, 184, 0.16);
 
   /* ─── Shadows ───────────────────────────────────────────────────── */
   --shadow-panel: 0 16px 40px rgba(0, 0, 0, 0.32);
   --shadow-card: 0 4px 12px rgba(0, 0, 0, 0.24);
-  --shadow-accent: 0 0 16px rgba(139, 92, 246, 0.18);
+  --shadow-accent: 0 0 16px rgba(136, 6, 206, 0.16);
 
   /* ─── Legacy status aliases (kept for compat) ─────────────────── */
   --success: #34d399;
@@ -70,11 +89,12 @@
   /* ─── Muse violet branding tokens ─────────────────────────────── */
   --muse-violet-1: #7c3cff;
   --muse-violet-2: #5b2cff;
-  --muse-violet-soft: rgba(124, 60, 255, 0.16);
-  --muse-violet-glow: rgba(124, 60, 255, 0.28);
-  --muse-violet-border: rgba(124, 60, 255, 0.34);
-  --muse-stripe-opacity-main: 0.18;
-  --muse-stripe-opacity-sidebar: 0.16;
+  --muse-violet-soft: rgba(124, 60, 255, 0.08);
+  --muse-violet-glow: rgba(124, 60, 255, 0.12);
+  --muse-violet-border: rgba(124, 60, 255, 0.14);
+  --muse-stripe-opacity-main: 0.06;
+  --muse-stripe-opacity-sidebar: 0.05;
+  --muse-stripe-opacity-sidebar-rail: 0.025;
   --muse-stripe-blur: 18px;
   --muse-violet-50: #f5f3ff;
   --muse-violet-100: #ede9fe;
@@ -113,9 +133,8 @@ body {
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   background:
-    radial-gradient(circle at 12% 0%, rgba(139, 92, 246, 0.08), transparent 28rem),
-    radial-gradient(circle at 85% 90%, rgba(124, 58, 237, 0.05), transparent 32rem),
-    linear-gradient(180deg, #0a0c18 0%, var(--bg) 100%);
+    radial-gradient(circle at 85% 90%, rgba(94, 234, 212, 0.02), transparent 32rem),
+    linear-gradient(180deg, #09090b 0%, var(--bg) 100%);
 }
 
 /* ─── Global placeholder ──────────────────────────────────────── */
@@ -138,7 +157,15 @@ input:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--focus-outline);
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+/* Softer focus for inputs inside composer — gradient border provides primary cue; crisp outline for keyboard users */
+.chat-composer-form input:focus-visible,
+.chat-composer-form textarea:focus-visible {
+  outline: 2px solid rgba(216, 180, 254, 0.85);
+  outline-offset: 2px;
+  box-shadow: none;
 }
 
 .status-chip:focus-visible,
@@ -228,7 +255,8 @@ textarea:focus-visible {
 .tab-btn.tab-active {
   background: var(--accent-soft);
   border-color: var(--accent-border);
-  color: var(--accent);
+  color: var(--accent-text);
+  box-shadow: 0 0 8px var(--accent-glow);
 }
 
 .tab-icon {
@@ -269,9 +297,9 @@ textarea:focus-visible {
   flex-shrink: 0;
 }
 
-.status-dot-green  { background: var(--status-ok); box-shadow: 0 0 4px var(--status-ok); }
-.status-dot-yellow { background: var(--status-warn); box-shadow: 0 0 4px var(--status-warn); }
-.status-dot-red    { background: var(--status-error); box-shadow: 0 0 4px var(--status-error); }
+.status-dot-green  { background: var(--status-ok); box-shadow: 0 0 3px var(--status-ok); }
+.status-dot-yellow { background: var(--status-warn); box-shadow: 0 0 3px var(--status-warn); }
+.status-dot-red    { background: var(--status-error); box-shadow: 0 0 3px var(--status-error); }
 .status-dot-gray   { background: var(--status-inactive); }
 
 .status-item-label {
@@ -746,7 +774,7 @@ textarea:focus-visible {
 }
 
 .command-history-input {
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 
@@ -761,7 +789,7 @@ textarea:focus-visible {
 }
 
 .command-history-success .command-history-input {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .command-history-error .command-history-input {
@@ -817,7 +845,7 @@ textarea:focus-visible {
   background: var(--accent);
   border: none;
   border-radius: var(--radius-control);
-  color: #fff;
+  color: var(--accent-on);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
@@ -1467,7 +1495,7 @@ textarea:focus-visible {
 }
 
 .suggestion-cmd {
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 
@@ -1739,7 +1767,7 @@ textarea:focus-visible {
   display: inline-block;
   width: 8px;
   height: 8px;
-  box-shadow: 0 0 4px var(--status-error);
+  box-shadow: 0 0 3px var(--status-error);
 }
 
 .agent-runtime-details {
@@ -1788,9 +1816,31 @@ textarea:focus-visible {
 
 /* Compact header overrides */
 .app-header {
-  padding: 0 0 12px;
-  margin-bottom: 0;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 0;
+  margin-bottom: 8px;
+  border-bottom: none;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  align-items: center;
+  background: transparent;
+  border-radius: var(--radius-control) var(--radius-control) 0 0;
+}
+
+/* Header content above decorative pseudo-elements */
+.app-header > * {
+  position: relative;
+  z-index: 2;
+}
+
+/* Header aurora removed — clean transparent header */
+.app-header::before {
+  display: none;
+}
+
+/* HDR divider disabled — panels should read as separate, not connected */
+.app-header::after {
+  display: none;
 }
 
 .app-brand {
@@ -1824,23 +1874,26 @@ textarea:focus-visible {
   align-items: center;
   gap: 4px;
   padding: 3px 8px;
-  background: var(--panel-soft);
-  border: 1px solid var(--border-muted);
+  background: rgba(20, 20, 24, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-top-color: rgba(255, 255, 255, 0.10);
   border-radius: 20px;
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   line-height: 1;
   transition: border-color 0.15s, background 0.15s;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 0 4px rgba(176, 38, 255, 0.04);
 }
 
 .status-chip-label {
   color: var(--text-muted);
-  font-weight: 500;
+  font-weight: 650;
+  letter-spacing: 0.02em;
 }
 
 .status-chip-value {
   color: var(--text-secondary);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .status-chip .status-dot {
@@ -1860,9 +1913,9 @@ textarea:focus-visible {
 .status-chip-danger  { border-color: var(--status-error-border); background: var(--status-error-bg); color: var(--status-error); }
 
 /* Active status dot glow */
-.status-chip-green .status-dot  { box-shadow: 0 0 6px var(--status-ok); }
-.status-chip-yellow .status-dot { box-shadow: 0 0 6px var(--status-warn); }
-.status-chip-red .status-dot    { box-shadow: 0 0 6px var(--status-error); }
+.status-chip-green .status-dot  { box-shadow: 0 0 3px var(--status-ok); }
+.status-chip-yellow .status-dot { box-shadow: 0 0 3px var(--status-warn); }
+.status-chip-red .status-dot    { box-shadow: 0 0 3px var(--status-error); }
 
 /* Main layout grid — sidebar (left) + chat (right) */
 .main-layout {
@@ -1894,9 +1947,33 @@ textarea:focus-visible {
   min-height: 0;
   overflow: hidden;
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: var(--radius-panel);
-  box-shadow: var(--shadow-panel), var(--shadow-accent);
+  box-shadow: var(--shadow-panel);
+  position: relative;
+  isolation: isolate;
+}
+
+/* HDR gradient border on chat panel */
+.chat-panel > :not(.muse-bg):not(.chat-composer) {
+  position: relative;
+  z-index: 2;
+}
+
+.chat-panel::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--hdr-border-gradient);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 0;
+  opacity: .30;
 }
 
 .chat-scroll {
@@ -1914,9 +1991,9 @@ textarea:focus-visible {
 
 /* Composer attached to panel bottom — NOT sticky/floating */
 .chat-composer {
-  border-top: 1px solid var(--border-strong);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
   padding: 12px 20px;
-  background: var(--sidebar-bg-strong);
+  background: rgba(14, 14, 17, 0.42);
   flex-shrink: 0;
 }
 
@@ -1924,10 +2001,40 @@ textarea:focus-visible {
   display: flex;
   gap: 8px;
   align-items: flex-end;
-  background: var(--panel-solid);
-  border: 1px solid var(--border-strong);
+  background: rgba(22, 22, 26, 0.40);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: var(--radius-control);
   padding: 4px;
+  position: relative;
+  isolation: isolate;
+}
+
+/* Content above gradient border pseudo-element */
+.chat-composer-form > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* UV HDR gradient border — violet edges, white/silver middle */
+.chat-composer-form::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--hdr-border-gradient);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 0;
+  opacity: .40;
+  transition: opacity 0.25s;
+}
+
+.chat-composer-form:focus-within::before {
+  opacity: .55;
 }
 
 .chat-input {
@@ -1947,8 +2054,8 @@ textarea:focus-visible {
 }
 
 .chat-input:focus {
-  border-color: var(--accent-border);
-  box-shadow: 0 0 0 3px var(--focus-ring);
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: none;
   background: var(--input-bg-focus);
 }
 
@@ -1961,14 +2068,14 @@ textarea:focus-visible {
   background: var(--accent);
   border: none;
   border-radius: 8px;
-  color: #fff;
+  color: var(--accent-on);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: background 0.15s, box-shadow 0.15s;
   flex-shrink: 0;
   min-height: 36px;
-  box-shadow: 0 0 8px var(--accent-glow);
+  box-shadow: 0 0 6px rgba(136, 6, 206, 0.18);
 }
 
 .chat-send-button:hover {
@@ -1977,7 +2084,7 @@ textarea:focus-visible {
 
 .chat-send-button:active {
   background: var(--accent);
-  box-shadow: 0 0 4px var(--accent-glow);
+  box-shadow: 0 0 3px rgba(136, 6, 206, 0.14);
 }
 
 /* ─── Chat messages ─────────────────────────────────────────────── */
@@ -2135,9 +2242,35 @@ textarea:focus-visible {
   overflow-y: auto;
   min-height: 0;
   background: var(--sidebar-bg);
-  border: 1px solid var(--border);
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: var(--radius-panel);
   box-shadow: var(--shadow-card);
+  position: relative;
+  isolation: isolate;
+}
+
+/* HDR gradient border on sidebar */
+.context-panel > :not(.muse-bg),
+.context-sidebar > :not(.muse-bg) {
+  position: relative;
+  z-index: 2;
+}
+
+.context-panel::before,
+.context-sidebar::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--hdr-border-gradient);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 0;
+  opacity: .30;
 }
 
 /* Left sidebar states */
@@ -2268,14 +2401,14 @@ textarea:focus-visible {
 }
 
 .mini-card-muted {
-  opacity: 0.75;
   background: transparent;
   border-color: var(--border-muted);
+  color: var(--text-muted);
 }
 
 .mini-card-muted:hover {
-  opacity: 1;
   border-color: var(--border);
+  color: var(--text);
 }
 
 .mini-card-alert {
@@ -2374,7 +2507,7 @@ textarea:focus-visible {
   font-size: 12px;
   background: none;
   border: none;
-  color: var(--accent);
+  color: var(--accent-text);
   cursor: pointer;
   font-weight: 550;
 }
@@ -2438,14 +2571,16 @@ textarea:focus-visible {
   display: block;
   object-fit: contain;
   opacity: .96;
-  filter: drop-shadow(0 0 10px rgba(124, 60, 255, .18));
+  filter:
+    drop-shadow(0 0 6px rgba(136, 6, 206, .32))
+    drop-shadow(0 0 14px rgba(176, 38, 255, .14));
   border-radius: 0;
 }
 
 /* ─── Muse background layers ─────────────────────────────────────── */
 /*
   Purely visual background images — isolated behind content via z-index,
-  pointer-events none, mix-blend-mode screen, and readability overlays.
+  pointer-events none, mix-blend-mode normal, and readability overlays.
 */
 
 .chat-panel,
@@ -2465,19 +2600,15 @@ textarea:focus-visible {
 }
 
 .muse-bg--main {
-  background-image: url('/images/muse-bg-main.png');
-  background-position: right bottom;
-  background-size: cover;
-  opacity: var(--muse-stripe-opacity-main);
-  filter: blur(0) saturate(1.05);
+  /* Background image removed — placeholder for future image */
+  background-image: none;
+  opacity: 0;
 }
 
 .muse-bg--sidebar {
-  background-image: url('/images/muse-bg-sidebar.png');
-  background-position: left bottom;
-  background-size: cover;
-  opacity: var(--muse-stripe-opacity-sidebar);
-  filter: blur(0) saturate(1.05);
+  /* Background image removed — placeholder for future image */
+  background-image: none;
+  opacity: 0;
 }
 
 /* Readability overlays */
@@ -2494,16 +2625,16 @@ textarea:focus-visible {
 .chat-panel::after {
   background: linear-gradient(
     180deg,
-    rgba(8, 10, 18, 0.52) 0%,
-    rgba(8, 10, 18, 0.78) 100%
+    rgba(10, 10, 12, 0.30) 0%,
+    rgba(10, 10, 12, 0.52) 100%
   );
 }
 
 .context-sidebar::after {
   background: linear-gradient(
     180deg,
-    rgba(8, 10, 18, 0.46) 0%,
-    rgba(8, 10, 18, 0.74) 100%
+    rgba(10, 10, 12, 0.24) 0%,
+    rgba(10, 10, 12, 0.46) 100%
   );
 }
 
@@ -2516,35 +2647,19 @@ textarea:focus-visible {
 
 /* Rail mode dims the sidebar background further */
 .context-sidebar-rail .muse-bg--sidebar {
-  opacity: .08;
+  opacity: var(--muse-stripe-opacity-sidebar-rail);
 }
 
-/* Responsive: fade backgrounds and shrink logo on narrower viewports */
+/* Responsive: shrink logo on narrower viewports */
 @media (max-width: 900px) {
   .muse-brand__logo {
     width: 112px;
-  }
-
-  .muse-bg--main {
-    opacity: .14;
-  }
-
-  .muse-bg--sidebar {
-    opacity: .12;
   }
 }
 
 @media (max-width: 640px) {
   .muse-brand__logo {
     width: 96px;
-  }
-
-  .muse-bg--main {
-    opacity: .10;
-  }
-
-  .muse-bg--sidebar {
-    opacity: .08;
   }
 }
 

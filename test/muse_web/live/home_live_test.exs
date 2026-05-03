@@ -1149,9 +1149,8 @@ defmodule MuseWeb.HomeLiveTest do
       assert conn.resp_body =~ "width: 96px"
       # Sidebar header spacing
       assert conn.resp_body =~ ".context-sidebar-header"
-      # Updated responsive opacity values (sidebar + main)
-      assert conn.resp_body =~ "opacity: .14"
-      assert conn.resp_body =~ "opacity: .10"
+      # Background layers disabled (opacity: 0) — ready for future image
+      assert conn.resp_body =~ "opacity: 0"
     end
 
     test "static assets serve branding images with 200" do
