@@ -2568,6 +2568,7 @@ textarea:focus-visible {
   align-items: center;
   gap: .75rem;
   min-width: 0;
+  padding-block: .5rem;
 }
 
 .muse-brand__label {
