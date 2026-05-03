@@ -29,33 +29,33 @@
   /* ─── Borders ──────────────────────────────────────────────────── */
   --border: rgba(255, 255, 255, 0.16);
   --border-strong: rgba(255, 255, 255, 0.26);
-  --border-muted: rgba(136, 6, 206, 0.18);
+  --border-muted: rgba(255, 255, 255, 0.10);
 
   /* ─── Accent / French violet ──────────────────────────────────── */
   --accent: #8806CE;
   --accent-hover: #9B2FFF;
   --accent-text: #d8b4fe;
-  --accent-soft: rgba(136, 6, 206, 0.16);
-  --accent-border: rgba(176, 38, 255, 0.36);
-  --accent-glow: rgba(136, 6, 206, 0.26);
+  --accent-soft: rgba(136, 6, 206, 0.10);
+  --accent-border: rgba(176, 38, 255, 0.28);
+  --accent-glow: rgba(136, 6, 206, 0.14);
   --accent-on: #ffffff;
 
   /* ─── HDR violet accent (header chrome only) ────────────────── */
   --hdr-violet: #8806CE;
   --hdr-violet-hot: #B026FF;
-  --hdr-violet-soft: rgba(136, 6, 206, 0.14);
-  --hdr-violet-border: rgba(136, 6, 206, 0.32);
-  --hdr-violet-glow: rgba(176, 38, 255, 0.26);
+  --hdr-violet-soft: rgba(136, 6, 206, 0.08);
+  --hdr-violet-border: rgba(136, 6, 206, 0.18);
+  --hdr-violet-glow: rgba(176, 38, 255, 0.14);
 
   /* ─── HDR gradient border tokens ─────────────────────────────── */
   --hdr-border-gradient: linear-gradient(
     90deg,
-    rgba(176, 38, 255, 0.28) 0%,
-    rgba(255, 255, 255, 0.18) 18%,
-    rgba(255, 255, 255, 0.06) 40%,
-    rgba(255, 255, 255, 0.06) 60%,
-    rgba(255, 255, 255, 0.18) 82%,
-    rgba(176, 38, 255, 0.24) 100%
+    rgba(176, 38, 255, 0.12) 0%,
+    rgba(255, 255, 255, 0.14) 16%,
+    rgba(255, 255, 255, 0.04) 38%,
+    rgba(255, 255, 255, 0.04) 62%,
+    rgba(255, 255, 255, 0.14) 84%,
+    rgba(176, 38, 255, 0.10) 100%
   );
 
   /* ─── Focus ────────────────────────────────────────────────────── */
@@ -79,7 +79,7 @@
   /* ─── Shadows ───────────────────────────────────────────────────── */
   --shadow-panel: 0 16px 40px rgba(0, 0, 0, 0.32);
   --shadow-card: 0 4px 12px rgba(0, 0, 0, 0.24);
-  --shadow-accent: 0 0 16px rgba(136, 6, 206, 0.16);
+  --shadow-accent: 0 0 16px rgba(136, 6, 206, 0.08);
 
   /* ─── Legacy status aliases (kept for compat) ─────────────────── */
   --success: #34d399;
@@ -2015,7 +2015,7 @@ textarea:focus-visible {
   z-index: 1;
 }
 
-/* UV HDR gradient border — violet edges, white/silver middle */
+/* Graphite HDR gradient border — subtle violet edges, white/silver middle */
 .chat-composer-form::before {
   content: "";
   position: absolute;
@@ -2029,12 +2029,12 @@ textarea:focus-visible {
   mask-composite: exclude;
   pointer-events: none;
   z-index: 0;
-  opacity: .40;
+  opacity: .35;
   transition: opacity 0.25s;
 }
 
 .chat-composer-form:focus-within::before {
-  opacity: .55;
+  opacity: .50;
 }
 
 .chat-input {
