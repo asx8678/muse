@@ -979,7 +979,7 @@ defmodule MuseWeb.HomeLiveTest do
     test "serves /assets/css/app.css with chat-first UI classes" do
       conn = build_conn() |> get("/assets/css/app.css")
       assert conn.status == 200
-      assert conn.resp_body =~ "--bg: #080a12"
+      assert conn.resp_body =~ "--bg: #1a1a1a"
       assert conn.resp_body =~ "--panel"
       assert conn.resp_body =~ ".app-shell"
       assert conn.resp_body =~ ".main-layout"
