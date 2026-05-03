@@ -1,34 +1,75 @@
 defmodule MuseWeb.HomeLive do
   use MuseWeb, :live_view
 
-  @collapse_timeout_ms 10_000
+  import MuseWeb.ConsoleComponents,
+    only: [
+      events_tab: 1,
+      logs_tab: 1,
+      files_tab: 1,
+      agents_tab: 1,
+      stats_tab: 1,
+      settings_tab: 1,
+      app_header: 1,
+      status_bar: 1,
+      diagnostics_popup: 1,
+      dev_sidebar: 1,
+      command_console: 1,
+      toast_container: 1
+    ]
 
-  # Allowed window names — never convert arbitrary user strings to atoms
-  @window_names %{
-    "events" => "Events",
-    "reload" => "Recent files",
-    "universal-agent" => "Universal agent",
-    "settings" => "Settings",
-    "statistics" => "Statistics",
-    "agents" => "Agent tree"
-  }
+  import MuseWeb.EventFormatter,
+    only: [
+      filtered_events: 3,
+      format_event_json: 1,
+      event_to_map: 1,
+      format_timestamp: 1
+    ]
+
+  import MuseWeb.LogFormatter,
+    only: [
+      filtered_logs: 3,
+      format_log_json: 1,
+      format_logs_json: 1
+    ]
+
+  import MuseWeb.ExportJSON, only: [json_safe: 1, build_diagnostics_payload: 1]
+  import MuseWeb.ConsoleCommand, only: [palette_actions: 0]
+
+  alias MuseWeb.BackendBridge
+  alias MuseWeb.ConsoleCommand
+
+  @collapse_timeout_ms 10_000
+  @toast_timeout_ms 5_000
+
+  @tabs [
+    {"events", "📋", "Events"},
+    {"logs", "📝", "Logs"},
+    {"files", "📂", "Files"},
+    {"agents", "🌳", "Agents"},
+    {"stats", "📊", "Stats"},
+    {"settings", "⚙️", "Settings"}
+  ]
+
+  # -- Mount ------------------------------------------------------------------
 
   @impl true
   def mount(_params, _session, socket) do
     state = Muse.State.get()
-    workspace = safe_workspace_root()
-    reload_status = safe_reload_status()
-    diagnostics = safe_diagnostics()
-    self_healing_issues = safe_self_healing_issues()
+    workspace = BackendBridge.safe_workspace_root()
+    reload_status = BackendBridge.safe_reload_status()
+    diagnostics = BackendBridge.safe_diagnostics()
+    self_healing_issues = BackendBridge.safe_self_healing_issues()
     diagnostic_issue_statuses = compute_issue_statuses(self_healing_issues)
 
     diagnostics_open? = diagnostics != []
 
     if connected?(socket) do
       Muse.State.subscribe()
-      safe_subscribe_diagnostics()
-      safe_subscribe_self_healing()
-      safe_subscribe_agent_registry()
+      BackendBridge.safe_subscribe_diagnostics()
+      BackendBridge.safe_subscribe_self_healing()
+      BackendBridge.safe_subscribe_agent_registry()
+      BackendBridge.safe_subscribe_logs()
+      BackendBridge.safe_subscribe_agent_runtime()
     end
 
     socket =
@@ -44,13 +85,28 @@ defmodule MuseWeb.HomeLive do
         diagnostics_collapse_timer_ref: nil,
         self_healing_issues: self_healing_issues,
         diagnostic_issue_statuses: diagnostic_issue_statuses,
-        open_windows: MapSet.new(),
-        active_window: nil,
         beam_stats: Muse.BeamStats.snapshot(),
-        agent_snapshot: safe_agent_snapshot()
+        agent_snapshot: BackendBridge.safe_agent_snapshot(),
+        # Sprint 1 assigns
+        tabs: @tabs,
+        active_tab: "events",
+        event_filter: "all",
+        event_search: "",
+        command_history: [],
+        toasts: [],
+        expanded_event_id: nil,
+        # Log assigns
+        logs: BackendBridge.safe_logs(),
+        log_filter: "all",
+        log_search: "",
+        expanded_log_id: nil,
+        # Agent runtime assigns
+        agent_runtime: BackendBridge.safe_agent_runtime_snapshot(),
+        # Legacy assigns kept for compatibility
+        open_windows: MapSet.new(),
+        active_window: nil
       )
 
-    # Schedule initial collapse if diagnostics exist on mount
     socket =
       if diagnostics_open? and connected?(socket) do
         schedule_collapse(socket)
@@ -61,6 +117,8 @@ defmodule MuseWeb.HomeLive do
     {:ok, socket}
   end
 
+  # -- Event handlers ---------------------------------------------------------
+
   @impl true
   def handle_event("submit", %{"text" => text}, socket) do
     text = String.trim(text)
@@ -68,26 +126,398 @@ defmodule MuseWeb.HomeLive do
     if text == "" do
       {:noreply, socket}
     else
-      try do
-        Muse.submit(:web, text)
-        state = Muse.State.get()
-        {:noreply, assign(socket, state: state, input: "")}
-      rescue
-        e ->
-          {:noreply, socket |> put_flash(:error, Exception.message(e)) |> assign(input: text)}
+      case Muse.Commands.parse(text) do
+        :empty ->
+          {:noreply, socket}
+
+        {:message, msg} ->
+          try do
+            Muse.submit(:web, msg)
+            state = Muse.State.get()
+            socket = assign(socket, state: state, input: "")
+            entry = make_history_entry(msg, "Message sent to Muse.", :success)
+            {:noreply, assign(socket, command_history: socket.assigns.command_history ++ [entry])}
+          rescue
+            e ->
+              entry = make_history_entry(msg, "Error: #{Exception.message(e)}", :error)
+              socket = socket |> assign(input: text) |> add_toast(Exception.message(e), :error)
+
+              {:noreply,
+               assign(socket, command_history: socket.assigns.command_history ++ [entry])}
+          end
+
+        {:command, action} ->
+          {output, socket} = ConsoleCommand.dispatch_command(action, socket)
+
+          entry =
+            make_history_entry(
+              text,
+              output,
+              if(String.starts_with?(output, "Error"), do: :error, else: :success)
+            )
+
+          {:noreply,
+           assign(socket, command_history: socket.assigns.command_history ++ [entry], input: "")}
+
+        {:command, action, args} ->
+          {output, socket} = ConsoleCommand.dispatch_command_with_args(action, args, socket)
+
+          entry =
+            make_history_entry(
+              text,
+              output,
+              if(String.starts_with?(output, "Error"), do: :error, else: :success)
+            )
+
+          {:noreply,
+           assign(socket, command_history: socket.assigns.command_history ++ [entry], input: "")}
+
+        {:unknown, cmd} ->
+          entry =
+            make_history_entry(
+              text,
+              "Unknown command: #{cmd}. Type /help for available commands.",
+              :error
+            )
+
+          {:noreply,
+           assign(socket, command_history: socket.assigns.command_history ++ [entry], input: "")}
       end
+    end
+  end
+
+  @impl true
+  def handle_event("switch_tab", %{"tab" => tab}, socket) do
+    if tab in Enum.map(@tabs, &elem(&1, 0)) do
+      {:noreply, assign(socket, active_tab: tab)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("set_event_filter", %{"filter" => filter}, socket) do
+    if filter in ~w(all errors warnings info) do
+      {:noreply, assign(socket, event_filter: filter)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("set_event_search", %{"query" => query}, socket) do
+    {:noreply, assign(socket, event_search: String.trim(query || ""))}
+  end
+
+  @impl true
+  def handle_event("clear_event_search", _params, socket) do
+    {:noreply, assign(socket, event_search: "")}
+  end
+
+  @impl true
+  def handle_event("clear_event_filters", _params, socket) do
+    {:noreply, assign(socket, event_filter: "all", event_search: "")}
+  end
+
+  @impl true
+  def handle_event("copy_event_json", %{"id" => id_str}, socket) do
+    id = String.to_integer(id_str)
+
+    event = Enum.find(socket.assigns.state.events, &(&1.id == id))
+
+    if event do
+      json = format_event_json(event)
+      {:noreply, push_event(socket, "copy_to_clipboard", %{text: json, label: "Event JSON"})}
+    else
+      {:noreply, add_toast(socket, "Event not found", :error)}
+    end
+  end
+
+  @impl true
+  def handle_event("export_events", _params, socket) do
+    events = socket.assigns.state.events
+
+    filtered =
+      filtered_events(
+        Enum.reverse(events),
+        socket.assigns.event_filter,
+        socket.assigns.event_search
+      )
+
+    payload =
+      %{
+        "exported_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "filter" => socket.assigns.event_filter,
+        "search" => socket.assigns.event_search,
+        "total_events" => length(events),
+        "exported_count" => length(filtered),
+        "events" => Enum.map(filtered, &event_to_map/1)
+      }
+      |> json_safe()
+
+    json = Jason.encode!(payload, pretty: true)
+
+    {:noreply,
+     push_event(socket, "copy_to_clipboard", %{
+       text: json,
+       label: "#{length(filtered)} events exported"
+     })}
+  rescue
+    e -> {:noreply, add_toast(socket, "Export failed: #{Exception.message(e)}", :error)}
+  end
+
+  @impl true
+  def handle_event("clear_events", _params, socket) do
+    Muse.State.clear()
+    state = Muse.State.get()
+    socket = socket |> assign(state: state) |> add_toast("Events cleared", :info)
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("simulate_event", _params, socket) do
+    if Mix.env() != :prod do
+      event = Muse.Event.new(:web, :simulated, %{text: "Simulated test event from dev tools"})
+      Muse.State.append(event)
+      state = Muse.State.get()
+      socket = socket |> assign(state: state) |> add_toast("Simulated event created", :success)
+      {:noreply, socket}
+    else
+      {:noreply, socket}
     end
   end
 
   @impl true
   def handle_event("simulate_backend_error", _params, socket) do
     if Mix.env() != :prod do
-      safe_emit_simulated_error()
-    end
+      BackendBridge.safe_emit_simulated_error()
+      # Also create an event in the event log for visibility
+      event =
+        Muse.Event.new(:web, :error, %{text: "Simulated backend error triggered from dev tools"})
 
+      Muse.State.append(event)
+      state = Muse.State.get()
+
+      socket =
+        socket
+        |> assign(state: state)
+        |> add_toast("Backend error simulated — check diagnostics", :warning)
+
+      {:noreply, socket}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("force_reload_watcher", _params, socket) do
+    socket =
+      case BackendBridge.safe_force_reload() do
+        :ok -> socket |> add_toast("Watcher rescan triggered", :success)
+        {:error, reason} -> socket |> add_toast("Watcher error: #{reason}", :warning)
+      end
+
+    {:noreply, assign(socket, reload_status: BackendBridge.safe_reload_status())}
+  end
+
+  @impl true
+  def handle_event("refresh_stats", _params, socket) do
+    {:noreply,
+     assign(socket, beam_stats: Muse.BeamStats.snapshot()) |> add_toast("Stats refreshed", :info)}
+  end
+
+  @impl true
+  def handle_event("dismiss_toast", %{"id" => id_str}, socket) do
+    id = String.to_integer(id_str)
+    toasts = Enum.reject(socket.assigns.toasts, &(&1.id == id))
+    {:noreply, assign(socket, toasts: toasts)}
+  end
+
+  @impl true
+  def handle_event("toggle_event_detail", %{"id" => id_str}, socket) do
+    id = String.to_integer(id_str)
+    new_id = if socket.assigns.expanded_event_id == id, do: nil, else: id
+    {:noreply, assign(socket, expanded_event_id: new_id)}
+  end
+
+  @impl true
+  def handle_event("copy_diagnostics", _params, socket) do
+    payload = build_diagnostics_payload(socket.assigns)
+    json = Jason.encode!(payload, pretty: true)
+    {:noreply, push_event(socket, "copy_to_clipboard", %{text: json, label: "Diagnostics"})}
+  rescue
+    e -> {:noreply, add_toast(socket, "Diagnostics copy failed: #{Exception.message(e)}", :error)}
+  end
+
+  @impl true
+  def handle_event("command_palette_action", %{"action" => action}, socket) do
+    socket = ConsoleCommand.execute_palette_action(action, socket)
     {:noreply, socket}
   end
 
+  @impl true
+  def handle_event("connect_agent_runtime", _params, socket) do
+    case BackendBridge.safe_connect_agent_runtime() do
+      {:error, reason} when is_binary(reason) ->
+        runtime = BackendBridge.safe_agent_runtime_snapshot()
+
+        socket =
+          socket |> assign(agent_runtime: runtime) |> add_toast("Runtime: #{reason}", :warning)
+
+        {:noreply, socket}
+
+      {:error, _} ->
+        socket = socket |> add_toast("Agent runtime unavailable", :warning)
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("retry_agent_runtime", _params, socket) do
+    case BackendBridge.safe_retry_agent_runtime() do
+      {:error, reason} when is_binary(reason) ->
+        runtime = BackendBridge.safe_agent_runtime_snapshot()
+
+        socket =
+          socket |> assign(agent_runtime: runtime) |> add_toast("Runtime: #{reason}", :warning)
+
+        {:noreply, socket}
+
+      {:error, _} ->
+        socket = socket |> add_toast("Agent runtime unavailable", :warning)
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("disconnect_agent_runtime", _params, socket) do
+    case BackendBridge.safe_disconnect_agent_runtime() do
+      {:ok, _snapshot} ->
+        runtime = BackendBridge.safe_agent_runtime_snapshot()
+
+        socket =
+          socket |> assign(agent_runtime: runtime) |> add_toast("Runtime disconnected", :info)
+
+        {:noreply, socket}
+
+      {:error, _} ->
+        socket = socket |> add_toast("Agent runtime unavailable", :warning)
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("set_agent_runtime_endpoint", %{"endpoint" => endpoint}, socket) do
+    case BackendBridge.safe_set_agent_runtime_endpoint(endpoint) do
+      :ok ->
+        runtime = BackendBridge.safe_agent_runtime_snapshot()
+        {:noreply, assign(socket, agent_runtime: runtime)}
+
+      {:error, _} ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("set_log_filter", %{"filter" => filter}, socket) do
+    if filter in ~w(all errors warnings info debug) do
+      {:noreply, assign(socket, log_filter: filter)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("set_log_search", %{"query" => query}, socket) do
+    {:noreply, assign(socket, log_search: String.trim(query || ""))}
+  end
+
+  @impl true
+  def handle_event("clear_log_search", _params, socket) do
+    {:noreply, assign(socket, log_search: "")}
+  end
+
+  @impl true
+  def handle_event("clear_log_filters", _params, socket) do
+    {:noreply, assign(socket, log_filter: "all", log_search: "")}
+  end
+
+  @impl true
+  def handle_event("clear_logs", _params, socket) do
+    case BackendBridge.safe_clear_logs() do
+      :ok ->
+        {:noreply,
+         assign(socket, logs: BackendBridge.safe_logs()) |> add_toast("Logs cleared", :info)}
+
+      {:error, _} ->
+        {:noreply, add_toast(socket, "Log buffer unavailable", :warning)}
+    end
+  end
+
+  @impl true
+  def handle_event("copy_log_json", %{"id" => id_str}, socket) do
+    id = String.to_integer(id_str)
+
+    log = Enum.find(socket.assigns.logs, &(&1.id == id))
+
+    if log do
+      json = format_log_json(log)
+      {:noreply, push_event(socket, "copy_to_clipboard", %{text: json, label: "Log JSON"})}
+    else
+      {:noreply, add_toast(socket, "Log not found", :error)}
+    end
+  end
+
+  @impl true
+  def handle_event("export_logs", _params, socket) do
+    filtered =
+      filtered_logs(
+        socket.assigns.logs,
+        socket.assigns.log_filter,
+        socket.assigns.log_search
+      )
+
+    json = format_logs_json(filtered)
+
+    {:noreply,
+     push_event(socket, "copy_to_clipboard", %{
+       text: json,
+       label: "#{length(filtered)} logs exported"
+     })}
+  rescue
+    e -> {:noreply, add_toast(socket, "Export failed: #{Exception.message(e)}", :error)}
+  end
+
+  @impl true
+  def handle_event("toggle_log_detail", %{"id" => id_str}, socket) do
+    id = String.to_integer(id_str)
+    new_id = if socket.assigns.expanded_log_id == id, do: nil, else: id
+    {:noreply, assign(socket, expanded_log_id: new_id)}
+  end
+
+  @impl true
+  def handle_event("simulate_log", _params, socket) do
+    if Mix.env() != :prod do
+      case BackendBridge.safe_append_log(
+             :info,
+             "Simulated log entry from dev tools",
+             %{simulated: true},
+             :dev
+           ) do
+        {:ok, _entry} ->
+          {:noreply,
+           assign(socket, logs: BackendBridge.safe_logs())
+           |> add_toast("Simulated log created", :success)}
+
+        {:error, _} ->
+          {:noreply, add_toast(socket, "Log buffer unavailable", :warning)}
+      end
+    else
+      {:noreply, socket}
+    end
+  end
+
+  # Diagnostics handlers (preserved from legacy)
   @impl true
   def handle_event("open_diagnostics", _params, socket) do
     {:noreply, assign(socket, diagnostics_open?: true) |> schedule_collapse()}
@@ -106,49 +536,6 @@ defmodule MuseWeb.HomeLive do
   end
 
   @impl true
-  def handle_event("toggle_window", %{"window" => window_name}, socket) do
-    if Map.has_key?(@window_names, window_name) do
-      open = socket.assigns.open_windows
-
-      if MapSet.member?(open, window_name) do
-        new_open = MapSet.delete(open, window_name)
-
-        new_active =
-          if socket.assigns.active_window == window_name,
-            do: nil,
-            else: socket.assigns.active_window
-
-        {:noreply, assign(socket, open_windows: new_open, active_window: new_active)}
-      else
-        new_open = MapSet.put(open, window_name)
-        {:noreply, assign(socket, open_windows: new_open, active_window: window_name)}
-      end
-    else
-      {:noreply, socket}
-    end
-  end
-
-  @impl true
-  def handle_event("close_window", %{"window" => window_name}, socket) do
-    new_open = MapSet.delete(socket.assigns.open_windows, window_name)
-
-    new_active =
-      if socket.assigns.active_window == window_name, do: nil, else: socket.assigns.active_window
-
-    {:noreply, assign(socket, open_windows: new_open, active_window: new_active)}
-  end
-
-  @impl true
-  def handle_event("focus_window", %{"window" => window_name}, socket) do
-    {:noreply, assign(socket, active_window: window_name)}
-  end
-
-  @impl true
-  def handle_event("refresh_stats", _params, socket) do
-    {:noreply, assign(socket, beam_stats: Muse.BeamStats.snapshot())}
-  end
-
-  @impl true
   def handle_event("queue_diagnostic_fix", %{"diagnostic_id" => id_str}, socket) do
     id = String.to_integer(id_str)
 
@@ -157,7 +544,7 @@ defmodule MuseWeb.HomeLive do
         {:noreply, socket}
 
       diagnostic ->
-        case safe_queue_diagnostic(diagnostic) do
+        case BackendBridge.safe_queue_diagnostic(diagnostic) do
           {:ok, issue} ->
             self_healing_issues =
               [issue | socket.assigns.self_healing_issues]
@@ -181,11 +568,35 @@ defmodule MuseWeb.HomeLive do
     end
   end
 
+  # Legacy window handlers kept for compatibility
+  @impl true
+  def handle_event("toggle_window", %{"window" => _window_name}, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("close_window", %{"window" => _window_name}, socket) do
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("focus_window", %{"window" => _window_name}, socket) do
+    {:noreply, socket}
+  end
+
+  # -- Info handlers ----------------------------------------------------------
+
   @impl true
   def handle_info({:muse_event, _event}, socket) do
     state = Muse.State.get()
-    reload_status = safe_reload_status()
+    reload_status = BackendBridge.safe_reload_status()
     {:noreply, assign(socket, state: state, reload_status: reload_status)}
+  end
+
+  @impl true
+  def handle_info({:muse_events_cleared}, socket) do
+    state = Muse.State.get()
+    {:noreply, assign(socket, state: state)}
   end
 
   @impl true
@@ -231,6 +642,27 @@ defmodule MuseWeb.HomeLive do
   end
 
   @impl true
+  def handle_info({:dismiss_toast, id}, socket) do
+    toasts = Enum.reject(socket.assigns.toasts, &(&1.id == id))
+    {:noreply, assign(socket, toasts: toasts)}
+  end
+
+  @impl true
+  def handle_info({:muse_log, _entry}, socket) do
+    {:noreply, assign(socket, logs: BackendBridge.safe_logs())}
+  end
+
+  @impl true
+  def handle_info({:muse_logs_cleared}, socket) do
+    {:noreply, assign(socket, logs: BackendBridge.safe_logs())}
+  end
+
+  @impl true
+  def handle_info({:muse_agent_runtime_updated, snapshot}, socket) do
+    {:noreply, assign(socket, agent_runtime: snapshot)}
+  end
+
+  @impl true
   def handle_info({:muse_agent_registry_updated, snapshot}, socket) do
     {:noreply, assign(socket, agent_snapshot: snapshot)}
   end
@@ -271,7 +703,7 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_info({:self_healing_issue_removed, _issue}, socket) do
-    self_healing_issues = safe_self_healing_issues()
+    self_healing_issues = BackendBridge.safe_self_healing_issues()
     statuses = compute_issue_statuses(self_healing_issues)
 
     {:noreply,
@@ -280,507 +712,90 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_info({:self_healing_issues_cleared, _fixed}, socket) do
-    self_healing_issues = safe_self_healing_issues()
+    self_healing_issues = BackendBridge.safe_self_healing_issues()
     statuses = compute_issue_statuses(self_healing_issues)
 
     {:noreply,
      assign(socket, self_healing_issues: self_healing_issues, diagnostic_issue_statuses: statuses)}
   end
 
-  # Catch-all for unknown PubSub messages
   @impl true
   def handle_info(_msg, socket) do
     {:noreply, socket}
   end
 
+  # -- Render -----------------------------------------------------------------
+
   @impl true
   def render(assigns) do
     ~H"""
-    <main class="app-shell">
-      <header class="app-header">
-        <div class="app-brand">
-          <span class="brand-mark">Muse</span>
-          <span class="brand-context">Backend console</span>
-        </div>
-        <div class="header-actions">
-          <div class="icon-dock">
-            <button type="button" class={"dock-icon #{window_active?(@open_windows, "events")}"} phx-click="toggle_window" phx-value-window="events" title="Events" aria-label="Open events window">📋</button>
-            <button type="button" class={"dock-icon #{window_active?(@open_windows, "reload")}"} phx-click="toggle_window" phx-value-window="reload" title="Recent files" aria-label="Open recent files window">📂</button>
-            <button type="button" class={"dock-icon #{window_active?(@open_windows, "universal-agent")}"} phx-click="toggle_window" phx-value-window="universal-agent" title="Universal agent" aria-label="Open universal agent window">🤖</button>
-            <button type="button" class={"dock-icon #{window_active?(@open_windows, "settings")}"} phx-click="toggle_window" phx-value-window="settings" title="Settings" aria-label="Open settings window">⚙️</button>
-            <button type="button" class={"dock-icon #{window_active?(@open_windows, "statistics")}"} phx-click="toggle_window" phx-value-window="statistics" title="Statistics" aria-label="Open statistics window">📊</button>
-            <button type="button" class={"dock-icon #{window_active?(@open_windows, "agents")}"} phx-click="toggle_window" phx-value-window="agents" title="Agent tree" aria-label="Open agent tree window">🌳</button>
-          </div>
-          <button
-            type="button"
-            id="reload-status"
-            class={"reload-pill " <> window_active?(@open_windows, "reload")}
-            phx-click="toggle_window"
-            phx-value-window="reload"
-            aria-label="Open recent files window"
-          >
-            <%= reload_pill_text(@reload_status) %>
-          </button>
-          <%= if @diagnostics != [] and not @diagnostics_open? do %>
-            <button
-              type="button"
-              id="diagnostics-badge"
-              class="diagnostic-pill"
-              phx-click="open_diagnostics"
-              aria-label="Open diagnostics panel"
-            >
-              ⚠ <%= length(@diagnostics) %> diagnostic<%= if length(@diagnostics) != 1, do: "s", else: "" %>
-            </button>
+    <main id="muse-shell" class="app-shell" phx-hook="KeyboardShortcuts">
+      <div id="clipboard-handler" phx-hook="ClipboardHandler" style="display:none" aria-hidden="true"></div>
+      <.app_header tabs={@tabs} active_tab={@active_tab} />
+      <.status_bar state={@state} reload_status={@reload_status} workspace={@workspace} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} />
+      <.diagnostics_popup diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
+      <div class="console-layout">
+        <main class="console-main">
+          <%= case @active_tab do %>
+            <% "events" -> %>
+              <.events_tab events={@state.events} filter={@event_filter} search={@event_search} expanded_id={@expanded_event_id} />
+            <% "logs" -> %>
+              <.logs_tab logs={@logs} filter={@log_filter} search={@log_search} expanded_id={@expanded_log_id} />
+            <% "files" -> %>
+              <.files_tab reload_status={@reload_status} />
+            <% "agents" -> %>
+              <.agents_tab agent_snapshot={@agent_snapshot} agent_runtime={@agent_runtime} />
+            <% "stats" -> %>
+              <.stats_tab beam_stats={@beam_stats} />
+            <% "settings" -> %>
+              <.settings_tab workspace={@workspace} reload_status={@reload_status} />
           <% end %>
-          <div id="workspace" class="workspace-chip" title={@workspace}>
-            <span class="workspace-label">Workspace</span>
-            <span class="workspace-path"><%= @workspace %></span>
-          </div>
-        </div>
-      </header>
-
-      <%= if @diagnostics != [] and @diagnostics_open? do %>
-        <aside id="diagnostics-popup" class="diagnostics-popup" role="region" aria-labelledby="diagnostics-title" aria-live="polite">
-          <div class="diagnostic-title-bar">
-            <span id="diagnostics-title" class="diagnostic-title">Backend diagnostics</span>
-            <button type="button" class="diagnostics-collapse-btn" phx-click="collapse_diagnostics" title="Minimize" aria-label="Minimize diagnostics panel">
-              ✕
-            </button>
-          </div>
-          <%= for diagnostic <- Enum.take(@diagnostics, 5) do %>
-            <article class={["diagnostic-notice", Atom.to_string(diagnostic.level)]}>
-              <div class="diagnostic-header">
-                <span class="diagnostic-level"><%= diagnostic.level |> Atom.to_string() |> String.upcase() %></span>
-                <time class="diagnostic-timestamp" datetime={DateTime.to_iso8601(diagnostic.timestamp)}>
-                  <%= diagnostic_timestamp(diagnostic.timestamp) %>
-                </time>
-              </div>
-              <p class="diagnostic-message"><%= diagnostic.message %></p>
-              <div class="diagnostic-actions">
-                <%= case Map.get(@diagnostic_issue_statuses, diagnostic.id) do %>
-                  <% nil -> %>
-                    <button
-                      type="button"
-                      class="diagnostic-action-btn"
-                      phx-click="queue_diagnostic_fix"
-                      phx-value-diagnostic_id={Integer.to_string(diagnostic.id)}
-                    >
-                      Add to next agent turn
-                    </button>
-                  <% :queued -> %>
-                    <button type="button" class="diagnostic-queued" disabled>Queued for next agent turn</button>
-                  <% :in_progress -> %>
-                    <button type="button" class="diagnostic-queued" disabled>In progress</button>
-                  <% :fixed -> %>
-                    <button type="button" class="diagnostic-queued" disabled>Already fixed</button>
-                  <% :failed -> %>
-                    <button type="button" class="diagnostic-queued" disabled>Self-healing failed</button>
-                  <% :ignored -> %>
-                    <button type="button" class="diagnostic-queued" disabled>Ignored</button>
-                <% end %>
-              </div>
-            </article>
-          <% end %>
-          <%= if length(@diagnostics) > 5 do %>
-            <p class="diagnostics-more">+<%= length(@diagnostics) - 5 %> more backend diagnostics</p>
-          <% end %>
-          <%= if @self_healing_issues != [] do %>
-            <div class="self-healing-summary">
-              <span class="self-healing-summary-title">Self-healing queue: <%= length(@self_healing_issues) %> issue<%= if length(@self_healing_issues) != 1, do: "s", else: "" %></span>
-            </div>
-          <% end %>
-        </aside>
-      <% end %>
-
-      <%= if MapSet.member?(@open_windows, "events") do %>
-        <div id="window-events" class={"managed-window " <> window_focused?(@active_window, "events")} phx-hook="DraggableWindow">
-          <div class="window-title-bar">
-            <span class="window-title">Events</span>
-            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="events" aria-label="Close events window">✕</button>
-          </div>
-          <div class="window-body">
-            <%= for event <- Enum.reverse(@state.events) |> Enum.take(20) do %>
-              <div class={event_row_class(event)}>
-                <span class="event-source"><%= event.source %></span>
-                <span class={event_badge_class(event)}><%= event.type %></span>
-                <span class="event-meta"><%= event_meta(event) %></span>
-              </div>
-            <% end %>
-            <%= if @state.events == [] do %>
-              <p class="agent-placeholder">No events yet</p>
-            <% end %>
-          </div>
-        </div>
-      <% end %>
-
-      <%= if MapSet.member?(@open_windows, "reload") do %>
-        <div id="window-reload" class={"managed-window " <> window_focused?(@active_window, "reload")} phx-hook="DraggableWindow">
-          <div class="window-title-bar">
-            <span class="window-title">Recent files</span>
-            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="reload" aria-label="Close recent files window">✕</button>
-          </div>
-          <div class="window-body">
-            <%= if @reload_status[:status] == :unavailable do %>
-              <p class="agent-placeholder">Reload unavailable</p>
-            <% else %>
-              <div class="stat-row">
-                <span class="stat-label">Generation</span>
-                <span class="stat-value"><%= @reload_status[:generation] %></span>
-              </div>
-              <%= if @reload_status[:last_error] do %>
-                <div class="stat-row">
-                  <span class="stat-label">Last error</span>
-                  <span class="stat-value"><%= @reload_status[:last_error] %></span>
-                </div>
-              <% end %>
-              <%= for file <- (@reload_status[:recent_files] || []) do %>
-                <div class="file-entry">
-                  <div class="file-path"><%= file[:basename] %></div>
-                  <div class="file-meta">
-                    <span><%= file[:modified_count] %> reload<%= if file[:modified_count] != 1, do: "s", else: "" %></span>
-                    <span>+<%= file[:lines_added] %> lines</span>
-                  </div>
-                </div>
-              <% end %>
-              <%= if (@reload_status[:recent_files] || []) == [] do %>
-                <p class="agent-placeholder">No recent file changes</p>
-              <% end %>
-            <% end %>
-          </div>
-        </div>
-      <% end %>
-
-      <%= if MapSet.member?(@open_windows, "universal-agent") do %>
-        <div id="window-universal-agent" class={"managed-window " <> window_focused?(@active_window, "universal-agent")} phx-hook="DraggableWindow">
-          <div class="window-title-bar">
-            <span class="window-title">Universal agent</span>
-            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="universal-agent" aria-label="Close universal agent window">✕</button>
-          </div>
-          <div class="window-body">
-            <p class="agent-placeholder">No universal agent runtime connected</p>
-          </div>
-        </div>
-      <% end %>
-
-      <%= if MapSet.member?(@open_windows, "settings") do %>
-        <div id="window-settings" class={"managed-window " <> window_focused?(@active_window, "settings")} phx-hook="DraggableWindow">
-          <div class="window-title-bar">
-            <span class="window-title">Settings</span>
-            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="settings" aria-label="Close settings window">✕</button>
-          </div>
-          <div class="window-body">
-            <div class="settings-row">
-              <span class="settings-label">Theme</span>
-              <span class="settings-value">Dark</span>
-            </div>
-            <div class="settings-row">
-              <span class="settings-label">Workspace</span>
-              <span class="settings-value"><%= @workspace %></span>
-            </div>
-            <div class="settings-row">
-              <span class="settings-label">Watch mode</span>
-              <span class="settings-value"><%= if @reload_status[:status] == :unavailable, do: "Off", else: "On" %></span>
-            </div>
-          </div>
-        </div>
-      <% end %>
-
-      <%= if MapSet.member?(@open_windows, "statistics") do %>
-        <div id="window-statistics" class={"managed-window " <> window_focused?(@active_window, "statistics")} phx-hook="DraggableWindow">
-          <div class="window-title-bar">
-            <span class="window-title">Statistics</span>
-            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="statistics" aria-label="Close statistics window">✕</button>
-          </div>
-          <div class="window-body">
-            <div class="stat-section-title">Memory</div>
-            <div class="stat-row">
-              <span class="stat-label">Total</span>
-              <span class="stat-value"><%= format_bytes(@beam_stats.total_memory) %></span>
-            </div>
-            <%= for {key, val} <- (Map.get(@beam_stats, :memory, %{}) |> Enum.sort()) do %>
-              <div class="stat-row">
-                <span class="stat-label"><%= format_mem_key(key) %></span>
-                <span class="stat-value"><%= format_bytes(val) %></span>
-              </div>
-            <% end %>
-            <div class="stat-section-title">Processes</div>
-            <div class="stat-row">
-              <span class="stat-label">Count</span>
-              <span class="stat-value"><%= @beam_stats.process_count %></span>
-            </div>
-            <div class="stat-row">
-              <span class="stat-label">Limit</span>
-              <span class="stat-value"><%= @beam_stats.process_limit %></span>
-            </div>
-            <div class="stat-section-title">Ports</div>
-            <div class="stat-row">
-              <span class="stat-label">Count / Limit</span>
-              <span class="stat-value"><%= @beam_stats.port_count %> / <%= @beam_stats.port_limit %></span>
-            </div>
-            <div class="stat-section-title">Schedulers</div>
-            <div class="stat-row">
-              <span class="stat-label">Total / Online</span>
-              <span class="stat-value"><%= @beam_stats.scheduler_count %> / <%= @beam_stats.schedulers_online %></span>
-            </div>
-            <div class="stat-section-title">Runtime</div>
-            <div class="stat-row">
-              <span class="stat-label">OTP Release</span>
-              <span class="stat-value"><%= @beam_stats.otp_release %></span>
-            </div>
-            <button type="button" class="secondary-button" phx-click="refresh_stats" style="margin-top:8px;width:100%">Refresh</button>
-          </div>
-        </div>
-      <% end %>
-
-      <%= if MapSet.member?(@open_windows, "agents") do %>
-        <div id="window-agents" class={"managed-window " <> window_focused?(@active_window, "agents")} phx-hook="DraggableWindow">
-          <div class="window-title-bar">
-            <span class="window-title">Agent tree</span>
-            <button type="button" class="window-close-btn" phx-click="close_window" phx-value-window="agents" aria-label="Close agent tree window">✕</button>
-          </div>
-          <div class="window-body">
-            <%= if @agent_snapshot == :unavailable do %>
-              <p class="agent-placeholder">Agent registry unavailable</p>
-            <% else %>
-              <%= for agent <- sorted_agents(@agent_snapshot.agents) do %>
-                <div class={"agent-entry #{agent_indent_class(agent, @agent_snapshot.agents)}"}>
-                  <div class="agent-header-row">
-                    <span class="agent-name"><%= agent.name %></span>
-                    <span class={"agent-status #{agent.status}"}><%= agent.status %></span>
-                  </div>
-                  <%= if agent.task do %>
-                    <div class="agent-detail">✦ <%= agent.task %></div>
-                  <% end %>
-                  <%= if agent.current_tool do %>
-                    <div class="agent-detail">🔧 <%= agent.current_tool %></div>
-                  <% end %>
-                  <%= if agent.current_file do %>
-                    <div class="agent-detail">📂 <%= agent.current_file %></div>
-                  <% end %>
-                  <%= if agent.progress != nil do %>
-                    <div class="agent-progress-row">
-                      <div class="agent-progress-bar">
-                        <div class="agent-progress-fill" style={"width:#{round(agent.progress * 100)}%"}></div>
-                      </div>
-                      <span class="agent-progress-label"><%= round(agent.progress * 100) %>%</span>
-                    </div>
-                  <% end %>
-                </div>
-              <% end %>
-              <%= if @agent_snapshot.agents == [] do %>
-                <p class="agent-placeholder">No agents registered</p>
-              <% end %>
-            <% end %>
-          </div>
-        </div>
-      <% end %>
-
-      <div class="dashboard-grid">
-        <section id="events" class="panel events-panel">
-          <div class="panel-header">
-            <h2 class="panel-title">Events</h2>
-            <p class="panel-description"><%= length(@state.events) %> event<%= if length(@state.events) != 1, do: "s", else: "" %> received · newest first</p>
-          </div>
-          <div class="panel-body event-log">
-            <%= for event <- Enum.reverse(@state.events) do %>
-              <article class={event_row_class(event)}>
-                <div class="event-main">
-                  <span class="event-source"><%= event.source %></span>
-                  <span class={event_badge_class(event)}><%= event.type %></span>
-                  <span class="event-meta"><%= event_meta(event) %></span>
-                </div>
-                <div class="event-message"><%= event_display(event) %></div>
-              </article>
-            <% end %>
-          </div>
-        </section>
-
-        <aside class="side-panel">
-                    <%= if Mix.env() != :prod do %>
-            <section id="dev-tools" class="panel dev-tools-panel">
-              <div class="panel-header">
-                <h2 class="panel-title">Dev tools</h2>
-              </div>
-              <div class="panel-body">
-                <button type="button" class="secondary-button" phx-click="simulate_backend_error">Simulate backend error</button>
-              </div>
-            </section>
-          <% end %>
-        </aside>
+        </main>
+        <.dev_sidebar reload_status={@reload_status} command_history={@command_history} />
       </div>
-
-      <section id="input-form" class="panel command-panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Command</h2>
-          <p class="panel-description">Send a message or command to Muse.</p>
+      <.command_console input={@input} command_history={@command_history} />
+      <div id="command-palette" class="command-palette" role="dialog" aria-label="Command palette" aria-modal="true" phx-hook="CommandPalette" data-palette-actions={Jason.encode!(palette_actions())} style="display:none">
+        <div class="command-palette-backdrop" data-action="close"></div>
+        <div class="command-palette-inner">
+          <input
+            type="text"
+            class="command-palette-input"
+            placeholder="Type a command or action…"
+            aria-label="Search commands and actions"
+          />
+          <ul id="command-palette-list" class="command-palette-list" role="listbox" aria-label="Suggestions" phx-update="ignore"></ul>
+          <div class="command-palette-footer">
+            <span class="palette-hint">↑↓ Navigate · ↵ Select · Esc Close</span>
+            <span class="palette-shortcut">Ctrl+K</span>
+          </div>
         </div>
-        <div class="panel-body">
-          <form phx-submit="submit" class="command-bar">
-            <input type="text" name="text" value={@input} class="command-input" placeholder="Enter command or message..." />
-            <button type="submit" class="primary-button">Send</button>
-          </form>
-        </div>
-      </section>
+      </div>
+      <.toast_container toasts={@toasts} />
     </main>
     """
   end
 
-  # -- Private helpers ----------------------------------------------------------
+  # -- Private helpers (remaining in HomeLive) --------------------------------
 
-  defp window_active?(open_windows, name) do
-    if MapSet.member?(open_windows, name), do: "active", else: ""
+  defp make_history_entry(input, output, type) do
+    %{
+      id: System.unique_integer([:positive]),
+      input: input,
+      output: output,
+      type: type,
+      timestamp: format_timestamp(DateTime.utc_now())
+    }
   end
 
-  defp window_focused?(active_window, name) do
-    if active_window == name, do: "active-window", else: ""
-  end
+  defp add_toast(socket, message, type) do
+    id = System.unique_integer([:positive])
+    toast = %{id: id, message: message, type: type}
 
-  defp reload_pill_text(%{status: :unavailable}), do: "Reload unavailable"
-
-  defp reload_pill_text(%{recent_file: %{basename: basename, lines_added: lines}})
-       when is_binary(basename) do
-    "#{basename} · +#{lines} lines"
-  end
-
-  defp reload_pill_text(%{generation: gen}) when is_integer(gen) and gen > 0 do
-    "Reload gen #{gen}"
-  end
-
-  defp reload_pill_text(_), do: "Watching files"
-
-  defp sorted_agents(agents) do
-    # Simple parent/child ordering: parent agents first, children indented under parent
-    # Build a lookup for parent_id -> children, then flatten
-    by_id = Map.new(agents, &{&1.id, &1})
-    roots = Enum.filter(agents, &(is_nil(&1.parent_id) or not Map.has_key?(by_id, &1.parent_id)))
-
-    Enum.flat_map(roots, fn root ->
-      children = Enum.filter(agents, &(&1.parent_id == root.id))
-      [root | children]
-    end)
-  end
-
-  defp agent_indent_class(agent, all_agents) do
-    if agent.parent_id != nil and Enum.any?(all_agents, &(&1.id == agent.parent_id)) do
-      "agent-child"
-    else
-      ""
+    if connected?(socket) do
+      Process.send_after(self(), {:dismiss_toast, id}, @toast_timeout_ms)
     end
-  end
 
-  defp format_bytes(bytes) when is_integer(bytes) and bytes >= 0 do
-    cond do
-      bytes >= 1_073_741_824 -> "#{Float.round(bytes / 1_073_741_824, 1)} GB"
-      bytes >= 1_048_576 -> "#{Float.round(bytes / 1_048_576, 1)} MB"
-      bytes >= 1_024 -> "#{Float.round(bytes / 1_024, 1)} KB"
-      true -> "#{bytes} B"
-    end
-  end
-
-  defp format_bytes(_), do: "—"
-
-  defp format_mem_key(key) when is_atom(key) do
-    key |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
-  end
-
-  defp format_mem_key(key), do: to_string(key)
-
-  defp event_display(%Muse.Event{data: %{text: text}}), do: text
-  defp event_display(%Muse.Event{data: %{file: file}}), do: file
-
-  defp event_display(%Muse.Event{data: %{files: files}}) when is_list(files),
-    do: Enum.join(files, ", ")
-
-  defp event_display(%Muse.Event{data: %{issues: issues}}) when is_list(issues),
-    do: "#{length(issues)} issue(s) attached"
-
-  defp event_display(%Muse.Event{data: data}), do: inspect(data)
-
-  defp event_row_class(%Muse.Event{type: type, data: data}) do
-    cond do
-      errorish?(type) or errorish?(data) -> "event-row event-row-error"
-      successish?(type) -> "event-row event-row-success"
-      true -> "event-row"
-    end
-  end
-
-  defp event_badge_class(%Muse.Event{type: type, data: data}) do
-    cond do
-      errorish?(type) or errorish?(data) ->
-        "event-badge event-badge-danger"
-
-      successish?(type) ->
-        "event-badge event-badge-success"
-
-      type in [:user_message, :assistant_message, :queued_issues_attached] ->
-        "event-badge event-badge-accent"
-
-      true ->
-        "event-badge event-badge-neutral"
-    end
-  end
-
-  defp event_meta(%Muse.Event{timestamp: timestamp, data: data}) do
-    parts = []
-
-    parts =
-      case timestamp do
-        %DateTime{} -> [diagnostic_timestamp(timestamp) | parts]
-        _ -> parts
-      end
-
-    parts =
-      if is_map(data) and Map.has_key?(data, :generation) do
-        ["gen #{data[:generation]}" | parts]
-      else
-        parts
-      end
-
-    parts =
-      if is_map(data) and is_list(data[:files]) do
-        n = length(data[:files])
-        label = if n == 1, do: "file", else: "files"
-        ["#{n} #{label}" | parts]
-      else
-        parts
-      end
-
-    parts
-    |> Enum.reverse()
-    |> Enum.join(" · ")
-  end
-
-  defp errorish?(term) when is_atom(term) do
-    term in [:error, :failed, :failure, :critical, :reload_failed]
-  end
-
-  defp errorish?(%{type: type}), do: errorish?(type)
-
-  defp errorish?(term) when is_binary(term) do
-    String.downcase(term) in ["error", "failed", "failure", "critical"]
-  end
-
-  defp errorish?(_), do: false
-
-  defp successish?(term) when is_atom(term) do
-    term in [:success, :reloaded, :fixed, :info, :reload_success, :rollback_success]
-  end
-
-  defp successish?(term) when is_binary(term) do
-    down = String.downcase(term)
-    down in ["success", "reloaded", "fixed", "info", "reload_success", "rollback_success"]
-  end
-
-  defp successish?(_), do: false
-
-  defp diagnostic_timestamp(%DateTime{} = timestamp) do
-    time =
-      timestamp
-      |> DateTime.to_time()
-      |> Time.truncate(:second)
-      |> Time.to_string()
-
-    time <> " UTC"
+    assign(socket, toasts: socket.assigns.toasts ++ [toast])
   end
 
   defp schedule_collapse(socket) do
@@ -801,152 +816,5 @@ defmodule MuseWeb.HomeLive do
 
   defp compute_issue_statuses(issues) do
     Map.new(issues, fn issue -> {issue.diagnostic_id, issue.status} end)
-  end
-
-  defp safe_diagnostics do
-    case Process.whereis(Muse.Diagnostics) do
-      nil ->
-        []
-
-      pid ->
-        if Process.alive?(pid) do
-          Muse.Diagnostics.list()
-        else
-          []
-        end
-    end
-  rescue
-    _ -> []
-  catch
-    :exit, _ -> []
-  end
-
-  defp safe_subscribe_diagnostics do
-    _ = Muse.Diagnostics.subscribe()
-    :ok
-  rescue
-    _ -> :ok
-  catch
-    :exit, _ -> :ok
-  end
-
-  defp safe_self_healing_issues do
-    case Process.whereis(Muse.SelfHealingQueue) do
-      nil ->
-        []
-
-      pid ->
-        if Process.alive?(pid) do
-          Muse.SelfHealingQueue.list()
-        else
-          []
-        end
-    end
-  rescue
-    _ -> []
-  catch
-    :exit, _ -> []
-  end
-
-  defp safe_subscribe_self_healing do
-    _ = Muse.SelfHealingQueue.subscribe()
-    :ok
-  rescue
-    _ -> :ok
-  catch
-    :exit, _ -> :ok
-  end
-
-  defp safe_subscribe_agent_registry do
-    _ = Muse.AgentRegistry.subscribe()
-    :ok
-  rescue
-    _ -> :ok
-  catch
-    :exit, _ -> :ok
-  end
-
-  defp safe_agent_snapshot do
-    case Process.whereis(Muse.AgentRegistry) do
-      nil ->
-        :unavailable
-
-      pid ->
-        if Process.alive?(pid) do
-          Muse.AgentRegistry.snapshot()
-        else
-          :unavailable
-        end
-    end
-  rescue
-    _ -> :unavailable
-  catch
-    :exit, _ -> :unavailable
-  end
-
-  defp safe_queue_diagnostic(diagnostic) do
-    case Process.whereis(Muse.SelfHealingQueue) do
-      nil ->
-        {:error, :queue_unavailable}
-
-      pid ->
-        if Process.alive?(pid) do
-          case Muse.SelfHealingQueue.add_diagnostic(diagnostic) do
-            %Muse.SelfHealingIssue{} = issue -> {:ok, issue}
-            {:error, :duplicate} -> {:error, :duplicate}
-            {:error, reason} -> {:error, reason}
-          end
-        else
-          {:error, :queue_unavailable}
-        end
-    end
-  rescue
-    e -> {:error, Exception.message(e)}
-  catch
-    :exit, _ -> {:error, :queue_unavailable}
-  end
-
-  defp safe_workspace_root do
-    case Process.whereis(Muse.Workspace) do
-      nil ->
-        "unknown"
-
-      pid ->
-        if Process.alive?(pid), do: Muse.Workspace.root(), else: "unknown"
-    end
-  end
-
-  defp safe_reload_status do
-    case Process.whereis(Muse.DevReloader) do
-      nil ->
-        %{status: :unavailable}
-
-      pid ->
-        if Process.alive?(pid) do
-          Muse.DevReloader.status()
-        else
-          %{status: :unavailable}
-        end
-    end
-  end
-
-  defp safe_emit_simulated_error do
-    case Process.whereis(Muse.Diagnostics) do
-      nil ->
-        :ok
-
-      pid ->
-        if Process.alive?(pid) do
-          Muse.Diagnostics.emit(
-            :error,
-            "Simulated backend error for popup testing",
-            %{source: :web, simulated?: true}
-          )
-        end
-    end
-  rescue
-    _ -> :ok
-  catch
-    :exit, _ -> :ok
   end
 end

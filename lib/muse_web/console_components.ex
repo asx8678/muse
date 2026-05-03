@@ -1,0 +1,869 @@
+defmodule MuseWeb.ConsoleComponents do
+  @moduledoc """
+  LiveView function components for the Muse console tabs and panels.
+
+  These components render UI fragments and delegate event handling
+  back to the parent LiveView via `phx-click` strings. All IDs,
+  classes, and ARIA attributes are preserved for test compatibility.
+  """
+
+  use Phoenix.Component
+
+  import MuseWeb.EventFormatter,
+    only: [
+      filtered_events: 3,
+      event_row_class: 1,
+      event_timestamp: 1,
+      event_severity: 1,
+      event_badge_class: 1,
+      event_meta: 1,
+      event_display: 1,
+      format_event_json: 1,
+      diagnostic_timestamp: 1,
+      format_timestamp: 1
+    ]
+
+  import MuseWeb.LogFormatter,
+    only: [
+      filtered_logs: 3,
+      log_level_display: 1,
+      log_badge_class: 1,
+      log_row_class: 1,
+      log_timestamp: 1,
+      format_log_json: 1
+    ]
+
+  # -- Events tab -------------------------------------------------------------
+
+  attr(:events, :list, required: true)
+  attr(:filter, :string, required: true)
+  attr(:search, :string, required: true)
+  attr(:expanded_id, :integer, required: true)
+
+  def events_tab(assigns) do
+    ~H"""
+    <section class="panel events-panel" role="tabpanel" aria-label="Events">
+      <div class="panel-header">
+        <div class="events-header-row">
+          <h2 class="panel-title">Events</h2>
+          <div class="event-filters" role="radiogroup" aria-label="Event filter">
+            <%= for f <- ~w(all errors warnings info) do %>
+              <button
+                type="button"
+                role="radio"
+                class={"event-filter-btn #{if @filter == f, do: "event-filter-active", else: ""}"}
+                aria-checked={if @filter == f, do: "true", else: "false"}
+                phx-click="set_event_filter"
+                phx-value-filter={f}
+              >
+                <%= String.capitalize(f) %>
+              </button>
+            <% end %>
+          </div>
+          <button type="button" class="secondary-button event-clear-btn" phx-click="clear_events">Clear events</button>
+        </div>
+        <div class="events-search-row">
+          <form phx-change="set_event_search" class="event-search-form">
+            <input
+              type="text"
+              name="query"
+              class="event-search-input"
+              placeholder="Search events…"
+              value={@search}
+              aria-label="Search events"
+            />
+          </form>
+          <%= if @search != "" do %>
+            <button type="button" class="event-search-clear" phx-click="clear_event_search" aria-label="Clear search">✕</button>
+          <% end %>
+          <%= if @filter != "all" or @search != "" do %>
+            <button type="button" class="secondary-button event-clear-filters-btn" phx-click="clear_event_filters">Clear filters</button>
+          <% end %>
+          <button type="button" class="secondary-button event-export-btn" phx-click="export_events" title="Export filtered events as JSON">Export</button>
+        </div>
+        <p class="panel-description">
+          Muse watches your backend workspace, tracks events, manages agents, and lets you send runtime commands.
+          <%= length(@events) %> event<%= if length(@events) != 1, do: "s", else: "" %> received · newest first
+          <%= if @filter != "all" or @search != "" do %>
+            · <%= length(filtered_events(Enum.reverse(@events), @filter, @search)) %> matching
+          <% end %>
+        </p>
+      </div>
+      <div class="panel-body event-log">
+        <%= if @events == [] do %>
+          <div class="empty-state">
+            <p class="empty-state-title">No events yet</p>
+            <p class="empty-state-description">
+              Events are created by backend activity, file changes, agent actions, and commands you send.
+            </p>
+            <div class="empty-state-actions">
+              <button type="button" class="secondary-button" phx-click="simulate_event">Simulate event</button>
+              <button type="button" class="secondary-button" disabled>View event schema</button>
+            </div>
+          </div>
+        <% else %>
+          <% filtered = filtered_events(Enum.reverse(@events), @filter, @search) %>
+          <%= if filtered == [] do %>
+            <div class="empty-state">
+              <p class="empty-state-title">No matching events</p>
+              <p class="empty-state-description">
+                No events match your current filter or search. Try adjusting your search or clearing filters.
+              </p>
+              <div class="empty-state-actions">
+                <button type="button" class="secondary-button" phx-click="clear_event_filters">Clear filters/search</button>
+              </div>
+            </div>
+          <% else %>
+            <%= for event <- filtered do %>
+              <article class={event_row_class(event)}>
+                <button
+                  type="button"
+                  class="event-main event-expand-btn"
+                  phx-click="toggle_event_detail"
+                  phx-value-id={event.id}
+                  aria-expanded={if @expanded_id == event.id, do: "true", else: "false"}
+                  aria-controls={"event-detail-#{event.id}"}
+                >
+                  <span class="event-timestamp"><%= event_timestamp(event.timestamp) %></span>
+                  <span class={"event-severity event-severity-#{event_severity(event)}"}><%= event_severity(event) %></span>
+                  <span class="event-source"><%= event.source %></span>
+                  <span class={event_badge_class(event)}><%= event.type %></span>
+                  <span class="event-meta"><%= event_meta(event) %></span>
+                </button>
+                <div class="event-message"><%= event_display(event) %></div>
+                <div class="event-row-actions">
+                  <button
+                    type="button"
+                    class="event-copy-json-btn"
+                    phx-click="copy_event_json"
+                    phx-value-id={event.id}
+                    aria-label="Copy event JSON"
+                    title="Copy JSON to clipboard"
+                  >📋 Copy JSON</button>
+                </div>
+                <%= if @expanded_id == event.id do %>
+                  <div class="event-detail" id={"event-detail-#{event.id}"} role="region">
+                    <pre class="event-detail-json"><%= format_event_json(event) %></pre>
+                  </div>
+                <% end %>
+              </article>
+            <% end %>
+          <% end %>
+        <% end %>
+      </div>
+    </section>
+    """
+  end
+
+  # -- Logs tab --------------------------------------------------------------
+
+  attr(:logs, :list, required: true)
+  attr(:filter, :string, required: true)
+  attr(:search, :string, required: true)
+  attr(:expanded_id, :integer, required: true)
+
+  def logs_tab(assigns) do
+    ~H"""
+    <section class="panel logs-panel" role="tabpanel" aria-label="Logs">
+      <div class="panel-header">
+        <div class="events-header-row">
+          <h2 class="panel-title">Logs</h2>
+          <div class="event-filters" role="radiogroup" aria-label="Log filter">
+            <%= for f <- ~w(all errors warnings info debug) do %>
+              <button
+                type="button"
+                role="radio"
+                class={"event-filter-btn #{if @filter == f, do: "event-filter-active", else: ""}"}
+                aria-checked={if @filter == f, do: "true", else: "false"}
+                phx-click="set_log_filter"
+                phx-value-filter={f}
+              >
+                <%= String.capitalize(f) %>
+              </button>
+            <% end %>
+          </div>
+          <button type="button" class="secondary-button event-clear-btn" phx-click="clear_logs">Clear logs</button>
+        </div>
+        <div class="events-search-row">
+          <form phx-change="set_log_search" class="event-search-form">
+            <input
+              type="text"
+              name="query"
+              class="event-search-input"
+              placeholder="Search logs…"
+              value={@search}
+              aria-label="Search logs"
+            />
+          </form>
+          <%= if @search != "" do %>
+            <button type="button" class="event-search-clear" phx-click="clear_log_search" aria-label="Clear log search">✕</button>
+          <% end %>
+          <%= if @filter != "all" or @search != "" do %>
+            <button type="button" class="secondary-button event-clear-filters-btn" phx-click="clear_log_filters">Clear filters</button>
+          <% end %>
+          <button type="button" class="secondary-button event-export-btn" phx-click="export_logs" title="Export filtered logs as JSON">Export</button>
+        </div>
+        <p class="panel-description">
+          Structured log entries from the backend and runtime.
+          <%= length(@logs) %> log<%= if length(@logs) != 1, do: "s", else: "" %> recorded · newest first
+          <%= if @filter != "all" or @search != "" do %>
+            · <%= length(filtered_logs(@logs, @filter, @search)) %> matching
+          <% end %>
+        </p>
+      </div>
+      <div class="panel-body event-log">
+        <%= if @logs == [] do %>
+          <div class="empty-state">
+            <p class="empty-state-title">No logs yet</p>
+            <p class="empty-state-description">
+              Logs from the backend/runtime will appear here.
+            </p>
+            <div class="empty-state-actions">
+              <%= if Mix.env() != :prod do %>
+                <button type="button" class="secondary-button" phx-click="simulate_log">Simulate log</button>
+              <% end %>
+            </div>
+          </div>
+        <% else %>
+          <% filtered = filtered_logs(@logs, @filter, @search) %>
+          <%= if filtered == [] do %>
+            <div class="empty-state">
+              <p class="empty-state-title">No matching logs</p>
+              <p class="empty-state-description">
+                No logs match your current filter or search. Try adjusting your search or clearing filters.
+              </p>
+              <div class="empty-state-actions">
+                <button type="button" class="secondary-button" phx-click="clear_log_filters">Clear filters/search</button>
+              </div>
+            </div>
+          <% else %>
+            <%= for log <- filtered do %>
+              <article class={log_row_class(log.level)}>
+                <button
+                  type="button"
+                  class="event-main event-expand-btn"
+                  phx-click="toggle_log_detail"
+                  phx-value-id={log.id}
+                  aria-expanded={if @expanded_id == log.id, do: "true", else: "false"}
+                  aria-controls={"log-detail-#{log.id}"}
+                >
+                  <span class="event-timestamp"><%= log_timestamp(log.timestamp) %></span>
+                  <span class={log_badge_class(log.level)}><%= log_level_display(log.level) %></span>
+                  <span class="event-source"><%= log.source %></span>
+                  <span class="event-message-text"><%= log.message %></span>
+                </button>
+                <div class="event-row-actions">
+                  <button
+                    type="button"
+                    class="event-copy-json-btn"
+                    phx-click="copy_log_json"
+                    phx-value-id={log.id}
+                    aria-label="Copy log JSON"
+                    title="Copy JSON to clipboard"
+                  >📋 Copy JSON</button>
+                </div>
+                <%= if @expanded_id == log.id do %>
+                  <div class="event-detail" id={"log-detail-#{log.id}"} role="region">
+                    <pre class="event-detail-json"><%= format_log_json(log) %></pre>
+                  </div>
+                <% end %>
+              </article>
+            <% end %>
+          <% end %>
+        <% end %>
+      </div>
+    </section>
+    """
+  end
+
+  # -- Files tab --------------------------------------------------------------
+
+  attr(:reload_status, :map, required: true)
+
+  def files_tab(assigns) do
+    ~H"""
+    <section class="panel files-panel" role="tabpanel" aria-label="Files">
+      <div class="panel-header">
+        <h2 class="panel-title">Files</h2>
+        <p class="panel-description">File watcher and recent changes</p>
+      </div>
+      <div class="panel-body">
+        <%= if @reload_status[:status] == :unavailable do %>
+          <div class="empty-state">
+            <p class="empty-state-title">File watcher unavailable</p>
+            <p class="empty-state-description">
+              The file watcher is not running. Start Muse with file watching enabled to track source changes.
+            </p>
+            <div class="empty-state-actions">
+              <button type="button" class="secondary-button" disabled>Rescan</button>
+              <button type="button" class="secondary-button" disabled>Pause</button>
+            </div>
+          </div>
+        <% else %>
+          <div class="stat-row">
+            <span class="stat-label">Generation</span>
+            <span class="stat-value"><%= @reload_status[:generation] %></span>
+          </div>
+          <%= if @reload_status[:last_error] do %>
+            <div class="stat-row">
+              <span class="stat-label">Last error</span>
+              <span class="stat-value"><%= @reload_status[:last_error] %></span>
+            </div>
+          <% end %>
+          <%= for file <- (@reload_status[:recent_files] || []) do %>
+            <div class="file-entry">
+              <div class="file-path"><%= file[:basename] %></div>
+              <div class="file-meta">
+                <span><%= file[:modified_count] %> reload<%= if file[:modified_count] != 1, do: "s", else: "" %></span>
+                <span>+<%= file[:lines_added] %> lines</span>
+              </div>
+            </div>
+          <% end %>
+          <%= if (@reload_status[:recent_files] || []) == [] do %>
+            <div class="empty-state">
+              <p class="empty-state-title">No recent file changes</p>
+              <p class="empty-state-description">The watcher is active and monitoring your workspace for changes.</p>
+              <div class="empty-state-actions">
+                <button type="button" class="secondary-button" phx-click="force_reload_watcher">Rescan</button>
+              </div>
+            </div>
+          <% end %>
+        <% end %>
+      </div>
+    </section>
+    """
+  end
+
+  # -- Agents tab --------------------------------------------------------------
+
+  attr(:agent_snapshot, :any, required: true)
+  attr(:agent_runtime, :map, default: nil)
+
+  def agents_tab(assigns) do
+    ~H"""
+    <section class="panel agents-panel" role="tabpanel" aria-label="Agents">
+      <div class="panel-header">
+        <h2 class="panel-title">Agents</h2>
+        <p class="panel-description">Agent tree and runtime status</p>
+      </div>
+      <div class="panel-body">
+        <% runtime = @agent_runtime || %{status: :disconnected, endpoint: "", last_error: nil, last_attempt_at: nil, health: :inactive} %>
+        <div class="agent-runtime-card" id="agent-runtime-card">
+          <div class="agent-runtime-header">
+            <h3 class="agent-runtime-title">Universal agent runtime</h3>
+            <span class={"agent-runtime-status agent-runtime-status-#{runtime.status}"}>
+              <span class={"status-dot #{runtime_status_dot(runtime.status)}"}></span>
+              <%= runtime_status_label(runtime.status) %>
+            </span>
+          </div>
+          <div class="agent-runtime-details">
+            <form phx-change="set_agent_runtime_endpoint" class="agent-runtime-endpoint-form">
+              <label class="stat-label" for="agent-runtime-endpoint-input">Endpoint</label>
+              <input
+                type="text"
+                id="agent-runtime-endpoint-input"
+                name="endpoint"
+                class="agent-runtime-endpoint-input"
+                value={runtime[:endpoint] || ""}
+                placeholder="ws://localhost:4000"
+                aria-label="Agent runtime endpoint"
+              />
+            </form>
+            <%= if runtime[:last_attempt_at] do %>
+              <div class="stat-row">
+                <span class="stat-label">Last attempt</span>
+                <span class="stat-value"><%= format_timestamp(runtime.last_attempt_at) %></span>
+              </div>
+            <% end %>
+            <%= if runtime[:last_error] do %>
+              <div class="stat-row">
+                <span class="stat-label">Error</span>
+                <span class="stat-value stat-value-error"><%= runtime.last_error %></span>
+              </div>
+            <% end %>
+          </div>
+          <div class="agent-runtime-actions">
+            <%= if runtime.status == :disconnected or runtime.status == :error do %>
+              <button type="button" class="secondary-button" phx-click="connect_agent_runtime" title="Connect to agent runtime">Connect</button>
+              <button type="button" class="secondary-button" phx-click="retry_agent_runtime" title="Retry agent runtime connection">Retry</button>
+            <% end %>
+            <%= if runtime.status == :connected or runtime.status == :connecting do %>
+              <button type="button" class="secondary-button" phx-click="disconnect_agent_runtime" title="Disconnect agent runtime">Disconnect</button>
+            <% end %>
+            <button type="button" class="secondary-button" phx-click="switch_tab" phx-value-tab="logs" title="Open logs tab">Open logs</button>
+          </div>
+        </div>
+
+        <%= if @agent_snapshot == :unavailable do %>
+          <div class="empty-state">
+            <p class="empty-state-title">Agent registry unavailable</p>
+            <p class="empty-state-description">
+              The agent registry is not running. Start the Muse agent runtime to register and manage agents.
+            </p>
+            <div class="empty-state-actions">
+              <button type="button" class="secondary-button" phx-click="connect_agent_runtime">Connect runtime</button>
+              <button type="button" class="secondary-button" disabled>View setup instructions</button>
+            </div>
+          </div>
+        <% else %>
+          <%= for agent <- sorted_agents(@agent_snapshot.agents) do %>
+            <div class={"agent-entry #{agent_indent_class(agent, @agent_snapshot.agents)}"}>
+              <div class="agent-header-row">
+                <span class="agent-name"><%= agent.name %></span>
+                <span class={"agent-status #{agent.status}"}><%= agent.status %></span>
+              </div>
+              <%= if agent.task do %>
+                <div class="agent-detail">✦ <%= agent.task %></div>
+              <% end %>
+              <%= if agent.current_tool do %>
+                <div class="agent-detail">🔧 <%= agent.current_tool %></div>
+              <% end %>
+              <%= if agent.current_file do %>
+                <div class="agent-detail">📂 <%= agent.current_file %></div>
+              <% end %>
+              <%= if agent.progress != nil do %>
+                <div class="agent-progress-row">
+                  <div class="agent-progress-bar">
+                    <div class="agent-progress-fill" style={"width:#{round(agent.progress * 100)}%"}></div>
+                  </div>
+                  <span class="agent-progress-label"><%= round(agent.progress * 100) %>%</span>
+                </div>
+              <% end %>
+            </div>
+          <% end %>
+          <%= if @agent_snapshot.agents == [] do %>
+            <div class="empty-state">
+              <p class="empty-state-title">No agents registered</p>
+              <p class="empty-state-description">
+                Start or connect an agent runtime to register agents. Agents handle tasks like self-healing, code review, and more.
+              </p>
+              <div class="empty-state-actions">
+                <button type="button" class="secondary-button" phx-click="connect_agent_runtime">Connect runtime</button>
+                <button type="button" class="secondary-button" disabled>View setup instructions</button>
+              </div>
+            </div>
+          <% end %>
+        <% end %>
+      </div>
+    </section>
+    """
+  end
+
+  # -- Stats tab --------------------------------------------------------------
+
+  attr(:beam_stats, :map, required: true)
+
+  def stats_tab(assigns) do
+    ~H"""
+    <section class="panel stats-panel" role="tabpanel" aria-label="Stats">
+      <div class="panel-header">
+        <h2 class="panel-title">Statistics</h2>
+        <p class="panel-description">BEAM runtime statistics</p>
+      </div>
+      <div class="panel-body">
+        <div class="stat-section-title">Memory</div>
+        <div class="stat-row">
+          <span class="stat-label">Total</span>
+          <span class="stat-value"><%= format_bytes(@beam_stats.total_memory) %></span>
+        </div>
+        <%= for {key, val} <- (Map.get(@beam_stats, :memory, %{}) |> Enum.sort()) do %>
+          <div class="stat-row">
+            <span class="stat-label"><%= format_mem_key(key) %></span>
+            <span class="stat-value"><%= format_bytes(val) %></span>
+          </div>
+        <% end %>
+        <div class="stat-section-title">Processes</div>
+        <div class="stat-row">
+          <span class="stat-label">Count</span>
+          <span class="stat-value"><%= @beam_stats.process_count %></span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Limit</span>
+          <span class="stat-value"><%= @beam_stats.process_limit %></span>
+        </div>
+        <div class="stat-section-title">Ports</div>
+        <div class="stat-row">
+          <span class="stat-label">Count / Limit</span>
+          <span class="stat-value"><%= @beam_stats.port_count %> / <%= @beam_stats.port_limit %></span>
+        </div>
+        <div class="stat-section-title">Schedulers</div>
+        <div class="stat-row">
+          <span class="stat-label">Total / Online</span>
+          <span class="stat-value"><%= @beam_stats.scheduler_count %> / <%= @beam_stats.schedulers_online %></span>
+        </div>
+        <div class="stat-section-title">Runtime</div>
+        <div class="stat-row">
+          <span class="stat-label">OTP Release</span>
+          <span class="stat-value"><%= @beam_stats.otp_release %></span>
+        </div>
+        <button type="button" class="secondary-button" phx-click="refresh_stats" style="margin-top:8px;width:100%">Refresh</button>
+      </div>
+    </section>
+    """
+  end
+
+  # -- Settings tab -----------------------------------------------------------
+
+  attr(:workspace, :string, required: true)
+  attr(:reload_status, :map, required: true)
+
+  def settings_tab(assigns) do
+    ~H"""
+    <section class="panel settings-panel" role="tabpanel" aria-label="Settings">
+      <div class="panel-header">
+        <h2 class="panel-title">Settings</h2>
+      </div>
+      <div class="panel-body">
+        <div class="settings-row">
+          <span class="settings-label">Theme</span>
+          <span class="settings-value">Dark</span>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Workspace</span>
+          <span class="settings-value"><%= @workspace %></span>
+        </div>
+        <div class="settings-row">
+          <span class="settings-label">Watch mode</span>
+          <span class="settings-value"><%= if @reload_status[:status] == :unavailable, do: "Off", else: "On" %></span>
+        </div>
+      </div>
+    </section>
+    """
+  end
+
+  # -- Agent helpers ----------------------------------------------------------
+
+  def sorted_agents(agents) do
+    by_id = Map.new(agents, &{&1.id, &1})
+    roots = Enum.filter(agents, &(is_nil(&1.parent_id) or not Map.has_key?(by_id, &1.parent_id)))
+
+    Enum.flat_map(roots, fn root ->
+      children = Enum.filter(agents, &(&1.parent_id == root.id))
+      [root | children]
+    end)
+  end
+
+  defp agent_indent_class(agent, all_agents) do
+    if agent.parent_id != nil and Enum.any?(all_agents, &(&1.id == agent.parent_id)) do
+      "agent-child"
+    else
+      ""
+    end
+  end
+
+  # -- Formatting helpers -----------------------------------------------------
+
+  def format_bytes(bytes) when is_integer(bytes) and bytes >= 0 do
+    cond do
+      bytes >= 1_073_741_824 -> "#{Float.round(bytes / 1_073_741_824, 1)} GB"
+      bytes >= 1_048_576 -> "#{Float.round(bytes / 1_048_576, 1)} MB"
+      bytes >= 1_024 -> "#{Float.round(bytes / 1_024, 1)} KB"
+      true -> "#{bytes} B"
+    end
+  end
+
+  def format_bytes(_), do: "—"
+
+  def format_mem_key(key) when is_atom(key) do
+    key |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
+  end
+
+  def format_mem_key(key), do: to_string(key)
+
+  # -- Shell-level components --------------------------------------------------
+
+  attr(:tabs, :list, required: true)
+  attr(:active_tab, :string, required: true)
+
+  def app_header(assigns) do
+    ~H"""
+    <header class="app-header">
+      <div class="app-brand">
+        <span class="brand-mark">Muse</span>
+        <span class="brand-subtitle">Backend console</span>
+      </div>
+      <nav class="tab-nav" role="tablist" aria-label="Console navigation">
+        <%= for {id, icon, label} <- @tabs do %>
+          <button
+            type="button"
+            role="tab"
+            class={"tab-btn #{if @active_tab == id, do: "tab-active", else: ""}"}
+            aria-selected={if @active_tab == id, do: "true", else: "false"}
+            phx-click="switch_tab"
+            phx-value-tab={id}
+            aria-label={label}
+            title={tab_tooltip(id, label)}
+          >
+            <span class="tab-icon"><%= icon %></span>
+            <span class="tab-label"><%= label %></span>
+          </button>
+        <% end %>
+      </nav>
+    </header>
+    """
+  end
+
+  attr(:state, :map, required: true)
+  attr(:reload_status, :map, required: true)
+  attr(:workspace, :string, required: true)
+  attr(:diagnostics, :list, required: true)
+  attr(:diagnostics_open?, :boolean, required: true)
+  attr(:agent_runtime, :map, default: nil)
+
+  def status_bar(assigns) do
+    ~H"""
+    <section class="status-bar" aria-label="System status">
+      <div class="status-item" title="Backend connection status">
+        <span class={"status-dot status-dot-green"}></span>
+        <span class="status-item-label">Backend</span>
+        <span class="status-item-value">Connected</span>
+      </div>
+      <div class="status-item" title="File watcher status">
+        <span class={"status-dot #{if @reload_status[:status] == :unavailable, do: "status-dot-gray", else: "status-dot-green"}"}></span>
+        <span class="status-item-label">File watcher</span>
+        <span class="status-item-value"><%= if @reload_status[:status] == :unavailable, do: "Unavailable", else: "Active" %></span>
+      </div>
+      <div class="status-item" title="Workspace root path">
+        <span class="status-dot status-dot-yellow"></span>
+        <span class="status-item-label">Workspace</span>
+        <span class="status-item-value status-item-path" title={@workspace}><%= @workspace %></span>
+      </div>
+      <div class="status-item" title="Universal agent runtime connection">
+        <% runtime = @agent_runtime || %{status: :disconnected} %>
+        <span class={"status-dot #{runtime_status_dot(runtime.status)}"}></span>
+        <span class="status-item-label">Universal agent</span>
+        <span class="status-item-value"><%= runtime_status_label(runtime.status) %></span>
+      </div>
+      <div class="status-item" title="Total events received">
+        <span class={"status-dot #{status_dot_color(length(@state.events))}"}></span>
+        <span class="status-item-label">Events</span>
+        <span class="status-item-value"><%= length(@state.events) %></span>
+      </div>
+      <%= if @diagnostics != [] and not @diagnostics_open? do %>
+        <button
+          type="button"
+          id="diagnostics-badge"
+          class="diagnostic-pill"
+          phx-click="open_diagnostics"
+          aria-label="Open diagnostics panel"
+        >
+          ⚠ <%= length(@diagnostics) %> diagnostic<%= if length(@diagnostics) != 1, do: "s", else: "" %>
+        </button>
+      <% end %>
+    </section>
+    """
+  end
+
+  attr(:diagnostics, :list, required: true)
+  attr(:diagnostics_open?, :boolean, required: true)
+  attr(:diagnostic_issue_statuses, :map, required: true)
+  attr(:self_healing_issues, :list, required: true)
+
+  def diagnostics_popup(assigns) do
+    ~H"""
+    <%= if @diagnostics != [] and @diagnostics_open? do %>
+      <aside id="diagnostics-popup" class="diagnostics-popup" role="region" aria-labelledby="diagnostics-title" aria-live="polite">
+        <div class="diagnostic-title-bar">
+          <span id="diagnostics-title" class="diagnostic-title">Backend diagnostics</span>
+          <button type="button" class="diagnostics-collapse-btn" phx-click="collapse_diagnostics" title="Minimize" aria-label="Minimize diagnostics panel">
+            ✕
+          </button>
+        </div>
+        <%= for diagnostic <- Enum.take(@diagnostics, 5) do %>
+          <article class={["diagnostic-notice", Atom.to_string(diagnostic.level)]}>
+            <div class="diagnostic-header">
+              <span class="diagnostic-level"><%= diagnostic.level |> Atom.to_string() |> String.upcase() %></span>
+              <time class="diagnostic-timestamp" datetime={DateTime.to_iso8601(diagnostic.timestamp)}>
+                <%= diagnostic_timestamp(diagnostic.timestamp) %>
+              </time>
+            </div>
+            <p class="diagnostic-message"><%= diagnostic.message %></p>
+            <div class="diagnostic-actions">
+              <%= case Map.get(@diagnostic_issue_statuses, diagnostic.id) do %>
+                <% nil -> %>
+                  <button
+                    type="button"
+                    class="diagnostic-action-btn"
+                    phx-click="queue_diagnostic_fix"
+                    phx-value-diagnostic_id={Integer.to_string(diagnostic.id)}
+                  >
+                    Add to next agent turn
+                  </button>
+                <% :queued -> %>
+                  <button type="button" class="diagnostic-queued" disabled>Queued for next agent turn</button>
+                <% :in_progress -> %>
+                  <button type="button" class="diagnostic-queued" disabled>In progress</button>
+                <% :fixed -> %>
+                  <button type="button" class="diagnostic-queued" disabled>Already fixed</button>
+                <% :failed -> %>
+                  <button type="button" class="diagnostic-queued" disabled>Self-healing failed</button>
+                <% :ignored -> %>
+                  <button type="button" class="diagnostic-queued" disabled>Ignored</button>
+              <% end %>
+            </div>
+          </article>
+        <% end %>
+        <%= if length(@diagnostics) > 5 do %>
+          <p class="diagnostics-more">+<%= length(@diagnostics) - 5 %> more backend diagnostics</p>
+        <% end %>
+        <%= if @self_healing_issues != [] do %>
+          <div class="self-healing-summary">
+            <span class="self-healing-summary-title">Self-healing queue: <%= length(@self_healing_issues) %> issue<%= if length(@self_healing_issues) != 1, do: "s", else: "" %></span>
+          </div>
+        <% end %>
+      </aside>
+    <% end %>
+    """
+  end
+
+  attr(:reload_status, :map, required: true)
+  attr(:command_history, :list, required: true)
+
+  def dev_sidebar(assigns) do
+    ~H"""
+    <aside class="dev-sidebar">
+      <%= if Mix.env() != :prod do %>
+        <section id="dev-tools" class="panel dev-tools-panel">
+          <div class="panel-header">
+            <h2 class="panel-title">Dev tools</h2>
+          </div>
+          <div class="panel-body">
+            <div class="dev-tool-group">
+              <h3 class="dev-tool-group-title">Simulate</h3>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="simulate_event" title="Create a simulated test event">Simulate event</button>
+              <button type="button" class="secondary-button dev-tool-btn dev-tool-btn-warning" phx-click="simulate_backend_error" title="Simulate a backend error (dev only)">Simulate backend error</button>
+            </div>
+            <div class="dev-tool-separator"></div>
+            <div class="dev-tool-group">
+              <h3 class="dev-tool-group-title">Actions</h3>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="clear_events" title="Remove all events from the log">Clear events</button>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="force_reload_watcher" title="Trigger a watcher rescan">Rescan watcher</button>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="refresh_stats" title="Refresh BEAM runtime statistics">Refresh stats</button>
+            </div>
+            <div class="dev-tool-separator"></div>
+            <div class="dev-tool-group">
+              <h3 class="dev-tool-group-title">Export</h3>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="copy_diagnostics" title="Copy diagnostics to clipboard">Copy diagnostics</button>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="export_logs" title="Export logs to clipboard">Export logs</button>
+            </div>
+            <div class="dev-tool-separator"></div>
+            <div class="dev-tool-group">
+              <h3 class="dev-tool-group-title">Agent runtime</h3>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="connect_agent_runtime" title="Connect to universal agent runtime">Connect runtime</button>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="retry_agent_runtime" title="Retry agent runtime connection">Retry connection</button>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="disconnect_agent_runtime" title="Disconnect agent runtime">Disconnect</button>
+            </div>
+          </div>
+        </section>
+      <% end %>
+
+      <section class="panel setup-panel">
+        <div class="panel-header">
+          <h2 class="panel-title">Setup checklist</h2>
+        </div>
+        <div class="panel-body">
+          <ul class="setup-checklist">
+            <li class="setup-item setup-item-done">
+              <span class="setup-check">✓</span>
+              <span class="setup-text">Workspace detected</span>
+            </li>
+            <li class={"setup-item #{if @reload_status[:status] != :unavailable, do: "setup-item-done", else: ""}"}>
+              <span class="setup-check"><%= if @reload_status[:status] != :unavailable, do: "✓", else: "○" %></span>
+              <span class="setup-text">File watching enabled</span>
+            </li>
+            <li class="setup-item">
+              <span class="setup-check">○</span>
+              <span class="setup-text">Connect universal agent runtime</span>
+            </li>
+            <li class="setup-item">
+              <span class="setup-check">○</span>
+              <span class="setup-text">Register first agent</span>
+            </li>
+            <li class={"setup-item #{if @command_history != [], do: "setup-item-done", else: ""}"}>
+              <span class="setup-check"><%= if @command_history != [], do: "✓", else: "○" %></span>
+              <span class="setup-text">Send first command</span>
+            </li>
+          </ul>
+        </div>
+      </section>
+    </aside>
+    """
+  end
+
+  attr(:input, :string, required: true)
+  attr(:command_history, :list, required: true)
+
+  def command_console(assigns) do
+    ~H"""
+    <section id="input-form" class="command-console" aria-label="Command console" phx-hook="CommandConsole" data-slash-commands={Jason.encode!(Muse.Commands.slash_commands_json())}>
+      <div class="command-history" id="command-history">
+        <%= for entry <- @command_history do %>
+          <div class={"command-history-entry command-history-#{entry.type}"}>
+            <span class="command-history-input"><%= entry.input %></span>
+            <pre class="command-history-output"><%= entry.output %></pre>
+            <time class="command-history-time"><%= entry.timestamp %></time>
+          </div>
+        <% end %>
+      </div>
+      <form id="command-form" phx-submit="submit" class="command-bar">
+        <textarea
+          name="text"
+          class="command-input"
+          placeholder="Type /help for commands or ask Muse a question."
+          rows="1"
+          aria-label="Command input"
+        ><%= @input %></textarea>
+        <button type="submit" class="primary-button" aria-label="Send command">Send</button>
+      </form>
+    </section>
+    """
+  end
+
+  attr(:toasts, :list, required: true)
+
+  def toast_container(assigns) do
+    ~H"""
+    <div class="toast-container" aria-live="polite" aria-atomic="true">
+      <%= for toast <- @toasts do %>
+        <div class={"toast toast-#{toast.type}"} id={"toast-#{toast.id}"} phx-hook="ToastAutoDismiss">
+          <span class="toast-message"><%= toast.message %></span>
+          <button type="button" class="toast-dismiss" phx-click="dismiss_toast" phx-value-id={toast.id} aria-label="Dismiss notification">✕</button>
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
+  # -- Helper for status bar ------------------------------------------------
+
+  defp status_dot_color(0), do: "status-dot-gray"
+  defp status_dot_color(count) when count > 10, do: "status-dot-green"
+  defp status_dot_color(_), do: "status-dot-green"
+
+  @tab_tooltips %{
+    "events" => "Events (Ctrl+E)",
+    "logs" => "Logs (Ctrl+L)",
+    "files" => "Files (Ctrl+F)",
+    "agents" => "Agents (Ctrl+A)",
+    "stats" => "Stats (Ctrl+R)",
+    "settings" => "Settings (Ctrl+,)"
+  }
+
+  defp tab_tooltip(id, label) do
+    Map.get(@tab_tooltips, id, label)
+  end
+
+  # -- Agent runtime helpers --------------------------------------------------
+
+  defp runtime_status_dot(:connected), do: "status-dot-green"
+  defp runtime_status_dot(:connecting), do: "status-dot-yellow"
+  defp runtime_status_dot(:error), do: "status-dot-red"
+  defp runtime_status_dot(:disconnected), do: "status-dot-gray"
+  defp runtime_status_dot(_), do: "status-dot-gray"
+
+  defp runtime_status_label(:connected), do: "Connected"
+  defp runtime_status_label(:connecting), do: "Connecting…"
+  defp runtime_status_label(:error), do: "Error"
+  defp runtime_status_label(:disconnected), do: "Disconnected"
+  defp runtime_status_label(other), do: String.capitalize(to_string(other))
+end

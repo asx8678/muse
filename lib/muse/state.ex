@@ -27,6 +27,9 @@ defmodule Muse.State do
   @spec append(Muse.Event.t()) :: :ok
   def append(event), do: GenServer.call(__MODULE__, {:append, event})
 
+  @spec clear() :: :ok
+  def clear, do: GenServer.call(__MODULE__, :clear)
+
   @spec subscribe() :: :ok | {:error, term()}
   def subscribe do
     case Phoenix.PubSub.subscribe(Muse.PubSub, @topic) do
@@ -57,5 +60,11 @@ defmodule Muse.State do
     new_state = %{state | events: state.events ++ [event]}
     Phoenix.PubSub.broadcast(Muse.PubSub, @topic, {:muse_event, event})
     {:reply, :ok, new_state}
+  end
+
+  @impl true
+  def handle_call(:clear, _from, _state) do
+    Phoenix.PubSub.broadcast(Muse.PubSub, @topic, {:muse_events_cleared})
+    {:reply, :ok, %{events: []}}
   end
 end

@@ -79,6 +79,33 @@ defmodule Muse.StateTest do
     end
   end
 
+  describe "clear/0" do
+    test "removes all events" do
+      Event.new(:a, :first, nil) |> State.append()
+      Event.new(:b, :second, nil) |> State.append()
+      assert length(State.events()) == 2
+
+      assert :ok = State.clear()
+      assert State.events() == []
+    end
+
+    test "get returns empty state after clear" do
+      Event.new(:a, :first, nil) |> State.append()
+      assert :ok = State.clear()
+      assert State.get() == %{events: []}
+    end
+
+    test "subscriber receives {:muse_events_cleared} on clear" do
+      :ok = State.subscribe()
+      Event.new(:a, :first, nil) |> State.append()
+      # Flush the append broadcast
+      assert_received {:muse_event, _}
+
+      assert :ok = State.clear()
+      assert_received {:muse_events_cleared}
+    end
+  end
+
   describe "subscribe/0 + broadcast" do
     test "subscriber receives {:muse_event, event} on append" do
       :ok = State.subscribe()

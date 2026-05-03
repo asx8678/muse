@@ -54,6 +54,8 @@ defmodule Muse.Application do
       {Phoenix.PubSub, name: Muse.PubSub},
       Muse.Diagnostics,
       Muse.SelfHealingQueue,
+      {Muse.LogBuffer, [install_logger_handler?: true]},
+      Muse.AgentRuntime,
       {Muse.Workspace, root: opts.workspace},
       Muse.State,
       Muse.AgentRegistry

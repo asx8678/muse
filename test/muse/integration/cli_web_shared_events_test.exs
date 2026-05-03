@@ -142,7 +142,7 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
       # Mount and submit through LiveView
       {:ok, view, _html} = live(build_conn(), "/")
 
-      view |> element("form") |> render_submit(%{"text" => "hello from web"})
+      view |> element("#command-form") |> render_submit(%{"text" => "hello from web"})
 
       # Check events via CLI /events
       output =
@@ -158,7 +158,7 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
     test "assistant response for web submit is visible in CLI /events" do
       {:ok, view, _html} = live(build_conn(), "/")
 
-      view |> element("form") |> render_submit(%{"text" => "web query"})
+      view |> element("#command-form") |> render_submit(%{"text" => "web query"})
 
       output =
         ExUnit.CaptureIO.capture_io(fn ->
@@ -172,8 +172,8 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
     test "multiple web submissions accumulate in CLI /events" do
       {:ok, view, _html} = live(build_conn(), "/")
 
-      view |> element("form") |> render_submit(%{"text" => "web first"})
-      view |> element("form") |> render_submit(%{"text" => "web second"})
+      view |> element("#command-form") |> render_submit(%{"text" => "web first"})
+      view |> element("#command-form") |> render_submit(%{"text" => "web second"})
 
       output =
         ExUnit.CaptureIO.capture_io(fn ->
@@ -197,7 +197,7 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
       # Submit from Web
       {:ok, view, _html} = live(build_conn(), "/")
 
-      view |> element("form") |> render_submit(%{"text" => "from web side"})
+      view |> element("#command-form") |> render_submit(%{"text" => "from web side"})
 
       # Both events appear in LiveView
       html = render(view)
@@ -223,7 +223,7 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
       # Then from Web
       {:ok, view, _html} = live(build_conn(), "/")
 
-      view |> element("form") |> render_submit(%{"text" => "web event"})
+      view |> element("#command-form") |> render_submit(%{"text" => "web event"})
 
       # Verify order in State directly
       events = Muse.State.events()
