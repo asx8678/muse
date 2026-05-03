@@ -1,33 +1,17 @@
 #!/usr/bin/env sh
 set -eu
 
-# bin/muse_cli — Convenience wrapper for Muse Mix release.
+# rel/overlays/bin/muse_cli — Convenience wrapper for the Muse Mix release.
 #
-# Usage:
-#   bin/muse_cli [options]
+# This script is placed at _build/prod/rel/muse/bin/muse_cli by the
+# overlay mechanism declared in mix.exs.  It resolves its own directory
+# at runtime and forwards all arguments to the release's bin/muse eval
+# command, which in turn calls Muse.CLI.ReleaseCommand.main/1.
 #
-# All options are forwarded to Muse.CLI.ReleaseCommand.main/1:
-#   --repl            Use REPL CLI (default)
-#   --tui             Use TUI CLI (ExRatatui)
-#   --no-web          Disable web interface
-#   --web-only        Disable CLI, enable web only
-#   --no-cli          Alias for --web-only
-#   --port PORT       HTTP port (default: 4000)
-#   --host HOST       HTTP host (default: 127.0.0.1)
-#   --workspace PATH  Workspace directory
-#   --no-watch        Disable hot reload
-#   --verbose         Enable debug-level console logging
-#   --help, -h        Show this help
-#
-# The script resolves the release directory relative to itself and
-# invokes the Muse application via `bin/muse eval`.  Arguments are
-# forwarded through System.argv() so the shell handles all quoting;
-# no manual Elixir string construction is needed.
+# Usage (from the release directory):
+#   bin/muse_cli --tui --no-web
+#   bin/muse_cli --repl
+#   bin/muse_cli --help
 
-# Resolve the release directory (same directory this script lives in).
-RELEASE_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-# Forward all shell args via System.argv() after the -- separator.
-# ReleaseCommand.main/1 strips the leading "--" that System.argv()
-# includes when invoked this way.
-exec "$RELEASE_DIR/muse" eval "Muse.CLI.ReleaseCommand.main(System.argv())" -- "$@"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+exec "$SCRIPT_DIR/muse" eval "Muse.CLI.ReleaseCommand.main(System.argv())" -- "$@"

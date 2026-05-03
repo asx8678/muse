@@ -118,7 +118,8 @@ defmodule Muse.Diagnostics.LoggerHandler do
         :ok
 
       level ->
-        metadata = Map.get(event, :meta, %{})
+        raw_meta = Map.get(event, :meta, %{})
+        metadata = Muse.MetadataSanitizer.sanitize(raw_meta)
         safe_emit(level, format_message(msg), metadata)
     end
   end

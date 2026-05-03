@@ -21,28 +21,13 @@ defmodule MuseWeb.Endpoint do
     at: "/assets",
     from: {:muse, "priv/static/assets"},
     gzip: false,
-    only: ~w(app.js)
-  )
-
-  plug(Plug.Static,
-    at: "/assets",
-    from: "assets",
-    gzip: false,
-    only: ~w(css)
+    only: ~w(app.js css)
   )
 
   plug(Plug.Static,
     at: "/images",
     from: {:muse, "priv/static/images"},
-    gzip: false,
-    only: ~w(muse-bg-light.png muse-bg-dark.png muse-purple-wave-background-1920x1080.webp)
-  )
-
-  plug(Plug.Static,
-    at: "/images",
-    from: "assets/images",
-    gzip: false,
-    only: ~w(muse-logo-header.png muse-bg-main.png muse-bg-sidebar.png)
+    gzip: false
   )
 
   plug(Plug.RequestId)

@@ -333,6 +333,8 @@ defmodule Muse.DevReloaderTest do
 
   describe "snapshot/restore" do
     test "snapshot_modules returns a map of Muse modules" do
+      Code.ensure_loaded!(Muse)
+
       snapshot = DevReloader.snapshot_modules()
       assert is_map(snapshot)
 

@@ -1247,7 +1247,7 @@ defmodule MuseWeb.ConsoleComponents do
 
   def diagnostic_line_value(%{metadata: meta}) when is_map(meta) do
     line = Map.get(meta, :line) || Map.get(meta, "line")
-    if line, do: String.to_integer(to_string(line)), else: nil
+    MuseWeb.safe_to_integer_or_nil(line)
   end
 
   def diagnostic_line_value(_), do: nil

@@ -739,6 +739,183 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "diagnostic-action-disabled"
   end
 
+  # -- Malformed ID robustness tests -------------------------------------------
+
+  describe "malformed client IDs" do
+    test "dismiss_toast with non-integer id does not crash" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      {:noreply, socket} =
+        MuseWeb.HomeLive.handle_event(
+          "dismiss_toast",
+          %{"id" => "abc"},
+          view.pid |> :sys.get_state() |> Map.get(:socket)
+        )
+
+      # Socket is still live, no crash
+      assert socket.assigns != nil
+    end
+
+    test "dismiss_toast with empty string id does not crash" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      {:noreply, socket} =
+        MuseWeb.HomeLive.handle_event(
+          "dismiss_toast",
+          %{"id" => ""},
+          view.pid |> :sys.get_state() |> Map.get(:socket)
+        )
+
+      assert socket.assigns != nil
+    end
+
+    test "dismiss_toast with partial integer id does not crash" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      {:noreply, socket} =
+        MuseWeb.HomeLive.handle_event(
+          "dismiss_toast",
+          %{"id" => "1x"},
+          view.pid |> :sys.get_state() |> Map.get(:socket)
+        )
+
+      assert socket.assigns != nil
+    end
+
+    test "toggle_event_detail with non-integer id does not crash" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      {:noreply, socket} =
+        MuseWeb.HomeLive.handle_event(
+          "toggle_event_detail",
+          %{"id" => "abc"},
+          view.pid |> :sys.get_state() |> Map.get(:socket)
+        )
+
+      assert socket.assigns.expanded_event_id == nil
+    end
+
+    test "toggle_log_detail with non-integer id does not crash" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      {:noreply, socket} =
+        MuseWeb.HomeLive.handle_event(
+          "toggle_log_detail",
+          %{"id" => "not-a-number"},
+          view.pid |> :sys.get_state() |> Map.get(:socket)
+        )
+
+      assert socket.assigns.expanded_log_id == nil
+    end
+
+    test "copy_event_json with non-integer id returns error toast" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      {:noreply, socket} =
+        MuseWeb.HomeLive.handle_event(
+          "copy_event_json",
+          %{"id" => "abc"},
+          view.pid |> :sys.get_state() |> Map.get(:socket)
+        )
+
+      assert Enum.any?(socket.assigns.toasts, &String.contains?(&1.message, "Invalid event ID"))
+    end
+
+    test "copy_log_json with non-integer id returns error toast" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      {:noreply, socket} =
+        MuseWeb.HomeLive.handle_event(
+          "copy_log_json",
+          %{"id" => ""},
+          view.pid |> :sys.get_state() |> Map.get(:socket)
+        )
+
+      assert Enum.any?(socket.assigns.toasts, &String.contains?(&1.message, "Invalid log ID"))
+    end
+
+    test "queue_diagnostic_fix with non-integer id does not crash" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      {:noreply, socket} =
+        MuseWeb.HomeLive.handle_event(
+          "queue_diagnostic_fix",
+          %{"diagnostic_id" => "1x"},
+          view.pid |> :sys.get_state() |> Map.get(:socket)
+        )
+
+      assert socket.assigns != nil
+    end
+
+    test "copy_diagnostic with non-integer id returns error toast" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      {:noreply, socket} =
+        MuseWeb.HomeLive.handle_event(
+          "copy_diagnostic",
+          %{"diagnostic_id" => "abc"},
+          view.pid |> :sys.get_state() |> Map.get(:socket)
+        )
+
+      assert Enum.any?(
+               socket.assigns.toasts,
+               &String.contains?(&1.message, "Invalid diagnostic ID")
+             )
+    end
+
+    test "jump_to_diagnostic_file with non-integer id returns error toast" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      {:noreply, socket} =
+        MuseWeb.HomeLive.handle_event(
+          "jump_to_diagnostic_file",
+          %{"diagnostic_id" => "not-an-id"},
+          view.pid |> :sys.get_state() |> Map.get(:socket)
+        )
+
+      assert Enum.any?(
+               socket.assigns.toasts,
+               &String.contains?(&1.message, "Invalid diagnostic ID")
+             )
+    end
+  end
+
+  # -- Malformed diagnostic line metadata tests --------------------------------
+
+  describe "malformed diagnostic line metadata" do
+    test "diagnostic_line returns nil for non-integer line value" do
+      assert MuseWeb.ConsoleComponents.diagnostic_line_value(%{metadata: %{"line" => "abc"}}) ==
+               nil
+    end
+
+    test "diagnostic_line_value handles empty string" do
+      assert MuseWeb.ConsoleComponents.diagnostic_line_value(%{metadata: %{"line" => ""}}) == nil
+    end
+
+    test "diagnostic_line_value handles partial integer like 1x" do
+      assert MuseWeb.ConsoleComponents.diagnostic_line_value(%{metadata: %{"line" => "1x"}}) ==
+               nil
+    end
+
+    test "diagnostic_line_value handles integer line value" do
+      assert MuseWeb.ConsoleComponents.diagnostic_line_value(%{metadata: %{"line" => 42}}) == 42
+    end
+
+    test "diagnostic_line_value handles string integer line value" do
+      assert MuseWeb.ConsoleComponents.diagnostic_line_value(%{metadata: %{"line" => "42"}}) == 42
+    end
+
+    test "diagnostic_line_value handles missing line" do
+      assert MuseWeb.ConsoleComponents.diagnostic_line_value(%{metadata: %{}}) == nil
+      assert MuseWeb.ConsoleComponents.diagnostic_line_value(%{}) == nil
+    end
+
+    test "diagnostic_line_value handles atom-key line" do
+      assert MuseWeb.ConsoleComponents.diagnostic_line_value(%{metadata: %{line: 10}}) == 10
+      assert MuseWeb.ConsoleComponents.diagnostic_line_value(%{metadata: %{line: "10"}}) == 10
+    end
+  end
+
   # -- Slash command tests -----------------------------------------------------
 
   test "/help command returns help text" do

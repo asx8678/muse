@@ -109,10 +109,20 @@ defmodule Muse.SelfHealingIssue do
     end
   end
 
-  defp normalize_metadata(metadata) when is_map(metadata), do: metadata
+  defp normalize_metadata(metadata) when is_map(metadata) do
+    Muse.MetadataSanitizer.sanitize(metadata)
+  end
 
   defp normalize_metadata(metadata) do
-    %{metadata: metadata |> safe_inspect() |> truncate(@max_metadata_chars)}
+    sanitized = Muse.MetadataSanitizer.sanitize(metadata)
+
+    %{
+      metadata:
+        if(is_binary(sanitized),
+          do: sanitized,
+          else: safe_inspect(sanitized) |> truncate(@max_metadata_chars)
+        )
+    }
   end
 
   defp safe_inspect(term) do

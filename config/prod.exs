@@ -1,13 +1,10 @@
 import Config
 
 config :muse, MuseWeb.Endpoint,
-  # The secret_key_base must be set for releases. In production, override
-  # via env var: RELEASE_NODE, MUSE_SECRET_KEY_BASE, etc.
+  # Production secrets are loaded at runtime in config/runtime.exs so releases
+  # can be assembled without embedding secrets into build artifacts.
   server: true,
-  http: [ip: {127, 0, 0, 1}, port: 4000],
-  secret_key_base:
-    System.get_env("MUSE_SECRET_KEY_BASE") ||
-      "CHANGE-ME-64-byte-minimum-production-secret-key-base-placeholder-00000000"
+  http: [ip: {127, 0, 0, 1}, port: 4000]
 
 config :muse, :logger,
   buffer_level: :warning,

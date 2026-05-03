@@ -19,7 +19,8 @@ defmodule Muse.LogEntryTest do
       entry = LogEntry.new(:error, "fail", %{code: 500}, :runtime)
       assert entry.level == :error
       assert entry.source == :runtime
-      assert entry.metadata == %{code: 500}
+      # Sanitizer preserves integer values
+      assert entry.metadata[:code] == 500
     end
 
     test "normalizes :warn to :warning" do

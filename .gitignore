@@ -8,7 +8,9 @@
 /_build/
 /deps/
 /muse
-/priv/static/
+# Only ignore esbuild output; CSS/images are source-copied and should be tracked
+/priv/static/assets/app.js
+/priv/static/assets/app.js.map
 
 # Runtime logs
 .muse/

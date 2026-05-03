@@ -21,7 +21,8 @@ defmodule Muse.SelfHealingIssueTest do
       diagnostic = Diagnostic.new(:error, "backend error", %{source: :dev_reloader})
       issue = SelfHealingIssue.from_diagnostic(diagnostic)
 
-      assert issue.source == :dev_reloader
+      # Sanitizer converts atom values to strings
+      assert issue.source == "dev_reloader"
     end
 
     test "extracts source from diagnostic metadata with string key" do
@@ -36,7 +37,8 @@ defmodule Muse.SelfHealingIssueTest do
       diagnostic = Diagnostic.new(:error, "both keys", metadata)
       issue = SelfHealingIssue.from_diagnostic(diagnostic)
 
-      assert issue.source == :atom_source
+      # Sanitizer converts atom values to strings; atom key is preferred
+      assert issue.source == "atom_source"
     end
 
     test "handles diagnostic without source in metadata" do
@@ -61,21 +63,26 @@ defmodule Muse.SelfHealingIssueTest do
       assert String.length(issue.message) <= 2_000
     end
 
-    test "preserves map metadata as-is" do
+    test "preserves map metadata with sanitized values" do
       diagnostic =
         Diagnostic.new(:warning, "meta test", %{file: "lib/muse.ex", line: 42, module: Muse})
 
       issue = SelfHealingIssue.from_diagnostic(diagnostic)
 
-      assert issue.metadata == %{file: "lib/muse.ex", line: 42, module: Muse}
+      # Sanitizer converts atom values to strings for JSON safety
+      assert issue.metadata[:file] == "lib/muse.ex"
+      assert issue.metadata[:line] == 42
+      assert issue.metadata[:module] == "Elixir.Muse"
     end
 
-    test "wraps non-map metadata in inspected map" do
+    test "wraps non-map metadata — tuples sanitized then inspected" do
       diagnostic = Diagnostic.new(:error, "non-map meta", {:tuple, "data"})
       issue = SelfHealingIssue.from_diagnostic(diagnostic)
 
       assert is_map(issue.metadata)
-      assert issue.metadata[:metadata] =~ "{:tuple"
+      # Sanitizer converts tuples to lists; non-map branch inspects to string
+      assert is_binary(issue.metadata[:metadata])
+      assert issue.metadata[:metadata] =~ "tuple"
     end
   end
 

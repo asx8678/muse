@@ -30,8 +30,16 @@ defmodule Muse.LogEntry do
       level: normalize_level(level),
       source: source,
       message: to_string(message),
-      metadata: metadata
+      metadata: sanitize_metadata(metadata)
     }
+  end
+
+  defp sanitize_metadata(metadata) when is_map(metadata) do
+    Muse.MetadataSanitizer.sanitize(metadata)
+  end
+
+  defp sanitize_metadata(metadata) do
+    Muse.MetadataSanitizer.sanitize(%{metadata: metadata})
   end
 
   defp generate_id, do: System.unique_integer([:positive])

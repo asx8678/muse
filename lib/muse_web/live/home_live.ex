@@ -206,15 +206,19 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("copy_event_json", %{"id" => id_str}, socket) do
-    id = String.to_integer(id_str)
+    case MuseWeb.safe_to_integer(id_str) do
+      {:ok, id} ->
+        event = Enum.find(socket.assigns.state.events, &(&1.id == id))
 
-    event = Enum.find(socket.assigns.state.events, &(&1.id == id))
+        if event do
+          json = format_event_json(event)
+          {:noreply, push_event(socket, "copy_to_clipboard", %{text: json, label: "Event JSON"})}
+        else
+          {:noreply, add_toast(socket, "Event not found", :error)}
+        end
 
-    if event do
-      json = format_event_json(event)
-      {:noreply, push_event(socket, "copy_to_clipboard", %{text: json, label: "Event JSON"})}
-    else
-      {:noreply, add_toast(socket, "Event not found", :error)}
+      :error ->
+        {:noreply, add_toast(socket, "Invalid event ID", :error)}
     end
   end
 
@@ -313,16 +317,26 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("dismiss_toast", %{"id" => id_str}, socket) do
-    id = String.to_integer(id_str)
-    toasts = Enum.reject(socket.assigns.toasts, &(&1.id == id))
-    {:noreply, assign(socket, toasts: toasts)}
+    case MuseWeb.safe_to_integer(id_str) do
+      {:ok, id} ->
+        toasts = Enum.reject(socket.assigns.toasts, &(&1.id == id))
+        {:noreply, assign(socket, toasts: toasts)}
+
+      :error ->
+        {:noreply, socket}
+    end
   end
 
   @impl true
   def handle_event("toggle_event_detail", %{"id" => id_str}, socket) do
-    id = String.to_integer(id_str)
-    new_id = if socket.assigns.expanded_event_id == id, do: nil, else: id
-    {:noreply, assign(socket, expanded_event_id: new_id)}
+    case MuseWeb.safe_to_integer(id_str) do
+      {:ok, id} ->
+        new_id = if socket.assigns.expanded_event_id == id, do: nil, else: id
+        {:noreply, assign(socket, expanded_event_id: new_id)}
+
+      :error ->
+        {:noreply, socket}
+    end
   end
 
   @impl true
@@ -441,15 +455,19 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("copy_log_json", %{"id" => id_str}, socket) do
-    id = String.to_integer(id_str)
+    case MuseWeb.safe_to_integer(id_str) do
+      {:ok, id} ->
+        log = Enum.find(socket.assigns.logs, &(&1.id == id))
 
-    log = Enum.find(socket.assigns.logs, &(&1.id == id))
+        if log do
+          json = format_log_json(log)
+          {:noreply, push_event(socket, "copy_to_clipboard", %{text: json, label: "Log JSON"})}
+        else
+          {:noreply, add_toast(socket, "Log not found", :error)}
+        end
 
-    if log do
-      json = format_log_json(log)
-      {:noreply, push_event(socket, "copy_to_clipboard", %{text: json, label: "Log JSON"})}
-    else
-      {:noreply, add_toast(socket, "Log not found", :error)}
+      :error ->
+        {:noreply, add_toast(socket, "Invalid log ID", :error)}
     end
   end
 
@@ -475,9 +493,14 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("toggle_log_detail", %{"id" => id_str}, socket) do
-    id = String.to_integer(id_str)
-    new_id = if socket.assigns.expanded_log_id == id, do: nil, else: id
-    {:noreply, assign(socket, expanded_log_id: new_id)}
+    case MuseWeb.safe_to_integer(id_str) do
+      {:ok, id} ->
+        new_id = if socket.assigns.expanded_log_id == id, do: nil, else: id
+        {:noreply, assign(socket, expanded_log_id: new_id)}
+
+      :error ->
+        {:noreply, socket}
+    end
   end
 
   @impl true
@@ -541,72 +564,86 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("queue_diagnostic_fix", %{"diagnostic_id" => id_str}, socket) do
-    id = String.to_integer(id_str)
-
-    case Enum.find(socket.assigns.diagnostics, &(&1.id == id)) do
-      nil ->
-        {:noreply, socket}
-
-      diagnostic ->
-        case BackendBridge.safe_queue_diagnostic(diagnostic) do
-          {:ok, issue} ->
-            self_healing_issues =
-              [issue | socket.assigns.self_healing_issues]
-              |> Enum.uniq_by(& &1.diagnostic_id)
-
-            statuses = Map.put(socket.assigns.diagnostic_issue_statuses, id, :queued)
-
-            {:noreply,
-             assign(socket,
-               self_healing_issues: self_healing_issues,
-               diagnostic_issue_statuses: statuses
-             )}
-
-          {:error, :duplicate} ->
-            statuses = Map.put(socket.assigns.diagnostic_issue_statuses, id, :queued)
-            {:noreply, assign(socket, diagnostic_issue_statuses: statuses)}
-
-          {:error, _} ->
+    case MuseWeb.safe_to_integer(id_str) do
+      {:ok, id} ->
+        case Enum.find(socket.assigns.diagnostics, &(&1.id == id)) do
+          nil ->
             {:noreply, socket}
+
+          diagnostic ->
+            case BackendBridge.safe_queue_diagnostic(diagnostic) do
+              {:ok, issue} ->
+                self_healing_issues =
+                  [issue | socket.assigns.self_healing_issues]
+                  |> Enum.uniq_by(& &1.diagnostic_id)
+
+                statuses = Map.put(socket.assigns.diagnostic_issue_statuses, id, :queued)
+
+                {:noreply,
+                 assign(socket,
+                   self_healing_issues: self_healing_issues,
+                   diagnostic_issue_statuses: statuses
+                 )}
+
+              {:error, :duplicate} ->
+                statuses = Map.put(socket.assigns.diagnostic_issue_statuses, id, :queued)
+                {:noreply, assign(socket, diagnostic_issue_statuses: statuses)}
+
+              {:error, _} ->
+                {:noreply, socket}
+            end
         end
+
+      :error ->
+        {:noreply, socket}
     end
   end
 
   @impl true
   def handle_event("copy_diagnostic", %{"diagnostic_id" => id_str}, socket) do
-    id = String.to_integer(id_str)
+    case MuseWeb.safe_to_integer(id_str) do
+      {:ok, id} ->
+        case Enum.find(socket.assigns.diagnostics, &(&1.id == id)) do
+          nil ->
+            {:noreply, add_toast(socket, "Diagnostic not found", :error)}
 
-    case Enum.find(socket.assigns.diagnostics, &(&1.id == id)) do
-      nil ->
-        {:noreply, add_toast(socket, "Diagnostic not found", :error)}
+          diagnostic ->
+            text = "#{String.upcase(to_string(diagnostic.level))}: #{diagnostic.message}"
 
-      diagnostic ->
-        text = "#{String.upcase(to_string(diagnostic.level))}: #{diagnostic.message}"
-        {:noreply, push_event(socket, "copy_to_clipboard", %{text: text, label: "Diagnostic"})}
+            {:noreply,
+             push_event(socket, "copy_to_clipboard", %{text: text, label: "Diagnostic"})}
+        end
+
+      :error ->
+        {:noreply, add_toast(socket, "Invalid diagnostic ID", :error)}
     end
   end
 
   @impl true
   def handle_event("jump_to_diagnostic_file", %{"diagnostic_id" => id_str}, socket) do
-    id = String.to_integer(id_str)
+    case MuseWeb.safe_to_integer(id_str) do
+      {:ok, id} ->
+        case Enum.find(socket.assigns.diagnostics, &(&1.id == id)) do
+          nil ->
+            {:noreply, add_toast(socket, "Diagnostic not found", :error)}
 
-    case Enum.find(socket.assigns.diagnostics, &(&1.id == id)) do
-      nil ->
-        {:noreply, add_toast(socket, "Diagnostic not found", :error)}
+          diagnostic ->
+            file = diagnostic_file(diagnostic)
+            line = diagnostic_line(diagnostic)
 
-      diagnostic ->
-        file = diagnostic_file(diagnostic)
-        line = diagnostic_line(diagnostic)
-
-        if file do
-          {:noreply,
-           push_event(socket, "jump_to_file", %{
-             file: file,
-             line: line || 1
-           })}
-        else
-          {:noreply, add_toast(socket, "No file location in this diagnostic", :warning)}
+            if file do
+              {:noreply,
+               push_event(socket, "jump_to_file", %{
+                 file: file,
+                 line: line || 1
+               })}
+            else
+              {:noreply, add_toast(socket, "No file location in this diagnostic", :warning)}
+            end
         end
+
+      :error ->
+        {:noreply, add_toast(socket, "Invalid diagnostic ID", :error)}
     end
   end
 
@@ -796,7 +833,7 @@ defmodule MuseWeb.HomeLive do
 
   defp diagnostic_line(%{metadata: meta}) when is_map(meta) do
     line = Map.get(meta, :line) || Map.get(meta, "line")
-    if line, do: String.to_integer(to_string(line)), else: nil
+    MuseWeb.safe_to_integer_or_nil(line)
   end
 
   defp diagnostic_line(_), do: nil

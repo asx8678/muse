@@ -179,23 +179,10 @@ defmodule Muse.LogBuffer.LoggerHandler do
   # -- Metadata extraction -----------------------------------------------------
 
   defp extract_metadata(%{meta: meta}) when is_map(meta) do
-    safe_meta =
-      meta
-      |> Map.take([:application, :mfa, :file, :line, :pid, :time])
-      |> Enum.into(%{}, fn {k, v} -> {k, json_safe_value(v)} end)
-
-    safe_meta
+    Muse.MetadataSanitizer.sanitize(meta)
   end
 
   defp extract_metadata(_), do: %{}
-
-  defp json_safe_value(v) when is_atom(v), do: to_string(v)
-  defp json_safe_value(v) when is_binary(v), do: v
-  defp json_safe_value(v) when is_number(v), do: v
-  defp json_safe_value(v) when is_boolean(v), do: v
-  defp json_safe_value(nil), do: nil
-  defp json_safe_value(pid) when is_pid(pid), do: inspect(pid)
-  defp json_safe_value(v), do: inspect(v)
 
   # -- Handler config helpers --------------------------------------------------
 

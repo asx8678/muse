@@ -3,6 +3,29 @@ defmodule Muse.WorkspaceTest do
 
   alias Muse.Workspace
 
+  @symlinks_supported? (fn ->
+                          base =
+                            Path.join(
+                              System.tmp_dir!(),
+                              "muse_ws_symlink_probe_#{System.unique_integer([:positive])}"
+                            )
+
+                          target = Path.join(base, "target")
+                          link = Path.join(base, "link")
+
+                          try do
+                            File.mkdir_p!(base)
+                            File.write!(target, "ok")
+                            File.ln_s(target, link) == :ok
+                          rescue
+                            _ -> false
+                          catch
+                            _, _ -> false
+                          after
+                            File.rm_rf(base)
+                          end
+                        end).()
+
   # Globally named Agent — must stop any leftover process before each test.
 
   setup do
@@ -84,14 +107,87 @@ defmodule Muse.WorkspaceTest do
         Workspace.resolve!("/etc/passwd")
       end
     end
+
+    if @symlinks_supported? do
+      test "symlink to an outside directory is rejected for new child paths", %{root: root} do
+        outside =
+          Path.join(System.tmp_dir!(), "muse_ws_outside_#{System.unique_integer([:positive])}")
+
+        File.mkdir_p!(outside)
+
+        try do
+          link = Path.join(root, "outside_link")
+          assert :ok = File.ln_s(outside, link)
+          {:ok, _} = Workspace.start_link(root: root)
+
+          assert_raise ArgumentError, ~r/escapes workspace/, fn ->
+            Workspace.resolve!("outside_link/new_file.ex")
+          end
+        after
+          File.rm_rf(outside)
+        end
+      end
+
+      test "symlink to an outside file is rejected", %{root: root} do
+        outside_file =
+          Path.join(System.tmp_dir!(), "muse_ws_secret_#{System.unique_integer([:positive])}")
+
+        File.write!(outside_file, "secret")
+
+        try do
+          link = Path.join(root, "linked_secret")
+          assert :ok = File.ln_s(outside_file, link)
+          {:ok, _} = Workspace.start_link(root: root)
+
+          assert_raise ArgumentError, ~r/escapes workspace/, fn ->
+            Workspace.resolve!("linked_secret")
+          end
+        after
+          File.rm(outside_file)
+        end
+      end
+
+      test "symlink resolving inside the workspace remains allowed", %{root: root} do
+        safe_dir = Path.join(root, "safe_dir")
+        File.mkdir_p!(safe_dir)
+
+        link = Path.join(root, "safe_link")
+        assert :ok = File.ln_s(safe_dir, link)
+        {:ok, _} = Workspace.start_link(root: root)
+
+        assert Workspace.resolve!("safe_link/new_file.ex") == Path.join(link, "new_file.ex")
+      end
+    else
+      @tag skip: "symlink creation unavailable on this platform"
+      test "symlink to an outside directory is rejected for new child paths" do
+        :ok
+      end
+
+      @tag skip: "symlink creation unavailable on this platform"
+      test "symlink to an outside file is rejected" do
+        :ok
+      end
+
+      @tag skip: "symlink creation unavailable on this platform"
+      test "symlink resolving inside the workspace remains allowed" do
+        :ok
+      end
+    end
   end
 
   # -- Helpers ------------------------------------------------------------------
 
   defp stop_workspace do
     case Process.whereis(Workspace) do
-      nil -> :ok
-      pid -> GenServer.stop(pid, :shutdown)
+      nil ->
+        :ok
+
+      pid ->
+        try do
+          GenServer.stop(pid, :shutdown)
+        catch
+          :exit, _ -> :ok
+        end
     end
   end
 end

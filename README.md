@@ -140,8 +140,22 @@ Mix releases include native NIF libraries and support all modes:
 MIX_ENV=prod mix release
 ```
 
-This creates a self-contained release at `_build/prod/rel/muse/`. The release
-includes the ExRatatui native NIF, so **TUI mode works**:
+Production release startup requires `MUSE_SECRET_KEY_BASE` at runtime. The
+release can be built without this value, but every release invocation that
+loads runtime config (including `bin/muse_cli`) must set a strong secret of at
+least 64 bytes. Generate one locally with `mix phx.gen.secret`, then provide it
+through your deployment environment or secret manager — do not commit it to the
+repo:
+
+```bash
+export MUSE_SECRET_KEY_BASE="$(mix phx.gen.secret)"
+```
+
+If `MUSE_SECRET_KEY_BASE` is missing or too short, Muse fails fast before the
+production endpoint starts.
+
+The release command creates a self-contained release at `_build/prod/rel/muse/`.
+The release includes the ExRatatui native NIF, so **TUI mode works**:
 
 ```bash
 # Show help
@@ -172,6 +186,7 @@ to any machine with the same OS/architecture and Erlang/OTP installed, then:
 
 ```bash
 mkdir -p /opt/muse && tar -xzf muse-0.1.0.tar.gz -C /opt/muse
+# Ensure MUSE_SECRET_KEY_BASE is set in the target environment first.
 /opt/muse/bin/muse_cli --tui
 ```
 

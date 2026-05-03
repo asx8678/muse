@@ -11,6 +11,7 @@ defmodule Muse.MixProject do
       deps: deps(),
       escript: escript(),
       releases: releases(),
+      aliases: aliases(),
       listeners: [Phoenix.CodeReloader]
     ]
   end
@@ -42,6 +43,13 @@ defmodule Muse.MixProject do
 
   defp escript do
     [main_module: Muse.CLI.Main, name: "muse"]
+  end
+
+  defp aliases do
+    [
+      "assets.deploy": ["muse.assets"],
+      "assets.build": ["muse.assets"]
+    ]
   end
 
   defp releases do
