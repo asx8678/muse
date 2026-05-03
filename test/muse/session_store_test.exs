@@ -1,11 +1,16 @@
 defmodule Muse.SessionStoreTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Muse.SessionStore
 
   setup do
     base_dir = tmp_dir!()
     session_id = "test-session-#{System.unique_integer([:positive])}"
+
+    on_exit(fn ->
+      File.rm_rf!(base_dir)
+    end)
+
     %{base_dir: base_dir, session_id: session_id}
   end
 
@@ -13,12 +18,14 @@ defmodule Muse.SessionStoreTest do
     path =
       Path.join(
         System.tmp_dir!(),
-        "muse-session-store-test-#{:erlang.unique_integer([:positive])}"
+        "muse-session-store-test-#{System.unique_integer([:positive])}"
       )
 
     File.mkdir_p!(path)
     path
   end
+
+  # ── session_dir/2 ──────────────────────────────────────────────────────
 
   describe "session_dir/2" do
     test "returns a deterministic path" do
@@ -36,6 +43,92 @@ defmodule Muse.SessionStoreTest do
                "/custom/path/xyz"
     end
   end
+
+  # ── Session ID validation ──────────────────────────────────────────────
+
+  describe "session ID validation" do
+    test "rejects empty session id", %{base_dir: base_dir} do
+      assert {:error, {:invalid_session_id, ""}} =
+               SessionStore.save_session(base_dir, "", %{"a" => 1})
+
+      assert {:error, {:invalid_session_id, ""}} =
+               SessionStore.load_session(base_dir, "")
+
+      assert {:error, {:invalid_session_id, ""}} =
+               SessionStore.append_event(base_dir, "", %{})
+    end
+
+    test "rejects dot-only session ids", %{base_dir: base_dir} do
+      for id <- [".", ".."] do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 SessionStore.save_session(base_dir, id, %{"a" => 1})
+      end
+    end
+
+    test "rejects session id with forward slash", %{base_dir: base_dir} do
+      assert {:error, {:invalid_session_id, "../escape"}} =
+               SessionStore.save_session(base_dir, "../escape", %{"a" => 1})
+    end
+
+    test "rejects session id with backslash", %{base_dir: base_dir} do
+      assert {:error, {:invalid_session_id, "foo\\bar"}} =
+               SessionStore.save_session(base_dir, "foo\\bar", %{"a" => 1})
+    end
+
+    test "rejects session id with NUL byte", %{base_dir: base_dir} do
+      assert {:error, {:invalid_session_id, "foo\0bar"}} =
+               SessionStore.save_session(base_dir, "foo\0bar", %{"a" => 1})
+    end
+
+    test "path traversal does not write outside base dir", %{base_dir: base_dir} do
+      assert {:error, {:invalid_session_id, "../escape"}} =
+               SessionStore.save_session(base_dir, "../escape", %{"data" => "should not persist"})
+
+      assert {:error, {:invalid_session_id, "sub/../escape"}} =
+               SessionStore.save_session(base_dir, "sub/../escape", %{
+                 "data" => "should not persist"
+               })
+
+      # No session file or directory was created inside base_dir for these invalid ids
+      session_path = Path.join(SessionStore.session_dir(base_dir, "../escape"), "session.json")
+
+      refute File.exists?(session_path),
+             "no session.json should exist for invalid session id"
+
+      sub_path = Path.join(SessionStore.session_dir(base_dir, "sub/../escape"), "session.json")
+
+      refute File.exists?(sub_path),
+             "no session.json should exist for path-traversal id"
+    end
+
+    test "accepts normal alphanumeric session ids", %{base_dir: base_dir, session_id: session_id} do
+      assert :ok = SessionStore.save_session(base_dir, session_id, %{"a" => 1})
+      assert {:ok, _} = SessionStore.load_session(base_dir, session_id)
+    end
+
+    test "accepts session id with hyphens and underscores", %{base_dir: base_dir} do
+      assert :ok = SessionStore.save_session(base_dir, "my-session_id_123", %{"a" => 1})
+      assert {:ok, _} = SessionStore.load_session(base_dir, "my-session_id_123")
+    end
+
+    test "rejects non-binary session id", %{base_dir: base_dir} do
+      # session_dir/2 has a guard, but save_session validates
+      assert {:error, {:invalid_session_id, :atom_id}} =
+               SessionStore.save_session(base_dir, :atom_id, %{"a" => 1})
+    end
+
+    test "load_events rejects invalid session id", %{base_dir: base_dir} do
+      assert {:error, {:invalid_session_id, "../escape"}} =
+               SessionStore.load_events(base_dir, "../escape")
+    end
+
+    test "load_messages rejects invalid session id", %{base_dir: base_dir} do
+      assert {:error, {:invalid_session_id, "../escape"}} =
+               SessionStore.load_messages(base_dir, "../escape")
+    end
+  end
+
+  # ── save_session/3 and load_session/2 ──────────────────────────────────
 
   describe "save_session/3 and load_session/2" do
     test "happy path round-trip", %{base_dir: base_dir, session_id: session_id} do
@@ -80,12 +173,20 @@ defmodule Muse.SessionStoreTest do
       assert {:error, _reason} = SessionStore.load_session(base_dir, "no-such-session")
     end
 
-    test "returns error for corrupt session.json", %{base_dir: base_dir, session_id: session_id} do
+    test "returns error for corrupt session.json with {:corrupt_json, reason}",
+         %{base_dir: base_dir, session_id: session_id} do
       dir = SessionStore.session_dir(base_dir, session_id)
       File.mkdir_p!(dir)
       File.write!(Path.join(dir, "session.json"), "not valid json")
 
-      assert {:error, _reason} = SessionStore.load_session(base_dir, session_id)
+      assert {:error, {:corrupt_json, _reason}} =
+               SessionStore.load_session(base_dir, session_id)
+    end
+
+    test "returns error for unresolvable path", %{base_dir: base_dir} do
+      # A path that is guaranteed to fail File.read
+      assert {:error, _reason} =
+               SessionStore.load_session(base_dir, "nonexistent-session")
     end
 
     test "atomic write cleans up .tmp files", %{base_dir: base_dir, session_id: session_id} do
@@ -99,6 +200,8 @@ defmodule Muse.SessionStoreTest do
                |> Enum.filter(&String.ends_with?(&1, ".tmp"))
     end
   end
+
+  # ── append_event/3 and load_events/2 ───────────────────────────────────
 
   describe "append_event/3 and load_events/2" do
     test "append and replay in order", %{base_dir: base_dir, session_id: session_id} do
@@ -131,11 +234,11 @@ defmodule Muse.SessionStoreTest do
       assert {:ok, [], %{skipped: 0}} = SessionStore.load_events(base_dir, session_id)
     end
 
-    test "rejects values that cannot be serialized", %{base_dir: base_dir, session_id: session_id} do
-      # Jason cannot encode tuples (like anonymous function references)
-      assert_raise Protocol.UndefinedError, fn ->
-        SessionStore.append_event(base_dir, session_id, %{"bad" => fn -> :ok end})
-      end
+    test "returns error for values that cannot be serialized",
+         %{base_dir: base_dir, session_id: session_id} do
+      # Jason cannot encode anonymous functions
+      assert {:error, {:encode_failed, _reason}} =
+               SessionStore.append_event(base_dir, session_id, %{"bad" => fn -> :ok end})
     end
 
     test "separate namespaces from messages", %{base_dir: base_dir, session_id: session_id} do
@@ -158,15 +261,15 @@ defmodule Muse.SessionStoreTest do
       path = Path.join(dir, "events.jsonl")
 
       # Write one valid line and one partial (incomplete JSON)
-      File.write!(path, ~s|{"type":"valid"}
-{"type":"partial
-|)
+      File.write!(path, ~s|{"type":"valid"}\n{"type":"partial\n|)
 
       assert {:ok, events, %{skipped: 1}} = SessionStore.load_events(base_dir, session_id)
       assert length(events) == 1
       assert hd(events)["type"] == "valid"
     end
   end
+
+  # ── append_message/3 and load_messages/2 ───────────────────────────────
 
   describe "append_message/3 and load_messages/2" do
     test "append and replay", %{base_dir: base_dir, session_id: session_id} do
@@ -184,6 +287,8 @@ defmodule Muse.SessionStoreTest do
       assert second["role"] == "assistant"
     end
   end
+
+  # ── Corrupt-line handling ──────────────────────────────────────────────
 
   describe "corrupt-line handling" do
     test "skips corrupt lines mid-file", %{base_dir: base_dir, session_id: session_id} do
@@ -245,6 +350,8 @@ defmodule Muse.SessionStoreTest do
     end
   end
 
+  # ── Muse.Event round-trip ──────────────────────────────────────────────
+
   describe "Muse.Event round-trip" do
     test "serializes and deserializes a Muse.Event struct as map",
          %{base_dir: base_dir, session_id: session_id} do
@@ -275,7 +382,6 @@ defmodule Muse.SessionStoreTest do
       assert {:ok, loaded, %{skipped: 0}} = SessionStore.load_events(base_dir, session_id)
       assert length(loaded) == 5
 
-      # Verify events come back in order by checking data.index
       for {decoded, idx} <- Enum.zip(loaded, 1..5) do
         assert decoded["data"]["index"] == idx
       end
@@ -304,14 +410,121 @@ defmodule Muse.SessionStoreTest do
       assert :ok = SessionStore.append_event(base_dir, session_id, event)
       assert {:ok, [loaded], %{skipped: 0}} = SessionStore.load_events(base_dir, session_id)
 
-      # Atoms in data get serialized as strings
       assert loaded["data"]["status"] == "running"
       assert loaded["data"]["mode"] == "streaming"
     end
   end
 
+  # ── Sensitive key redaction ────────────────────────────────────────────
+
+  describe "sensitive key redaction" do
+    test "redacts sensitive keys from session snapshot",
+         %{base_dir: base_dir, session_id: session_id} do
+      data = %{
+        "objective" => "Build feature",
+        "api_key" => "sk-test-12345",
+        "config" => %{"token" => "secret-value", "name" => "safe"}
+      }
+
+      assert :ok = SessionStore.save_session(base_dir, session_id, data)
+      assert {:ok, loaded} = SessionStore.load_session(base_dir, session_id)
+
+      assert loaded["objective"] == "Build feature"
+      assert loaded["api_key"] == "**REDACTED**"
+      assert loaded["config"]["token"] == "**REDACTED**"
+      assert loaded["config"]["name"] == "safe"
+    end
+
+    test "redacts sensitive keys from events",
+         %{base_dir: base_dir, session_id: session_id} do
+      event_data = %{provider: "anthropic", api_key: "sk-ant-test", messages: [%{role: "user"}]}
+
+      assert :ok =
+               SessionStore.append_event(base_dir, session_id, %{
+                 "type" => "test",
+                 "data" => event_data
+               })
+
+      assert {:ok, [loaded], %{skipped: 0}} = SessionStore.load_events(base_dir, session_id)
+      assert loaded["data"]["api_key"] == "**REDACTED**"
+      assert loaded["data"]["provider"] == "anthropic"
+      assert loaded["data"]["messages"] == [%{"role" => "user"}]
+    end
+
+    test "redacts sensitive atom keys",
+         %{base_dir: base_dir, session_id: session_id} do
+      data = %{api_key: "sk-test-value", safe_field: "keep-me"}
+
+      assert :ok = SessionStore.save_session(base_dir, session_id, data)
+      assert {:ok, loaded} = SessionStore.load_session(base_dir, session_id)
+
+      assert loaded["api_key"] == "**REDACTED**"
+      assert loaded["safe_field"] == "keep-me"
+    end
+
+    test "redacted values are not the original secret in raw file",
+         %{base_dir: base_dir, session_id: session_id} do
+      data = %{"api_key" => "sk-test-12345", "password" => "hunter2"}
+
+      assert :ok = SessionStore.save_session(base_dir, session_id, data)
+
+      {:ok, raw} =
+        File.read(Path.join(SessionStore.session_dir(base_dir, session_id), "session.json"))
+
+      # The raw file must NOT contain the original secrets
+      refute String.contains?(raw, "sk-test-12345"),
+             "raw session.json must not contain original secret value"
+
+      refute String.contains?(raw, "hunter2"),
+             "raw session.json must not contain original password value"
+
+      # But it MUST contain the redaction marker
+      assert String.contains?(raw, "**REDACTED**"),
+             "raw session.json must contain redaction marker"
+    end
+
+    test "redacted secrets do not appear in raw events file",
+         %{base_dir: base_dir, session_id: session_id} do
+      event_data = %{provider: "anthropic", api_key: "sk-ant-real-test"}
+
+      SessionStore.append_event(
+        base_dir,
+        session_id,
+        %{"type" => "test", "data" => event_data}
+      )
+
+      {:ok, raw} =
+        File.read(Path.join(SessionStore.session_dir(base_dir, session_id), "events.jsonl"))
+
+      refute String.contains?(raw, "sk-ant-real-test"),
+             "raw events.jsonl must not contain original secret"
+
+      assert String.contains?(raw, "**REDACTED**"),
+             "raw events.jsonl must contain redaction marker"
+    end
+
+    test "non-sensitive keys are preserved",
+         %{base_dir: base_dir, session_id: session_id} do
+      data = %{
+        "source" => "cli",
+        "objective" => "build feature",
+        "config" => %{"model" => "gpt-4", "temperature" => 0.7}
+      }
+
+      assert :ok = SessionStore.save_session(base_dir, session_id, data)
+      assert {:ok, loaded} = SessionStore.load_session(base_dir, session_id)
+
+      assert loaded["source"] == "cli"
+      assert loaded["objective"] == "build feature"
+      assert loaded["config"]["model"] == "gpt-4"
+      assert loaded["config"]["temperature"] == 0.7
+    end
+  end
+
+  # ── No real secrets in persisted data ──────────────────────────────────
+
   describe "no secrets in persisted data" do
-    test "does not persist provider credentials in snapshot",
+    test "test data uses non-production credential patterns",
          %{base_dir: base_dir, session_id: session_id} do
       data = %{
         "objective" => "Build feature",
@@ -324,15 +537,12 @@ defmodule Muse.SessionStoreTest do
       {:ok, raw} =
         File.read(Path.join(SessionStore.session_dir(base_dir, session_id), "session.json"))
 
-      assert String.contains?(raw, "sk-test-12345"),
-             "SessionStore does not filter fields; secret hygiene is caller responsibility"
-
-      # Acceptance: test data must not contain real credentials
+      # SessionStore redacts, but this test is a safety net for test-data hygiene
       refute String.contains?(raw, "sk-prod-")
       refute String.contains?(raw, "Bearer")
     end
 
-    test "does not persist provider credentials in events",
+    test "test data uses non-production credential patterns in events",
          %{base_dir: base_dir, session_id: session_id} do
       event_data = %{provider: "anthropic", api_key: "sk-ant-test"}
 
@@ -345,9 +555,59 @@ defmodule Muse.SessionStoreTest do
       {:ok, raw} =
         File.read(Path.join(SessionStore.session_dir(base_dir, session_id), "events.jsonl"))
 
-      # Acceptance: test data uses non-production credentials
       refute String.contains?(raw, "sk-prod-")
       refute String.contains?(raw, "Bearer")
+    end
+  end
+
+  # ── Temp-dir isolation ─────────────────────────────────────────────────
+
+  describe "temp-dir isolation" do
+    test "each run uses a fresh base_dir", %{base_dir: base_dir, session_id: session_id} do
+      assert :ok = SessionStore.save_session(base_dir, session_id, %{"run" => 1})
+      assert {:ok, %{"run" => 1}} = SessionStore.load_session(base_dir, session_id)
+
+      # Session dir and session.json exist during the test
+      session_dir = SessionStore.session_dir(base_dir, session_id)
+      assert File.dir?(session_dir)
+      assert File.exists?(Path.join(session_dir, "session.json"))
+    end
+
+    test "subsequent run with fresh dir is independent",
+         %{base_dir: base_dir, session_id: session_id} do
+      # Fresh base_dir and session_id from setup
+      assert :ok = SessionStore.save_session(base_dir, session_id, %{"run" => 2})
+      assert {:ok, %{"run" => 2}} = SessionStore.load_session(base_dir, session_id)
+
+      # on_exit will clean up base_dir after the test completes
+    end
+  end
+
+  # ── Repeated deterministic runs ────────────────────────────────────────
+
+  describe "repeated deterministic runs" do
+    test "two saves and loads with same data produce same result",
+         %{base_dir: base_dir, session_id: session_id} do
+      data = %{"objective" => "test", "count" => 42}
+
+      assert :ok = SessionStore.save_session(base_dir, session_id, data)
+      assert {:ok, loaded1} = SessionStore.load_session(base_dir, session_id)
+
+      assert :ok = SessionStore.save_session(base_dir, session_id, data)
+      assert {:ok, loaded2} = SessionStore.load_session(base_dir, session_id)
+
+      assert loaded1 == loaded2
+    end
+
+    test "append and replay produces same events across multiple load calls",
+         %{base_dir: base_dir, session_id: session_id} do
+      SessionStore.append_event(base_dir, session_id, %{"seq" => 1})
+      SessionStore.append_event(base_dir, session_id, %{"seq" => 2})
+
+      assert {:ok, e1, %{skipped: 0}} = SessionStore.load_events(base_dir, session_id)
+      assert {:ok, e2, %{skipped: 0}} = SessionStore.load_events(base_dir, session_id)
+
+      assert e1 == e2
     end
   end
 end
