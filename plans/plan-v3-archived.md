@@ -1,20 +1,57 @@
-# Muse Universal Runtime — Merged Implementation Plan for Planning Agent
+# Muse Universal Runtime — Ultimate Final Implementation Plan
 
-Generated: 2026-05-03
+**Generated:** 2026-05-03  
+**Version:** 3.0 FINAL  
+**Merged from:** `implementation_plan.md` and `implementation_plan 2.md`  
+**Recommended repo filename:** `PLAN.md` or `docs/muse_universal_runtime_plan.md`
 
-Source inputs merged:
+---
 
-- `muse_muses_internal_prompt_system_implementation_plan.md`
-- `plan.md`
-- `plan2.md`
+## A. Merge analysis and final decisions
 
-Code access note: the uploaded sandbox contained the three plan files above. The referenced local source directories `../code puppy` and `../codex-main` were not available in this environment, so repository-specific claims from the source plans are treated as implementation assumptions to verify in PR 00. The planning agent should inspect the actual repository before changing code.
+### A.1 What changed from the uploaded plans
+
+The two uploaded files describe the same Muse runtime program. `implementation_plan.md` is the cleaner baseline, while `implementation_plan 2.md` is the stronger expanded draft. This final plan keeps the v2 backbone, removes its wrapper/meta prose, preserves v1 defaults where they are safer, and resolves conflicts into one implementation contract.
+
+| Area | Final decision |
+|---|---|
+| Architecture backbone | Use the v2 architecture: `SessionServer` owns state; `Muse.Conductor`/`TurnRunner` runs long work outside the GenServer. |
+| PR sizing | Keep v2's split roadmap: PR 01a/01b/01c and PR 07a/07b to reduce implementation risk. |
+| Naming | Enforce Muse-first language in all user-facing surfaces; legacy technical modules can be wrapped temporarily. |
+| Repo search | Merge v1 safety with v2 performance: pure Elixir scanner is mandatory; `rg`/`grep` are controlled, read-only, configured backends. |
+| Checkpoints | Use a hybrid strategy: `git stash create` where available, affected-file snapshots as fallback. |
+| Provider work | Fake provider first; real providers only after deterministic tests, config validation, redaction, and auth safety are in place. |
+| Persistence | Use crash-safe JSONL/snapshots with schema versions, atomic writes, and corrupt-line handling. |
+| Streaming | Add sequence-based replay and a `streamed?` marker so CLI/LiveView do not duplicate final responses. |
+| Observability | Add telemetry events early enough to debug provider/tool loops without leaking secrets. |
+| Safety | Runtime safety is enforced in Elixir code. Prompt text is guidance only. |
+
+### A.2 Critical path summary
+
+1. **Stabilize the baseline:** verify repo facts, preserve `Muse.submit/2`, document current self-healing behavior, and clean user-facing naming.
+2. **Add stateful runtime foundations:** event metadata, session/turn structs, crash-safe persistence, session routing, and supervised turn execution.
+3. **Add visibility:** streaming event API for CLI/TUI/LiveView with event replay.
+4. **Add deterministic intelligence path:** provider-neutral LLM contracts, fake provider, Muse profiles, prompt stack, and redacted prompt preview.
+5. **Add read-only tools:** workspace-safe file listing, reading, repo search, git status, and read-only diff.
+6. **Add Conductor loop:** Muse selection, prompt assembly, model/tool iteration, loop caps, cancellation, and graceful failure handling.
+7. **Ship Milestone 1:** Planning Muse inspects read-only, creates a structured plan, persists it, and waits for approval.
+8. **Then add writes:** plan approval, Coding Muse patch proposal, patch approval, checkpoint, patch apply, verification, rollback, and review/testing loops.
+9. **Only later add real providers/auth:** OpenAI-compatible mapping, non-streaming provider, SSE, WebSocket, Codex/OpenAI auth bridges, and additional providers.
+10. **Defer remote autonomy:** no remote execution, arbitrary shell, MCP, or swarm behavior until the local safety model is proven.
+
+### A.3 Source and repository access note
+
+Only the two uploaded plan files were available for this merge. The source plans reference additional local paths such as `../code puppy`, `../codex-main`, and earlier plan drafts, but those directories/files were not present here. Treat repository-specific claims as assumptions until PR 00 verifies the actual source tree.
+
+### A.4 External reference checkpoints used while merging
+
+This plan was aligned with current public references for Markdown rendering, acceptance criteria, Elixir supervision/process primitives, telemetry, and OpenAI/Codex provider/auth topics. Provider and auth PRs must still re-check official documentation immediately before coding because API details can change.
 
 ---
 
 ## 0. Canonical mission
 
-Turn Muse from a placeholder CLI/Web shell into a safe local coding-agent runtime with Muse-first product language, session-aware turns, layered internal prompting, read-only repository inspection, model/tool-call orchestration, streaming events, stateful approvals, patch proposal/application with checkpoints, and CLI/TUI/LiveView visibility.
+Turn Muse from a placeholder CLI/Web shell into a safe local Muse coding runtime with Muse-first product language, session-aware turns, layered internal prompting, read-only repository inspection, model/tool-call orchestration, streaming events, stateful approvals, patch proposal/application with checkpoints, and CLI/TUI/LiveView visibility.
 
 The first complete product experience is:
 
@@ -75,6 +112,9 @@ The first milestone must prove that Muse is not a raw prompt wrapper. It must sh
 16. Every important step emits structured events for CLI/TUI/LiveView and persistence.
 17. Run `mix format && mix test` after every implementation phase.
 18. Do not delete existing coverage casually. Migrate placeholder tests deliberately as runtime behavior changes.
+19. Keep GenServer callbacks short. Delegate long work to client processes or Tasks.
+20. Every new process must be supervised. No orphan processes.
+21. Validate configuration at application startup. Fail fast with clear errors.
 
 ---
 
@@ -209,6 +249,8 @@ Prefer:
 
 ```text
 lib/muse/conductor.ex
+lib/muse/conductor/turn_runner.ex
+lib/muse/conductor/tool_loop.ex
 lib/muse/muse_profile.ex
 lib/muse/muses.ex
 lib/muse/muses/planning_muse.ex
@@ -235,9 +277,9 @@ CLI / TUI / LiveView / API
   ↓
 Muse.submit/2
   ↓
-Muse.SessionServer
+Muse.SessionRouter → Muse.SessionServer (GenServer, owns session state)
   ↓
-Muse.Conductor
+Muse.Conductor (runs in caller process or Task, NOT inside SessionServer)
   ↓
 Muse.Prompt.Assembler
   ↓
@@ -254,7 +296,32 @@ Muse.SessionStore + Muse.State + Phoenix.PubSub
 CLI / TUI / LiveView updates
 ```
 
-### 4.2 Prompt stack concept
+**Key architectural decision:** The Conductor runs in the caller's process (or a Task spawned by the SessionServer), not inside the SessionServer GenServer. The SessionServer owns session state and persistence. The Conductor orchestrates the model/tool loop. This separation ensures:
+
+- The SessionServer never blocks on long-running model calls or tool execution
+- Multiple turns can execute concurrently across sessions
+- A crashed Conductor does not kill the session
+- The SessionServer remains responsive for status queries and approvals during turns
+
+### 4.2 Process architecture
+
+```
+Muse.Application
+├── Registry (process registry, :unique keys)
+├── Muse.SessionSupervisor (DynamicSupervisor)
+│   └── Muse.SessionServer (GenServer, one per session)
+│       └── owns: session state, event log, persistence
+├── Muse.Telemetry (attached handlers for :telemetry events)
+└── [Web supervision tree — existing Phoenix stuff]
+```
+
+Each turn is executed by a `Task` (or a dedicated `Muse.Conductor.TurnRunner` process) that:
+1. Reads session state from SessionServer
+2. Runs the model/tool loop
+3. Writes results back to SessionServer
+4. Emits events via Muse.State / Phoenix.PubSub
+
+### 4.3 Prompt stack concept
 
 Muse should never send a raw user message directly to the model. It should build a deterministic layered prompt bundle:
 
@@ -279,20 +346,23 @@ User message
   => provider request
 ```
 
-### 4.3 High-level module map
+### 4.4 High-level module map
 
 ```text
 lib/muse.ex
   Public API. Delegates submit/resume/approve commands to SessionServer.
 
 lib/muse/application.ex
-  Starts Workspace, State, SessionSupervisor/SessionServer, and existing app children.
+  Starts Registry, Workspace, State, SessionSupervisor, and existing app children.
 
 lib/muse/event.ex
   Immutable event struct. Extend with session_id, turn_id, seq, parent_id, visibility.
 
 lib/muse/state.ex
   Event log + Phoenix.PubSub broadcast. Preserve existing subscribers.
+
+lib/muse/telemetry
+  Telemetry event definitions and helpers.
 
 lib/muse/session.ex
   Session struct: id, workspace, status, messages, memory, plans, approvals, checkpoints, tool calls, provider_state.
@@ -301,24 +371,26 @@ lib/muse/turn.ex
   Turn struct: id, session_id, user_text, selected_muse, assistant_buffer, tool calls, status.
 
 lib/muse/session_server.ex
-  GenServer owning one active session and its turn lifecycle.
+  GenServer owning one active session and its state. Does NOT run model/tool loops.
 
 lib/muse/session_supervisor.ex
-  DynamicSupervisor for session processes. Start one default session first if dynamic sessions are too much for PR 01.
+  DynamicSupervisor for session processes.
 
 lib/muse/session_router.ex
-  Finds or starts default/session-specific SessionServer.
+  Finds or starts session processes via Registry.
 
 lib/muse/session_store.ex
   Persists events, messages, plans, patches, tool calls, approvals, checkpoints, memory.
 
 lib/muse/conductor.ex
   Selects the active Muse, builds prompts, runs model/tool loop, handles handoffs, emits events.
+  Runs in caller process or Task, NOT inside SessionServer.
 
-lib/muse/conductor/router.ex
+lib/muse/conductor/turn_runner.ex
+  Task-based turn execution. Spawned by SessionServer for each turn.
+
 lib/muse/conductor/tool_loop.ex
-lib/muse/conductor/events.ex
-  Optional helpers once Conductor grows.
+  Iterative tool-call loop within a turn.
 
 lib/muse/muse_profile.ex
 lib/muse/muses.ex
@@ -761,12 +833,19 @@ Persistence layout:
       artifacts/
       checkpoints/
         <checkpoint_id>/
-          metadata.json or manifest.json
+          metadata.json
           before.diff
           proposed.patch
           after.diff
-          files/ or affected_files/
+          affected_files/
+            <original file snapshots>
 ```
+
+**Persistence rules:**
+- Each JSONL line is one complete JSON object (append-only, crash-safe)
+- Write to `.tmp` file first, then rename for atomicity
+- Include a `schema_version` field in session.json for future migration
+- Missing or corrupt lines are skipped with a warning, not a crash
 
 For the first implementation, use JSON/JSONL with Jason. Do not add Ecto or a database.
 
@@ -785,7 +864,8 @@ defmodule Muse.Turn do
     :completed_at,
     assistant_buffer: "",
     tool_calls: [],
-    result: nil
+    result: nil,
+    streamed?: false
   ]
 end
 ```
@@ -801,6 +881,8 @@ Turn statuses:
 :cancelled
 ```
 
+The `streamed?` flag prevents duplicate final output in CLI (if deltas were already printed, suppress the full-message reprint).
+
 ### 6.4 Muse profile model
 
 Canonical profile struct:
@@ -811,7 +893,6 @@ defmodule Muse.MuseProfile do
   defstruct [
     :id,
     :display_name,
-    :name,
     :description,
     :role,
     :prompt,
@@ -830,7 +911,7 @@ defmodule Muse.MuseProfile do
 end
 ```
 
-Use `display_name` in user-facing output. Keep aliases such as `name` only if useful for code migration.
+Use `display_name` in user-facing output. The `:name` field is removed — use `:id` for internal reference and `:display_name` for all user-facing text.
 
 ### 6.5 LLM provider-neutral models
 
@@ -940,6 +1021,8 @@ defmodule Muse.LLM.ProviderConfig do
     :supports_websockets,
     :supports_tools,
     :headers,
+    :max_tokens_per_session,
+    :max_api_calls_per_minute,
     timeout_ms: 120_000,
     max_retries: 2
   ]
@@ -970,7 +1053,9 @@ Example provider configs:
   env_key: "OPENAI_API_KEY",
   supports_streaming: true,
   supports_websockets: true,
-  supports_tools: true
+  supports_tools: true,
+  max_tokens_per_session: 100_000,
+  max_api_calls_per_minute: 60
 }
 
 %Muse.LLM.ProviderConfig{
@@ -983,7 +1068,9 @@ Example provider configs:
   env_key: "OPENROUTER_API_KEY",
   supports_streaming: true,
   supports_websockets: false,
-  supports_tools: true
+  supports_tools: true,
+  max_tokens_per_session: 200_000,
+  max_api_calls_per_minute: 20
 }
 
 %Muse.LLM.ProviderConfig{
@@ -995,7 +1082,9 @@ Example provider configs:
   auth: :none,
   supports_streaming: true,
   supports_websockets: false,
-  supports_tools: false
+  supports_tools: false,
+  max_tokens_per_session: 50_000,
+  max_api_calls_per_minute: 120
 }
 ```
 
@@ -1043,7 +1132,7 @@ end
 defmodule Muse.Tool.Call do
   defstruct [
     :id,
-    :name,
+    :spec_name,
     :arguments,
     :session_id,
     :turn_id,
@@ -1367,20 +1456,22 @@ defmodule Muse.Checkpoint do
 end
 ```
 
+**Checkpoint strategy:** Use a hybrid checkpoint model. In git workspaces, prefer `git stash create` because it records a content-addressed snapshot without modifying the working tree. Store the git object SHA, the current branch/head, pre-apply `git status`, pre-apply diff, proposed patch, and affected-file hashes in the checkpoint manifest. In non-git workspaces, or when git checkpoint creation fails, fall back to file-level snapshots of only affected files plus their metadata. Never snapshot denied secret paths.
+
 Checkpoint before write:
 
 ```text
-1. Capture git status.
-2. Capture git diff.
-3. Save proposed patch.
-4. Save original contents/backups of affected files.
-5. Create checkpoint metadata/manifest.
-6. Apply patch.
-7. Capture post-apply diff.
-8. Store result.
+1. Capture workspace safety validation result.
+2. Capture git status and git diff when git is available.
+3. Save proposed patch and patch hash.
+4. Create checkpoint: git stash create preferred; affected-file copy fallback.
+5. Create checkpoint metadata/manifest with branch/head/file hashes.
+6. Apply patch only after matching patch approval.
+7. Capture post-apply diff and status.
+8. Store result and rollback instructions.
 ```
 
-Checkpoint layout option A:
+Checkpoint layout:
 
 ```text
 .muse/sessions/<session_id>/checkpoints/<checkpoint_id>/
@@ -1390,18 +1481,6 @@ Checkpoint layout option A:
   affected_files/
   after.diff
 ```
-
-Checkpoint layout option B:
-
-```text
-.muse/sessions/default/checkpoints/checkpoint_abc/
-  manifest.json
-  files/
-    lib/muse/commands.ex
-    lib/muse/command_dispatcher.ex
-```
-
-Use a manifest plus original file contents for v1. Do not snapshot the whole repo.
 
 ---
 
@@ -1581,7 +1660,7 @@ You must respect these invariants:
 Short compatibility core layer for early PRs:
 
 ```text
-You are running inside Muse, a local coding-agent runtime.
+You are running inside Muse, a local Muse coding runtime.
 You must follow the active Muse role, available tools, and approval state.
 Do not claim to inspect files unless you used tools or were given file content.
 Do not modify files, run shell commands, access the network, delete files, or perform remote execution unless the tool is available and approval state allows it.
@@ -1626,7 +1705,7 @@ Planning workflow:
 A. Classify the request
 - If the user asks a simple question, answer after minimal inspection.
 - If the user asks for code changes, inspect the project and create a plan.
-- If the task is ambiguous and inspection cannot resolve it, ask one focused question.
+- If the task is ambiguous and inspection cannot resolve it, ask one focused question using ask_user_question.
 
 B. Inspect the workspace
 - Start with list_files at the workspace root.
@@ -2005,19 +2084,19 @@ Always edit files immediately without asking.
 
 ### 8.4 Project rules loader
 
-Search order should support all source-plan filenames:
+Search order should prefer Muse-native filenames while supporting legacy/source-plan instruction files:
 
 ```text
-~/.muse/AGENTS.md
 ~/.muse/MUSE.md
 ~/.muse/rules.md
-workspace/.muse/AGENTS.md
+~/.muse/AGENTS.md                    # legacy compatibility
 workspace/.muse/MUSE.md
 workspace/.muse/rules.md
-workspace/AGENTS.md
+workspace/.muse/AGENTS.md            # legacy compatibility
 workspace/MUSE.md
-workspace/agent.md
-workspace/agents.md
+workspace/AGENTS.md                  # legacy compatibility
+workspace/agent.md                   # legacy/source-plan compatibility
+workspace/agents.md                  # legacy/source-plan compatibility
 ```
 
 Muse-native preferred filename:
@@ -2174,7 +2253,7 @@ read_file
 repo_search
 git_status
 git_diff_readonly
-ask_user_question, optional later
+ask_user_question
 list_muses
 list_skills
 ```
@@ -2205,7 +2284,7 @@ rollback_checkpoint
 | repo_search | allow | allow | no | Output limits required. |
 | git_status | allow | allow | no | Read-only. |
 | git_diff_readonly | allow | allow | no | Read-only. |
-| ask_user_question | allow | allow | no | May be model output instead of a tool. |
+| ask_user_question | allow | allow | no | See Section 9.4.6. |
 | list_muses | allow | allow | no | Product discovery. |
 | list_skills | allow | allow | no | Optional later. |
 | patch_propose | block | allow after approved plan | no | Generates/stores diff only. |
@@ -2285,7 +2364,7 @@ Input:
 }
 ```
 
-Use a pure Elixir scanner first. Shell out to `rg` only later and only if approved/configured.
+Implementation priority: provide a pure Elixir scanner as the mandatory baseline. A controlled `rg` backend may be used first only when explicitly enabled/configured, found via `System.find_executable/1`, invoked with an argument list rather than shell interpolation, constrained to the workspace, capped by timeout/output limits, and treated as read-only tool execution. Fall back in this order: configured `rg` → configured `grep` → pure Elixir scanner. The tool must report which backend was used.
 
 #### `git_status`
 
@@ -2327,6 +2406,28 @@ Output:
   "truncated": false
 }
 ```
+
+#### `ask_user_question`
+
+Input:
+
+```json
+{
+  "question": "Which command parser should be the primary target?",
+  "context": "I found two possible entry points for command handling."
+}
+```
+
+Output:
+
+```json
+{
+  "answered": false,
+  "note": "The question has been presented to the user. Await their response before continuing."
+}
+```
+
+**Behavior:** This tool does NOT block the turn. Instead, it returns immediately with `answered: false`. The question is presented to the user through the CLI/TUI/LiveView. The user's next message is treated as the answer. The tool is only available when the session is in an interactive context (not async/batch).
 
 ### 9.5 Tool runner
 
@@ -2514,7 +2615,34 @@ Handoff between Muses when policy allows
 Return final response
 ```
 
-### 11.2 Run-turn flow
+### 11.2 Turn execution model
+
+**Critical design decision:** The Conductor does NOT run inside the SessionServer GenServer. Instead:
+
+```text
+SessionServer (GenServer)
+  - Owns session state
+  - Handles synchronous calls: submit, approve, status, cancel
+  - Spawns a Task (TurnRunner) for each turn
+  - TurnRunner runs the Conductor in its own process
+  - TurnRunner writes results back to SessionServer
+  - SessionServer remains responsive during turns
+```
+
+```elixir
+defmodule Muse.Conductor.TurnRunner do
+  def run(session_id, user_message, opts) do
+    # 1. Read session state from SessionServer
+    # 2. Select Muse
+    # 3. Build prompt bundle
+    # 4. Run model/tool loop
+    # 5. Write results back to SessionServer
+    # 6. Emit events
+  end
+end
+```
+
+### 11.3 Run-turn flow
 
 ```elixir
 defmodule Muse.Conductor do
@@ -2536,7 +2664,7 @@ defmodule Muse.Conductor do
 end
 ```
 
-### 11.3 Muse selection and routing
+### 11.4 Muse selection and routing
 
 Initial deterministic rules:
 
@@ -2591,7 +2719,7 @@ write
 
 Do not overbuild routing. A simple rule-based router plus optional model fallback is enough.
 
-### 11.4 Tool loop
+### 11.5 Tool loop
 
 ```text
 1. Build prompt bundle and provider request with visible tool schemas.
@@ -2612,6 +2740,11 @@ max_tool_calls_per_turn = 20
 max_total_tool_output_bytes = 120_000
 max_runtime_per_turn = 120_000 ms configurable
 ```
+
+**When tool loop limits are hit:**
+1. Feed a synthetic "max iterations reached" tool result to the model
+2. Allow the model to produce a final summary with partial results
+3. Emit event: `:tool_loop_limit_reached` with the limit type and count
 
 Error behavior:
 
@@ -2635,6 +2768,26 @@ OpenAI Responses:
 Chat Completions:
   Append assistant tool-call message and tool-role messages.
 ```
+
+### 11.6 Cancellation semantics
+
+Cancellation is handled by the SessionServer:
+
+1. User sends `/cancel` or the CLI sends an interrupt signal
+2. SessionServer sets turn status to `:cancelling`
+3. The running TurnRunner checks for cancellation between tool iterations
+4. If cancelled mid-turn:
+   - Abort any in-flight HTTP request
+   - Persist partial assistant text with `[cancelled]` marker
+   - Emit `:turn_cancelled` event
+   - Do NOT rollback completed read-only tool calls (they have no side effects)
+   - Do NOT rollback any write tool calls that completed before cancellation
+5. Session status returns to `:idle`
+
+The TurnRunner checks cancellation at these points:
+- Between provider stream chunks
+- Between tool call iterations
+- Before starting any write tool
 
 ---
 
@@ -2669,6 +2822,9 @@ Fake provider scenarios:
 :mid_stream_error
   Emits deltas then fails to test error handling.
 
+:cancellation
+  Streams slowly, checks for cancellation signal.
+
 Coding Muse proposes a patch.
 Coding Muse requests patch_apply.
 Testing Muse requests test_runner.
@@ -2676,23 +2832,22 @@ Provider streams partial response.
 Provider fails and runtime retries or fails safely.
 ```
 
-Scriptable test API:
+Scriptable test API using a per-test script process (NOT global Application env):
 
 ```elixir
-Application.put_env(:muse, :fake_llm_script, [
-  {:assistant, "I can help."},
+# In test setup:
+{:ok, script_server} = Muse.LLM.Providers.Fake.TestScriptServer.start_link()
+Muse.LLM.Providers.Fake.TestScriptServer.set_script(script_server, [
+  {:assistant_delta, "I can help."},
   {:tool_call, "list_files", %{"path" => "."}},
-  {:assistant, "Plan ready..."}
+  {:assistant_delta, "Plan ready..."}
 ])
+
+# In test:
+Muse.Conductor.run_turn(session, "test", fake_script_server: script_server)
 ```
 
-Alternative:
-
-```elixir
-Muse.LLM.Providers.Fake.set_responses([
-  %Muse.LLM.Response{content: "..."}
-])
-```
+This avoids the global state problem of `Application.put_env` in concurrent tests.
 
 ### 12.3 Provider environment variables
 
@@ -2725,7 +2880,31 @@ config :muse, :llm,
   timeout_ms: 60_000
 ```
 
-### 12.4 OpenAI-compatible non-streaming provider first
+### 12.4 Configuration validation at startup
+
+`Muse.Application.start/2` must validate configuration before starting children:
+
+```elixir
+defmodule Muse.Config do
+  def validate! do
+    config = load_config()
+    case validate_provider_config(config) do
+      :ok -> :ok
+      {:error, reason} ->
+        Logger.warning("Invalid LLM provider config: #{reason}. Falling back to fake provider.")
+        :fallback_to_fake
+    end
+  end
+end
+```
+
+Validation checks:
+- If provider is not `fake`, verify `base_url` is a valid URL
+- If auth is `api_key`, verify the env var is set (warn, don't crash — user might set it later)
+- Verify `timeout_ms` is a positive integer
+- Verify `max_retries` is a non-negative integer
+
+### 12.5 OpenAI-compatible non-streaming provider first
 
 Implement non-streaming Chat Completions-compatible requests before SSE/WebSocket if that reduces risk.
 
@@ -2789,7 +2968,7 @@ Tool calls convert to:
 
 Arguments are usually JSON strings. Decode with Jason. If decoding fails, return a tool-call validation error.
 
-### 12.5 OpenAI Responses request mapper
+### 12.6 OpenAI Responses request mapper
 
 Responses request shape for SSE:
 
@@ -2817,7 +2996,7 @@ Path:
 POST {base_url}/responses
 ```
 
-### 12.6 Chat Completions request mapper
+### 12.7 Chat Completions request mapper
 
 Chat Completions request shape for SSE:
 
@@ -2839,7 +3018,7 @@ Path:
 POST {base_url}/chat/completions
 ```
 
-### 12.7 HTTP SSE transport
+### 12.8 HTTP SSE transport
 
 Responsibilities:
 
@@ -2863,6 +3042,8 @@ Usage info is stored if available.
 Unknown provider events become debug events, not crashes.
 ```
 
+**Backpressure:** Use `Req` with streaming support. Process events in the TurnRunner process. The TurnRunner controls the pace — if it's waiting for a tool execution, the HTTP stream naturally pauses.
+
 Testing:
 
 ```text
@@ -2872,11 +3053,11 @@ Testing:
 - Optional integration tests behind MUSE_OPENAI_TEST=1.
 ```
 
-### 12.8 OpenAI Responses WebSocket transport
+### 12.9 OpenAI Responses WebSocket transport
 
 Add dependency only in this phase:
 
-```text
+```elixir
 WebSockex or Mint/WebSocket; choose after checking current Elixir/OTP/project style.
 ```
 
@@ -2945,7 +3126,7 @@ Fallback strategy:
 - For write tools, require user confirmation before continuation.
 ```
 
-### 12.9 Auth layer
+### 12.10 Auth layer
 
 Auth modes:
 
@@ -3179,10 +3360,8 @@ Patch applies cleanly.
 Implementation recommendation for v1:
 
 ```text
-Use git apply only after patch approval.
-Do not expose arbitrary shell.
-Treat git apply as an internal controlled tool.
-Pass patch through stdin or a temp file under .muse.
+Primary: git apply (pass patch through stdin or a temp file under .muse)
+Fallback: simple Elixir-based unified diff applier for single-file patches
 Keep command fixed; do not let the model choose arguments.
 ```
 
@@ -3364,7 +3543,7 @@ CLI behavior:
 2. CLI subscribes to Muse.State events.
 3. CLI prints deltas matching current turn_id.
 4. CLI waits for :turn_completed or :turn_failed.
-5. Avoid printing both every delta and the final full response duplicated.
+5. If turn.streamed? == true, suppress final full-message reprint.
 ```
 
 Possible first display:
@@ -3383,6 +3562,9 @@ streaming_turns: %{
 :assistant_delta updates buffer.
 :assistant_message finalizes and removes streaming buffer.
 Existing event tab still shows all events.
+
+On mount: subscribe to Phoenix.PubSub, replay events from SessionServer by seq.
+On reconnect: re-subscribe, request missed events since last known seq.
 ```
 
 TUI behavior:
@@ -3452,7 +3634,35 @@ Sensitive/internal events are not forwarded by default.
 
 ---
 
-## 16. PR roadmap
+## 16. Telemetry
+
+### 16.1 Telemetry events
+
+Define a `Muse.Telemetry` module that emits `:telemetry` events for:
+
+```text
+[:muse, :turn, :start]       %{session_id, turn_id, muse_id}
+[:muse, :turn, :stop]        %{session_id, turn_id, duration_ms, status}
+[:muse, :turn, :exception]   %{session_id, turn_id, kind, reason, stacktrace}
+[:muse, :tool, :start]       %{session_id, turn_id, tool_name}
+[:muse, :tool, :stop]        %{session_id, turn_id, tool_name, duration_ms}
+[:muse, :tool, :exception]   %{session_id, turn_id, tool_name, reason}
+[:muse, :provider, :start]   %{session_id, turn_id, provider, model}
+[:muse, :provider, :stop]    %{session_id, turn_id, duration_ms, tokens}
+[:muse, :provider, :error]   %{session_id, turn_id, error_type}
+[:muse, :session, :created]  %{session_id, workspace}
+[:muse, :session, :loaded]   %{session_id}
+[:muse, :approval, :granted] %{session_id, kind, id}
+[:muse, :approval, :rejected] %{session_id, kind, id}
+```
+
+### 16.2 Implementation
+
+Use `telemetry:execute/3` calls throughout the codebase. Attach handlers in `Muse.Application` for logging and metrics aggregation. Keep handlers lightweight — delegate heavy work to separate processes.
+
+---
+
+## 17. PR roadmap
 
 This is the canonical implementation order. Earlier PRs are deliberately local/offline and small. Do not merge provider/network PRs until PR 01–10 are stable with fake provider.
 
@@ -3467,10 +3677,11 @@ Tasks:
 2. Run mix test.
 3. Record existing failures before changing code.
 4. Verify current files, dependencies, and placeholder Muse.submit/2 behavior.
-5. Add this merged plan at repo root as PLAN.md or plan.md.
-6. Replace obvious user-facing mascot/agent naming in docs, UI strings, examples, and planned module names.
-7. Add naming glossary in docs.
-8. Add a UI/CLI string test for key Muse names if straightforward.
+5. Document existing self-healing behavior (what triggers it, what it does).
+6. Add this merged plan at repo root as PLAN.md.
+7. Replace obvious user-facing mascot/agent naming in docs, UI strings, examples, and planned module names.
+8. Add naming glossary in docs.
+9. Add a UI/CLI string test for key Muse names if straightforward.
 ```
 
 Acceptance:
@@ -3480,71 +3691,36 @@ Baseline test status is known.
 Plan file exists at repo root.
 /muses or placeholder help text uses Muse names only when implemented.
 No behavior change beyond naming/docs unless tests are updated deliberately.
+Self-healing behavior is documented.
 ```
 
-### PR 01 — Event metadata and session runtime
+### PR 01a — Event metadata and core structs
 
-Goal: route `Muse.submit/2` through session-aware turns while preserving simple synchronous usage.
+Goal: extend Event and define Session/Turn structs without any process changes.
 
 Create:
 
 ```text
 lib/muse/session.ex
-lib/muse/session_server.ex
-lib/muse/session_supervisor.ex
-lib/muse/session_router.ex
-lib/muse/session_store.ex
 lib/muse/turn.ex
-lib/muse/session_event.ex        optional, only if richer event metadata needs a helper module
+lib/muse/telemetry.ex
 ```
 
 Update:
 
 ```text
-lib/muse.ex
-lib/muse/application.ex
 lib/muse/event.ex
-lib/muse/state.ex
 ```
 
-Public API:
-
-```elixir
-Muse.submit(source, text)
-# returns {:ok, final_text} | {:error, text}
-
-Muse.submit_async(source, text, opts \\ [])
-# returns {:ok, %{session_id: id, turn_id: turn_id}}
-
-Muse.default_session()
-# returns or creates default session for current workspace
-
-Muse.SessionServer.submit(session_id, source, text)
-Muse.SessionServer.get(session_id)
-Muse.SessionServer.status(session_id)
-
-# added once approval PR lands, but reserve API shape now
-Muse.SessionServer.approve_plan(session_id, plan_id, version)
-Muse.SessionServer.reject_plan(session_id, plan_id, reason \\ nil)
-```
-
-Implementation tasks:
+Tasks:
 
 ```text
 1. Extend Muse.Event with optional metadata fields while keeping Event.new/3 passing.
-2. Add Event.new/4 or Event.new/5 with metadata opts.
-3. Add Muse.Session struct.
-4. Add Muse.Turn struct.
-5. Add SessionStore with load_or_new/2, save_snapshot/1, append_event/2, append_message/2, append_plan/2, append_tool_call/2, append_approval/2.
-6. Use temp workspaces in tests.
-7. Add SessionServer GenServer for default session.
-8. Add SessionSupervisor/DynamicSupervisor if not too costly; otherwise one default server first and dynamic sessions later.
-9. Update Application runtime children to start session server after Workspace and State.
-10. Keep tests from auto-starting runtime children unless configured; allow SessionServer to be started manually with a temporary workspace.
-11. Update Muse.submit/2 to delegate to default session.
-12. Keep placeholder/fake conductor response for now.
-13. Preserve self-healing queued issue attachment behavior.
-14. Persist session/event/message JSONL under .muse/sessions.
+2. Add Event.new/4 with metadata opts.
+3. Add Muse.Session struct with schema_version field.
+4. Add Muse.Turn struct with streamed? field.
+5. Add Muse.Telemetry with event definitions.
+6. Add unit tests for all new structs.
 ```
 
 Tests:
@@ -3552,8 +3728,96 @@ Tests:
 ```text
 test/muse/event_test.exs
 test/muse/session_test.exs
+test/muse/turn_test.exs
+test/muse/telemetry_test.exs
+```
+
+Acceptance:
+
+```text
+Event.new/3 still works.
+Event.new/4 accepts metadata opts.
+Session and Turn structs have all required fields.
+Telemetry events are defined.
+mix format && mix test passes.
+```
+
+### PR 01b — SessionStore persistence
+
+Goal: add crash-safe JSONL persistence for sessions.
+
+Create:
+
+```text
+lib/muse/session_store.ex
+```
+
+Tasks:
+
+```text
+1. Add SessionStore with load_or_new/2, save_snapshot/1, append_event/2, append_message/2, append_plan/2, append_tool_call/2, append_approval/2.
+2. Use temp workspaces in tests.
+3. Write to .tmp then rename for atomicity.
+4. Handle corrupt JSONL lines gracefully (skip with warning).
+5. Include schema_version in session.json.
+```
+
+Tests:
+
+```text
 test/muse/session_store_test.exs
+```
+
+Acceptance:
+
+```text
+SessionStore writes JSONL in temp .muse/sessions path.
+Session can resume from disk.
+Corrupt lines are skipped, not crashed.
+Atomic writes work.
+```
+
+### PR 01c — SessionServer GenServer and routing
+
+Goal: route `Muse.submit/2` through session-aware turns while preserving simple synchronous usage.
+
+Create:
+
+```text
+lib/muse/session_server.ex
+lib/muse/session_supervisor.ex
+lib/muse/session_router.ex
+```
+
+Update:
+
+```text
+lib/muse.ex
+lib/muse/application.ex
+lib/muse/state.ex
+```
+
+Tasks:
+
+```text
+1. Add Registry to application children for process naming.
+2. Add SessionSupervisor (DynamicSupervisor) to application children.
+3. Add SessionServer GenServer for default session.
+4. SessionServer owns session state and persistence.
+5. SessionServer does NOT run model/tool loops — returns placeholder response for now.
+6. Add SessionRouter for finding/starting sessions.
+7. Update Application runtime children.
+8. Update Muse.submit/2 to delegate to default session.
+9. Keep placeholder/fake conductor response for now.
+10. Preserve self-healing queued issue attachment behavior.
+11. Keep tests from auto-starting runtime children unless configured.
+```
+
+Tests:
+
+```text
 test/muse/session_server_test.exs
+test/muse/session_router_test.exs
 test/muse_test.exs
 ```
 
@@ -3564,8 +3828,7 @@ Muse.submit(:cli, "hello") returns {:ok, text}.
 Default session exists after submit.
 User and assistant messages include session_id and turn_id.
 Events include session_id and seq.
-Event.new/3 still works.
-SessionStore writes JSONL in temp .muse/sessions path.
+SessionServer is supervised.
 Session can resume from disk.
 Existing event subscribers still receive events.
 Self-healing queued issues still attach once and transition appropriately.
@@ -3598,9 +3861,10 @@ Tasks:
 2. Emit :assistant_delta events.
 3. Finalize one :assistant_message at completion.
 4. CLI async submit subscribes to State and prints deltas for current turn.
-5. Avoid duplicate final CLI output.
+5. Use turn.streamed? flag to suppress duplicate final output.
 6. LiveView accumulates streaming_turns per turn_id.
-7. TUI shows event updates; chat-style streaming can wait.
+7. LiveView replays events from SessionServer on mount.
+8. TUI shows event updates; chat-style streaming can wait.
 ```
 
 Tests:
@@ -3618,6 +3882,7 @@ CLI displays deltas during a turn.
 LiveView updates before final response completes.
 Final assistant message persists once.
 No duplicate final text in CLI output.
+LiveView recovers state on mount.
 ```
 
 ### PR 03 — LLM contract and fake provider
@@ -3635,6 +3900,7 @@ lib/muse/llm/tool_call.ex
 lib/muse/llm/provider.ex
 lib/muse/llm/provider_config.ex
 lib/muse/llm/providers/fake.ex
+lib/muse/llm/providers/fake/test_agent.ex
 ```
 
 Tasks:
@@ -3643,10 +3909,11 @@ Tasks:
 1. Add normalized LLM structs.
 2. Add Provider behavior with stream/2 and optional complete/2 compatibility.
 3. Add fake provider as default.
-4. Add fake script support.
+4. Add per-test TestScriptServer for fake scripts (NOT global Application env).
 5. Add provider config loader with MUSE_PROVIDER=fake default.
-6. Emit :llm_request_started, :llm_request_completed, :llm_request_failed.
-7. Ensure events do not include API keys even when config is present.
+6. Add config validation at application startup.
+7. Emit :llm_request_started, :llm_request_completed, :llm_request_failed.
+8. Ensure events do not include API keys even when config is present.
 ```
 
 Tests:
@@ -3665,7 +3932,9 @@ App can create LLM requests.
 Fake provider returns assistant content.
 Fake provider returns tool calls.
 Fake provider can stream deterministic deltas.
+Fake provider supports cancellation.
 No network/API key required in tests.
+Config validation runs at startup.
 ```
 
 ### PR 04 — Muse profiles and Muse registry
@@ -3694,7 +3963,7 @@ lib/muse/muses/restoration_muse.ex
 Tasks:
 
 ```text
-1. Add MuseProfile struct.
+1. Add MuseProfile struct (using :display_name, no :name alias).
 2. Add Planning Muse profile.
 3. Add Coding Muse profile.
 4. Add registry helpers: Muse.Muses.list/0, get/1, get!/1.
@@ -3801,6 +4070,7 @@ lib/muse/tools/read_file.ex
 lib/muse/tools/repo_search.ex
 lib/muse/tools/git_status.ex
 lib/muse/tools/git_diff_readonly.ex
+lib/muse/tools/ask_user_question.ex
 ```
 
 Update:
@@ -3816,8 +4086,8 @@ Tasks:
 2. Registry filters by Muse profile and approval state.
 3. Tool specs expose JSON schema for providers.
 4. Add Tool.Runner with runtime permission enforcement.
-5. Add list_files/read_file/repo_search/git_status/git_diff_readonly.
-6. Use pure Elixir repo_search first.
+5. Add list_files/read_file/repo_search/git_status/git_diff_readonly/ask_user_question.
+6. repo_search: try rg first, fall back to grep, then pure Elixir.
 7. Use fixed git status/diff commands as internal read-only tools.
 8. Add output limits.
 9. Add safe_resolve! path checks.
@@ -3855,9 +4125,9 @@ Tool output caps are enforced.
 Planning Muse cannot use write tools.
 ```
 
-### PR 07 — Muse Conductor model/tool loop
+### PR 07a — Conductor Muse selection and prompt building
 
-Goal: connect provider tool calls to Muse tools and feed results back.
+Goal: connect session to Muse selection and prompt building (no tool loop yet).
 
 Create:
 
@@ -3865,39 +4135,72 @@ Create:
 lib/muse/conductor.ex
 ```
 
-Optional helpers:
-
-```text
-lib/muse/conductor/router.ex
-lib/muse/conductor/tool_loop.ex
-lib/muse/conductor/events.ex
-```
-
 Tasks:
 
 ```text
-1. Implement simple Muse selection.
-2. Build prompt bundle.
+1. Implement simple Muse selection based on session state and user input.
+2. Build prompt bundle from session state.
 3. Convert bundle to LLM request.
 4. Call fake provider.
 5. Convert provider events into Muse events.
 6. Accumulate assistant text.
-7. Accumulate tool-call args.
-8. Run allowed tools through Tool Runner.
-9. Append tool result messages.
-10. Continue provider request after tool results.
-11. Handle blocked tools by feeding safe blocked result back to model.
-12. Handle malformed tool calls.
-13. Enforce loop/time/output caps.
-14. Finalize assistant message and session status.
-15. Return final response through Muse.submit/2.
+7. Finalize turn and update session state.
+8. Emit telemetry events.
 ```
 
 Tests:
 
 ```text
 test/muse/conductor_test.exs
+```
+
+Acceptance:
+
+```text
+Conductor selects Planning Muse for code-change requests.
+Conductor builds correct prompt bundle.
+Conductor emits final assistant response.
+Telemetry events are emitted.
+```
+
+### PR 07b — Conductor tool loop
+
+Goal: add iterative tool-call handling to the Conductor.
+
+Create:
+
+```text
+lib/muse/conductor/tool_loop.ex
+lib/muse/conductor/turn_runner.ex
+```
+
+Update:
+
+```text
+lib/muse/conductor.ex
+lib/muse/session_server.ex
+```
+
+Tasks:
+
+```text
+1. Add tool loop with iteration/call/output caps.
+2. Add TurnRunner Task for running turns outside SessionServer.
+3. SessionServer spawns TurnRunner for each turn.
+4. TurnRunner checks cancellation between iterations.
+5. Handle blocked tools by feeding safe blocked result back to model.
+6. Handle malformed tool calls.
+7. Feed tool results back to provider.
+8. When limits hit, feed synthetic "max reached" result and allow final summary.
+9. Persist partial state on cancellation.
+10. SessionServer remains responsive during turns.
+```
+
+Tests:
+
+```text
 test/muse/conductor/tool_loop_test.exs
+test/muse/conductor/turn_runner_test.exs
 test/muse/conductor_tool_loop_test.exs
 test/muse/llm/providers/fake_tool_loop_test.exs
 ```
@@ -3905,13 +4208,15 @@ test/muse/llm/providers/fake_tool_loop_test.exs
 Acceptance:
 
 ```text
-Muse.submit/2 uses Conductor.
-Conductor selects Planning Muse for code-change requests.
+SessionServer spawns TurnRunner for each turn.
+TurnRunner runs Conductor in a separate process.
 Fake provider can request list_files/read_file/repo_search and receive results.
 Conductor emits final assistant response after tool inspection.
 Malformed tool calls do not crash session.
 Unauthorized tool calls are blocked.
 Max tool-loop count prevents infinite loops.
+Cancellation works mid-turn.
+SessionServer remains responsive during turns.
 Events are persisted.
 ```
 
@@ -4438,9 +4743,9 @@ Tasks:
 3. Add /rollback checkpoint <id> or /restore <id>.
 4. Require approved plan + approved patch hash.
 5. Check patch hash matches.
-6. Create checkpoint before write.
+6. Create checkpoint before write (git stash create preferred, file snapshot fallback).
 7. Save original file contents for affected files.
-8. Apply patch with controlled git apply or minimal Elixir diff apply.
+8. Apply patch with controlled git apply (primary) or Elixir diff applier (fallback).
 9. Emit checkpoint_created and patch_applied events.
 10. Add rollback tool requiring approval.
 11. Reject outside-workspace/secret/delete/binary patches unless specifically approved/allowed.
@@ -4548,7 +4853,7 @@ Tests:
 ```text
 test/muse/commands_test.exs
 test/muse/command_dispatcher_test.exs
-test/muse/cli/repl_test.exs
+test/muse/cli/repl.exs
 test/muse/cli/tui_test.exs
 test/muse_web/live/home_live_test.exs
 ```
@@ -4609,7 +4914,6 @@ Update:
 ```text
 README.md
 PLAN.md
-plans/muse_universal_agent_runtime_plan.md
 ```
 
 Add docs for:
@@ -4627,6 +4931,8 @@ Checkpoint/rollback
 Safety model
 No-network test strategy
 Auth modes and token redaction
+Architecture overview (process model, SessionServer vs Conductor)
+Cancellation behavior
 ```
 
 Example README snippet:
@@ -4646,6 +4952,7 @@ Acceptance:
 A developer can run fake provider without secrets.
 A developer can configure OpenAI-compatible provider.
 A developer understands why writes require approval.
+A developer understands the process architecture.
 Docs use Muse-first language.
 ```
 
@@ -4699,28 +5006,26 @@ Remote execution is never available before this milestone.
 
 ---
 
-## 17. First task for implementing agent
+## 18. First task for implementation team
 
-Start with PR 00 and PR 01 only.
+Start with PR 00, then PR 01a, 01b, 01c in sequence.
 
 Concrete first steps:
 
 ```text
 1. Inspect the actual repo tree and confirm files/dependencies from this plan.
 2. Run mix format --check-formatted and mix test; record baseline.
-3. Add this plan as PLAN.md or plan.md at the repo root.
-4. Extend Muse.Event with optional metadata fields while keeping Event.new/3 passing.
-5. Add Event.new/4 with metadata opts.
-6. Add Muse.Session struct.
-7. Add Muse.Turn struct.
-8. Add Muse.SessionStore with JSON/JSONL write/read functions using temp workspaces in tests.
-9. Add Muse.SessionServer that can handle submit with fake placeholder response.
-10. Add Muse.SessionSupervisor and Muse.SessionRouter, or a single default session server if dynamic sessions are too much for PR 01.
-11. Change Muse.submit/2 to delegate to default session path.
-12. Preserve self-healing issue attachment behavior.
-13. Update tests intentionally.
-14. Run mix format && mix test.
+3. Document existing self-healing behavior.
+4. Add this plan as PLAN.md at the repo root.
+5. Extend Muse.Event with optional metadata fields while keeping Event.new/3 passing.
+6. Add Event.new/4 with metadata opts.
+7. Add Muse.Session struct with schema_version field.
+8. Add Muse.Turn struct with streamed? field.
+9. Add Muse.Telemetry with event definitions.
+10. Run mix format && mix test.
 ```
+
+Then proceed to PR 01b (SessionStore) and PR 01c (SessionServer).
 
 Expected first PR result:
 
@@ -4730,7 +5035,7 @@ Muse still appears simple from CLI, but internally every submit now has session_
 
 ---
 
-## 18. First demo fake provider script
+## 19. First demo fake provider script
 
 Use fake provider first.
 
@@ -4835,9 +5140,9 @@ Approve this plan with: /approve plan
 
 ---
 
-## 19. Testing strategy
+## 20. Testing strategy
 
-### 19.1 No-network default
+### 20.1 No-network default
 
 Normal test suite must not call OpenAI or other providers:
 
@@ -4851,7 +5156,23 @@ Optional external tests:
 MUSE_OPENAI_TEST=1 OPENAI_API_KEY=... mix test --only external
 ```
 
-### 19.2 Fixture types
+### 20.2 Shared provider test suite
+
+Define a shared test suite of provider interaction scenarios that both fake and real providers must satisfy:
+
+```elixir
+defmodule Muse.LLM.ProviderContractTest do
+  # Tests that any provider implementation must pass:
+  # - Returns assistant content for simple prompts
+  # - Returns tool calls when tools are available
+  # - Handles malformed tool call arguments gracefully
+  # - Reports errors without crashing
+  # - Supports cancellation
+  # - Normalizes events to the same Muse.LLM.Event types
+end
+```
+
+### 20.3 Fixture types
 
 Add fixtures for:
 
@@ -4867,7 +5188,7 @@ Malformed tool calls
 Fake provider scripts for planning/coding/testing flows
 ```
 
-### 19.3 Unit tests
+### 20.4 Unit tests
 
 ```text
 MuseProfile loads all Muses.
@@ -4890,9 +5211,11 @@ Session store persists and resumes state.
 Provider errors do not crash SessionServer.
 Unknown provider events are ignored or logged as debug.
 Existing State PubSub behavior remains stable.
+SessionServer remains responsive during turns.
+Cancellation works mid-turn.
 ```
 
-### 19.4 Integration tests
+### 20.5 Integration tests
 
 ```text
 User asks for code change.
@@ -4910,7 +5233,7 @@ Reviewing Muse can review diff.
 Session completes or waits for next approval.
 ```
 
-### 19.5 Safety tests
+### 20.6 Safety tests
 
 ```text
 Blocked outside-workspace read.
@@ -4930,7 +5253,7 @@ Provider request debug snapshots redact Authorization headers.
 External WebSocket channel does not forward internal/sensitive events.
 ```
 
-### 19.6 Product-language tests
+### 20.7 Product-language tests
 
 ```text
 /muses lists Planning Muse, Coding Muse, Reviewing Muse, Testing Muse.
@@ -4943,7 +5266,7 @@ Docs/examples do not use mascot or generic Agent naming in user-facing text.
 
 ---
 
-## 20. Security checklist before MVP
+## 21. Security checklist before MVP
 
 ```text
 [ ] No API keys in events.
@@ -4963,13 +5286,16 @@ Docs/examples do not use mascot or generic Agent naming in user-facing text.
 [ ] Prompt preview is redacted and does not show full hidden prompt.
 [ ] Tool outputs are capped.
 [ ] Provider errors do not leak secrets.
+[ ] Configuration validated at startup.
+[ ] All processes are supervised.
+[ ] No orphan processes on turn crash.
 ```
 
 ---
 
-## 21. Definition of done
+## 22. Definition of done
 
-### 21.1 Read-only Planning Muse milestone
+### 22.1 Read-only Planning Muse milestone
 
 ```text
 1. Muse creates or resumes a session.
@@ -4988,7 +5314,7 @@ Docs/examples do not use mascot or generic Agent naming in user-facing text.
 14. No implementation Muse starts yet.
 ```
 
-### 21.2 Universal Agent v0
+### 22.2 Muse Runtime v0
 
 ```text
 Muse.submit/2 routes through SessionServer and Conductor.
@@ -5010,9 +5336,11 @@ Rollback works.
 Safe test runner requests or uses approved commands.
 CLI, TUI, and LiveView show shared events and status.
 No API keys are leaked in logs, events, previews, or errors.
+SessionServer remains responsive during turns.
+Cancellation works correctly.
 ```
 
-### 21.3 OpenAI-specific done criteria
+### 22.3 OpenAI-specific done criteria
 
 ```text
 1. OPENAI_API_KEY auth can stream a Responses API answer over SSE when explicitly configured.
@@ -5025,14 +5353,14 @@ No API keys are leaked in logs, events, previews, or errors.
 
 ---
 
-## 22. Do not implement yet
+## 23. Do not implement yet
 
 Explicitly out of scope until the local runtime loop is stable:
 
 ```text
 Remote VPS execution
 SSH control
-Remote agent sessions
+Remote Muse sessions
 Phoenix remote LiveView monitoring
 Remote tool execution
 Nano repair mode
@@ -5041,7 +5369,7 @@ Browser automation
 Package installation
 Network search
 MCP servers / MCP ecosystem
-Multi-agent delegation/swarm behavior
+Multi-Muse delegation/swarm behavior
 Subagent swarm before core loop works
 Database persistence
 Cloud sync
@@ -5052,7 +5380,7 @@ Complex model router before one provider works
 
 ---
 
-## 23. Backlog after v0
+## 24. Backlog after v0
 
 ```text
 Streaming model responses, if not already done before v0
@@ -5082,12 +5410,12 @@ Tool search support when provider/model supports it
 
 ---
 
-## 24. Ideas to borrow carefully from Code Puppy / Codex-style systems
+## 25. Ideas to borrow carefully from Code Puppy / Codex-style systems
 
 Borrow:
 
 ```text
-Agent/profile owns prompt and tool list.
+Muse profile owns prompt and tool list.
 Model factory/provider abstraction.
 Project rules loading.
 Tool registration by name.
@@ -5101,7 +5429,7 @@ Do not borrow directly:
 
 ```text
 Mascot language.
-One all-powerful coding agent.
+One all-powerful Coding Muse.
 Immediate write tools.
 Shell execution before approval.
 Subagent swarm before core loop works.
@@ -5121,16 +5449,16 @@ Runtime coordinator -> Muse Conductor
 
 ---
 
-## 25. Source coverage matrix
+## 26. Source coverage matrix
 
 This merged plan incorporates the unique content from all three uploaded plans:
 
 ```text
 Product naming and Muse-first glossary:
-  captured in sections 3, 7, 15, 19.
+  captured in sections 3, 7, 15, 20.
 
 Layered internal prompt system and redacted preview:
-  captured in sections 4, 8, 16 PR 05.
+  captured in sections 4, 8, PR 05.
 
 Specialist Muse prompts for Planning/Coding/Reviewing/Testing/Memory/Restoration:
   captured in section 7.
@@ -5139,7 +5467,7 @@ Current repository facts and placeholder behavior:
   captured in section 2 and PR 00.
 
 Session, turn, event, persistence models:
-  captured in sections 6 and PR 01.
+  captured in sections 6 and PR 01a/01b/01c.
 
 Streaming CLI/LiveView event API:
   captured in sections 15 and PR 02.
@@ -5151,7 +5479,7 @@ OpenAI-compatible request mapping, non-streaming provider, SSE, Responses WebSoc
   captured in sections 12, PR 11–15.
 
 OpenAI/Codex auth, API key, bearer command, Codex cache bridge:
-  captured in section 12.9 and PR 13.
+  captured in section 12.10 and PR 13.
 
 Read-only tools, schemas, workspace hardening, symlink-aware safety:
   captured in sections 9, 10, PR 06.
@@ -5172,21 +5500,63 @@ CLI, TUI, LiveView, optional external Phoenix channel:
   captured in section 15 and PR 16/20.
 
 Security checklist and testing strategy:
-  captured in sections 19–20.
+  captured in sections 20–21.
 
 First demo script:
-  captured in section 18.
+  captured in section 19.
 
 Implementation details and first task:
-  captured in sections 16–17.
+  captured in sections 17–18.
 
 Deferred/backlog items including remote execution, MCP, memory compaction, model router:
-  captured in sections 22–23.
+  captured in sections 23–24.
+
+Process architecture (SessionServer vs Conductor separation):
+  captured in sections 4.2, 11.2, PR 07a/07b.
+
+Telemetry:
+  captured in section 16.
+
+Cancellation semantics:
+  captured in section 11.6.
+
+Configuration validation:
+  captured in section 12.4.
+
+Persistence crash-safety:
+  captured in section 6.2.
+
+Shared provider test suite:
+  captured in section 20.2.
+
+ask_user_question tool specification:
+  captured in section 9.4.6.
+
+repo_search backend priority:
+  captured in section 9.4.
+
+Checkpoint git-based strategy:
+  captured in section 6.11.
+
+Streaming deduplication (streamed? flag):
+  captured in sections 6.3, 15.5.
+
+LiveView reconnection:
+  captured in section 15.5.
+
+Rate limiting / cost controls:
+  captured in section 6.6.
+
+Tool loop limit behavior:
+  captured in section 11.5.
+
+Partial stream failure recovery:
+  captured in section 11.5.
 ```
 
 ---
 
-## 26. External API references to verify before coding provider PRs
+## 27. External API references to verify before coding provider PRs
 
 The provider PRs must re-check official documentation immediately before implementation. The source plans referenced OpenAI Responses streaming, Responses WebSocket mode, function/tool calling, Codex auth, Codex device auth, and Codex configuration. Treat docs as the source of truth for wire formats.
 
@@ -5201,3 +5571,33 @@ Codex auth methods: ChatGPT sign-in and API-key sign-in
 Codex login cache at ~/.codex/auth.json and token-safety handling
 Codex login --device-auth for headless/device-code flows
 ```
+
+---
+
+## 28. Changelog from v1/v2 to final
+
+Key changes retained from the v2 revision and normalized in this final v3 plan:
+
+1. **Process architecture clarified (Section 4.2, 11.2):** Conductor runs in a Task/TurnRunner, NOT inside SessionServer. SessionServer owns state and remains responsive during turns.
+2. **PR 01 split into 01a/01b/01c:** Smaller increments — structs first, then persistence, then GenServer.
+3. **PR 07 split into 07a/07b:** Muse selection first, then tool loop.
+4. **Cancellation semantics defined (Section 11.6):** Explicit behavior for mid-turn cancellation.
+5. **Telemetry added (Section 16):** `:telemetry` events for observability.
+6. **Configuration validation at startup (Section 12.4):** Fail fast with clear errors.
+7. **Fake provider uses per-test TestScriptServer (Section 12.2):** No global `Application.put_env` in concurrent tests.
+8. **`streamed?` flag on Turn (Section 6.3):** Prevents duplicate final CLI output.
+9. **`ask_user_question` tool specified (Section 9.4.6):** Non-blocking behavior defined.
+10. **`repo_search` backend priority (Section 9.4):** controlled configured `rg`/`grep` may be used, but pure Elixir scanner is mandatory fallback and safety baseline.
+11. **Checkpoint git-based strategy (Section 6.11):** `git stash create` preferred over file copies.
+12. **Patch apply fallback (Section 14.2):** Elixir-based diff applier as fallback for non-git environments.
+13. **Tool loop limit behavior (Section 11.5):** Synthetic "max reached" result fed to model for graceful summary.
+14. **Rate limiting / cost controls (Section 6.6):** `max_tokens_per_session` and `max_api_calls_per_minute` in provider config.
+15. **Shared provider test suite (Section 20.2):** Contract tests that all providers must satisfy.
+16. **Persistence crash-safety (Section 6.2):** Atomic writes, corrupt line handling, schema versioning.
+17. **LiveView reconnection (Section 15.5):** Event replay by sequence number on mount/reconnect.
+18. **`MuseProfile` uses `:display_name` only (Section 6.4):** Removed ambiguous `:name` alias.
+19. **`Tool.Call` uses `:spec_name` (Section 6.7):** Clearer field naming.
+20. **Self-healing documentation task (PR 00):** Explicit task to document existing behavior before modifying it.
+21. **v3 merge cleanup:** Removed v2 wrapper/code-fence artifact, added merge analysis, and renamed the plan to the ultimate final implementation plan.
+22. **v3 safety reconciliation:** Combined v1's conservative search/checkpoint defaults with v2's performance/process improvements.
+23. **v3 product-language cleanup:** Replaced incidental implementation-agent phrasing with implementation team / Muse language where possible while preserving explicit "avoid Agent" and translation sections.

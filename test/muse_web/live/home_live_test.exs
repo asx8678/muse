@@ -1322,8 +1322,8 @@ defmodule MuseWeb.HomeLiveTest do
       assert conn.resp_body =~ "max-width: 900px"
       assert conn.resp_body =~ "max-width: 640px"
       # Responsive logo widths
-      assert conn.resp_body =~ "width: 112px"
-      assert conn.resp_body =~ "width: 96px"
+      assert conn.resp_body =~ "width: 124px"
+      assert conn.resp_body =~ "width: 104px"
       # Sidebar header spacing
       assert conn.resp_body =~ ".context-sidebar-header"
       # Background layers disabled (opacity: 0) — ready for future image

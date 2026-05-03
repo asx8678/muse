@@ -1,1003 +1,243 @@
-# Muse — Minimal Core Setup Plan
+# Muse Universal Runtime — Executive Summary
 
-## Window Management System Plan
-
-MVP floating-window shell for the Muse LiveView UI.
-
-### Phases
-
-| # | Phase | Scope |
-|---|-------|-------|
-| 1 | Icon dock + window shell | Header icon bar; `open_windows` / `active_window` assigns; `toggle_window` / `close_window` / `focus_window` events; safe window-name allowlist |
-| 2 | Draggable JS hook | `DraggableWindow` LiveView hook in `app.js`; pointer-event drag by title-bar; localStorage position persistence |
-| 3 | BEAM stats window | `Muse.BeamStats.snapshot/0`; Statistics window rendering memory / process / scheduler info |
-| 4 | Reload / recent-files window | Enhance `Muse.DevReloader` status with `recent_files` list; `scan_file_stats/1` helper for line-count tracking; per-file `modified_count` + `lines_added` |
-| 5 | Agent registry + tree window | `Muse.AgentRegistry` GenServer with register/update/unregister/snapshot/subscribe; PubSub broadcast; Agents window with idle/unavailable UI |
-| 6 | Settings / universal-agent placeholders | Settings window shell; Universal Agent window placeholder |
-| 7 | CSS | `.icon-dock`, `.dock-icon`, `.managed-window`, `.window-title-bar`, `.window-body`, stats / file / agent-tree classes; floating fixed position; high z-index |
-| 8 | Tests + QA | `Muse.BeamStatsTest`, `Muse.AgentRegistryTest`, DevReloader recent-files tests, HomeLive window-interaction tests, JS hook source checks, `mix format && mix test` |
-
-### Constraints
-- All windows gracefully handle missing GenServers (DevReloader, AgentRegistry).
-- No real agent/tool activity — UI shows unavailable/idle.
-- Preserve existing IDs: `workspace`, `diagnostics-badge`, `diagnostics-popup`, `events`, `reload-status`.
-- Dark-only, subtle purple accent.
+> **Archived source plan:** [`plans/plan-v3-archived.md`](plans/plan-v3-archived.md) · **Architecture:** [`docs/architecture.md`](docs/architecture.md) · **Prompts:** [`docs/prompts.md`](docs/prompts.md) · **Providers:** [`docs/provider-roadmap.md`](docs/provider-roadmap.md) · **Testing:** [`docs/testing.md`](docs/testing.md) · **Security:** [`docs/security.md`](docs/security.md)
 
 ---
 
-## Overview
+## 1. Mission
 
-Muse is a minimal Elixir CLI coding-agent foundation. This milestone creates the
-boot infrastructure, CLI REPL, optional local web UI, workspace management,
-shared in-memory event state, placeholder agent responses, and a basic
-development hot-code watcher with rollback.
+Turn Muse from a placeholder CLI/Web shell into a **safe local Muse coding runtime** with Muse-first product language, session-aware turns, layered internal prompting, read-only repository inspection, model/tool-call orchestration, streaming events, stateful approvals, patch proposal/application with checkpoints, and CLI/TUI/LiveView visibility.
 
-No real AI, no shell execution, no file editing, no persistence. Just the
-skeleton that breathes.
+The first complete product experience:
 
----
+```text
+muse> add a /version command
 
-## Product Identity
+Planning Muse:
+I will inspect the CLI command structure, find the project version source,
+create an implementation plan, and wait for approval before changes.
 
-| Item              | Value           |
-|-------------------|-----------------|
-| Product name      | Muse            |
-| Executable        | `muse`          |
-| OTP app           | `:muse`         |
-| Core module       | `Muse`          |
-| Web namespace     | `MuseWeb`       |
-| CLI prompt        | `muse>`         |
+[read-only inspection events stream]
 
----
+Plan ready:
+1. Locate CLI command routing.
+2. Add /version handling.
+3. Source version from mix.exs or application metadata.
+4. Add tests.
+5. Run relevant verification.
 
-## Project Structure
-
+Approve this plan? [y/N]
 ```
-muse/
-├── mix.exs
-├── README.md
-├── bin/
-│   └── muse                  # optional dev wrapper script
-├── config/
-│   ├── config.exs
-│   └── dev.exs
-├── assets/
-│   ├── js/
-│   │   └── app.js
-│   └── css/
-│       └── app.css
-├── lib/
-│   ├── muse.ex               # Public API: Muse.submit/2
-│   ├── muse/
-│   │   ├── application.ex    # OTP app callback + supervisor
-│   │   ├── argv.ex           # Boot args helper
-│   │   ├── boot_options.ex   # CLI flag parsing
-│   │   ├── workspace.ex      # Workspace root + path resolution
-│   │   ├── event.ex          # Event struct
-│   │   ├── state.ex          # GenServer: shared event state + PubSub
-│   │   ├── health.ex         # Smoke checks for dev reloader
-│   │   ├── dev_reloader.ex   # Development hot-code watcher + rollback
-│   │   └── cli/
-│   │       ├── main.ex       # Escript entrypoint
-│   │       └── repl.ex       # CLI REPL loop
-│   ├── muse_web.ex           # Web module helpers
-│   ├── muse_web/
-│   │   ├── endpoint.ex       # Phoenix endpoint (Bandit adapter)
-│   │   ├── router.ex         # Minimal router
-│   │   └── live/
-│   │       └── home_live.ex  # Home LiveView
-│   └── mix/
-│       └── tasks/
-│           └── muse.ex       # mix muse task
-└── test/
-    ├── test_helper.exs
-    ├── muse/
-    │   ├── boot_options_test.exs
-    │   ├── workspace_test.exs
-    │   ├── event_test.exs
-    │   ├── state_test.exs
-    │   ├── health_test.exs
-    │   ├── dev_reloader_test.exs
-    │   └── muse_test.exs     # Muse.submit/2 tests
-    └── muse_web/
-        └── live/
-            └── home_live_test.exs
+
+The second product experience:
+
+```text
+muse> approve plan
+
+Muse Conductor:
+Plan approved. Coding Muse will prepare a patch.
+
+Coding Muse:
+I found the command handler and test files. Here is the proposed diff.
+
+Apply this patch? [y/N]
 ```
 
 ---
 
-## Dependencies
+## 2. Non-Negotiable Implementation Contract
 
-```elixir
-defp deps do
-  [
-    {:phoenix, "~> 1.8"},
-    {:phoenix_live_view, "~> 1.1"},
-    {:phoenix_html, "~> 4.3"},
-    {:phoenix_pubsub, "~> 2.2"},
-    {:phoenix_live_reload, "~> 1.6", only: :dev},
-    {:bandit, "~> 1.0"},
-    {:jason, "~> 1.4"},
-    {:esbuild, "~> 0.9", runtime: Mix.env() == :dev}
-  ]
-end
-```
-
-No Ecto. No database. No Tailwind. Plain CSS only.
+1. **Keep `Muse.submit/2`** as the public API, even when it delegates into sessions and the Conductor
+2. **Small PR-sized phases** — no jumping to OpenAI networking, remote execution, or autonomous shell
+3. **Deterministic offline tests by default** — fake provider first
+4. **Muse-first user-facing names everywhere** — Planning Muse, Coding Muse, Reviewing Muse, etc.
+5. **No Agent/Bot/mascot labels** in CLI, TUI, LiveView, docs, prompts, events, or examples
+6. **Prompt text is guidance, not security** — runtime safety enforced in Elixir code
+7. **Planning Muse uses read-only tools only** before plan approval
+8. **Coding Muse prepares patches only after an approved plan**
+9. **File writes require patch approval**; shell commands require explicit approval
+10. **Network disabled or approval-gated by default**; remote execution always denied until later milestone
+11. **Secrets never appear** in prompt previews, logs, events, crash text, or provider debug output
+12. **Every important step emits structured events** for CLI/TUI/LiveView and persistence
 
 ---
 
-## Default Boot Options
+## 3. Architecture
 
-```elixir
-%{
-  cli?: true,
-  web?: true,
-  host: "127.0.0.1",
-  port: 4000,
-  workspace: nil,          # resolved at parse time to absolute path
-  watch?: true,            # true when source_mode? == true, false otherwise
-  help?: false
-}
+### Runtime Path
+
+```text
+User input
+  → CLI / TUI / LiveView
+  → Muse.submit/2
+  → SessionRouter → SessionServer (GenServer, owns state)
+  → Conductor (Task, NOT inside SessionServer)
+  → Prompt.Assembler
+  → LLM.Provider
+  → Tool.Runner
+  → ApprovalGate
+  → SessionStore + State + PubSub
+  → CLI / TUI / LiveView updates
 ```
 
-### Flag Behavior
+### Process Architecture
 
-| Flag                | Effect                                    |
-|---------------------|-------------------------------------------|
-| (none)              | cli?: true, web?: true                    |
-| `--no-web`          | cli?: true, web?: false                   |
-| `--web-only`        | cli?: false, web?: true                   |
-| `--no-cli`          | cli?: false, web?: true (alias for --web-only) |
-| `--port PORT`       | port: PORT                                |
-| `--host HOST`       | host: HOST                                |
-| `--workspace PATH`  | workspace: absolute path                  |
-| `--watch`           | watch?: true (override)                   |
-| `--no-watch`        | watch?: false                             |
-| `--help`            | help?: true, print usage and exit         |
+```text
+Muse.Application
+├── Registry (:unique keys)
+├── SessionSupervisor (DynamicSupervisor)
+│   └── SessionServer (GenServer, one per session)
+│       └── owns: session state, event log, persistence
+├── Muse.Telemetry
+└── [Phoenix web supervision tree]
 
-Invalid flags → clear error + exit code 1.
+Each turn → TurnRunner (Task):
+  1. Reads state from SessionServer
+  2. Runs Conductor model/tool loop
+  3. Writes results back to SessionServer
+  4. Emits events via State / PubSub
+```
+
+> **Key decision:** Conductor runs in caller process or Task, **not inside SessionServer**. This ensures SessionServer never blocks on model calls, remains responsive for status/approvals during turns, and a crashed Conductor doesn't kill the session.
 
 ---
 
-## Implementation Steps (Ordered)
+## 4. PR Roadmap
 
-### Step 1 — Scaffold the app
+| PR | Goal | Key Scope |
+|---|---|---|
+| 00 | Baseline verification & naming cleanup | Verify repo, record tests, add PLAN.md, Muse-first naming |
+| 01a | Event metadata & core structs | Extend Event, add Session/Turn/Telemetry structs |
+| 01b | SessionStore persistence | Crash-safe JSONL, atomic writes, corrupt-line handling |
+| 01c | SessionServer & routing | GenServer per session, DynamicSupervisor, Registry, route submit/2 |
+| 02 | Streaming event API | Delta events, CLI stream printer, LiveView replay, `streamed?` flag |
+| 03 | LLM contract & fake provider | Provider behavior, normalized structs, fake provider, config validation |
+| 04 | Muse profiles & registry | MuseProfile, Planning/Coding profiles, `/muses` command |
+| 05 | Prompt assembler & redacted preview | Layer/Bundle, project rules, redactor, ModelPreparer, `/prompt preview` |
+| 06 | Read-only tools & workspace hardening | Tool Spec/Registry/Runner, list_files/read_file/repo_search/git_*, symlink & secret safety |
+| 07a | Conductor — Muse selection & prompt building | Select Muse, build bundle, call fake provider, emit events |
+| 07b | Conductor — tool loop | TurnRunner Task, iterative tool calls, caps, cancellation, blocked-tool handling |
+| 08 | Structured plan model & Planning Muse MVP | Plan/Task structs, parser, validation, `/plan`, session `:awaiting_plan_approval` |
+| 09 | Approval Gate & plan approval | Approval struct, ApprovalGate, `/approve plan`, `/reject plan`, stale prevention |
+| 10 | **Read-only Planning Muse milestone** 🔒 | End-to-end hardening, integration test, fake provider script, no writes |
+| 11 | Provider config & request mappers | ProviderConfig, Responses/ChatCompletions JSON mappers, secret redaction |
+| 12 | OpenAI-compatible non-streaming provider | Encoder/decoder, req dep, custom base_url, redacted errors |
+| 13 | Auth layer | API key, bearer command, Codex cache bridge, `/auth status` |
+| 14 | HTTP SSE provider | SSE parser, event normalizer, streaming deltas/tool calls |
+| 15 | Responses WebSocket provider | Persistent WS, previous_response_id, SSE fallback |
+| 16 | Optional external WebSocket channel | Phoenix channel for non-LiveView clients, event filtering |
+| 17 | Coding Muse patch proposal | Patch struct/parser/formatter, `patch_propose` tool, hash, `/approve patch` |
+| 18 | Patch apply, checkpoint, rollback | Checkpoint store, `patch_apply`/`rollback_checkpoint` tools, git stash preferred |
+| 19 | Test runner, Testing & Reviewing Muse | Safe test commands, bounded repair, review findings & recommendations |
+| 20 | CLI/TUI/LiveView integration polish | Unified commands, session panels, Muse-first strings everywhere |
+| 21 | Memory & Restoration Muse, handoffs | Compaction, memory.md, specialist handoffs via Conductor |
+| 22 | Documentation & developer onboarding | README, provider setup, safety model, architecture docs |
+| 23 | Additional providers & model routing | OpenRouter, Ollama, Anthropic, per-Muse model pinning |
+| 24 | Remote execution (later) | Runner abstraction, local runner, future SSH/remote, strict approvals |
 
-**Goal:** `mix new muse --sup` + working `mix compile`.
-
-**Actions:**
-1. Run `mix new muse --sup`
-2. Edit `mix.exs`:
-   - Set elixir version to `~> 1.17`
-   - Set version to `0.1.0`
-   - Add all deps listed above
-   - Add escript config: `[main_module: Muse.CLI.Main, name: "muse"]`
-   - Add `elixirc_paths: elixirc_paths(Mix.env())` to include `lib`
-3. Create `config/config.exs` with minimal Phoenix endpoint config:
-   - `adapter: Bandit.PhoenixAdapter`
-   - `secret_key_base` (dev-only placeholder)
-   - `pubsub_server: Muse.PubSub`
-   - `live_view` signing salt
-   - `render_errors` config if Phoenix requires it
-4. Create `config/dev.exs` with dev overrides:
-   - `http: [ip: {127,0,0,1}, port: 4000]`
-   - `check_origin: false`
-   - `code_reloader: true`
-   - `debug_errors: true`
-5. Verify `mix deps.get && mix compile` passes
-
-**Acceptance:** `mix compile` succeeds with zero warnings (or only known dep warnings).
-
----
-
-### Step 2 — Boot options + Argv
-
-**Goal:** Parse CLI flags into a typed struct; provide reusable argv access.
-
-**Files to create:**
-- `lib/muse/argv.ex`
-- `lib/muse/boot_options.ex`
-
-**Design:**
-
-```elixir
-# lib/muse/argv.ex
-defmodule Muse.Argv do
-  def get do
-    Application.get_env(:muse, :boot_args, System.argv())
-  end
-end
-```
-
-```elixir
-# lib/muse/boot_options.ex
-defmodule Muse.BootOptions do
-  defstruct cli?: true, web?: true, host: "127.0.0.1",
-            port: 4000, workspace: nil, watch?: true, help?: false
-
-  def parse!(argv) do
-    # Use OptionParser with strict opts
-    # Resolve workspace: --workspace > MUSE_WORKSPACE env > File.cwd!()
-    # Determine watch?: if source_mode? is false, default watch? to false
-    # Return %__MODULE__{...} or raise on invalid args
-  end
-end
-```
-
-**Key behaviors:**
-- `--web-only` sets `cli?: false, web?: true`
-- `--no-web` sets `cli?: true, web?: false`
-- `--no-cli` is an alias for `--web-only`
-- `--workspace` resolves to absolute path immediately
-- `watch?` defaults to true but only makes sense when `source_mode?` is true
-  (we'll handle the final default in Application, not in BootOptions)
-- Invalid flags → `Mix.raise()` or `IO.puts(:stderr, ...) + System.halt(1)`
-
-**Tests to create:**
-- `test/muse/boot_options_test.exs`
-  - default → cli?: true, web?: true
-  - --no-web → cli?: true, web?: false
-  - --web-only → cli?: false, web?: true
-  - --no-cli → cli?: false, web?: true
-  - --port 4100 → port: 4100
-  - --workspace /tmp/foo → workspace: "/tmp/foo"
-  - --no-watch → watch?: false
-  - --help → help?: true
-  - invalid flag → raises/errors
-
-**Acceptance:** All boot_options tests pass. `Muse.BootOptions.parse!([])` returns defaults.
+**Critical path:** `00 → 01a/01b/01c → 02 → 03 → 04 → 05 → 06 → 07a/07b → 08 → 09 → 10` (Milestone 1) `→ 11-15` (Providers) `→ 17-19` (Patch/Test/Review) `→ 20-24` (Polish/Extensions)
 
 ---
 
-### Step 3 — Workspace module
+## 5. Naming Rules
 
-**Goal:** Store workspace root once at boot; provide safe path resolution.
+### Product Roles
 
-**File to create:** `lib/muse/workspace.ex`
+| Role | User-Facing Name | Purpose |
+|---|---|---|
+| Orchestration | Muse Conductor | Selects Muse, manages turns, permissions, plans, tools, handoffs |
+| Planning | Planning Muse | Inspects workspace, creates approval-gated plans |
+| Coding | Coding Muse | Implements approved changes via patches |
+| Review | Reviewing Muse | Reviews diffs, architecture, risk, security |
+| Testing | Testing Muse | Runs and interprets verification steps |
+| Research | Research Muse | Searches repo, reads files, gathers context |
+| Memory | Memory Muse | Summarizes sessions, preserves compact context |
+| Restoration | Restoration Muse | Diagnoses failures, restores checkpoints |
+| Tools | Tool Muse | Represents controlled tool access (v0: registry label, not chat persona) |
 
-**Design:**
+### Required User-Facing Terms
 
-```elixir
-defmodule Muse.Workspace do
-  use Agent
+`Muse` · `Muses` · `Planning Muse` · `Coding Muse` · `Reviewing Muse` · `Testing Muse` · `Research Muse` · `Memory Muse` · `Restoration Muse` · `Tool Muse` · `Muse Conductor` · `Muse Runtime` · `Muse Tools` · `Muse Session` · `Muse Plan` · `Muse Checkpoint`
 
-  def start_link(opts) do
-    root = Keyword.fetch!(opts, :root) |> Path.expand()
-    Agent.start_link(fn -> root end, name: __MODULE__)
-  end
+### Avoid in User-Facing Text
 
-  def root, do: Agent.get(__MODULE__, & &1)
+`Agent` · `Planning Agent` · `Coding Agent` · `Worker Agent` · `Bot` · `Mascot names` · `Code Puppy branding`
 
-  def resolve!(path) do
-    root = root()
-    resolved = Path.expand(path, root)
-    if String.starts_with?(resolved, root <> "/") or resolved == root do
-      resolved
-    else
-      raise ArgumentError, "path #{inspect(path)} escapes workspace #{inspect(root)}"
-    end
-  end
-end
+### Module Naming
+
+```text
+lib/muse/conductor.ex          lib/muse/muses/planning_muse.ex
+lib/muse/conductor/turn_runner.ex   lib/muse/muses/coding_muse.ex
+lib/muse/conductor/tool_loop.ex     lib/muse/muses/reviewing_muse.ex
+lib/muse/muse_profile.ex            lib/muse/muses/testing_muse.ex
 ```
-
-**Key behaviors:**
-- `root/0` always returns absolute path
-- `resolve!/1` with relative path → joins to root, returns absolute
-- `resolve!/1` with absolute path inside root → allowed
-- `resolve!/1` with `../outside` → raises `ArgumentError`
-
-**Tests to create:**
-- `test/muse/workspace_test.exs`
-  - root is absolute
-  - relative "lib/foo.ex" resolves inside root
-  - absolute path inside root is accepted
-  - `../outside` is rejected (raises)
-
-**Acceptance:** All workspace tests pass. Path escape is blocked.
 
 ---
 
-### Step 4 — Event + State
+## 6. Milestones
 
-**Goal:** Define the event struct and shared GenServer state with PubSub broadcasting.
+**M1 — Read-Only Planning Muse.** User request → session → Planning Muse inspects with read-only tools → structured plan persisted → `:awaiting_plan_approval`. No files modified, no shell run, no implementation before approval.
 
-**Files to create:**
-- `lib/muse/event.ex`
-- `lib/muse/state.ex`
+**M2 — Basic Coding Muse.** After plan approval → Coding Muse proposes patch → diff shown → `:awaiting_patch_approval`. No file modified before `/approve patch`.
 
-**Event design:**
+**M3 — Patch Apply, Verification, Rollback.** Approved patch → checkpoint → apply → git diff visible → optional safe test commands → rollback works. Bounded repair, not infinite loops.
 
-```elixir
-defmodule Muse.Event do
-  defstruct [:id, :timestamp, :source, :type, :data]
+**M4 — Real Providers & Auth.** Same M1/M2 flows work with OpenAI-compatible provider. Fake provider remains test default. SSE streaming normalizes to same event types. Secrets redacted everywhere.
 
-  def new(source, type, data) do
-    %__MODULE__{
-      id: generate_id(),
-      timestamp: DateTime.utc_now(),
-      source: source,
-      type: type,
-      data: data
-    }
-  end
-
-  defp generate_id, do: System.unique_integer([:positive])
-end
-```
-
-**State design:**
-
-```elixir
-defmodule Muse.State do
-  use GenServer
-
-  @topic "muse:events"
-
-  def start_link(_opts), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
-
-  def get, do: GenServer.call(__MODULE__, :get)
-  def events, do: GenServer.call(__MODULE__, :events)
-  def append(event), do: GenServer.call(__MODULE__, {:append, event})
-  def subscribe, do: Phoenix.PubSub.subscribe(Muse.PubSub, @topic)
-
-  # GenServer callbacks
-  def init(_opts), do: {:ok, %{events: []}}
-
-  def handle_call(:get, _from, state), do: {:reply, state, state}
-  def handle_call(:events, _from, state), do: {:reply, state.events, state}
-
-  def handle_call({:append, event}, _from, state) do
-    new_state = %{state | events: state.events ++ [event]}
-    Phoenix.PubSub.broadcast(Muse.PubSub, @topic, {:muse_event, event})
-    {:reply, :ok, new_state}
-  end
-end
-```
-
-**Key behaviors:**
-- `Muse.State.subscribe()` hides the topic string from consumers
-- Events are appended in order (oldest first)
-- Each append broadcasts `{:muse_event, event}` on PubSub
-
-**Tests to create:**
-- `test/muse/event_test.exs`
-  - `new/3` creates struct with all fields
-- `test/muse/state_test.exs`
-  - initial events are empty
-  - `append/1` stores event
-  - `append/1` broadcasts PubSub message
-  - `subscribe/0` receives broadcast
-
-**Acceptance:** Event struct is well-formed. State stores and broadcasts correctly.
+**M5 — Specialist Muses, Memory, Recovery.** Memory compaction, Restoration Muse, controlled handoffs. Only after local runtime is safe and stable.
 
 ---
 
-### Step 5 — Muse.submit/2 (Public API)
+## 7. Definition of Done
 
-**Goal:** Single entry point for both CLI and web to submit text.
+### Read-Only Planning Muse (M1)
 
-**File to modify:** `lib/muse.ex`
+- Session created/resumed, Conductor selects Planning Muse
+- Prompt bundle assembled, fake provider drives model/tool loop
+- Planning Muse uses read-only tools (list, read, search, git)
+- Structured plan created, persisted, shown by `/plan`
+- Session status `:awaiting_plan_approval`; CLI/TUI/LiveView show plan
+- **Zero files modified, zero shell commands, zero implementation handoffs**
 
-**Design:**
+### Muse Runtime v0
 
-```elixir
-defmodule Muse do
-  def submit(source, text) do
-    user_event = Muse.Event.new(source, :user_message, %{text: text})
-    Muse.State.append(user_event)
+- `Muse.submit/2` routes through SessionServer + Conductor
+- Sessions persist to `.muse/sessions/`; prompt assembly is deterministic
+- `/prompt preview` redacts secrets; fake + OpenAI-compatible providers work
+- Planning Muse → read-only tools → plan → approval required before Coding Muse
+- Coding Muse → patch proposal → approval → checkpoint → apply → rollback works
+- Safe test runner, Testing/Reviewing Muse loops, bounded repair
+- CLI/TUI/LiveView share events; no API keys leaked anywhere
+- SessionServer responsive during turns; cancellation works
 
-    assistant_text = "Placeholder response: received #{inspect(text)}"
-    assistant_event = Muse.Event.new(:muse, :assistant_message, %{text: assistant_text})
-    Muse.State.append(assistant_event)
+### OpenAI-Specific
 
-    {:ok, assistant_text}
-  end
-end
-```
-
-**Tests to create:**
-- `test/muse/muse_test.exs`
-  - `submit/2` appends user event
-  - `submit/2` appends assistant placeholder event
-  - `submit/2` returns `{:ok, "Placeholder response: received \"hello\""}`
-
-**Acceptance:** `Muse.submit(:cli, "hello")` → stored events + placeholder response.
-
----
-
-### Step 6 — CLI REPL
-
-**Goal:** Interactive `muse>` prompt with command handling and error resilience.
-
-**File to create:** `lib/muse/cli/repl.ex`
-
-**Design:**
-
-```elixir
-defmodule Muse.CLI.Repl do
-  def start_link(opts) do
-    # Spawn a process that runs the REPL loop
-    # NOT a GenServer — IO.gets is blocking
-    pid = spawn_link(fn -> loop(opts) end)
-    {:ok, pid}
-  end
-
-  defp loop(opts) do
-    case IO.gets("muse> ") do
-      :eof -> shutdown()
-      {:error, _} -> shutdown()
-      nil -> shutdown()
-      input ->
-        input = String.trim(input)
-        handle_input(input, opts)
-        loop(opts)
-    end
-  end
-
-  defp handle_input(input, _opts) do
-    try do
-      case input do
-        "" -> :ok
-        "/help" -> print_help()
-        "/events" -> print_events()
-        "/workspace" -> print_workspace()
-        "/reload" -> Muse.DevReloader.reload()
-        "/rollback" -> Muse.DevReloader.rollback()
-        "/reload-status" -> print_reload_status()
-        "/quit" -> shutdown()
-        ":quit" -> shutdown()
-        text -> Muse.submit(:cli, text) |> print_response()
-      end
-    rescue
-      e ->
-        IO.puts("[error] #{inspect(e)}")
-        # Attempt rollback if dev reloader is active
-        try do
-          if function_exported?(Muse.DevReloader, :rollback, 0) do
-            Muse.DevReloader.rollback()
-          end
-        rescue
-          _ -> :ok
-        end
-    end
-  end
-
-  defp print_response({:ok, text}), do: IO.puts("assistant> #{text}")
-  defp print_response({:error, text}), do: IO.puts("[error] #{text}")
-
-  defp print_help do
-    IO.puts("""
-    Commands:
-      /help          Show this help
-      /events        Print event log
-      /workspace     Print current workspace
-      /reload        Force dev reload
-      /rollback      Roll back to last good generation
-      /reload-status Show reload generation and last error
-      /quit          Stop Muse
-      :quit          Stop Muse
-    """)
-  end
-
-  defp print_events do
-    Muse.State.events()
-    |> Enum.each(fn event -> IO.puts("[#{event.source}] #{inspect(event.data)}") end)
-  end
-
-  defp print_workspace do
-    IO.puts("Workspace: #{Muse.Workspace.root()}")
-  end
-
-  defp print_reload_status do
-    status = Muse.DevReloader.status()
-    IO.puts("Generation: #{status.generation}")
-    if status.last_error, do: IO.puts("Last error: #{inspect(status.last_error)}")
-    if status.last_reload_at, do: IO.puts("Last reload: #{status.last_reload_at}")
-  end
-
-  defp shutdown do
-    IO.puts("Goodbye!")
-    System.halt(0)
-  end
-end
-```
-
-**Key behaviors:**
-- EOF/nil → clean shutdown, no crash, no restart loop
-- Errors in input handling → print error, attempt rollback, continue prompt
-- Both `/quit` and `:quit` exit
-- Normal text → `Muse.submit(:cli, text)`
-
-**Tests to create:**
-- `test/muse/cli/repl_test.exs`
-  - Harder to test IO loops; focus on unit-testing the helper functions
-  - Or test via integration: start app with `--no-web`, feed input, check output
-
-**Acceptance:** `mix muse --no-web` shows `muse>` prompt. Commands work. Crashes don't kill the app.
+- `OPENAI_API_KEY` streams Responses API over SSE when configured
+- Chat Completions provider streams text from compatible endpoint
+- Responses WebSocket connects, stores `previous_response_id`
+- Tool-call events from real providers normalize identically to fake provider
+- Codex auth cache detected/used only when explicitly configured; OAuth tokens never logged
 
 ---
 
-### Step 7 — Dev Reloader + Health Check
+## 8. Detailed Docs
 
-**Goal:** Poll for source changes, compile, smoke-check, rollback on failure.
-
-**Files to create:**
-- `lib/muse/health.ex`
-- `lib/muse/dev_reloader.ex`
-
-**Health check design:**
-
-```elixir
-defmodule Muse.Health do
-  def check! do
-    # Raise if any check fails; return :ok if all pass
-    checks = [
-      fn -> File.dir?(Muse.Workspace.root()) end,
-      fn -> Process.alive?(Process.whereis(Muse.State)) end,
-      fn -> is_list(Muse.State.events()) end,
-      fn -> Muse.BootOptions.parse!([]) end,
-      fn -> function_exported?(Muse, :submit, 2) end
-    ]
-
-    Enum.each(checks, fn check ->
-      unless check.(), do: raise "Health check failed"
-    end)
-
-    :ok
-  end
-end
-```
-
-**Dev reloader design:**
-
-```elixir
-defmodule Muse.DevReloader do
-  use GenServer
-
-  @poll_interval 1000
-  @debounce_ms 300
-  @watch_patterns ~w(lib/muse.ex lib/muse/**/*.ex lib/muse_web/**/*.ex)
-  @exclude_patterns ~w(lib/muse/dev_reloader.ex lib/muse/application.ex)
-
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
-
-  def status, do: GenServer.call(__MODULE__, :status)
-  def reload, do: GenServer.call(__MODULE__, :force_reload)
-  def rollback, do: GenServer.call(__MODULE__, :rollback)
-
-  def init(opts) do
-    schedule_poll()
-    {:ok, %{
-      generation: 0,
-      last_good_snapshot: nil,
-      last_error: nil,
-      last_reload_at: nil,
-      pending_changes: nil,
-      mtimes: scan_mtimes()
-    }}
-  end
-
-  # ... handle_call, handle_info for polling, debounce, reload, rollback
-end
-```
-
-**Key behaviors:**
-- Poll every 1000ms for changed `lib/**/*.ex` files (exclude `_build`, `deps`, `assets`, `test`)
-- Debounce 300ms before acting on changes
-- Exclude `dev_reloader.ex` and `application.ex` from auto-reload
-- Before loading new code: snapshot current Muse.*/MuseWeb.* module object code
-- On changed files: compile → `Muse.Health.check!()`
-- Success: increment generation, store snapshot as rollback target, broadcast success event
-- Failure: restore previous snapshot, store error, broadcast failure event, keep running
-- `/rollback` CLI command: restore last good snapshot manually
-- `status()` returns current generation, last error, last reload time
-
-**Dev reloader events:**
-- `:reload_success` → `%{generation, files}`
-- `:reload_failed` → `%{error, files}`
-- `:rollback_success` → `%{generation}`
-
-**Tests to create:**
-- `test/muse/health_test.exs`
-  - `check!/0` returns `:ok` when everything is healthy
-  - `check!/0` raises when a check fails (e.g., State is dead)
-- `test/muse/dev_reloader_test.exs`
-  - `status/0` returns generation
-  - `reload/0` handles compile success
-  - `reload/0` handles compile failure without killing app
-  - `rollback/0` restores previous generation
-  - Health check failure triggers rollback
-
-**Acceptance:** `mix muse` starts with `Hot reload: enabled`. Editing a watched `.ex` file triggers reload. Compile failure keeps old code. `/rollback` works. `/reload-status` shows info.
+| Document | Content |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | Process architecture, data models, module map, tool system, Conductor, CLI/TUI/LiveView, telemetry, approvals |
+| [`docs/prompts.md`](docs/prompts.md) | All Muse profiles and prompt templates (core, planning, coding, reviewing, testing, memory, restoration) |
+| [`docs/provider-roadmap.md`](docs/provider-roadmap.md) | Provider/auth implementation details, config models, wire APIs, transports |
+| [`docs/testing.md`](docs/testing.md) | Testing strategy: fake provider, offline-first, integration tests |
+| [`docs/security.md`](docs/security.md) | Security checklist: workspace safety, symlink awareness, secret redaction, approval enforcement |
 
 ---
 
-### Step 8 — Minimal Web UI
+## 9. Explicitly Out of Scope
 
-**Goal:** Phoenix + LiveView page showing workspace, events, input form, reload status.
-
-**Files to create:**
-- `lib/muse_web.ex`
-- `lib/muse_web/endpoint.ex`
-- `lib/muse_web/router.ex`
-- `lib/muse_web/live/home_live.ex`
-- `assets/js/app.js`
-- `assets/css/app.css`
-
-**Endpoint design:**
-
-```elixir
-defmodule MuseWeb.Endpoint do
-  use Phoenix.Endpoint, otp_app: :muse
-
-  socket "/live", Phoenix.LiveView.Socket
-  plug Plug.Static, at: "/", from: :muse, gzip: false, only: ~w(assets)
-
-  plug Plug.Session,
-    store: :cookie,
-    key: "_muse_key",
-    signing_salt: "dev-salt"
-
-  plug MuseWeb.Router
-end
-```
-
-**Router design:**
-
-```elixir
-defmodule MuseWeb.Router do
-  use Phoenix.Router
-
-  pipeline :browser do
-    plug :accepts, ["html"]
-    plug :fetch_session
-    plug :protect_from_forgery
-    plug :put_secure_browser_headers
-  end
-
-  scope "/", MuseWeb do
-    pipe_through :browser
-    live "/", HomeLive
-  end
-end
-```
-
-**HomeLive design:**
-
-```elixir
-defmodule MuseWeb.HomeLive do
-  use MuseWeb, :live_view
-
-  def mount(_params, _session, socket) do
-    state = Muse.State.get()
-    if connected?(socket), do: Muse.State.subscribe()
-    {:ok, assign(socket, state: state, input: "")}
-  end
-
-  def handle_event("submit", %{"text" => text}, socket) do
-    try do
-      Muse.submit(:web, text)
-      {:noreply, assign(socket, input: "")}
-    rescue
-      e ->
-        {:noreply, put_flash(socket, :error, inspect(e))}
-    end
-  end
-
-  def handle_info({:muse_event, event}, socket) do
-    state = Muse.State.get()
-    {:noreply, assign(socket, state: state)}
-  end
-
-  def render(assigns) do
-    # Minimal HEEx template:
-    # - workspace root
-    # - event list
-    # - text input + submit button
-    # - reload status
-  end
-end
-```
-
-**Assets:**
-- `assets/js/app.js` — minimal Phoenix LiveView socket connect
-- `assets/css/app.css` — minimal plain CSS, no Tailwind
-
-**Tests to create:**
-- `test/muse_web/live/home_live_test.exs`
-  - LiveView renders workspace
-  - LiveView renders existing events
-  - Form submit appends events
-
-**Acceptance:** `mix muse --web-only` starts `http://127.0.0.1:4000`. Page shows workspace, events, input form, reload status. Submitting calls `Muse.submit(:web, text)`.
+Remote VPS/SSH execution · Remote Muse sessions · Phoenix remote LiveView monitoring · Remote tool execution · Autonomous shell loops · Browser automation · Package installation · Network search · MCP servers/ecosystem · Multi-Muse delegation/swarm · Subagent swarm · Database persistence · Cloud sync · Large UI redesign · Complex memory before read-only planning works · Complex model router before one provider works
 
 ---
 
-### Step 9 — Wire CLI + Web Together
+## 10. Backlog After v0
 
-**Goal:** Default `mix muse` starts both. Events are shared.
-
-**This is already wired by the architecture** — both CLI and web call `Muse.submit/2`, which goes through `Muse.State`, which broadcasts via PubSub. The CLI subscribes through `/events`, and the LiveView subscribes on mount.
-
-**Verification:**
-1. Start `mix muse`
-2. Type in CLI `muse> hello` → see response in CLI
-3. Open browser `http://127.0.0.1:4000` → see events from CLI input
-4. Submit from web → see events in CLI `/events`
-5. Confirm startup banner:
-   ```
-   Muse started
-   Workspace: /absolute/path
-   CLI: enabled
-   Web: http://127.0.0.1:4000
-   Hot reload: enabled
-   ```
-
-**Acceptance:** Events flow bidirectionally. Startup banner is correct.
-
----
-
-### Step 10 — Escript Entrypoint + Mix Task
-
-**Goal:** `mix escript.build && ./muse --no-web` works. `mix muse` works.
-
-**Files to create/modify:**
-- `lib/muse/cli/main.ex`
-- `lib/mix/tasks/muse.ex`
-
-**Escript entrypoint:**
-
-```elixir
-defmodule Muse.CLI.Main do
-  def main(args) do
-    Application.put_env(:muse, :boot_args, args)
-    Application.put_env(:muse, :source_mode?, false)
-    {:ok, _apps} = Application.ensure_all_started(:muse)
-    Process.sleep(:infinity)
-  end
-end
-```
-
-**Mix task:**
-
-```elixir
-defmodule Mix.Tasks.Muse do
-  use Mix.Task
-
-  @shortdoc "Start Muse coding agent"
-
-  def run(args) do
-    Application.put_env(:muse, :boot_args, args)
-    Application.put_env(:muse, :source_mode?, true)
-    {:ok, _apps} = Application.ensure_all_started(:muse)
-    Process.sleep(:infinity)
-  end
-end
-```
-
-**mix.exs escript config:**
-
-```elixir
-defp escript do
-  [main_module: Muse.CLI.Main, name: "muse"]
-end
-```
-
-**Acceptance:** `mix muse` starts CLI + web. `mix escript.build && ./muse --no-web` starts CLI only.
-
----
-
-### Step 11 — Application Supervisor Wiring
-
-**Goal:** `Muse.Application` reads boot options, starts correct children, prints banner.
-
-**File to modify:** `lib/muse/application.ex`
-
-**Supervisor children:**
-
-```elixir
-def start(_type, _args) do
-  argv = Muse.Argv.get()
-  opts = Muse.BootOptions.parse!(argv)
-
-  if opts.help?, do: print_help_and_exit()
-
-  children = base_children(opts) ++
-             maybe_cli_child(opts) ++
-             maybe_web_child(opts) ++
-             maybe_dev_reloader_child(opts)
-
-  print_banner(opts)
-
-  Supervisor.start_link(children, strategy: :one_for_one, name: Muse.Supervisor)
-end
-
-defp base_children(opts) do
-  [
-    {Task.Supervisor, name: Muse.TaskSupervisor},
-    {Phoenix.PubSub, name: Muse.PubSub},
-    {Muse.Workspace, root: opts.workspace},
-    Muse.State
-  ]
-end
-
-defp maybe_cli_child(%{cli?: true} = opts), do: [{Muse.CLI.Repl, opts}]
-defp maybe_cli_child(_), do: []
-
-defp maybe_web_child(%{web?: true} = opts) do
-  [{MuseWeb.Endpoint, server: true, http: [ip: {127,0,0,1}, port: opts.port]}]
-end
-defp maybe_web_child(_), do: []
-
-defp maybe_dev_reloader_child(%{watch?: true} = opts) do
-  if Application.get_env(:muse, :source_mode?, false) do
-    [{Muse.DevReloader, opts}]
-  else
-    []
-  end
-end
-defp maybe_dev_reloader_child(_), do: []
-```
-
-**Banner:**
-
-```
-Muse started
-Workspace: /absolute/path
-CLI: enabled
-Web: http://127.0.0.1:4000
-Hot reload: enabled
-```
-
-Variations:
-- CLI only: `Web: disabled`
-- Web only: `CLI: disabled`
-- No watch: `Hot reload: disabled`
-
-**Acceptance:** Startup banner matches mode. Correct children start. Workspace is captured once.
-
----
-
-### Step 12 — Optional Dev Wrapper + Install Script
-
-**Goal:** Developer can run `muse` from any project directory, executing the source version.
-
-**Files to create:**
-- `bin/muse` (template, not the actual installed wrapper)
-- `script/install-dev` (generates installed wrapper)
-
-**install-dev script:**
-
-```bash
-#!/usr/bin/env sh
-set -eu
-
-MUSE_SRC="$(cd "$(dirname "$0")/.." && pwd)"
-TARGET="${1:-$HOME/.local/bin/muse}"
-
-cat > "$TARGET" <<WRAPPER
-#!/usr/bin/env sh
-set -eu
-export MUSE_WORKSPACE="\${MUSE_WORKSPACE:-\$(pwd)}"
-cd "$MUSE_SRC"
-exec mix muse \$@
-WRAPPER
-
-chmod +x "$TARGET"
-echo "Installed muse dev wrapper → $TARGET"
-```
-
-**README should document:**
-```bash
-cd ~/projects/muse
-./script/install-dev
-
-# Then from any project:
-cd ~/projects/my_app
-muse           # runs source version, workspace = ~/projects/my_app
-```
-
-**Acceptance:** `script/install-dev` creates a working `muse` wrapper that preserves the user's cwd as workspace.
-
----
-
-### Step 13 — README
-
-**Goal:** Document everything a new user needs.
-
-**Sections:**
-1. What is Muse?
-2. Quick Start
-   - `mix deps.get && mix muse`
-3. Commands
-   - `mix muse`, `mix muse --no-web`, `mix muse --web-only`, etc.
-4. CLI Commands
-   - `/help`, `/events`, `/workspace`, `/reload`, `/rollback`, `/reload-status`, `/quit`
-5. Building escript
-   - `mix escript.build && ./muse`
-6. Installing escript
-   - `mix escript.install` + add `~/.mix/escripts` to `$PATH`
-7. Dev wrapper
-   - `./script/install-dev`
-8. Architecture overview
-   - CLI and Web both call `Muse.submit/2`
-   - Shared state via `Muse.State` + PubSub
-   - Dev reloader for source-mode hot reload
-
-**Acceptance:** A new developer can read the README and get running in under 5 minutes.
-
----
-
-## Test Summary
-
-| Module            | Key Tests                                              |
-|-------------------|--------------------------------------------------------|
-| BootOptions       | defaults, --no-web, --web-only, --no-cli, --port, --workspace, --no-watch, --help, invalid |
-| Workspace         | root is absolute, resolve inside, resolve outside raises |
-| Event             | new/3 creates struct with all fields                  |
-| State             | initial empty, append stores, append broadcasts        |
-| Muse (submit/2)   | appends user event, appends assistant event, returns text |
-| Health            | check! returns :ok when healthy, raises on failure     |
-| DevReloader       | status, reload success, reload failure, rollback       |
-| HomeLive          | renders workspace, renders events, submit appends     |
-
----
-
-## Definition of Done
-
-- [ ] `mix muse` starts CLI + web
-- [ ] `mix muse --no-web` starts CLI only
-- [ ] `mix muse --web-only` starts web only
-- [ ] `mix muse --port 4100` starts web on port 4100
-- [ ] `mix muse --workspace /tmp/example` uses /tmp/example
-- [ ] `mix muse --no-watch` disables dev reloader
-- [ ] `mix escript.build && ./muse --no-web` works
-- [ ] CLI prompt shows `muse>`
-- [ ] Startup banner shows workspace, CLI status, web status, hot reload status
-- [ ] CLI and web share same in-memory events
-- [ ] Editing a watched source file triggers hot reload
-- [ ] Compile failure → old code keeps running
-- [ ] Health check failure → rollback
-- [ ] No real AI required; placeholder response is sufficient
-- [ ] All tests pass: `mix test`
-
----
-
-## Risks & Mitigations
-
-| Risk                                   | Mitigation                                        |
-|----------------------------------------|---------------------------------------------------|
-| Dev reloader breaks itself             | Exclude its own module + Application from auto-reload |
-| CLI REPL IO.gets blocks GenServer      | Use spawn_link, not GenServer, for the REPL loop  |
-| Escript can't include Phoenix assets   | For escript mode, serve minimal inline HTML       |
-| PubSub not started before State        | Order supervisor children: PubSub before State    |
-| Workspace race on boot                 | Capture workspace before starting supervisor      |
-| Hot reload misses process state changes| Document limitation; appup/relup is future scope  |
-
----
-
-## Implementation Order (Priority)
-
-```
-Step 1  → Scaffold
-Step 2  → Boot options + Argv
-Step 3  → Workspace
-Step 4  → Event + State
-Step 5  → Muse.submit/2
-Step 6  → CLI REPL
-Step 7  → Dev Reloader + Health
-Step 8  → Web UI
-Step 9  → Wire CLI + Web
-Step 10 → Escript + Mix Task
-Step 11 → Application Supervisor Wiring (iterate with steps 6-10)
-Step 12 → Dev Wrapper + Install Script
-Step 13 → README
-```
-
-> **Note:** Step 11 (Application wiring) is logically intertwined with steps 6-10.
-> In practice, you'll build it incrementally: start with base children in Step 1,
-> then add CLI child in Step 6, web child in Step 8, reloader child in Step 7.
-> Step 11 represents the final polished version of the Application module.
+Streaming model responses (if not in v0) · Model router & per-Muse pinning · OpenRouter/Ollama/Anthropic presets · Memory compaction enhancements · Plan/task board UI · Reviewing/Testing/Restoration Muse polish · Remote VPS execution · SSH profiles · Phoenix LiveView remote monitoring · MCP server integration · Self-healing repair mode · Evaluation harness · Cost tracking · Token accounting · Prompt caching · History compaction · Specialized roles beyond core Muses
