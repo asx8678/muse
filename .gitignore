@@ -21,3 +21,6 @@
 *~
 .DS_Store
 erl_crash.dump
+-e 
+# Beads auto-export (do not commit)
+issues.jsonl
