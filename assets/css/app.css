@@ -2101,6 +2101,11 @@ textarea:focus-visible {
   width: 100%;
 }
 
+.chat-messages > .chat-message-user:first-child,
+.chat-messages > .chat-message-assistant:first-child {
+  margin-top: 8px;
+}
+
 .chat-message-user {
   display: flex;
   flex-direction: column;
