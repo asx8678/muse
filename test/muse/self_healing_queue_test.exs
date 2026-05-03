@@ -166,7 +166,7 @@ defmodule Muse.SelfHealingQueueTest do
     i3 = SelfHealingQueue.add_diagnostic(d3)
 
     # Queue is newest-first: [i3, i2, i1]
-    [stored_i3, stored_i2, _stored_i1] = SelfHealingQueue.list()
+    [stored_i3, _stored_i2, _stored_i1] = SelfHealingQueue.list()
     assert stored_i3.id == i3.id
     assert stored_i3.status == :queued
 

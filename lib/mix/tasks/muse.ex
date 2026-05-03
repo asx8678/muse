@@ -1,8 +1,8 @@
 defmodule Mix.Tasks.Muse do
-  @shortdoc "Start Muse coding agent"
+  @shortdoc "Start Muse coding runtime"
 
   @moduledoc """
-  Starts the Muse coding agent from source via `mix muse`.
+  Starts the Muse coding runtime from source via `mix muse`.
 
   Stashes argv, marks `:source_mode?` as `true`, starts the `:muse`
   application, and blocks forever (the real work happens in supervised

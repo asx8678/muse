@@ -55,6 +55,13 @@ defmodule MuseWeb.ConsoleCommandTest do
       assert "connect_runtime" in ids
       assert "disconnect_runtime" in ids
     end
+
+    test "uses Muse-first labels for visible palette actions" do
+      actions = ConsoleCommand.palette_actions()
+
+      assert %{label: "Open Muses"} = Enum.find(actions, &(&1.id == "open_agents"))
+      refute Enum.any?(actions, &(&1.label == "Open Agents"))
+    end
   end
 
   describe "normalize_log_filter/1" do

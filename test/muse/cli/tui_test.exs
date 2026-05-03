@@ -247,12 +247,12 @@ defmodule Muse.CLI.TuiTest do
       assert last_span.content =~ ":10"
     end
 
-    test "agents tab renders Table" do
+    test "muses tab renders Table" do
       {:ok, state} = mount_tui()
       assert %ExRatatui.Widgets.Table{} = main_widget(%{state | active_tab: "agents"})
     end
 
-    test "agents tab with data renders rows" do
+    test "muses tab with data renders rows" do
       agent = %{
         id: "a1",
         name: "Coder",
@@ -378,7 +378,7 @@ defmodule Muse.CLI.TuiTest do
       assert new.active_tab == "diagnostics"
     end
 
-    test "Ctrl+A switches to agents", %{state: state} do
+    test "Ctrl+A switches to muses", %{state: state} do
       {:noreply, new} = Tui.handle_event(key("a", ["ctrl"]), state)
       assert new.active_tab == "agents"
     end
@@ -723,9 +723,9 @@ defmodule Muse.CLI.TuiTest do
       assert new.active_tab == "logs"
     end
 
-    test "switches to agents via /open agents" do
+    test "switches to muses via /open muses" do
       {:ok, state} = mount_tui()
-      ExRatatui.text_input_set_value(state.input_state, "/open agents")
+      ExRatatui.text_input_set_value(state.input_state, "/open muses")
       {:noreply, new} = Tui.handle_event(key("enter"), state)
       assert new.active_tab == "agents"
     end
@@ -1000,7 +1000,7 @@ defmodule Muse.CLI.TuiTest do
       assert length(main.items) == 5
     end
 
-    test "agents scroll offset skips rows" do
+    test "muses scroll offset skips rows" do
       agents =
         Enum.map(1..10, fn i ->
           %{id: "a#{i}", name: "Agent#{i}", status: :idle, kind: :coder, task: nil, progress: nil}

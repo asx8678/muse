@@ -5,7 +5,7 @@ defmodule Muse.CLI.Tui do
   Layout: header | tabs | main content | input | footer.
   Optional help popup overlay when `show_help?` is true.
 
-  Six tabs: Events, Logs, Diagnostics, Agents, Stats, Settings.
+  Six tabs: Events, Logs, Diagnostics, Muses, Stats, Settings.
   Focus model: :input (text input receives keys) or :main (scroll/tab keys).
   Input dispatches through Muse.CommandDispatcher for slash-commands.
   """
@@ -18,7 +18,7 @@ defmodule Muse.CLI.Tui do
   alias ExRatatui.Text.{Line, Span}
   alias ExRatatui.Widgets.{Block, List, Paragraph, Popup, Table, Tabs, TextInput}
 
-  @tab_labels ["Events", "Logs", "Diagnostics", "Agents", "Stats", "Settings"]
+  @tab_labels ["Events", "Logs", "Diagnostics", "Muses", "Stats", "Settings"]
   @tab_keys ~w(events logs diagnostics agents stats settings)
   @tab_index Enum.zip(@tab_keys, 0..5) |> Map.new()
   @scroll_page 10
@@ -659,7 +659,7 @@ defmodule Muse.CLI.Tui do
     total = length(agents)
 
     title =
-      [" Agents"]
+      [" Muses"]
       |> maybe_add(" #{min(offset + 1, total)}-#{min(offset + 50, total)}/#{total}", total > 0)
       |> Enum.join()
       |> Kernel.<>(" ")
@@ -827,7 +827,7 @@ defmodule Muse.CLI.Tui do
           "  Ctrl+E              Events tab",
           "  Ctrl+L              Logs tab",
           "  Ctrl+D              Diagnostics tab",
-          "  Ctrl+A              Agents tab",
+          "  Ctrl+A              Muses tab",
           "  Ctrl+S              Stats tab",
           "  Ctrl+,              Settings tab",
           "  Ctrl+R              Reload",

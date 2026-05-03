@@ -132,7 +132,7 @@ defmodule MuseWeb.ConsoleCommand do
     [
       %{id: "open_events", label: "Open Events", icon: "📋", shortcut: "Ctrl+E"},
       %{id: "open_files", label: "Open Files", icon: "📂", shortcut: "Ctrl+F"},
-      %{id: "open_agents", label: "Open Agents", icon: "🌳", shortcut: "Ctrl+A"},
+      %{id: "open_agents", label: "Open Muses", icon: "🌳", shortcut: "Ctrl+A"},
       %{id: "open_stats", label: "Open Stats", icon: "📊", shortcut: "Ctrl+R"},
       %{id: "open_settings", label: "Open Settings", icon: "⚙️", shortcut: "Ctrl+,"},
       %{id: "open_logs", label: "Open Logs", icon: "📝", shortcut: "Ctrl+L"},
@@ -209,7 +209,7 @@ defmodule MuseWeb.ConsoleCommand do
             |> add_toast("Runtime: #{reason}", :warning)
 
           {:error, _} ->
-            add_toast(socket, "Agent runtime unavailable", :warning)
+            add_toast(socket, "Muse runtime unavailable", :warning)
         end
 
       "disconnect_runtime" ->
@@ -219,7 +219,7 @@ defmodule MuseWeb.ConsoleCommand do
             |> add_toast("Runtime disconnected", :info)
 
           {:error, _} ->
-            add_toast(socket, "Agent runtime unavailable", :warning)
+            add_toast(socket, "Muse runtime unavailable", :warning)
         end
 
       _ ->

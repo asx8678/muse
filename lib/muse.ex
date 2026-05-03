@@ -1,6 +1,6 @@
 defmodule Muse do
   @moduledoc """
-  Muse — Minimal coding-agent foundation.
+  Muse — Minimal coding-runtime foundation.
 
   The primary public API for submitting user input and receiving assistant
   responses. Every submission appends a pair of events (user + assistant)

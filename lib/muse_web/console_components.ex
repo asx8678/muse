@@ -86,7 +86,7 @@ defmodule MuseWeb.ConsoleComponents do
           <button type="button" class="secondary-button event-export-btn" phx-click="export_events" title="Export filtered events as JSON">Export</button>
         </div>
         <p class="panel-description">
-          Muse watches your backend workspace, tracks events, manages agents, and lets you send runtime commands.
+          Muse watches your backend workspace, tracks events, manages Muses, and lets you send runtime commands.
           <%= length(@events) %> event<%= if length(@events) != 1, do: "s", else: "" %> received · newest first
           <%= if @filter != "all" or @search != "" do %>
             · <%= length(filtered_events(Enum.reverse(@events), @filter, @search)) %> matching
@@ -98,7 +98,7 @@ defmodule MuseWeb.ConsoleComponents do
           <div class="empty-state">
             <p class="empty-state-title">No events yet</p>
             <p class="empty-state-description">
-              Events are created by backend activity, file changes, agent actions, and commands you send.
+              Events are created by backend activity, file changes, Muse actions, and commands you send.
             </p>
             <div class="empty-state-actions">
               <button type="button" class="secondary-button" phx-click="simulate_event">Simulate event</button>
@@ -345,16 +345,16 @@ defmodule MuseWeb.ConsoleComponents do
 
   def agents_tab(assigns) do
     ~H"""
-    <section class="panel agents-panel" role="tabpanel" aria-label="Agents">
+    <section class="panel agents-panel" role="tabpanel" aria-label="Muses">
       <div class="panel-header">
-        <h2 class="panel-title">Agents</h2>
-        <p class="panel-description">Agent tree and runtime status</p>
+        <h2 class="panel-title">Muses</h2>
+        <p class="panel-description">Muse tree and runtime status</p>
       </div>
       <div class="panel-body">
         <% runtime = @agent_runtime || %{status: :disconnected, endpoint: "", last_error: nil, last_attempt_at: nil, health: :inactive} %>
         <div class="agent-runtime-card" id="agent-runtime-card">
           <div class="agent-runtime-header">
-            <h3 class="agent-runtime-title">Universal agent runtime</h3>
+            <h3 class="agent-runtime-title">Muse Runtime</h3>
             <span class={"agent-runtime-status agent-runtime-status-#{runtime.status}"}>
               <span class={"status-dot #{runtime_status_dot(runtime.status)}"}></span>
               <%= runtime_status_label(runtime.status) %>
@@ -370,7 +370,7 @@ defmodule MuseWeb.ConsoleComponents do
                 class="agent-runtime-endpoint-input"
                 value={runtime[:endpoint] || ""}
                 placeholder="ws://localhost:4000"
-                aria-label="Agent runtime endpoint"
+                aria-label="Muse runtime endpoint"
               />
             </form>
             <%= if runtime[:last_attempt_at] do %>
@@ -388,11 +388,11 @@ defmodule MuseWeb.ConsoleComponents do
           </div>
           <div class="agent-runtime-actions">
             <%= if runtime.status == :disconnected or runtime.status == :error do %>
-              <button type="button" class="secondary-button" phx-click="connect_agent_runtime" title="Connect to agent runtime">Connect</button>
-              <button type="button" class="secondary-button" phx-click="retry_agent_runtime" title="Retry agent runtime connection">Retry</button>
+              <button type="button" class="secondary-button" phx-click="connect_agent_runtime" title="Connect to Muse runtime">Connect</button>
+              <button type="button" class="secondary-button" phx-click="retry_agent_runtime" title="Retry Muse runtime connection">Retry</button>
             <% end %>
             <%= if runtime.status == :connected or runtime.status == :connecting do %>
-              <button type="button" class="secondary-button" phx-click="disconnect_agent_runtime" title="Disconnect agent runtime">Disconnect</button>
+              <button type="button" class="secondary-button" phx-click="disconnect_agent_runtime" title="Disconnect Muse runtime">Disconnect</button>
             <% end %>
             <button type="button" class="secondary-button" phx-click="switch_tab" phx-value-tab="logs" title="Open logs tab">Open logs</button>
           </div>
@@ -400,9 +400,9 @@ defmodule MuseWeb.ConsoleComponents do
 
         <%= if @agent_snapshot == :unavailable do %>
           <div class="empty-state">
-            <p class="empty-state-title">Agent registry unavailable</p>
+            <p class="empty-state-title">Muse registry unavailable</p>
             <p class="empty-state-description">
-              The agent registry is not running. Start the Muse agent runtime to register and manage agents.
+              The Muse registry is not running. Start the Muse runtime to register and manage Muses.
             </p>
             <div class="empty-state-actions">
               <button type="button" class="secondary-button" phx-click="connect_agent_runtime">Connect runtime</button>
@@ -437,9 +437,9 @@ defmodule MuseWeb.ConsoleComponents do
           <% end %>
           <%= if @agent_snapshot.agents == [] do %>
             <div class="empty-state">
-              <p class="empty-state-title">No agents registered</p>
+              <p class="empty-state-title">No Muses registered</p>
               <p class="empty-state-description">
-                Start or connect an agent runtime to register agents. Agents handle tasks like self-healing, code review, and more.
+                Start or connect a Muse runtime to register Muses. Muses handle tasks like self-healing, code review, and more.
               </p>
               <div class="empty-state-actions">
                 <button type="button" class="secondary-button" phx-click="connect_agent_runtime">Connect runtime</button>
@@ -588,7 +588,7 @@ defmodule MuseWeb.ConsoleComponents do
     ~H"""
     <header class="app-header">
       <div class="app-brand muse-brand">
-        <img src="/images/muse-logo-header.png" alt="Muse CLI Coding Agent" class="muse-brand__logo" />
+        <img src="/images/muse-logo-header.png" alt="Muse CLI Coding Muse" class="muse-brand__logo" />
       </div>
       <div class="status-chips">
         <.status_chip label="backend" tone="green" dot={true} value="connected" />
@@ -659,7 +659,7 @@ defmodule MuseWeb.ConsoleComponents do
               <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Explain this project">Explain this project</button>
               <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Check recent backend errors">Check recent backend errors</button>
               <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Review changed files">Review changed files</button>
-              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Help me connect the agent runtime">Help me connect the agent runtime</button>
+              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Help me connect the Muse runtime">Help me connect the Muse runtime</button>
             </div>
           </div>
         <% else %>
@@ -741,7 +741,7 @@ defmodule MuseWeb.ConsoleComponents do
         <% :rail -> %>
           <div class="context-rail">
             <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Expand sidebar" aria-label="Expand sidebar">☰</button>
-            <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Agent" aria-label="Agent section">🤖</button>
+            <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Muse" aria-label="Muse section">🌳</button>
             <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Workspace" aria-label="Workspace section">📂</button>
             <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Diagnostics" aria-label="Diagnostics section">⚠</button>
             <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Files" aria-label="Files section">📄</button>
@@ -758,7 +758,7 @@ defmodule MuseWeb.ConsoleComponents do
             </div>
           </div>
 
-          <.mini_card title="agent">
+          <.mini_card title="Muse">
             <% runtime = @agent_runtime || %{status: :disconnected} %>
             <div class="mini-card-row">
               <span class={"status-dot #{runtime_status_dot(runtime.status)}"}></span>
@@ -771,7 +771,7 @@ defmodule MuseWeb.ConsoleComponents do
               <div class="mini-card-row mini-card-error"><span class="mini-card-label">last error</span> <span><%= runtime.last_error %></span></div>
             <% end %>
             <%= if agent_count(runtime) do %>
-              <div class="mini-card-row"><span class="mini-card-label">agents</span> <span><%= agent_count(runtime) %></span></div>
+              <div class="mini-card-row"><span class="mini-card-label">Muses</span> <span><%= agent_count(runtime) %></span></div>
             <% end %>
           </.mini_card>
 
@@ -894,10 +894,10 @@ defmodule MuseWeb.ConsoleComponents do
         <span class="status-item-label">Workspace</span>
         <span class="status-item-value status-item-path" title={@workspace}><%= @workspace %></span>
       </div>
-      <div class="status-item" title="Universal agent runtime connection">
+      <div class="status-item" title="Muse runtime connection">
         <% runtime = @agent_runtime || %{status: :disconnected} %>
         <span class={"status-dot #{runtime_status_dot(runtime.status)}"}></span>
-        <span class="status-item-label">Universal agent</span>
+        <span class="status-item-label">Muse</span>
         <span class="status-item-value"><%= runtime_status_label(runtime.status) %></span>
       </div>
       <div class="status-item" title="Total events received">
@@ -956,10 +956,10 @@ defmodule MuseWeb.ConsoleComponents do
                     phx-click="queue_diagnostic_fix"
                     phx-value-diagnostic_id={Integer.to_string(diagnostic.id)}
                   >
-                    Add to next agent turn
+                    Add to next Muse turn
                   </button>
                 <% :queued -> %>
-                  <button type="button" class="diagnostic-queued" disabled>Queued for next agent turn</button>
+                  <button type="button" class="diagnostic-queued" disabled>Queued for next Muse turn</button>
                 <% :in_progress -> %>
                   <button type="button" class="diagnostic-queued" disabled>In progress</button>
                 <% :fixed -> %>
@@ -1032,10 +1032,10 @@ defmodule MuseWeb.ConsoleComponents do
             </div>
             <div class="dev-tool-separator"></div>
             <div class="dev-tool-group">
-              <h3 class="dev-tool-group-title">Agent runtime</h3>
-              <button type="button" class="secondary-button dev-tool-btn" phx-click="connect_agent_runtime" title="Connect to universal agent runtime">Connect runtime</button>
-              <button type="button" class="secondary-button dev-tool-btn" phx-click="retry_agent_runtime" title="Retry agent runtime connection">Retry connection</button>
-              <button type="button" class="secondary-button dev-tool-btn" phx-click="disconnect_agent_runtime" title="Disconnect agent runtime">Disconnect</button>
+              <h3 class="dev-tool-group-title">Muse runtime</h3>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="connect_agent_runtime" title="Connect to Muse runtime">Connect runtime</button>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="retry_agent_runtime" title="Retry Muse runtime connection">Retry connection</button>
+              <button type="button" class="secondary-button dev-tool-btn" phx-click="disconnect_agent_runtime" title="Disconnect Muse runtime">Disconnect</button>
             </div>
           </div>
         </section>
@@ -1057,11 +1057,11 @@ defmodule MuseWeb.ConsoleComponents do
             </li>
             <li class="setup-item">
               <span class="setup-check">○</span>
-              <span class="setup-text">Connect universal agent runtime</span>
+              <span class="setup-text">Connect Muse runtime</span>
             </li>
             <li class="setup-item">
               <span class="setup-check">○</span>
-              <span class="setup-text">Register first agent</span>
+              <span class="setup-text">Register first Muse</span>
             </li>
             <li class={"setup-item #{if @command_history != [], do: "setup-item-done", else: ""}"}>
               <span class="setup-check"><%= if @command_history != [], do: "✓", else: "○" %></span>

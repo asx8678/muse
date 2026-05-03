@@ -68,7 +68,7 @@ defmodule Muse.CommandDispatcherTest do
       {:ok, output, _effects} =
         CommandDispatcher.dispatch(:agents, nil, %{agent_snapshot: snapshot})
 
-      assert output =~ "2 agent(s)"
+      assert output =~ "2 Muses"
     end
   end
 
@@ -238,7 +238,7 @@ defmodule Muse.CommandDispatcherTest do
     end
 
     test "invalid filter returns error" do
-      {:error, output, effects} = CommandDispatcher.dispatch(:filter_logs, "nope", %{})
+      {:error, output, _effects} = CommandDispatcher.dispatch(:filter_logs, "nope", %{})
       assert output =~ "Unknown filter"
     end
   end

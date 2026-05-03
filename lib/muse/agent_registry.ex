@@ -1,17 +1,17 @@
 defmodule Muse.AgentRegistry do
   @moduledoc """
-  GenServer that tracks agent registrations and broadcasts changes over PubSub.
+  GenServer that tracks Muse registrations and broadcasts changes over PubSub.
 
-  This is a foundation API — no real external agent runtime is wired in yet.
-  The UI can call `snapshot/0` to get current agent state and `subscribe/0`
+  This is a foundation API — no real external Muse runtime is wired in yet.
+  The UI can call `snapshot/0` to get current Muse state and `subscribe/0`
   to receive `{:muse_agent_registry_updated, snapshot}` broadcasts.
 
-  Agent records are plain maps with the following fields:
+  Muse records are plain maps with the following fields:
 
     * `:id`          — unique identifier (string or atom)
     * `:name`        — display name
-    * `:kind`        — atom categorising the agent (e.g. `:coder`, `:reviewer`)
-    * `:parent_id`   — optional parent agent id
+    * `:kind`        — atom categorising the Muse (e.g. `:coder`, `:reviewer`)
+    * `:parent_id`   — optional parent Muse id
     * `:status`      — `:idle`, `:busy`, `:error`, `:unavailable`
     * `:progress`    — float 0.0–1.0 or nil
     * `:current_tool`— string or nil

@@ -1,7 +1,7 @@
 defmodule Muse.SelfHealingQueue do
   @moduledoc """
   In-memory GenServer holding self-healing issues queued for the next
-  agent/development turn.
+  Muse turn.
 
   Issues are deduplicated by `diagnostic_id` and bounded to a configurable
   maximum (default 100).  All mutations are broadcast on the

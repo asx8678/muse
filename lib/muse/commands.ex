@@ -9,7 +9,7 @@ defmodule Muse.Commands do
   @slash_commands [
     {"/help", :help, "Show available commands"},
     {"/events", :events, "Show event summary"},
-    {"/agents", :agents, "Show agent status"},
+    {"/muses", :agents, "Show Muse status"},
     {"/simulate event", :simulate_event, "Simulate a test event"},
     {"/simulate backend-error", :simulate_backend_error, "Simulate a backend error"},
     {"/clear", :clear_history, "Clear command history"},
@@ -24,7 +24,7 @@ defmodule Muse.Commands do
     {"/filter events", :filter_events, "Filter events by severity (e.g. /filter events errors)"},
     {"/open events", :open_events, "Switch to Events tab"},
     {"/open files", :open_files, "Switch to Files tab"},
-    {"/open agents", :open_agents, "Switch to Agents tab"},
+    {"/open muses", :open_agents, "Switch to Muses tab"},
     {"/open stats", :open_stats, "Switch to Stats tab"},
     {"/open settings", :open_settings, "Switch to Settings tab"},
     {"/open logs", :open_logs, "Switch to Logs tab"},
@@ -33,15 +33,24 @@ defmodule Muse.Commands do
     {"/export logs", :export_logs, "Export logs as JSON to clipboard"},
     {"/search logs", :search_logs, "Search logs by query (e.g. /search logs myquery)"},
     {"/filter logs", :filter_logs, "Filter logs by severity (e.g. /filter logs errors)"},
-    {"/runtime", :runtime, "Show agent runtime status"},
-    {"/connect runtime", :connect_runtime, "Attempt agent runtime connection"},
-    {"/disconnect runtime", :disconnect_runtime, "Disconnect agent runtime"},
+    {"/runtime", :runtime, "Show Muse runtime status"},
+    {"/connect runtime", :connect_runtime, "Attempt Muse runtime connection"},
+    {"/disconnect runtime", :disconnect_runtime, "Disconnect Muse runtime"},
     {"/reload", :reload, "Force dev reload"},
     {"/rollback", :rollback, "Roll back to last good generation"}
   ]
 
   # Sort longest-prefix-first so "/simulate backend-error" matches before "/simulate"
   @sorted_commands Enum.sort_by(@slash_commands, fn {prefix, _, _} -> -String.length(prefix) end)
+
+  # Legacy aliases — parsed but not shown in help text or autocomplete
+  @legacy_aliases [
+    {"/agents", :agents},
+    {"/open agents", :open_agents}
+  ]
+  @sorted_legacy_aliases Enum.sort_by(@legacy_aliases, fn {prefix, _} ->
+                           -String.length(prefix)
+                         end)
 
   @spec parse(String.t()) ::
           {:command, atom()}
@@ -63,6 +72,19 @@ defmodule Muse.Commands do
            cmd == prefix or String.starts_with?(cmd, prefix <> " ")
          end) do
       {prefix, action, _desc} ->
+        args = extract_args(cmd, prefix)
+        if args != "", do: {:command, action, args}, else: {:command, action}
+
+      nil ->
+        parse_legacy_alias(cmd)
+    end
+  end
+
+  defp parse_legacy_alias(cmd) do
+    case Enum.find(@sorted_legacy_aliases, fn {prefix, _action} ->
+           cmd == prefix or String.starts_with?(cmd, prefix <> " ")
+         end) do
+      {prefix, action} ->
         args = extract_args(cmd, prefix)
         if args != "", do: {:command, action, args}, else: {:command, action}
 

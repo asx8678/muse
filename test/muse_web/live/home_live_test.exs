@@ -246,6 +246,8 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "chat-send-button"
     assert html =~ ~s(id="command-form")
     assert html =~ "Ask muse to inspect, explain, fix, or generate code..."
+    assert html =~ "Help me connect the Muse runtime"
+    refute html =~ "Help me connect the agent runtime"
   end
 
   test "renders context sidebar panel" do
@@ -507,7 +509,7 @@ defmodule MuseWeb.HomeLiveTest do
     open_diagnostics_drawer(view)
     html = render(view)
 
-    assert html =~ "Add to next agent turn"
+    assert html =~ "Add to next Muse turn"
     assert html =~ "diagnostic-actions"
     assert html =~ "Copy error"
     assert html =~ "Jump to file"
@@ -613,7 +615,7 @@ defmodule MuseWeb.HomeLiveTest do
 
   # -- Self-healing diagnostic tests ------------------------------------------
 
-  test "clicking Add to next agent turn queues the diagnostic" do
+  test "clicking Add to next Muse turn queues the diagnostic" do
     diagnostic = Muse.Diagnostics.emit(:warning, "queue me")
 
     {:ok, view, _html} = live(build_conn(), "/")
@@ -627,7 +629,7 @@ defmodule MuseWeb.HomeLiveTest do
     |> render_click()
 
     html = render(view)
-    assert html =~ "Queued for next agent turn"
+    assert html =~ "Queued for next Muse turn"
   end
 
   test "queued diagnostic renders disabled state" do
@@ -1045,7 +1047,7 @@ defmodule MuseWeb.HomeLiveTest do
   test "context panel renders compact sections: agent, workspace, diagnostics, stats" do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ ~s(class="context-sidebar)
-    assert html =~ "agent"
+    assert html =~ "Muse"
     assert html =~ "workspace"
     assert html =~ "diagnostics"
     assert html =~ "stats"
@@ -1219,7 +1221,7 @@ defmodule MuseWeb.HomeLiveTest do
       {:ok, _view, html} = live(build_conn(), "/")
       assert html =~ ~s(class="muse-brand__logo")
       assert html =~ ~s(src="/images/muse-logo-header.png")
-      assert html =~ ~s(alt="Muse CLI Coding Agent")
+      assert html =~ ~s(alt="Muse CLI Coding Muse")
       # Visible label span removed — brand area has logo only
       refute html =~ ~s(class="brand-mark muse-brand__label")
     end

@@ -12,7 +12,11 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/events") == {:command, :events}
     end
 
-    test "parses /agents" do
+    test "parses /muses" do
+      assert Commands.parse("/muses") == {:command, :agents}
+    end
+
+    test "/agents legacy alias still parses" do
       assert Commands.parse("/agents") == {:command, :agents}
     end
 
@@ -78,6 +82,7 @@ defmodule Muse.CommandsTest do
     test "parses /open commands" do
       assert Commands.parse("/open events") == {:command, :open_events}
       assert Commands.parse("/open files") == {:command, :open_files}
+      assert Commands.parse("/open muses") == {:command, :open_agents}
       assert Commands.parse("/open agents") == {:command, :open_agents}
       assert Commands.parse("/open stats") == {:command, :open_stats}
       assert Commands.parse("/open settings") == {:command, :open_settings}
@@ -196,7 +201,7 @@ defmodule Muse.CommandsTest do
       text = Commands.help_text()
       assert text =~ "/help"
       assert text =~ "/events"
-      assert text =~ "/agents"
+      assert text =~ "/muses"
       assert text =~ "/simulate event"
       assert text =~ "/simulate backend-error"
       assert text =~ "/clear"

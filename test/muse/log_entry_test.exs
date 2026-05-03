@@ -8,7 +8,7 @@ defmodule Muse.LogEntryTest do
       entry = LogEntry.new(:info, "hello")
       assert %LogEntry{} = entry
       assert entry.id > 0
-      assert entry.timestamp != nil
+      assert %DateTime{} = entry.timestamp
       assert entry.level == :info
       assert entry.source == :app
       assert entry.message == "hello"

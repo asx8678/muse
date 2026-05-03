@@ -1,6 +1,6 @@
 # Muse
 
-Minimal Elixir/Phoenix LiveView coding-agent foundation.
+Minimal Elixir/Phoenix LiveView coding-runtime foundation for Muse.
 
 Muse gives you a CLI REPL and a web interface that both funnel through a
 single `Muse.submit/2` API — so adding real AI behavior later is a one-module
@@ -268,7 +268,7 @@ cd ~/projects/muse
 | `Muse.CLI.Main` | Escript entrypoint; sets `:source_mode?` |
 | `Muse.DevReloader` | Hot-reload watcher with generation tracking & rollback |
 | `Muse.SelfHealingQueue` | GenServer holding queued self-healing issues; broadcasts via PubSub |
-| `Muse.SelfHealingIssue` | Struct representing a diagnostic queued for next agent turn |
+| `Muse.SelfHealingIssue` | Struct representing a diagnostic queued for next Muse turn |
 
 ### Source mode vs. escript mode
 
@@ -288,32 +288,32 @@ in the left panel shows a compact summary (count + latest message). Clicking
 **details** opens a **diagnostics drawer** overlay with the full list, action
 buttons, and status labels.
 
-Each diagnostic in the drawer has an **"Add to next agent turn"** button.
+Each diagnostic in the drawer has an **"Add to next Muse turn"** button.
 Clicking it queues the diagnostic for self-healing.  Once queued, the button
-changes to a disabled **"Queued for next agent turn"** label.  Status labels
+changes to a disabled **"Queued for next Muse turn"** label.  Status labels
 update through the lifecycle: `In progress`, `Already fixed`, `Self-healing failed`,
 `Ignored`.
 
 On the next `Muse.submit/2` call (from the CLI or web), queued self-healing
 issues are atomically claimed and attached as an event in the state log.
 
-> **⚠️ Current limitation** — Full auto-fixing requires a real coding-agent
+> **⚠️ Current limitation** — Full auto-fixing requires a real coding Muse
 > integration.  Currently, `Muse.submit/2` is still a placeholder; queued
 > issues are recorded and attached to the next turn, but no automatic
-> resolution happens.  This is a **bridge** until a real agent is wired in.
+> resolution happens.  This is a **bridge** until a real coding Muse is wired in.
 
 ---
 
 ## UI
 
-Muse uses a dark-only modern chat-first agent workspace with calm neutral
+Muse uses a dark-only modern chat-first Muse workspace with calm neutral
 panels and a subtle purple accent.  The layout is a full-width single-window
 design with a compact top header and a central conversation area.
 
 - **Dark mode only** — no theme toggle. Dark background with high-contrast text.
 - **Top header** — compact status chips for backend, watcher, runtime, workspace,
   and diagnostics. When the sidebar is hidden, a context-reopen button appears.
-- **Left collapsible sidebar** — context cards for agent status, workspace info,
+- **Left collapsible sidebar** — context cards for Muse status, workspace info,
   diagnostics summary (with a details button that opens the drawer), recent files,
   and BEAM stats. The sidebar supports three states:
   - *Expanded* (default) — full card layout with labels.

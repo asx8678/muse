@@ -1,6 +1,44 @@
 # Muse Universal Runtime — Executive Summary
 
-> **Archived source plan:** [`plans/plan-v3-archived.md`](plans/plan-v3-archived.md) · **Architecture:** [`docs/architecture.md`](docs/architecture.md) · **Prompts:** [`docs/prompts.md`](docs/prompts.md) · **Providers:** [`docs/provider-roadmap.md`](docs/provider-roadmap.md) · **Testing:** [`docs/testing.md`](docs/testing.md) · **Security:** [`docs/security.md`](docs/security.md)
+> **Archived source plan:** [`plans/plan-v3-archived.md`](plans/plan-v3-archived.md) · **Architecture:** [`docs/architecture.md`](docs/architecture.md) · **Prompts:** [`docs/prompts.md`](docs/prompts.md) · **Providers:** [`docs/provider-roadmap.md`](docs/provider-roadmap.md) · **Testing:** [`docs/testing.md`](docs/testing.md) · **Security:** [`docs/security.md`](docs/security.md) · **PR 00 Baseline:** [`docs/pr-00-baseline.md`](docs/pr-00-baseline.md)
+
+---
+
+## PR 00 — Baseline Verification & Naming Cleanup
+
+**Status:** ✅ Complete
+
+Baseline quality gates (all passing):
+
+| Command | Exit Code | Notes |
+|---|---|---|
+| `mix format --check-formatted` | 0 | All files formatted |
+| `mix compile --warnings-as-errors` | 0 | No warnings |
+| `mix test` | 0 | 858 tests, 0 failures |
+
+Product-language audit — user-facing "Agent/Bot" labels replaced with Muse-first terms:
+
+- `Agents` → `Muses` (TUI tab, LiveView tab, sidebar card, status bar)
+- `Agent registry` → `Muse registry` (command output, LiveView panel)
+- `Agent runtime` → `Muse runtime` (command output, toasts, button titles, aria-labels)
+- `Add to next agent turn` → `Add to next Muse turn` (diagnostic drawer)
+- `Queued for next agent turn` → `Queued for next Muse turn` (diagnostic drawer)
+- `Muse CLI Coding Agent` → `Muse CLI Coding Muse` (logo alt text)
+- `/agents` → `/muses`, `/open agents` → `/open muses` (slash-command display; legacy aliases preserved)
+- `Open Agents` → `Open Muses` (command palette)
+- `Help me connect the agent runtime` → `Help me connect the Muse runtime` (empty-chat prompt chip)
+- `Connect universal agent runtime` / `Register first agent` → Muse-first setup copy
+- `coding-agent foundation` → `coding-runtime foundation` (README and public moduledocs)
+- `agent workspace` → `Muse workspace` (README)
+
+Planned exceptions (internal identifiers, not user-facing):
+- Module names: `Muse.AgentRegistry`, `Muse.AgentRuntime`
+- Data keys: `agent_snapshot`, `agent_runtime`, `agents` (map fields)
+- CSS classes: `agent-*` (e.g., `agent-runtime-card`, `agent-entry`)
+- Phoenix event names: `connect_agent_runtime`, `disconnect_agent_runtime`, etc.
+- PubSub messages: `:muse_agent_registry_updated`, `:muse_agent_runtime_updated`
+- Process names: `Muse.AgentRegistry`, `Muse.AgentRuntime`
+- Anti-examples in PLAN.md §5 "Avoid in User-Facing Text" and docs/testing.md product-language checklist
 
 ---
 

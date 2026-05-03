@@ -36,7 +36,7 @@ defmodule MuseWeb.HomeLive do
     {"events", "📋", "Events"},
     {"logs", "📝", "Logs"},
     {"files", "📂", "Files"},
-    {"agents", "🌳", "Agents"},
+    {"agents", "🌳", "Muses"},
     {"stats", "📊", "Stats"},
     {"settings", "⚙️", "Settings"}
   ]
@@ -366,7 +366,7 @@ defmodule MuseWeb.HomeLive do
         {:noreply, socket}
 
       {:error, _} ->
-        socket = socket |> add_toast("Agent runtime unavailable", :warning)
+        socket = socket |> add_toast("Muse runtime unavailable", :warning)
         {:noreply, socket}
     end
   end
@@ -383,7 +383,7 @@ defmodule MuseWeb.HomeLive do
         {:noreply, socket}
 
       {:error, _} ->
-        socket = socket |> add_toast("Agent runtime unavailable", :warning)
+        socket = socket |> add_toast("Muse runtime unavailable", :warning)
         {:noreply, socket}
     end
   end
@@ -400,7 +400,7 @@ defmodule MuseWeb.HomeLive do
         {:noreply, socket}
 
       {:error, _} ->
-        socket = socket |> add_toast("Agent runtime unavailable", :warning)
+        socket = socket |> add_toast("Muse runtime unavailable", :warning)
         {:noreply, socket}
     end
   end

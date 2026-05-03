@@ -1,6 +1,6 @@
 defmodule Muse.AgentRuntime do
   @moduledoc """
-  Simple universal agent runtime state manager.
+  Simple Muse runtime state manager.
 
   Maintains connection state and broadcasts updates via PubSub.
   No websocket dependency — `connect/1` transitions state and

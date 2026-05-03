@@ -84,8 +84,13 @@ defmodule Muse.CommandDispatcher do
 
   def dispatch(:agents, _args, context) do
     case Map.get(context, :agent_snapshot, :unavailable) do
-      :unavailable -> {:ok, "Agent registry unavailable.", []}
-      %{agents: agents} -> {:ok, "Agent registry: #{length(agents)} agent(s).", []}
+      :unavailable ->
+        {:ok, "Muse registry unavailable.", []}
+
+      %{agents: agents} ->
+        count = length(agents)
+        label = if count == 1, do: "Muse", else: "Muses"
+        {:ok, "Muse registry: #{count} #{label}.", []}
     end
   end
 
@@ -306,7 +311,7 @@ defmodule Muse.CommandDispatcher do
     do: {:ok, "Switched to Files tab.", [{:switch_tab, "files"}]}
 
   def dispatch(:open_agents, _args, _context),
-    do: {:ok, "Switched to Agents tab.", [{:switch_tab, "agents"}]}
+    do: {:ok, "Switched to Muses tab.", [{:switch_tab, "agents"}]}
 
   def dispatch(:open_stats, _args, _context),
     do: {:ok, "Switched to Stats tab.", [{:switch_tab, "stats"}]}
@@ -416,10 +421,10 @@ defmodule Muse.CommandDispatcher do
 
     msg =
       case runtime.status do
-        :disconnected -> "Agent runtime: Disconnected (endpoint: #{runtime.endpoint})"
-        :connecting -> "Agent runtime: Connecting to #{runtime.endpoint}..."
-        :connected -> "Agent runtime: Connected to #{runtime.endpoint}"
-        :error -> "Agent runtime: Error — #{runtime.last_error} (endpoint: #{runtime.endpoint})"
+        :disconnected -> "Muse runtime: Disconnected (endpoint: #{runtime.endpoint})"
+        :connecting -> "Muse runtime: Connecting to #{runtime.endpoint}..."
+        :connected -> "Muse runtime: Connected to #{runtime.endpoint}"
+        :error -> "Muse runtime: Error — #{runtime.last_error} (endpoint: #{runtime.endpoint})"
       end
 
     {:ok, msg, []}
@@ -434,7 +439,7 @@ defmodule Muse.CommandDispatcher do
          [{:refresh, :runtime}, {:toast, :warning, "Runtime: #{reason}"}]}
 
       {:error, _reason} ->
-        {:ok, "Agent runtime unavailable.", [{:toast, :warning, "Agent runtime unavailable"}]}
+        {:ok, "Muse runtime unavailable.", [{:toast, :warning, "Muse runtime unavailable"}]}
     end
   end
 
@@ -451,7 +456,7 @@ defmodule Muse.CommandDispatcher do
          [{:refresh, :runtime}, {:toast, :warning, "Runtime: #{reason}"}]}
 
       {:error, _reason} ->
-        {:ok, "Agent runtime unavailable.", [{:toast, :warning, "Agent runtime unavailable"}]}
+        {:ok, "Muse runtime unavailable.", [{:toast, :warning, "Muse runtime unavailable"}]}
     end
   end
 
@@ -464,7 +469,7 @@ defmodule Muse.CommandDispatcher do
          [{:refresh, :runtime}, {:toast, :info, "Runtime disconnected"}]}
 
       {:error, _reason} ->
-        {:ok, "Agent runtime unavailable.", [{:toast, :warning, "Agent runtime unavailable"}]}
+        {:ok, "Muse runtime unavailable.", [{:toast, :warning, "Muse runtime unavailable"}]}
     end
   end
 

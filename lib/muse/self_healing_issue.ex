@@ -3,7 +3,7 @@ defmodule Muse.SelfHealingIssue do
   Immutable record representing a diagnostic queued for self-healing.
 
   Each issue tracks a diagnostic that a user flagged for the next
-  agent/development turn.  Messages are safely stringified and
+  Muse turn.  Messages are safely stringified and
   truncated.  Map metadata is preserved as-is (matching
   `Muse.Diagnostic` style); non-map metadata is safely inspected
   and wrapped.
