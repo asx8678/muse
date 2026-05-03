@@ -10,9 +10,6 @@ defmodule MuseWeb.HomeLive do
       toast_container: 1
     ]
 
-  # Agent 2 exports events_to_messages but spec requires chat_messages/1
-  # which filters only :user_message and :assistant_message event types.
-
   import MuseWeb.EventFormatter,
     only: [
       filtered_events: 3,
@@ -33,7 +30,6 @@ defmodule MuseWeb.HomeLive do
   alias MuseWeb.BackendBridge
   alias MuseWeb.ConsoleCommand
 
-  @collapse_timeout_ms 10_000
   @toast_timeout_ms 5_000
 
   @tabs [
@@ -56,7 +52,8 @@ defmodule MuseWeb.HomeLive do
     self_healing_issues = BackendBridge.safe_self_healing_issues()
     diagnostic_issue_statuses = compute_issue_statuses(self_healing_issues)
 
-    diagnostics_open? = diagnostics != []
+    # Diagnostics drawer always closed on initial render, even if diagnostics exist
+    diagnostics_open? = false
 
     if connected?(socket) do
       Muse.State.subscribe()
@@ -76,8 +73,7 @@ defmodule MuseWeb.HomeLive do
         reload_status: reload_status,
         diagnostics: diagnostics,
         diagnostics_open?: diagnostics_open?,
-        diagnostics_collapse_ref: nil,
-        diagnostics_collapse_timer_ref: nil,
+        sidebar_state: :expanded,
         self_healing_issues: self_healing_issues,
         diagnostic_issue_statuses: diagnostic_issue_statuses,
         beam_stats: Muse.BeamStats.snapshot(),
@@ -101,13 +97,6 @@ defmodule MuseWeb.HomeLive do
         open_windows: MapSet.new(),
         active_window: nil
       )
-
-    socket =
-      if diagnostics_open? and connected?(socket) do
-        schedule_collapse(socket)
-      else
-        socket
-      end
 
     {:ok, socket}
   end
@@ -281,7 +270,7 @@ defmodule MuseWeb.HomeLive do
   def handle_event("simulate_backend_error", _params, socket) do
     if Mix.env() != :prod do
       BackendBridge.safe_emit_simulated_error()
-      # Also create an event in the event log for visibility
+
       event =
         Muse.Event.new(:web, :error, %{text: "Simulated backend error triggered from dev tools"})
 
@@ -507,22 +496,41 @@ defmodule MuseWeb.HomeLive do
     end
   end
 
-  # Diagnostics handlers (preserved from legacy)
+  # -- Sidebar handlers -------------------------------------------------------
+
+  @impl true
+  def handle_event("set_sidebar_state", %{"state" => state_str}, socket) do
+    case state_str do
+      s when s in ~w(expanded rail hidden) ->
+        {:noreply, assign(socket, sidebar_state: String.to_atom(s))}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("toggle_sidebar", _params, socket) do
+    new_state =
+      case socket.assigns.sidebar_state do
+        :expanded -> :rail
+        :rail -> :expanded
+        :hidden -> :expanded
+      end
+
+    {:noreply, assign(socket, sidebar_state: new_state)}
+  end
+
+  # -- Diagnostics handlers ---------------------------------------------------
+
   @impl true
   def handle_event("open_diagnostics", _params, socket) do
-    {:noreply, assign(socket, diagnostics_open?: true) |> schedule_collapse()}
+    {:noreply, assign(socket, diagnostics_open?: true)}
   end
 
   @impl true
   def handle_event("collapse_diagnostics", _params, socket) do
-    cancel_timer(socket)
-
-    {:noreply,
-     assign(socket,
-       diagnostics_open?: false,
-       diagnostics_collapse_ref: nil,
-       diagnostics_collapse_timer_ref: nil
-     )}
+    {:noreply, assign(socket, diagnostics_open?: false)}
   end
 
   @impl true
@@ -558,6 +566,44 @@ defmodule MuseWeb.HomeLive do
     end
   end
 
+  @impl true
+  def handle_event("copy_diagnostic", %{"diagnostic_id" => id_str}, socket) do
+    id = String.to_integer(id_str)
+
+    case Enum.find(socket.assigns.diagnostics, &(&1.id == id)) do
+      nil ->
+        {:noreply, add_toast(socket, "Diagnostic not found", :error)}
+
+      diagnostic ->
+        text = "#{String.upcase(to_string(diagnostic.level))}: #{diagnostic.message}"
+        {:noreply, push_event(socket, "copy_to_clipboard", %{text: text, label: "Diagnostic"})}
+    end
+  end
+
+  @impl true
+  def handle_event("jump_to_diagnostic_file", %{"diagnostic_id" => id_str}, socket) do
+    id = String.to_integer(id_str)
+
+    case Enum.find(socket.assigns.diagnostics, &(&1.id == id)) do
+      nil ->
+        {:noreply, add_toast(socket, "Diagnostic not found", :error)}
+
+      diagnostic ->
+        file = diagnostic_file(diagnostic)
+        line = diagnostic_line(diagnostic)
+
+        if file do
+          {:noreply,
+           push_event(socket, "jump_to_file", %{
+             file: file,
+             line: line || 1
+           })}
+        else
+          {:noreply, add_toast(socket, "No file location in this diagnostic", :warning)}
+        end
+    end
+  end
+
   # Legacy window handlers kept for compatibility
   @impl true
   def handle_event("toggle_window", %{"window" => _window_name}, socket) do
@@ -574,9 +620,6 @@ defmodule MuseWeb.HomeLive do
     {:noreply, socket}
   end
 
-  # -- Info handlers ----------------------------------------------------------
-
-  @impl true
   def handle_info({:muse_event, _event}, socket) do
     state = Muse.State.get()
     reload_status = BackendBridge.safe_reload_status()
@@ -596,39 +639,15 @@ defmodule MuseWeb.HomeLive do
       |> Enum.uniq_by(& &1.id)
       |> Enum.take(50)
 
-    socket =
-      socket
-      |> assign(diagnostics: diagnostics, diagnostics_open?: true)
-      |> schedule_collapse()
+    # Do NOT auto-open drawer or schedule collapse
+    socket = assign(socket, diagnostics: diagnostics)
 
     {:noreply, socket}
   end
 
   @impl true
   def handle_info({:muse_diagnostics_cleared}, socket) do
-    cancel_timer(socket)
-
-    {:noreply,
-     assign(socket,
-       diagnostics: [],
-       diagnostics_open?: false,
-       diagnostics_collapse_ref: nil,
-       diagnostics_collapse_timer_ref: nil
-     )}
-  end
-
-  @impl true
-  def handle_info({:collapse_diagnostics, ref}, socket) do
-    if socket.assigns.diagnostics_collapse_ref == ref do
-      {:noreply,
-       assign(socket,
-         diagnostics_open?: false,
-         diagnostics_collapse_ref: nil,
-         diagnostics_collapse_timer_ref: nil
-       )}
-    else
-      {:noreply, socket}
-    end
+    {:noreply, assign(socket, diagnostics: [], diagnostics_open?: false)}
   end
 
   @impl true
@@ -721,10 +740,10 @@ defmodule MuseWeb.HomeLive do
     ~H"""
     <main id="muse-shell" class="app-shell" phx-hook="KeyboardShortcuts">
       <div id="clipboard-handler" phx-hook="ClipboardHandler" style="display:none" aria-hidden="true"></div>
-      <.app_header workspace={@workspace} reload_status={@reload_status} state={@state} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} />
-      <main class="main-layout">
+      <.app_header workspace={@workspace} reload_status={@reload_status} state={@state} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} sidebar_state={@sidebar_state} />
+      <main class={"main-layout sidebar-#{@sidebar_state}"}>
+        <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} agent_snapshot={@agent_snapshot} beam_stats={@beam_stats} logs={@logs} sidebar_state={@sidebar_state} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
         <.chat_panel messages={chat_messages(@state.events)} input={@input} />
-        <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} agent_snapshot={@agent_snapshot} beam_stats={@beam_stats} logs={@logs} />
       </main>
       <.diagnostics_popup diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
       <.toast_container toasts={@toasts} />
@@ -732,7 +751,7 @@ defmodule MuseWeb.HomeLive do
     """
   end
 
-  # -- Private helpers (remaining in HomeLive) --------------------------------
+  # -- Private helpers --------------------------------------------------------
 
   defp make_history_entry(input, output, type) do
     %{
@@ -755,25 +774,22 @@ defmodule MuseWeb.HomeLive do
     assign(socket, toasts: socket.assigns.toasts ++ [toast])
   end
 
-  defp schedule_collapse(socket) do
-    cancel_timer(socket)
-
-    ref = make_ref()
-    timer_ref = Process.send_after(self(), {:collapse_diagnostics, ref}, @collapse_timeout_ms)
-    assign(socket, diagnostics_collapse_ref: ref, diagnostics_collapse_timer_ref: timer_ref)
-  end
-
-  defp cancel_timer(socket) do
-    if timer_ref = socket.assigns.diagnostics_collapse_timer_ref do
-      Process.cancel_timer(timer_ref)
-    end
-
-    :ok
-  end
-
   defp compute_issue_statuses(issues) do
     Map.new(issues, fn issue -> {issue.diagnostic_id, issue.status} end)
   end
+
+  defp diagnostic_file(%{metadata: meta}) when is_map(meta) do
+    Map.get(meta, :file) || Map.get(meta, "file")
+  end
+
+  defp diagnostic_file(_), do: nil
+
+  defp diagnostic_line(%{metadata: meta}) when is_map(meta) do
+    line = Map.get(meta, :line) || Map.get(meta, "line")
+    if line, do: String.to_integer(to_string(line)), else: nil
+  end
+
+  defp diagnostic_line(_), do: nil
 
   # -- Chat-first helpers -----------------------------------------------------
 

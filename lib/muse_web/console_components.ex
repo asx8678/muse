@@ -582,12 +582,13 @@ defmodule MuseWeb.ConsoleComponents do
   attr(:diagnostics, :list, required: true)
   attr(:diagnostics_open?, :boolean, required: true)
   attr(:agent_runtime, :map, default: nil)
+  attr(:sidebar_state, :atom, default: :expanded)
 
   def app_header(assigns) do
     ~H"""
     <header class="app-header">
       <div class="app-brand">
-        <span class="brand-mark">muse</span>
+        <span class="brand-mark muse-brand">muse</span>
       </div>
       <div class="status-chips">
         <.status_chip label="backend" tone="green" dot={true} value="connected" />
@@ -607,6 +608,11 @@ defmodule MuseWeb.ConsoleComponents do
             value={"#{length(@diagnostics)} issue#{if length(@diagnostics) != 1, do: "s", else: ""}"}
             click="open_diagnostics"
           />
+        <% end %>
+        <%= if @sidebar_state == :hidden do %>
+          <button type="button" class="status-chip context-reopen-chip" phx-click="set_sidebar_state" phx-value-state="expanded">
+            ☰ context
+          </button>
         <% end %>
       </div>
     </header>
@@ -722,77 +728,135 @@ defmodule MuseWeb.ConsoleComponents do
   attr(:agent_snapshot, :any, default: nil)
   attr(:beam_stats, :map, default: %{})
   attr(:logs, :list, default: [])
+  attr(:sidebar_state, :atom, default: :expanded)
+  attr(:diagnostic_issue_statuses, :map, default: %{})
+  attr(:self_healing_issues, :list, default: [])
 
   def context_panel(assigns) do
     ~H"""
-    <aside class="context-panel" aria-label="Workspace context">
-      <.mini_card title="agent">
-        <% runtime = @agent_runtime || %{status: :disconnected} %>
-        <div class="mini-card-row">
-          <span class={"status-dot #{runtime_status_dot(runtime.status)}"}></span>
-          <span><%= runtime_status_label(runtime.status) %></span>
-        </div>
-        <%= if runtime[:endpoint] && runtime[:endpoint] != "" do %>
-          <div class="mini-card-row"><span class="mini-card-label">endpoint</span> <span><%= runtime.endpoint %></span></div>
-        <% end %>
-        <%= if runtime[:last_error] do %>
-          <div class="mini-card-row mini-card-error"><span class="mini-card-label">last error</span> <span><%= runtime.last_error %></span></div>
-        <% end %>
-        <%= if agent_count(runtime) do %>
-          <div class="mini-card-row"><span class="mini-card-label">agents</span> <span><%= agent_count(runtime) %></span></div>
-        <% end %>
-      </.mini_card>
+    <aside class={"context-sidebar context-panel context-sidebar-#{@sidebar_state}"} aria-label="Workspace context">
+      <%= case @sidebar_state do %>
+        <% :rail -> %>
+          <div class="context-rail">
+            <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Expand sidebar" aria-label="Expand sidebar">☰</button>
+            <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Agent" aria-label="Agent section">🤖</button>
+            <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Workspace" aria-label="Workspace section">📂</button>
+            <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Diagnostics" aria-label="Diagnostics section">⚠</button>
+            <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Files" aria-label="Files section">📄</button>
+            <button type="button" class="rail-btn" phx-click="set_sidebar_state" phx-value-state="expanded" title="Stats" aria-label="Stats section">📊</button>
+          </div>
+        <% :hidden -> %>
+          <%!-- minimal content, CSS hides --%>
+        <% :expanded -> %>
+          <div class="context-sidebar-header">
+            <span class="context-sidebar-title">Context</span>
+            <div class="context-sidebar-actions">
+              <button type="button" class="context-icon-btn" phx-click="set_sidebar_state" phx-value-state="rail" title="Collapse to rail" aria-label="Collapse to rail">◧</button>
+              <button type="button" class="context-icon-btn" phx-click="set_sidebar_state" phx-value-state="hidden" title="Hide sidebar" aria-label="Hide sidebar">✕</button>
+            </div>
+          </div>
 
-      <.mini_card title="workspace">
-        <div class="mini-card-row"><span class="mini-card-label">path</span> <span class="mini-card-path"><%= short_path(@workspace) %></span></div>
-        <div class="mini-card-row">
-          <span class={"status-dot #{if @reload_status[:status] == :unavailable, do: "status-dot-gray", else: "status-dot-green"}"}></span>
-          <span><%= watcher_label(@reload_status) %></span>
-        </div>
-        <%= if @reload_status[:generation] do %>
-          <div class="mini-card-row"><span class="mini-card-label">gen</span> <span><%= @reload_status[:generation] %></span></div>
-        <% end %>
-      </.mini_card>
+          <.mini_card title="agent">
+            <% runtime = @agent_runtime || %{status: :disconnected} %>
+            <div class="mini-card-row">
+              <span class={"status-dot #{runtime_status_dot(runtime.status)}"}></span>
+              <span><%= runtime_status_label(runtime.status) %></span>
+            </div>
+            <%= if runtime[:endpoint] && runtime[:endpoint] != "" do %>
+              <div class="mini-card-row"><span class="mini-card-label">endpoint</span> <span><%= runtime.endpoint %></span></div>
+            <% end %>
+            <%= if runtime[:last_error] do %>
+              <div class="mini-card-row mini-card-error"><span class="mini-card-label">last error</span> <span><%= runtime.last_error %></span></div>
+            <% end %>
+            <%= if agent_count(runtime) do %>
+              <div class="mini-card-row"><span class="mini-card-label">agents</span> <span><%= agent_count(runtime) %></span></div>
+            <% end %>
+          </.mini_card>
 
-      <.mini_card title="diagnostics">
-        <div class="mini-card-row">
-          <span><%= length(@diagnostics) %> issue<%= if length(@diagnostics) != 1, do: "s", else: "" %></span>
-        </div>
-        <%= if @diagnostics != [] do %>
-          <div class="mini-card-row mini-card-subtle"><%= diagnostic_summary(List.first(@diagnostics)) %></div>
-          <button type="button" class="mini-card-btn" phx-click="open_diagnostics">open details</button>
-        <% end %>
-      </.mini_card>
+          <.mini_card title="workspace">
+            <div class="mini-card-row"><span class="mini-card-label">path</span> <span class="mini-card-path"><%= short_path(@workspace) %></span></div>
+            <div class="mini-card-row">
+              <span class={"status-dot #{if @reload_status[:status] == :unavailable, do: "status-dot-gray", else: "status-dot-green"}"}></span>
+              <span><%= watcher_label(@reload_status) %></span>
+            </div>
+            <%= if @reload_status[:generation] do %>
+              <div class="mini-card-row"><span class="mini-card-label">gen</span> <span><%= @reload_status[:generation] %></span></div>
+            <% end %>
+          </.mini_card>
 
-      <.mini_card title="recent files">
-        <%= for file <- recent_files(@reload_status) do %>
-          <div class="mini-card-row mini-card-path"><%= file %></div>
-        <% end %>
-        <%= if recent_files(@reload_status) == [] do %>
-          <div class="mini-card-row mini-card-subtle">none yet</div>
-        <% end %>
-      </.mini_card>
+          <.context_diagnostics_card diagnostics={@diagnostics} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
 
-      <.mini_card title="stats">
-        <div class="mini-card-row">
-          <span class="mini-card-label">memory</span>
-          <span><%= format_bytes(@beam_stats[:total_memory] || 0) %></span>
-        </div>
-        <div class="mini-card-row">
-          <span class="mini-card-label">processes</span>
-          <span><%= @beam_stats[:process_count] || "—" %></span>
-        </div>
-      </.mini_card>
+          <.mini_card title="recent files">
+            <%= for file <- recent_files(@reload_status) do %>
+              <div class="mini-card-row mini-card-path"><%= file %></div>
+            <% end %>
+            <%= if recent_files(@reload_status) == [] do %>
+              <div class="mini-card-row mini-card-subtle">none yet</div>
+            <% end %>
+          </.mini_card>
+
+          <.mini_card title="stats">
+            <div class="mini-card-row">
+              <span class="mini-card-label">memory</span>
+              <span><%= format_bytes(@beam_stats[:total_memory] || 0) %></span>
+            </div>
+            <div class="mini-card-row">
+              <span class="mini-card-label">processes</span>
+              <span><%= @beam_stats[:process_count] || "—" %></span>
+            </div>
+          </.mini_card>
+
+      <% end %>
     </aside>
     """
   end
 
+  attr(:diagnostics, :list, required: true)
+  attr(:diagnostic_issue_statuses, :map, required: true)
+  attr(:self_healing_issues, :list, required: true)
+
+  def context_diagnostics_card(assigns) do
+    ~H"""
+    <%= if @diagnostics == [] do %>
+      <.mini_card title="diagnostics" class="mini-card-muted">
+        <div class="mini-card-row">
+          <span class="diagnostic-count">0</span> <span>issues</span>
+        </div>
+        <div class="mini-card-row mini-card-subtle">all clear</div>
+      </.mini_card>
+    <% else %>
+      <.mini_card title="diagnostics" class="mini-card-alert">
+        <div class="mini-card-row">
+          <span class="diagnostic-count"><%= length(@diagnostics) %></span> <span>issue<%= if length(@diagnostics) != 1, do: "s", else: "" %></span>
+        </div>
+        <div class="diagnostic-latest"><%= diagnostic_summary(List.first(@diagnostics)) %></div>
+        <div class="diagnostic-card-actions">
+          <button type="button" class="mini-card-btn" phx-click="open_diagnostics">open details</button>
+          <button type="button" class="mini-card-btn" phx-click="copy_diagnostic" phx-value-diagnostic_id={Integer.to_string(List.first(@diagnostics).id)}>copy latest</button>
+          <%= case Map.get(@diagnostic_issue_statuses, List.first(@diagnostics).id) do %>
+            <% nil -> %>
+              <button type="button" class="mini-card-btn" phx-click="queue_diagnostic_fix" phx-value-diagnostic_id={Integer.to_string(List.first(@diagnostics).id)}>queue latest</button>
+            <% _status -> %>
+              <button type="button" class="mini-card-btn" disabled>queued</button>
+          <% end %>
+        </div>
+      </.mini_card>
+    <% end %>
+    """
+  end
+
   attr(:title, :string, required: true)
+  attr(:class, :string, default: nil)
   slot(:inner_block, required: true)
 
   def mini_card(assigns) do
+    card_class =
+      ["mini-card", assigns[:class]] |> Enum.filter(&(&1 != "" and &1 != nil)) |> Enum.join(" ")
+
+    assigns = assign(assigns, :card_class, card_class)
+
     ~H"""
-    <div class="mini-card">
+    <div class={@card_class}>
       <h3 class="mini-card-title"><%= @title %></h3>
       <div class="mini-card-body"><%= render_slot(@inner_block) %></div>
     </div>
@@ -862,9 +926,9 @@ defmodule MuseWeb.ConsoleComponents do
   def diagnostics_popup(assigns) do
     ~H"""
     <%= if @diagnostics != [] and @diagnostics_open? do %>
-      <aside id="diagnostics-popup" class="diagnostics-popup" role="region" aria-labelledby="diagnostics-title" aria-live="polite">
+      <aside id="diagnostics-drawer" class="diagnostics-drawer" role="region" aria-labelledby="diagnostics-title" aria-live="polite">
         <div class="diagnostic-title-bar">
-          <span id="diagnostics-title" class="diagnostic-title">Backend diagnostics</span>
+          <span id="diagnostics-title" class="diagnostic-title">Diagnostics</span>
           <button type="button" class="diagnostics-collapse-btn" phx-click="collapse_diagnostics" title="Minimize" aria-label="Minimize diagnostics panel">
             ✕
           </button>
@@ -878,6 +942,9 @@ defmodule MuseWeb.ConsoleComponents do
               </time>
             </div>
             <p class="diagnostic-message"><%= diagnostic.message %></p>
+            <%= if diagnostic_location(diagnostic) do %>
+              <div class="diagnostic-location"><%= diagnostic_location(diagnostic) %></div>
+            <% end %>
             <div class="diagnostic-actions">
               <%= case Map.get(@diagnostic_issue_statuses, diagnostic.id) do %>
                 <% nil -> %>
@@ -900,6 +967,19 @@ defmodule MuseWeb.ConsoleComponents do
                 <% :ignored -> %>
                   <button type="button" class="diagnostic-queued" disabled>Ignored</button>
               <% end %>
+              <button
+                type="button"
+                class="diagnostic-action-btn"
+                phx-click="copy_diagnostic"
+                phx-value-diagnostic_id={Integer.to_string(diagnostic.id)}
+              >Copy error</button>
+              <button
+                type="button"
+                class={"diagnostic-action-btn #{if diagnostic_file_value(diagnostic), do: "", else: "diagnostic-action-disabled"}"}
+                phx-click="jump_to_diagnostic_file"
+                phx-value-diagnostic_id={Integer.to_string(diagnostic.id)}
+                disabled={is_nil(diagnostic_file_value(diagnostic))}
+              >Jump to file</button>
             </div>
           </article>
         <% end %>
@@ -1154,4 +1234,33 @@ defmodule MuseWeb.ConsoleComponents do
   defp runtime_status_label(:error), do: "Error"
   defp runtime_status_label(:disconnected), do: "Disconnected"
   defp runtime_status_label(other), do: String.capitalize(to_string(other))
+
+  # -- Diagnostics metadata helpers ------------------------------------------
+
+  def diagnostic_file_value(%{metadata: meta}) when is_map(meta) do
+    Map.get(meta, :file) || Map.get(meta, "file")
+  end
+
+  def diagnostic_file_value(_), do: nil
+
+  def diagnostic_line_value(%{metadata: meta}) when is_map(meta) do
+    line = Map.get(meta, :line) || Map.get(meta, "line")
+    if line, do: String.to_integer(to_string(line)), else: nil
+  end
+
+  def diagnostic_line_value(_), do: nil
+
+  def diagnostic_level(%{level: level}), do: level
+  def diagnostic_level(_), do: :info
+
+  defp diagnostic_location(diagnostic) do
+    file = diagnostic_file_value(diagnostic)
+    line = diagnostic_line_value(diagnostic)
+
+    cond do
+      file && line -> "#{file}:#{line}"
+      file -> file
+      true -> nil
+    end
+  end
 end

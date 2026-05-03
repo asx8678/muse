@@ -198,12 +198,12 @@ cd ~/projects/muse
 
 ## Self-Healing Diagnostics
 
-When backend diagnostics (warnings, errors, criticals) appear, the UI shows
-a full diagnostic panel in the upper-right corner for **10 seconds**, then
-collapses it into a compact **warning badge** (e.g. `⚠ 3 backend diagnostics`).
-Click the badge to reopen the panel.
+When backend diagnostics (warnings, errors, criticals) appear, the sidebar card
+in the left panel shows a compact summary (count + latest message). Clicking
+**details** opens a **diagnostics drawer** overlay with the full list, action
+buttons, and status labels.
 
-Each diagnostic in the panel has an **"Add to next agent turn"** button.
+Each diagnostic in the drawer has an **"Add to next agent turn"** button.
 Clicking it queues the diagnostic for self-healing.  Once queued, the button
 changes to a disabled **"Queued for next agent turn"** label.  Status labels
 update through the lifecycle: `In progress`, `Already fixed`, `Self-healing failed`,
@@ -222,17 +222,28 @@ issues are atomically claimed and attached as an event in the state log.
 ## UI
 
 Muse uses a dark-only modern chat-first agent workspace with calm neutral
-panels and a subtle purple accent.  The layout is a two-column split with a
-primary conversation area on the left and a compact context panel on the right.
+panels and a subtle purple accent.  The layout is a full-width single-window
+design with a compact top header and a central conversation area.
 
-- Dark mode only — no theme toggle.
-- The main area is a conversation sourced from `Muse.State` `:user_message`
-  and `:assistant_message` events, rendered as chat bubbles.
-- Runtime status, diagnostics, workspace info, recent files, and BEAM stats
-  live in the compact optional context panel on the right — not as primary
-  tabs.
-- Backend diagnostics appear as a compact chip in the header when
-  collapsed, and expand into a fixed overlay when open.
+- **Dark mode only** — no theme toggle. Dark background with high-contrast text.
+- **Top header** — compact status chips for backend, watcher, runtime, workspace,
+  and diagnostics. When the sidebar is hidden, a context-reopen button appears.
+- **Left collapsible sidebar** — context cards for agent status, workspace info,
+  diagnostics summary (with a details button that opens the drawer), recent files,
+  and BEAM stats. The sidebar supports three states:
+  - *Expanded* (default) — full card layout with labels.
+  - *Rail* — narrow icon-only rail that expands on hover/click.
+  - *Hidden* — hidden entirely; reopen via the header.
+- **Central chat panel** — conversation sourced from `Muse.State` `:user_message`
+  and `:assistant_message` events, rendered as chat bubbles with a composer at
+  the bottom.
+- **Diagnostics drawer** — a slide-in overlay opened from the sidebar (or header
+  chip) showing the full diagnostics list with queue, copy, and jump-to-file
+  actions. Closing the drawer leaves the sidebar card and header chip visible.
+
+The main area is a conversation sourced from `Muse.State` `:user_message`
+and `:assistant_message` events, rendered as chat bubbles. No tab nav, no
+separate Backend console, no dev tools panel.
 
 ---
 

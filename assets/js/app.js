@@ -584,6 +584,12 @@ const ClipboardHandler = {
         showToastNotification("Copy failed — use manual copy");
       });
     });
+
+    this.handleEvent("jump_to_file", ({ file, line }) => {
+      const msg = line ? `File: ${file}:${line}` : `File: ${file}`;
+      showToastNotification(msg);
+      window.dispatchEvent(new CustomEvent("muse:jump-to-file", { detail: { file, line } }));
+    });
   }
 };
 

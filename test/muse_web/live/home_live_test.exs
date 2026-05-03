@@ -171,12 +171,17 @@ defmodule MuseWeb.HomeLiveTest do
     {:ok, workspace_root: workspace_root}
   end
 
+  # -- Helper to open diagnostics drawer from sidebar card ---------------------
+
+  defp open_diagnostics_drawer(view) do
+    view |> element(".mini-card-btn[phx-click='open_diagnostics']") |> render_click()
+  end
+
   # -- Core rendering tests ----------------------------------------------------
 
-  test "workspace root appears in context panel", %{workspace_root: workspace_root} do
+  test "workspace root appears in context panel", %{workspace_root: _workspace_root} do
     {:ok, _view, html} = live(build_conn(), "/")
-    # Workspace appears as a short path in the context panel
-    assert html =~ ~s(class="context-panel")
+    assert html =~ ~s(class="context-sidebar)
     assert html =~ "workspace"
   end
 
@@ -243,9 +248,9 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "Ask muse to inspect, explain, fix, or generate code..."
   end
 
-  test "renders context panel and status chip" do
+  test "renders context sidebar panel" do
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ ~s(class="context-panel")
+    assert html =~ ~s(class="context-sidebar)
     assert html =~ ~s(status-chip)
     assert html =~ ~s(class="status-chips")
   end
@@ -273,9 +278,113 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "runtime"
   end
 
-  test "renders main-layout container" do
+  test "renders main-layout container with default sidebar-expanded" do
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ ~s(class="main-layout")
+    assert html =~ ~s(class="main-layout sidebar-expanded")
+  end
+
+  # -- Sidebar state tests -----------------------------------------------------
+
+  test "default sidebar state is expanded" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ ~s(class="main-layout sidebar-expanded")
+    assert html =~ ~s(context-sidebar-expanded)
+  end
+
+  test "context panel appears before chat panel in HTML" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    context_pos = first_index!(html, "context-sidebar")
+    chat_pos = first_index!(html, "chat-panel")
+    assert context_pos < chat_pos, "context sidebar should appear before chat panel"
+  end
+
+  test "collapse sidebar to rail" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> element(".context-icon-btn[phx-click='set_sidebar_state'][phx-value-state='rail']")
+    |> render_click()
+
+    html = render(view)
+    assert html =~ ~s(sidebar-rail)
+    assert html =~ ~s(context-sidebar-rail)
+  end
+
+  test "hide sidebar" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    view
+    |> element(".context-icon-btn[phx-click='set_sidebar_state'][phx-value-state='hidden']")
+    |> render_click()
+
+    html = render(view)
+    assert html =~ ~s(sidebar-hidden)
+    assert html =~ ~s(context-sidebar-hidden)
+  end
+
+  test "restore sidebar from hidden via reopen chip" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Hide first
+    view
+    |> element(".context-icon-btn[phx-click='set_sidebar_state'][phx-value-state='hidden']")
+    |> render_click()
+
+    html = render(view)
+    assert html =~ ~s(sidebar-hidden)
+
+    # Click reopen chip in header
+    view |> element(".context-reopen-chip") |> render_click()
+    html = render(view)
+    assert html =~ ~s(sidebar-expanded)
+    assert html =~ ~s(context-sidebar-expanded)
+  end
+
+  test "toggle_sidebar cycles expanded -> rail -> expanded" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    {:noreply, socket} =
+      MuseWeb.HomeLive.handle_event(
+        "toggle_sidebar",
+        %{},
+        view.pid |> :sys.get_state() |> Map.get(:socket)
+      )
+
+    assert socket.assigns.sidebar_state == :rail
+
+    {:noreply, socket} = MuseWeb.HomeLive.handle_event("toggle_sidebar", %{}, socket)
+    assert socket.assigns.sidebar_state == :expanded
+  end
+
+  test "toggle_sidebar from hidden goes to expanded" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Set to hidden first
+    view
+    |> element(".context-icon-btn[phx-click='set_sidebar_state'][phx-value-state='hidden']")
+    |> render_click()
+
+    {:noreply, socket} =
+      MuseWeb.HomeLive.handle_event(
+        "toggle_sidebar",
+        %{},
+        view.pid |> :sys.get_state() |> Map.get(:socket)
+      )
+
+    assert socket.assigns.sidebar_state == :expanded
+  end
+
+  test "set_sidebar_state rejects invalid values" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    {:noreply, socket} =
+      MuseWeb.HomeLive.handle_event(
+        "set_sidebar_state",
+        %{"state" => "invalid"},
+        view.pid |> :sys.get_state() |> Map.get(:socket)
+      )
+
+    assert socket.assigns.sidebar_state == :expanded
   end
 
   # -- Existing events render as chat bubbles ----------------------------------
@@ -325,36 +434,68 @@ defmodule MuseWeb.HomeLiveTest do
 
   # -- Diagnostics tests -------------------------------------------------------
 
-  test "does not render diagnostics popup when there are no diagnostics" do
+  test "does not render diagnostics drawer when there are no diagnostics" do
     {:ok, _view, html} = live(build_conn(), "/")
+    refute html =~ ~s(id="diagnostics-drawer")
     refute html =~ ~s(id="diagnostics-popup")
     refute html =~ ~s(id="diagnostics-badge")
   end
 
-  test "renders full diagnostics popup when diagnostics exist on mount" do
+  test "diagnostics exist on mount but drawer does NOT auto-open" do
     Muse.Diagnostics.emit(:warning, "existing backend warning")
 
     {:ok, _view, html} = live(build_conn(), "/")
 
-    assert html =~ ~s(id="diagnostics-popup")
-    assert html =~ "Backend diagnostics"
-    assert html =~ "existing backend warning"
-    assert html =~ "diagnostic-notice warning"
+    # Drawer should NOT be open on initial mount
+    refute html =~ ~s(id="diagnostics-drawer")
+    # But diagnostics card in sidebar should show count
+    assert html =~ ~s(context-sidebar)
+    assert html =~ "1 issue"
   end
 
-  test "renders diagnostics with action buttons" do
-    Muse.Diagnostics.emit(:error, "actionable error")
+  test "diagnostics sidebar card shows count and latest without opening drawer" do
+    Muse.Diagnostics.emit(:warning, "sidebar card test")
 
     {:ok, _view, html} = live(build_conn(), "/")
+
+    assert html =~ ~s(diagnostic-count)
+    assert html =~ "1 issue"
+    refute html =~ ~s(id="diagnostics-drawer")
+  end
+
+  test "clicking open details in sidebar opens diagnostics drawer" do
+    Muse.Diagnostics.emit(:warning, "drawer open test")
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    open_diagnostics_drawer(view)
+
+    html = render(view)
+    assert html =~ ~s(id="diagnostics-drawer")
+    assert html =~ "drawer open test"
+  end
+
+  test "renders diagnostics drawer with action buttons" do
+    Muse.Diagnostics.emit(:error, "actionable error")
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    open_diagnostics_drawer(view)
+    html = render(view)
 
     assert html =~ "Add to next agent turn"
     assert html =~ "diagnostic-actions"
+    assert html =~ "Copy error"
+    assert html =~ "Jump to file"
   end
 
-  test "diagnostics popup has accessibility attributes" do
+  test "diagnostics drawer has accessibility attributes" do
     Muse.Diagnostics.emit(:warning, "a11y test")
 
-    {:ok, _view, html} = live(build_conn(), "/")
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    open_diagnostics_drawer(view)
+    html = render(view)
 
     assert html =~ ~s(role="region")
     assert html =~ ~s(aria-labelledby="diagnostics-title")
@@ -362,16 +503,17 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ ~s(aria-label="Minimize diagnostics panel")
   end
 
-  test "updates diagnostics popup in real time" do
-    {:ok, view, html} = live(build_conn(), "/")
-    refute html =~ ~s(id="diagnostics-popup")
+  test "diagnostics do NOT auto-open on real-time emit" do
+    {:ok, view, _html} = live(build_conn(), "/")
+    refute render(view) =~ ~s(id="diagnostics-drawer")
 
     Muse.Diagnostics.emit(:error, "late backend error")
 
     html = render(view)
-    assert html =~ ~s(id="diagnostics-popup")
-    assert html =~ "late backend error"
-    assert html =~ "diagnostic-notice error"
+    # Drawer should NOT auto-open
+    refute html =~ ~s(id="diagnostics-drawer")
+    # But diagnostics should be tracked
+    assert html =~ "1 issue"
   end
 
   test "renders latest five diagnostics and a more count" do
@@ -379,7 +521,10 @@ defmodule MuseWeb.HomeLiveTest do
       Muse.Diagnostics.emit(:warning, "diagnostic #{n}")
     end
 
-    {:ok, _view, html} = live(build_conn(), "/")
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    open_diagnostics_drawer(view)
+    html = render(view)
 
     assert html =~ "diagnostic 6"
     assert html =~ "diagnostic 2"
@@ -387,75 +532,59 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "+1 more backend diagnostics"
   end
 
-  test "clears diagnostics popup when clear broadcast arrives" do
+  test "clears diagnostics drawer when clear broadcast arrives" do
     Muse.Diagnostics.emit(:critical, "critical before clear")
-    {:ok, view, html} = live(build_conn(), "/")
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    open_diagnostics_drawer(view)
+    html = render(view)
     assert html =~ "critical before clear"
 
     Muse.Diagnostics.clear()
 
     html = render(view)
-    refute html =~ ~s(id="diagnostics-popup")
+    refute html =~ ~s(id="diagnostics-drawer")
     refute html =~ "critical before clear"
   end
 
   # -- Diagnostics collapse tests ----------------------------------------------
 
-  test "collapse button closes diagnostics popup" do
+  test "collapse button closes diagnostics drawer" do
     Muse.Diagnostics.emit(:warning, "collapsible warning")
 
-    {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ ~s(id="diagnostics-popup")
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    open_diagnostics_drawer(view)
+    html = render(view)
+    assert html =~ ~s(id="diagnostics-drawer")
 
     view |> element(".diagnostics-collapse-btn") |> render_click()
 
     html = render(view)
-    refute html =~ ~s(id="diagnostics-popup")
+    refute html =~ ~s(id="diagnostics-drawer")
     # Diagnostics status chip remains in header
     assert html =~ ~s(status-chip)
     assert html =~ "diagnostic"
   end
 
-  test "clicking diagnostics chip reopens popup" do
+  test "clicking diagnostics chip reopens drawer" do
     Muse.Diagnostics.emit(:warning, "chip reopen test")
 
-    {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ ~s(id="diagnostics-popup")
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    open_diagnostics_drawer(view)
+    html = render(view)
+    assert html =~ ~s(id="diagnostics-drawer")
 
     view |> element(".diagnostics-collapse-btn") |> render_click()
     html = render(view)
-    refute html =~ ~s(id="diagnostics-popup")
+    refute html =~ ~s(id="diagnostics-drawer")
 
-    # Click the diagnostics status chip in the header (use the header context)
+    # Click the diagnostics status chip in the header
     view |> element(".status-chip-yellow") |> render_click()
     html = render(view)
-    assert html =~ ~s(id="diagnostics-popup")
+    assert html =~ ~s(id="diagnostics-drawer")
     assert html =~ "chip reopen test"
-  end
-
-  test "collapse via handle_info hides popup when ref matches" do
-    Muse.Diagnostics.emit(:warning, "timed collapse")
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    %{socket: %{assigns: assigns}} = :sys.get_state(view.pid)
-    current_ref = assigns.diagnostics_collapse_ref
-    send(view.pid, {:collapse_diagnostics, current_ref})
-
-    html = render(view)
-    refute html =~ ~s(id="diagnostics-popup")
-    # Status chip remains in header
-    assert html =~ ~s(status-chip)
-  end
-
-  test "stale collapse ref is ignored" do
-    Muse.Diagnostics.emit(:warning, "stale ref test")
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    stale_ref = :erlang.make_ref()
-    send(view.pid, {:collapse_diagnostics, stale_ref})
-
-    html = render(view)
-    assert html =~ ~s(id="diagnostics-popup")
   end
 
   # -- Self-healing diagnostic tests ------------------------------------------
@@ -465,8 +594,12 @@ defmodule MuseWeb.HomeLiveTest do
 
     {:ok, view, _html} = live(build_conn(), "/")
 
+    open_diagnostics_drawer(view)
+
     view
-    |> element("[phx-click='queue_diagnostic_fix'][phx-value-diagnostic_id='#{diagnostic.id}']")
+    |> element(
+      "#diagnostics-drawer [phx-click='queue_diagnostic_fix'][phx-value-diagnostic_id='#{diagnostic.id}']"
+    )
     |> render_click()
 
     html = render(view)
@@ -478,8 +611,12 @@ defmodule MuseWeb.HomeLiveTest do
 
     {:ok, view, _html} = live(build_conn(), "/")
 
+    open_diagnostics_drawer(view)
+
     view
-    |> element("[phx-click='queue_diagnostic_fix'][phx-value-diagnostic_id='#{diagnostic.id}']")
+    |> element(
+      "#diagnostics-drawer [phx-click='queue_diagnostic_fix'][phx-value-diagnostic_id='#{diagnostic.id}']"
+    )
     |> render_click()
 
     html = render(view)
@@ -494,7 +631,9 @@ defmodule MuseWeb.HomeLiveTest do
 
     {:ok, view, _html} = live(build_conn(), "/")
 
+    open_diagnostics_drawer(view)
     html = render(view)
+
     assert html =~ "In progress"
     assert html =~ "disabled"
   end
@@ -506,7 +645,9 @@ defmodule MuseWeb.HomeLiveTest do
 
     {:ok, view, _html} = live(build_conn(), "/")
 
+    open_diagnostics_drawer(view)
     html = render(view)
+
     assert html =~ "Self-healing failed"
     assert html =~ "disabled"
   end
@@ -518,7 +659,9 @@ defmodule MuseWeb.HomeLiveTest do
 
     {:ok, view, _html} = live(build_conn(), "/")
 
+    open_diagnostics_drawer(view)
     html = render(view)
+
     assert html =~ "Already fixed"
     assert html =~ "disabled"
   end
@@ -528,12 +671,48 @@ defmodule MuseWeb.HomeLiveTest do
 
     {:ok, view, _html} = live(build_conn(), "/")
 
+    open_diagnostics_drawer(view)
+
     view
-    |> element("[phx-click='queue_diagnostic_fix'][phx-value-diagnostic_id='#{diagnostic.id}']")
+    |> element(
+      "#diagnostics-drawer [phx-click='queue_diagnostic_fix'][phx-value-diagnostic_id='#{diagnostic.id}']"
+    )
     |> render_click()
 
     html = render(view)
     assert html =~ "Self-healing queue"
+  end
+
+  # -- Diagnostics copy and jump actions ---------------------------------------
+
+  test "copy_diagnostic pushes clipboard event" do
+    diagnostic = Muse.Diagnostics.emit(:warning, "copy this diagnostic")
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    open_diagnostics_drawer(view)
+
+    view
+    |> element(
+      "#diagnostics-drawer [phx-click='copy_diagnostic'][phx-value-diagnostic_id='#{diagnostic.id}']"
+    )
+    |> render_click()
+
+    # Should succeed without error
+    html = render(view)
+    assert html =~ ~s(id="diagnostics-drawer")
+  end
+
+  test "jump_to_diagnostic_file warns when no metadata" do
+    Muse.Diagnostics.emit(:warning, "no file meta")
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    open_diagnostics_drawer(view)
+
+    # Jump button should be disabled when no file metadata
+    html = render(view)
+    assert html =~ "diagnostic-action-disabled"
   end
 
   # -- Slash command tests -----------------------------------------------------
@@ -664,7 +843,7 @@ defmodule MuseWeb.HomeLiveTest do
 
   test "context panel renders compact sections: agent, workspace, diagnostics, stats" do
     {:ok, _view, html} = live(build_conn(), "/")
-    assert html =~ ~s(class="context-panel")
+    assert html =~ ~s(class="context-sidebar)
     assert html =~ "agent"
     assert html =~ "workspace"
     assert html =~ "diagnostics"
@@ -681,10 +860,9 @@ defmodule MuseWeb.HomeLiveTest do
   test "context panel shows diagnostics summary when diagnostics exist" do
     Muse.Diagnostics.emit(:warning, "diagnostic in context test")
 
-    {:ok, view, _html} = live(build_conn(), "/")
+    {:ok, _view, html} = live(build_conn(), "/")
 
-    html = render(view)
-    assert html =~ ~s(class="context-panel")
+    assert html =~ ~s(class="context-sidebar)
     assert html =~ "diagnostics"
     assert html =~ "1 issue"
   end
@@ -695,7 +873,8 @@ defmodule MuseWeb.HomeLiveTest do
     {:ok, _view, html} = live(build_conn(), "/")
 
     assert html =~ ~s(class="chat-panel")
-    assert html =~ ~s(id="diagnostics-popup")
+    # Drawer not auto-opened
+    refute html =~ ~s(id="diagnostics-drawer")
   end
 
   # -- JS hook attachment tests ------------------------------------------------
@@ -785,7 +964,12 @@ defmodule MuseWeb.HomeLiveTest do
       assert conn.resp_body =~ ".chat-composer"
       assert conn.resp_body =~ ".chat-message-user"
       assert conn.resp_body =~ ".chat-message-assistant"
-      assert conn.resp_body =~ ".context-panel"
+      assert conn.resp_body =~ ".context-sidebar"
+      assert conn.resp_body =~ ".context-rail"
+      assert conn.resp_body =~ ".sidebar-expanded"
+      assert conn.resp_body =~ ".sidebar-rail"
+      assert conn.resp_body =~ ".sidebar-hidden"
+      assert conn.resp_body =~ ".diagnostics-drawer"
       assert conn.resp_body =~ ".status-chip"
       assert conn.resp_body =~ ".diagnostics-popup"
       assert conn.resp_body =~ ".toast-container"
