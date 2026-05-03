@@ -97,10 +97,38 @@ defmodule Muse.TelemetryTest do
     end
 
     test "provider_stop_measurements returns duration_ms plus tokens" do
-      measurements = Telemetry.provider_stop_measurements(100, %{input: 50, output: 50})
+      measurements =
+        Telemetry.provider_stop_measurements(100, %{input_tokens: 50, output_tokens: 50})
+
       assert measurements.duration_ms == 100
-      assert measurements.input == 50
-      assert measurements.output == 50
+      assert measurements.input_tokens == 50
+      assert measurements.output_tokens == 50
+    end
+
+    test "provider_stop_measurements preserves numeric token fields without sanitization" do
+      # Regression: token count fields like input_tokens/output_tokens must
+      # remain as integers in measurements, not be passed through metadata
+      # sanitization (which would redact keys containing "token" or convert
+      # atoms to strings).
+      tokens = %{input_tokens: 10, output_tokens: 20, total_tokens: 30}
+      measurements = Telemetry.provider_stop_measurements(50, tokens)
+
+      assert is_integer(measurements.input_tokens)
+      assert is_integer(measurements.output_tokens)
+      assert is_integer(measurements.total_tokens)
+      assert measurements.input_tokens == 10
+      assert measurements.output_tokens == 20
+      assert measurements.total_tokens == 30
+    end
+
+    test "provider_stop_measurements does not redact token-named keys" do
+      # Regression: unlike metadata helpers, measurements must never redact
+      # keys — they carry numeric counts, not secrets.
+      measurements =
+        Telemetry.provider_stop_measurements(100, %{tokens: 42})
+
+      # Key named "tokens" stays as-is in measurements (not redacted to "**REDACTED**")
+      assert measurements.tokens == 42
     end
 
     test "provider_stop_measurements defaults tokens to empty map" do
@@ -270,11 +298,24 @@ defmodule Muse.TelemetryTest do
       end
     end
 
-    test "MetadataSanitizer redacts 'tokens' key if accidentally passed" do
-      # This verifies the safety net: even if someone accidentally passes a map
-      # with a "tokens" key to sanitize_metadata, it gets redacted.
+    test "MetadataSanitizer redacts 'tokens' key in metadata (not measurements)" do
+      # This verifies the safety net for metadata: if a map with a "tokens"
+      # key is passed to sanitize_metadata (the metadata path), it gets redacted.
+      # Measurements use a different path and bypass sanitization.
       sanitized = Muse.MetadataSanitizer.sanitize(%{tokens: %{input: 100}})
       assert sanitized.tokens == "**REDACTED**"
+    end
+
+    test "measurements bypass metadata sanitization; metadata helpers apply it" do
+      # Contrast: the same numeric data in measurements stays numeric,
+      # but in metadata it would be sanitized/redacted.
+      measurements = Telemetry.provider_stop_measurements(50, %{input_tokens: 10})
+      assert is_integer(measurements.input_tokens)
+      assert measurements.input_tokens == 10
+
+      # Metadata sanitizer would convert/redact this if it were metadata
+      sanitized = Muse.MetadataSanitizer.sanitize(%{input_tokens: 10})
+      assert sanitized.input_tokens == "**REDACTED**"
     end
   end
 end

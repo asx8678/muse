@@ -3,7 +3,9 @@ defmodule Muse.Event do
   Immutable event record produced throughout the Muse system.
 
   Every event gets a unique monotonically-increasing integer ID and a UTC
-  timestamp at creation time.  `source`, `type`, and `data` are caller-defined.
+  timestamp at creation time.  IDs are generated via
+  `System.unique_integer([:positive, :monotonic])`, guaranteeing both
+  positivity and strict monotonic ordering within the BEAM node.  `source`, `type`, and `data` are caller-defined.
 
   ## Metadata fields
 
@@ -126,5 +128,5 @@ defmodule Muse.Event do
   @spec valid_visibility?(term()) :: boolean()
   def valid_visibility?(v), do: v in visibilities()
 
-  defp generate_id, do: System.unique_integer([:positive])
+  defp generate_id, do: System.unique_integer([:positive, :monotonic])
 end

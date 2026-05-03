@@ -35,6 +35,15 @@ defmodule Muse.EventTest do
       assert length(Enum.uniq(ids)) == 100
     end
 
+    test "IDs are monotonically increasing" do
+      events = for _ <- 1..100, do: Event.new(:test, :monotonic, nil)
+      ids = Enum.map(events, & &1.id)
+
+      # Each successive ID must be greater than the previous
+      assert ids == Enum.sort(ids),
+             "expected monotonically increasing IDs, got: #{inspect(Enum.take(ids, 5))}..."
+    end
+
     test "metadata fields default to nil" do
       event = Event.new(:cli, :started, %{})
 

@@ -150,12 +150,20 @@ defmodule Muse.Telemetry do
   @spec provider_error() :: :telemetry.event_name()
   def provider_error, do: [:muse, :provider, :error]
 
-  @doc "Measurements for `[:muse, :provider, :stop]`."
+  @doc """
+  Measurements for `[:muse, :provider, :stop]`.
+
+  Accepts `duration_ms` and an optional map of token usage counts
+  (e.g. `%{input_tokens: 10, output_tokens: 20}`).  Token counts are
+  numeric measurements and are **not** passed through the metadata
+  sanitizer — they are merged directly so they remain integers.
+  Sanitization is only applied to *metadata*, not measurements.
+  """
   @spec provider_stop_measurements(duration_ms :: non_neg_integer(), tokens :: map()) ::
           :telemetry.measurements()
   def provider_stop_measurements(duration_ms, tokens \\ %{})
       when is_integer(duration_ms) and duration_ms >= 0 and is_map(tokens) do
-    Map.merge(%{duration_ms: duration_ms}, sanitize_metadata(tokens))
+    Map.merge(%{duration_ms: duration_ms}, tokens)
   end
 
   @doc """
