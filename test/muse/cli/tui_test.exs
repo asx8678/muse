@@ -23,6 +23,9 @@ defmodule Muse.CLI.TuiTest do
   defp key(code, mods \\ []),
     do: %ExRatatui.Event.Key{code: code, kind: "press", modifiers: mods}
 
+  defp mouse(kind, button, x, y),
+    do: %ExRatatui.Event.Mouse{kind: kind, button: button, x: x, y: y, modifiers: []}
+
   defp widget_at(state, index) do
     Tui.render(state, frame()) |> Enum.at(index)
   end
@@ -280,6 +283,7 @@ defmodule Muse.CLI.TuiTest do
       assert %ExRatatui.Widgets.Paragraph{} = main
       assert main.text =~ "Workspace"
       assert main.text =~ "Ctrl+E"
+      assert main.text =~ "MAIN only"
     end
 
     test "help popup renders with key reference" do
@@ -289,6 +293,7 @@ defmodule Muse.CLI.TuiTest do
       assert %ExRatatui.Widgets.Popup{} = popup
       assert %ExRatatui.Widgets.Paragraph{} = popup.content
       assert popup.content.text =~ "Key Reference"
+      assert popup.content.text =~ "MAIN focus"
     end
   end
 
@@ -308,14 +313,17 @@ defmodule Muse.CLI.TuiTest do
       assert {:stop, _} = Tui.handle_event(key("q", ["ctrl"]), state)
     end
 
-    test "Esc quits when help not shown", %{state: state} do
-      assert {:stop, _} = Tui.handle_event(key("esc"), state)
-    end
-
     test "Esc closes help instead of quitting", %{state: state} do
       state = %{state | show_help?: true}
       {:noreply, new} = Tui.handle_event(key("esc"), state)
       refute new.show_help?
+    end
+
+    test "key release events are ignored", %{state: state} do
+      state = %{state | focus: :main}
+      release = %ExRatatui.Event.Key{code: "esc", kind: "release", modifiers: []}
+      {:noreply, new} = Tui.handle_event(release, state)
+      assert new == state
     end
   end
 
@@ -327,20 +335,30 @@ defmodule Muse.CLI.TuiTest do
       {:ok, state: state}
     end
 
-    test "Tab cycles to next tab when focus is main", %{state: state} do
+    test "Tab cycles to next tab regardless of focus (input focus)", %{state: state} do
+      {:noreply, new} = Tui.handle_event(key("tab"), state)
+      assert new.active_tab == "logs"
+      assert new.focus == :input
+    end
+
+    test "Tab cycles to next tab regardless of focus (main focus)", %{state: state} do
       state = %{state | focus: :main}
       {:noreply, new} = Tui.handle_event(key("tab"), state)
       assert new.active_tab == "logs"
+      assert new.focus == :main
     end
 
-    test "Shift+Tab cycles to previous tab when focus is main", %{state: state} do
+    test "Shift+Tab cycles to previous tab regardless of focus (input focus)", %{state: state} do
+      state = %{state | active_tab: "logs"}
+      {:noreply, new} = Tui.handle_event(key("back_tab"), state)
+      assert new.active_tab == "events"
+      assert new.focus == :input
+    end
+
+    test "Shift+Tab cycles to previous tab regardless of focus (main focus)", %{state: state} do
       state = %{state | focus: :main, active_tab: "logs"}
       {:noreply, new} = Tui.handle_event(key("back_tab"), state)
       assert new.active_tab == "events"
-    end
-
-    test "Tab switches focus to main when focus is input", %{state: state} do
-      {:noreply, new} = Tui.handle_event(key("tab"), state)
       assert new.focus == :main
     end
 
@@ -462,10 +480,43 @@ defmodule Muse.CLI.TuiTest do
       {:noreply, new} = Tui.handle_event(key("down"), state)
       assert new.scroll["events"] == 0
     end
+  end
 
-    test "i key returns focus to input", %{state: state} do
+  # -- handle_event/2 — focus switching -------------------------------------------
+
+  describe "handle_event/2 — focus switching" do
+    setup do
+      {:ok, state} = mount_tui()
+      {:ok, state: state}
+    end
+
+    test "i from main focuses input", %{state: state} do
+      state = %{state | focus: :main}
       {:noreply, new} = Tui.handle_event(key("i"), state)
       assert new.focus == :input
+    end
+
+    test "/ from main focuses input with slash prefix", %{state: state} do
+      state = %{state | focus: :main}
+      {:noreply, new} = Tui.handle_event(key("/"), state)
+      assert new.focus == :input
+      assert ExRatatui.text_input_get_value(new.input_state) == "/"
+    end
+
+    test "Esc from input focuses main", %{state: state} do
+      {:noreply, new} = Tui.handle_event(key("esc"), state)
+      assert new.focus == :main
+    end
+
+    test "Esc from main quits", %{state: state} do
+      state = %{state | focus: :main}
+      assert {:stop, _} = Tui.handle_event(key("esc"), state)
+    end
+
+    test "typing still works immediately after launch", %{state: state} do
+      {:noreply, _} = Tui.handle_event(key("h"), state)
+      {:noreply, _} = Tui.handle_event(key("i"), state)
+      assert ExRatatui.text_input_get_value(state.input_state) == "hi"
     end
   end
 
@@ -489,6 +540,7 @@ defmodule Muse.CLI.TuiTest do
     test "? types into input when focus is input", %{state: state} do
       {:noreply, new} = Tui.handle_event(key("?"), state)
       refute new.show_help?
+      assert ExRatatui.text_input_get_value(new.input_state) == "?"
     end
   end
 
@@ -526,17 +578,21 @@ defmodule Muse.CLI.TuiTest do
 
     test "/search events hello sets event_search and switches tab" do
       {:ok, state} = mount_tui()
+      state = %{state | scroll: %{state.scroll | "events" => 5}}
       ExRatatui.text_input_set_value(state.input_state, "/search events hello")
       {:noreply, new} = Tui.handle_event(key("enter"), state)
       assert new.event_search == "hello"
+      assert new.scroll["events"] == 0
       assert new.active_tab == "events"
     end
 
     test "/filter logs errors sets log_filter" do
       {:ok, state} = mount_tui()
+      state = %{state | scroll: %{state.scroll | "logs" => 5}}
       ExRatatui.text_input_set_value(state.input_state, "/filter logs errors")
       {:noreply, new} = Tui.handle_event(key("enter"), state)
       assert new.log_filter == "errors"
+      assert new.scroll["logs"] == 0
     end
 
     test "/stats dispatches through CommandDispatcher" do
@@ -557,6 +613,18 @@ defmodule Muse.CLI.TuiTest do
       {:ok, state} = mount_tui()
       {:noreply, _} = Tui.handle_event(key("a"), state)
       assert ExRatatui.text_input_get_value(state.input_state) == "a"
+    end
+
+    test "control-modified printable key does not insert text" do
+      {:ok, state} = mount_tui()
+      {:noreply, _} = Tui.handle_event(key("x", ["ctrl"]), state)
+      assert ExRatatui.text_input_get_value(state.input_state) == ""
+    end
+
+    test "shift-modified printable key still inserts text" do
+      {:ok, state} = mount_tui()
+      {:noreply, _} = Tui.handle_event(key("A", ["shift"]), state)
+      assert ExRatatui.text_input_get_value(state.input_state) == "A"
     end
   end
 
@@ -660,6 +728,14 @@ defmodule Muse.CLI.TuiTest do
       ExRatatui.text_input_set_value(state.input_state, "/open agents")
       {:noreply, new} = Tui.handle_event(key("enter"), state)
       assert new.active_tab == "agents"
+    end
+
+    test "unsupported dispatcher tab does not corrupt active_tab" do
+      {:ok, state} = mount_tui()
+      ExRatatui.text_input_set_value(state.input_state, "/open files")
+      {:noreply, new} = Tui.handle_event(key("enter"), state)
+      assert new.active_tab == "events"
+      assert new.status =~ "Unsupported TUI tab"
     end
 
     test "/open logs also sets focus to main" do
@@ -950,6 +1026,76 @@ defmodule Muse.CLI.TuiTest do
       state = %{state | active_tab: "settings", scroll: %{"settings" => 5}}
       main = main_widget(state)
       assert main.scroll == {5, 0}
+    end
+  end
+
+  # -- handle_event/2 — mouse events ---------------------------------------------
+
+  describe "handle_event/2 — mouse events" do
+    setup do
+      events =
+        Enum.map(1..20, fn i ->
+          %Muse.Event{
+            id: i,
+            timestamp: DateTime.utc_now(),
+            source: :cli,
+            type: :msg,
+            data: %{text: "e#{i}"}
+          }
+        end)
+
+      {:ok, state} = mount_tui()
+      state = %{state | events: events}
+      {:ok, state: state}
+    end
+
+    test "left click focuses input", %{state: state} do
+      state = %{state | focus: :main}
+      {:noreply, new} = Tui.handle_event(mouse("down", "left", 10, 20), state)
+      assert new.focus == :input
+    end
+
+    test "left click on tab row selects tab", %{state: state} do
+      {:noreply, new} = Tui.handle_event(mouse("down", "left", 40, 4), state)
+      # x=40, div(40, 20) = 2 → diagnostics tab
+      assert new.active_tab == "diagnostics"
+    end
+
+    test "scroll up in main focus scrolls content", %{state: state} do
+      state = %{state | focus: :main, scroll: %{state.scroll | "events" => 5}}
+      {:noreply, new} = Tui.handle_event(mouse("scroll_up", "", 10, 10), state)
+      assert new.scroll["events"] == 2
+    end
+
+    test "scroll down in main focus scrolls content", %{state: state} do
+      state = %{state | focus: :main}
+      {:noreply, new} = Tui.handle_event(mouse("scroll_down", "", 10, 10), state)
+      assert new.scroll["events"] == 3
+    end
+
+    test "unknown mouse event is ignored", %{state: state} do
+      {:noreply, new} = Tui.handle_event(mouse("moved", "", 10, 10), state)
+      assert new == state
+    end
+  end
+
+  # -- Footer context sensitivity -------------------------------------------------
+
+  describe "render/2 — footer context-sensitive hints" do
+    test "footer shows INPUT mode with input-specific hints" do
+      {:ok, state} = mount_tui()
+      {footer, _} = widget_at(state, 4)
+      assert footer.text =~ "INPUT"
+      assert footer.text =~ "Esc: main"
+      assert footer.text =~ "type: input"
+    end
+
+    test "footer shows MAIN mode with main-specific hints" do
+      {:ok, state} = mount_tui()
+      state = %{state | focus: :main}
+      {footer, _} = widget_at(state, 4)
+      assert footer.text =~ "MAIN"
+      assert footer.text =~ "i: type"
     end
   end
 end

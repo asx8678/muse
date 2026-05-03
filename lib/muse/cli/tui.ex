@@ -141,6 +141,9 @@ defmodule Muse.CLI.Tui do
   end
 
   @impl true
+  def handle_event(%ExRatatui.Event.Key{kind: "release"}, %__MODULE__{} = state),
+    do: {:noreply, state}
+
   def handle_event(%ExRatatui.Event.Key{code: "enter"}, %__MODULE__{focus: :input} = state) do
     value = ExRatatui.text_input_get_value(state.input_state) |> String.trim()
     handle_input(value, state)
@@ -153,27 +156,23 @@ defmodule Muse.CLI.Tui do
   def handle_event(%ExRatatui.Event.Key{code: "q", modifiers: ["ctrl"]}, state),
     do: {:stop, state}
 
-  # Esc — close help if shown, else quit
+  # Esc — close help if shown, else switch focus or quit
   def handle_event(%ExRatatui.Event.Key{code: "esc"}, %__MODULE__{show_help?: true} = state),
     do: {:noreply, %{state | show_help?: false}}
 
-  def handle_event(%ExRatatui.Event.Key{code: "esc"}, state), do: {:stop, state}
+  def handle_event(%ExRatatui.Event.Key{code: "esc"}, %__MODULE__{focus: :input} = state),
+    do: {:noreply, %{state | focus: :main}}
 
-  # Tab / Shift+Tab — cycle tabs when focus is main, or cycle focus
-  def handle_event(%ExRatatui.Event.Key{code: "tab"}, %__MODULE__{focus: :main} = state) do
+  def handle_event(%ExRatatui.Event.Key{code: "esc"}, %__MODULE__{focus: :main} = state),
+    do: {:stop, state}
+
+  # Tab / Shift+Tab — always cycle tabs (visible change on every press)
+  def handle_event(%ExRatatui.Event.Key{code: "tab"}, state) do
     {:noreply, %{state | active_tab: next_tab(state.active_tab, 1)}}
   end
 
-  def handle_event(%ExRatatui.Event.Key{code: "tab"}, %__MODULE__{focus: :input} = state) do
-    {:noreply, %{state | focus: :main}}
-  end
-
-  def handle_event(%ExRatatui.Event.Key{code: "back_tab"}, %__MODULE__{focus: :main} = state) do
+  def handle_event(%ExRatatui.Event.Key{code: "back_tab"}, state) do
     {:noreply, %{state | active_tab: next_tab(state.active_tab, -1)}}
-  end
-
-  def handle_event(%ExRatatui.Event.Key{code: "back_tab"}, %__MODULE__{focus: :input} = state) do
-    {:noreply, %{state | focus: :main, active_tab: next_tab(state.active_tab, -1)}}
   end
 
   # Ctrl+letter tab shortcuts (always work regardless of focus)
@@ -243,6 +242,12 @@ defmodule Muse.CLI.Tui do
   def handle_event(%ExRatatui.Event.Key{code: "i"}, %__MODULE__{focus: :main} = state),
     do: {:noreply, %{state | focus: :input}}
 
+  # / — focus input with slash pre-typed (quick command entry)
+  def handle_event(%ExRatatui.Event.Key{code: "/"}, %__MODULE__{focus: :main} = state) do
+    ExRatatui.text_input_set_value(state.input_state, "/")
+    {:noreply, %{state | focus: :input}}
+  end
+
   # Printable/editable keys — forward to text input when focus is input
   def handle_event(%ExRatatui.Event.Key{} = key, %__MODULE__{focus: :input} = state) do
     if editable_key?(key) do
@@ -251,6 +256,37 @@ defmodule Muse.CLI.Tui do
 
     {:noreply, state}
   end
+
+  # Mouse events — click to focus, click tab row to select, wheel to scroll.
+  # NOTE: ExRatatui's NIF does not currently enable terminal mouse capture,
+  # so these handlers won't fire until that is added upstream. They are
+  # included for forward-compatibility and testability.
+  def handle_event(
+        %ExRatatui.Event.Mouse{kind: "down", button: "left", x: x, y: y},
+        state
+      ) do
+    # Layout: header(3) | tabs(3) | main(?) | input(3) | footer(1)
+    # Approximate row positions; tab row = rows 3–5, input = rows (height-4)–(height-2)
+    cond do
+      # Tab row click (rows 3–5 in standard layout)
+      y >= 3 and y < 6 ->
+        tab = tab_from_x(x, state)
+        {:noreply, %{state | active_tab: tab}}
+
+      # Input area click (last 4 rows minus footer)
+      true ->
+        {:noreply, %{state | focus: :input}}
+    end
+  end
+
+  def handle_event(%ExRatatui.Event.Mouse{kind: "scroll_up"}, %__MODULE__{focus: :main} = state),
+    do: {:noreply, scroll_by(state, -3)}
+
+  def handle_event(
+        %ExRatatui.Event.Mouse{kind: "scroll_down"},
+        %__MODULE__{focus: :main} = state
+      ),
+      do: {:noreply, scroll_by(state, 3)}
 
   # Catch-all
   def handle_event(_event, state), do: {:noreply, state}
@@ -343,15 +379,26 @@ defmodule Muse.CLI.Tui do
     Enum.reduce(effects, state, &apply_effect(&2, &1))
   end
 
-  defp apply_effect(state, {:switch_tab, tab}),
+  defp apply_effect(state, {:switch_tab, tab}) when tab in @tab_keys,
     do: %{state | active_tab: tab, focus: :main}
+
+  defp apply_effect(state, {:switch_tab, tab}),
+    do: %{state | status: "Unsupported TUI tab: #{tab}"}
 
   defp apply_effect(state, {:clear_input}), do: state
   defp apply_effect(state, {:toast, _type, message}), do: %{state | status: message}
-  defp apply_effect(state, {:set_event_search, q}), do: %{state | event_search: q}
-  defp apply_effect(state, {:set_event_filter, f}), do: %{state | event_filter: f}
-  defp apply_effect(state, {:set_log_search, q}), do: %{state | log_search: q}
-  defp apply_effect(state, {:set_log_filter, f}), do: %{state | log_filter: f}
+
+  defp apply_effect(state, {:set_event_search, q}),
+    do: %{state | event_search: q, scroll: Map.put(state.scroll, "events", 0)}
+
+  defp apply_effect(state, {:set_event_filter, f}),
+    do: %{state | event_filter: f, scroll: Map.put(state.scroll, "events", 0)}
+
+  defp apply_effect(state, {:set_log_search, q}),
+    do: %{state | log_search: q, scroll: Map.put(state.scroll, "logs", 0)}
+
+  defp apply_effect(state, {:set_log_filter, f}),
+    do: %{state | log_filter: f, scroll: Map.put(state.scroll, "logs", 0)}
 
   defp apply_effect(state, {:refresh, :events}),
     do: %{state | events: safe_events(Muse.State)}
@@ -699,15 +746,16 @@ defmodule Muse.CLI.Tui do
       "  Log search:   #{state.log_search || "—"}",
       "",
       "  Key bindings:",
-      "    Tab / Shift+Tab   cycle tabs",
+      "    Tab / Shift+Tab   cycle tabs (always)",
+      "    Esc               INPUT→main / MAIN→quit",
+      "    i                 focus input (from MAIN)",
+      "    /                 focus input with / (from MAIN)",
       "    Ctrl+E/L/D/A/S/,  jump to tab",
       "    Ctrl+R             reload",
-      "    ?                  toggle help",
-      "    i                  focus input",
-      "    j/k ↑/↓            scroll",
+      "    ?                  toggle help (MAIN only)",
+      "    j/k ↑/↓            scroll (MAIN only)",
       "    PgUp/PgDn          scroll 10",
       "    Home/End            scroll to edge",
-      "    Esc                 close help / quit",
       "    Ctrl+Q / Ctrl+C    quit",
       "",
       "  Distribution: Muse runs as a single BEAM node."
@@ -735,7 +783,7 @@ defmodule Muse.CLI.Tui do
 
     %TextInput{
       state: input_state,
-      placeholder: "Type a message or /help … (Tab=switch focus)",
+      placeholder: "Type message or /command … (Enter=send, Esc=main)",
       placeholder_style: %Style{fg: :dark_gray},
       block: %Block{
         title: title,
@@ -752,8 +800,17 @@ defmodule Muse.CLI.Tui do
     focus_str = if focus == :input, do: "INPUT", else: "MAIN"
     mode = " mode=#{focus_str}"
 
+    hint =
+      case focus do
+        :input ->
+          " Tab/⇧Tab: tabs | Esc: main | Enter: send | type: input | ⌃Q: quit"
+
+        :main ->
+          " Tab/⇧Tab: tabs | i: type | /: cmd | ?: help | Esc: quit | ⌃Q: quit"
+      end
+
     %Paragraph{
-      text: " #{status}#{mode}  |  Tab: cycle  |  ?: help  |  Ctrl+q: quit",
+      text: " #{status}#{mode}  |#{hint}",
       style: %Style{fg: :dark_gray}
     }
   end
@@ -766,7 +823,7 @@ defmodule Muse.CLI.Tui do
         [
           "  Muse TUI — Key Reference",
           "",
-          "  Tab / Shift+Tab     Cycle tabs",
+          "  Tab / Shift+Tab     Cycle tabs (always works)",
           "  Ctrl+E              Events tab",
           "  Ctrl+L              Logs tab",
           "  Ctrl+D              Diagnostics tab",
@@ -774,13 +831,22 @@ defmodule Muse.CLI.Tui do
           "  Ctrl+S              Stats tab",
           "  Ctrl+,              Settings tab",
           "  Ctrl+R              Reload",
-          "  i                   Focus input",
-          "  j/k  ↑/↓            Scroll",
-          "  PgUp/PgDn           Page scroll",
-          "  Home/End            Scroll edges",
-          "  ?                   Toggle this help",
-          "  Esc                 Close help / quit",
-          "  Ctrl+Q / Ctrl+C     Quit",
+          "",
+          "  When INPUT focus:",
+          "    Enter              Send input",
+          "    Esc                Switch to MAIN focus",
+          "    (typing goes to input field)",
+          "",
+          "  When MAIN focus:",
+          "    i                  Switch to INPUT focus",
+          "    /                  Switch to INPUT with / prefix",
+          "    j/k  ↑/↓           Scroll",
+          "    PgUp/PgDn          Page scroll",
+          "    Home/End            Scroll edges",
+          "    Esc                 Quit",
+          "",
+          "  ?                   Toggle this help (MAIN focus)",
+          "  Ctrl+Q / Ctrl+C     Quit (always works)",
           "",
           "  Press Esc to close."
         ],
@@ -803,15 +869,28 @@ defmodule Muse.CLI.Tui do
     }
   end
 
+  # -- Tab-from-x helper (for mouse click on tab row) --------------------------
+
+  defp tab_from_x(x, _state) do
+    # 6 tabs roughly evenly spaced; each tab ~20 chars wide at 120 cols
+    idx = min(div(x, 20), 5)
+    Enum.at(@tab_keys, idx)
+  end
+
   # -- Key classification --------------------------------------------------------
 
-  defp editable_key?(%ExRatatui.Event.Key{code: code, kind: kind})
+  defp editable_key?(%ExRatatui.Event.Key{code: code, kind: kind, modifiers: modifiers})
        when kind in ["press", "repeat", nil] do
-    code in ~w(backspace delete left right home end) or
-      (byte_size(code) == 1 and String.printable?(code))
+    editable_modifier?(modifiers) and
+      (code in ~w(backspace delete left right home end) or
+         (byte_size(code) == 1 and String.printable?(code)))
   end
 
   defp editable_key?(_), do: false
+
+  defp editable_modifier?([]), do: true
+  defp editable_modifier?(["shift"]), do: true
+  defp editable_modifier?(_), do: false
 
   # -- Helpers -------------------------------------------------------------------
 
