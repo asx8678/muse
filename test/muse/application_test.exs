@@ -50,7 +50,7 @@ defmodule Muse.ApplicationTest do
   # -- runtime_children/1 -------------------------------------------------------
 
   describe "runtime_children/1 — default (CLI + Web + watch + source_mode)" do
-    test "includes Task.Supervisor, PubSub, Diagnostics, SelfHealingQueue, Workspace, State, CLI.Repl, Endpoint, DevReloader" do
+    test "includes Task.Supervisor, PubSub, SessionRegistry, SessionSupervisor, Diagnostics, SelfHealingQueue, Workspace, State, CLI.Repl, Endpoint, DevReloader" do
       with_env(:source_mode?, true, fn ->
         children = @app_mod.runtime_children(boot_opts())
         ids = child_ids(children)
@@ -58,6 +58,8 @@ defmodule Muse.ApplicationTest do
         # Task.Supervisor child is {Task.Supervisor, name: Muse.TaskSupervisor}
         assert Task.Supervisor in ids
         assert Phoenix.PubSub in ids
+        assert Muse.SessionRegistry in ids
+        assert Muse.SessionSupervisor in ids
         assert Muse.Diagnostics in ids
         assert Muse.SelfHealingQueue in ids
         assert Muse.Workspace in ids
@@ -76,17 +78,21 @@ defmodule Muse.ApplicationTest do
       end)
     end
 
-    test "Diagnostics starts after PubSub and before Workspace/State; SelfHealingQueue after Diagnostics" do
+    test "SessionRegistry/Supervisor starts after PubSub and before Diagnostics; SelfHealingQueue after Diagnostics" do
       with_env(:source_mode?, true, fn ->
         ids = @app_mod.runtime_children(boot_opts()) |> child_ids()
 
         pubsub_index = Enum.find_index(ids, &(&1 == Phoenix.PubSub))
+        registry_index = Enum.find_index(ids, &(&1 == Muse.SessionRegistry))
+        supervisor_index = Enum.find_index(ids, &(&1 == Muse.SessionSupervisor))
         diagnostics_index = Enum.find_index(ids, &(&1 == Muse.Diagnostics))
         self_healing_index = Enum.find_index(ids, &(&1 == Muse.SelfHealingQueue))
         workspace_index = Enum.find_index(ids, &(&1 == Muse.Workspace))
         state_index = Enum.find_index(ids, &(&1 == Muse.State))
 
-        assert pubsub_index < diagnostics_index
+        assert pubsub_index < registry_index
+        assert registry_index < supervisor_index
+        assert supervisor_index < diagnostics_index
         assert diagnostics_index < self_healing_index
         assert self_healing_index < workspace_index
         assert self_healing_index < state_index
@@ -234,12 +240,14 @@ defmodule Muse.ApplicationTest do
   # -- base_children/0 -----------------------------------------------------------
 
   describe "base_children/0" do
-    test "includes only PubSub" do
+    test "includes PubSub, SessionRegistry, and SessionSupervisor" do
       children = @app_mod.base_children()
       ids = child_ids(children)
 
       assert Phoenix.PubSub in ids
-      assert length(ids) == 1
+      assert Muse.SessionRegistry in ids
+      assert Muse.SessionSupervisor in ids
+      assert length(ids) == 3
     end
   end
 
@@ -561,7 +569,7 @@ defmodule Muse.ApplicationTest do
       :ok
     end
 
-    test "starts with --web-only --no-watch: TaskSupervisor, PubSub, Diagnostics, SelfHealingQueue, Workspace, State, Endpoint" do
+    test "starts runtime children and Muse.submit/2 routes through a session" do
       Elixir.Application.put_env(:muse, :start_runtime_children?, true)
       Elixir.Application.put_env(:muse, :source_mode?, false)
       Elixir.Application.put_env(:muse, :boot_args, ["--web-only", "--no-watch"])
@@ -576,11 +584,17 @@ defmodule Muse.ApplicationTest do
       # Verify expected processes are running
       assert Process.whereis(Muse.TaskSupervisor) != nil
       assert Process.whereis(Muse.PubSub) != nil
+      assert Process.whereis(Muse.SessionRegistry) != nil
+      assert Process.whereis(Muse.SessionSupervisor) != nil
       assert Process.whereis(Muse.Diagnostics) != nil
       assert Process.whereis(Muse.SelfHealingQueue) != nil
       assert Process.whereis(Muse.Workspace) != nil
       assert Process.whereis(Muse.State) != nil
       assert Process.whereis(MuseWeb.Endpoint) != nil
+
+      assert {:ok, text} = Muse.submit(:cli, "runtime smoke")
+      assert text == "Placeholder response: received \"runtime smoke\""
+      assert {:ok, %{session_id: "default", event_count: 2}} = Muse.SessionRouter.status()
 
       # CLI should NOT be running (web-only)
       assert Process.whereis(Muse.CLI.Repl) == nil
@@ -621,9 +635,9 @@ defmodule Muse.ApplicationTest do
       Elixir.Application.ensure_all_started(:muse)
     end
 
-    test "base mode (start_runtime_children? false) only starts PubSub" do
+    test "base mode (start_runtime_children? false) starts PubSub and session routing infrastructure" do
       # The default test config has start_runtime_children? = false
-      # so after a fresh app start, only PubSub should be running
+      # so after a fresh app start, only base routing infrastructure should be running.
       Elixir.Application.stop(:muse)
       Process.sleep(50)
 
@@ -631,6 +645,8 @@ defmodule Muse.ApplicationTest do
       {:ok, _} = Elixir.Application.ensure_all_started(:muse)
 
       assert Process.whereis(Muse.PubSub) != nil
+      assert Process.whereis(Muse.SessionRegistry) != nil
+      assert Process.whereis(Muse.SessionSupervisor) != nil
       # These should NOT be running under base mode
       assert Process.whereis(Muse.TaskSupervisor) == nil
       assert Process.whereis(Muse.Diagnostics) == nil

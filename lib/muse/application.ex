@@ -44,7 +44,9 @@ defmodule Muse.Application do
   @spec base_children() :: [Supervisor.child_spec()]
   def base_children do
     [
-      {Phoenix.PubSub, name: Muse.PubSub}
+      {Phoenix.PubSub, name: Muse.PubSub},
+      Muse.SessionRegistry,
+      Muse.SessionSupervisor
     ]
   end
 
@@ -57,6 +59,8 @@ defmodule Muse.Application do
     children = [
       {Task.Supervisor, name: Muse.TaskSupervisor},
       {Phoenix.PubSub, name: Muse.PubSub},
+      Muse.SessionRegistry,
+      Muse.SessionSupervisor,
       Muse.Diagnostics,
       Muse.SelfHealingQueue,
       {Muse.LogBuffer, [install_logger_handler?: true, logger_level: logger_level]},
