@@ -142,9 +142,9 @@ MUSE_MODEL=fake-planning-model
 
 This is the zero-config Muse-first experience. Running `muse` out of the box uses deterministic offline responses suitable for local development and CI.
 
-### 3.2 OpenAI-Compatible Config (Offline in PR11)
+### 3.2 OpenAI-Compatible Config
 
-PR11 can resolve OpenAI-compatible provider **configuration** and build request JSON payloads, but it does **not** call OpenAI or any other real provider. Real HTTP providers/transports are later roadmap work; auth/API-key loading remains in the auth layer.
+PR12 reads the OpenAI-compatible provider **configuration** and uses it to perform real HTTP calls against a configured `base_url` for non-streaming Chat Completions. Auth/API-key loading remains in the auth layer (PR13); the provider can send caller-provided headers but does not read `MUSE_OPENAI_API_KEY`.
 
 Example config values for an OpenAI-compatible provider:
 
@@ -162,12 +162,12 @@ MUSE_LLM_MAX_RETRIES=2
 |---|---|---|---|
 | `MUSE_PROVIDER` | No | `fake` | Provider identifier: `fake`, `openai_compatible` |
 | `MUSE_MODEL` | Non-fake only | `fake-planning-model` for fake; none for non-fake | Model identifier (e.g., `gpt-4.1`, `gpt-4.1-mini`) |
-| `MUSE_OPENAI_BASE_URL` | No for `openai_compatible` defaults | `https://api.openai.com/v1` for `openai_compatible` | Base URL stored on the config; PR11 does not connect to it |
+| `MUSE_OPENAI_BASE_URL` | No for `openai_compatible` defaults | `https://api.openai.com/v1` for `openai_compatible` | Base URL for HTTP calls; PR12 posts non-streaming Chat Completions to `{base_url}/chat/completions` |
 | `MUSE_LLM_TIMEOUT_MS` | No | `120000` | Per-request timeout in milliseconds |
-| `MUSE_LLM_MAX_RETRIES` | No | `0` for fake; `2` for openai-compatible | Maximum retry attempts stored for future transports |
-| `MUSE_WIRE_API` | No (`Muse.Config` only) | `responses` for openai-compatible | `responses` or `chat_completions`; unknown values resolve to `nil` |
+| `MUSE_LLM_MAX_RETRIES` | No | `0` for fake; `2` for openai-compatible | Maximum retry attempts (carried as Req option) |
+| `MUSE_WIRE_API` | No (`Muse.Config` only) | `responses` for openai-compatible | `responses` or `chat_completions`; PR12 only supports `nil`/`:chat_completions`; `:responses` returns an unsupported error |
 | `MUSE_TRANSPORT` | No (`Muse.Config` only) | `sse` for openai-compatible; `none` for fake | `none`, `sse`, or `websocket`; unknown values resolve to `nil` |
-| `MUSE_OPENAI_API_KEY` | Not read in PR11 | — | Auth/API-key loading is deferred to the auth layer (PR13); PR11 stores `env_key: "MUSE_OPENAI_API_KEY"` only |
+| `MUSE_OPENAI_API_KEY` | Not read in PR12 | — | Auth/API-key loading is deferred to the auth layer (PR13); caller-provided headers may be sent via `request.options[:headers]` but are redacted in errors/events |
 
 ### 3.3 App Config Example
 
@@ -205,7 +205,7 @@ Important boundaries:
 - The fake provider always validates and remains the safe default.
 - Validation never starts clients, opens sockets, or calls real provider APIs.
 - Validation does **not** read or require `MUSE_OPENAI_API_KEY`; auth loading remains PR13.
-- Startup wiring may call this validation, but PR11 itself is config/request-mapper plumbing, not a real provider bootstrap.
+- Startup wiring may call this validation before the provider makes its first HTTP call.
 - `ProviderConfig.redacted_inspect/1` and the `Inspect` implementation must be used for safe logging/debugging.
 
 **Validation checks summary:**
@@ -225,189 +225,176 @@ Important boundaries:
 
 ## 5. OpenAI-Compatible Non-Streaming Provider
 
-**Future provider phase, not PR11.** PR11 stops at provider config plus offline request mappers. It does not add an HTTP client, does not load credentials, and does not call real providers.
+PR12 adds `Muse.LLM.OpenAICompatibleProvider`, a real provider adapter that performs HTTP requests against any OpenAI-compatible Chat Completions endpoint. It uses [`Req`](https://hexdocs.pm/req/) (`{:req, "~> 0.5"}`) for the default `POST` call, with an injectable `post_fn` for offline tests.
 
-When real provider work begins, implement non-streaming Chat Completions-compatible requests **before** SSE/WebSocket to reduce integration risk. A non-streaming provider validates the request/response shape, auth, and error handling without the complexity of incremental parsing.
+**Non-streaming only.** PR12 supports Chat Completions non-streaming exclusively. No SSE parser, no WebSocket client, no synthetic `Authorization` header. Responses provider execution via `ResponsesMapper` is future work.
 
-**Add dependency only in the real provider phase:**
+### `Muse.LLM.OpenAICompatibleProvider`
 
-```elixir
-# mix.exs — only added when provider PRs begin
-{:req, "~> 0.5"}
-```
+File: `lib/muse/llm/openai_compatible_provider.ex`
 
-### Request Shape
+Implements `Muse.LLM.Provider` behaviour.
 
-```json
-{
-  "model": "gpt-4.1",
-  "messages": [
-    {
-      "role": "system",
-      "content": "You are Planning Muse. Inspect the workspace with read-only tools..."
-    },
-    {
-      "role": "user",
-      "content": "add a /version command"
-    }
-  ],
-  "tools": [
-    {
-      "type": "function",
-      "function": {
-        "name": "read_file",
-        "description": "Read a text file inside the workspace.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "path": {
-              "type": "string",
-              "description": "Relative path within the workspace root."
-            },
-            "start_line": {
-              "type": "integer",
-              "description": "Optional 1-based start line."
-            },
-            "max_lines": {
-              "type": "integer",
-              "description": "Optional maximum number of lines to return."
-            }
-          },
-          "required": ["path"],
-          "additionalProperties": false
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
-        "name": "list_files",
-        "description": "List files and directories in the workspace.",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "path": {
-              "type": "string",
-              "description": "Directory path relative to workspace root."
-            },
-            "recursive": {
-              "type": "boolean",
-              "description": "Whether to recurse into subdirectories."
-            }
-          },
-          "required": ["path"],
-          "additionalProperties": false
-        }
-      }
-    }
-  ],
-  "tool_choice": "auto"
-}
-```
-
-### Response Decoder
-
-Parse the non-streaming Chat Completions response:
+#### `complete/1` and `complete/2`
 
 ```elixir
-defmodule Muse.LLM.Providers.OpenAICompatible.Decoder do
-  @moduledoc """
-  Decodes OpenAI-compatible Chat Completions responses into Muse LLM structs.
-  """
+@spec complete(Request.t()) :: {:ok, Response.t()} | {:error, term()}
+def complete(request), do: complete(request, [])
 
-  alias Muse.LLM.{Response, ToolCall}
+@spec complete(Request.t(), keyword()) :: {:ok, Response.t()} | {:error, term()}
+def complete(%Request{} = request, opts) when is_list(opts)
+```
 
-  @spec decode(map()) :: {:ok, Response.t()} | {:error, term()}
-  def decode(body) do
-    choice = get_in(body, ["choices", Access.at(0)])
+`complete/1` performs a non-streaming Chat Completions POST by delegating to `complete/2` with an empty options list. `complete/2` accepts `opts[:post_fn]` to inject a custom HTTP function. Default: `&Req.post/2`.
 
-    with {:ok, message} <- fetch(choice, "message"),
-         {:ok, content} <- fetch(message, "content"),
-         {:ok, tool_calls} <- decode_tool_calls(message["tool_calls"]),
-         {:ok, finish_reason} <- fetch(choice, "finish_reason") do
-      {:ok, %Response{
-        id: body["id"],
-        content: content,
-        text: content,
-        tool_calls: tool_calls,
-        usage: body["usage"],
-        finish_reason: finish_reason,
-        raw: body
-      }}
-    end
-  end
+The request flow:
 
-  defp decode_tool_calls(nil), do: {:ok, []}
-  defp decode_tool_calls(calls) when is_list(calls) do
-    result =
-      Enum.map(calls, fn call ->
-        with {:ok, args} <- decode_arguments(call["function"]["arguments"]) do
-          %ToolCall{
-            id: call["id"],
-            name: call["function"]["name"],
-            arguments: args,
-            raw: call
-          }
-        end
-      end)
+1. `RequestBuilder.build_chat_completions(request)` produces the HTTP spec (URL, payload, headers).
+2. `post_fn.(url, [json: payload, headers: headers] ++ req_options)` performs the POST.
+3. A 2xx response body is JSON-decoded and passed to `ChatCompletionsDecoder.decode/1`.
+4. Non-2xx responses produce `{:error, {:provider_http_error, %{status:, body_summary:}}}`.
+5. Network/exception failures produce `{:error, {:provider_network_error, %{reason:}}}`.
 
-    case Enum.find(result, &match?({:error, _}, &1)) do
-      nil -> {:ok, result}
-      error -> error
-    end
-  end
+All error payloads are redacted through `EventPayloadRedactor` and truncated to 500 characters — provider HTTP bodies, raw response terms, and error messages never leak secrets.
 
-  defp decode_arguments(json_string) when is_binary(json_string) do
-    case Jason.decode(json_string) do
-      {:ok, args} -> {:ok, args}
-      {:error, _} -> {:error, :invalid_tool_arguments}
-    end
-  end
-  defp decode_arguments(args) when is_map(args), do: {:ok, args}
+#### `stream/2` — Event Replay
 
-  defp fetch(map, key) when is_map(map) do
-    case Map.fetch(map, key) do
-      {:ok, value} -> {:ok, value}
-      :error -> {:error, {:missing_field, key}}
+```elixir
+@spec stream(Request.t(), (Event.t() -> :ok)) :: {:ok, Response.t()} | {:error, term()}
+```
+
+`stream/2` performs the same single non-streaming HTTP call as `complete/2`, then replays the result as canonical Muse LLM events via the `emit_fn`:
+
+| Event | When |
+|---|---|
+| `Event.response_started()` | Before any content |
+| `Event.assistant_delta(text)` | Once for the full response text |
+| `Event.assistant_completed(text)` | After the text delta |
+| `Event.tool_call_started(tool_call)` | Per tool call |
+| `Event.tool_call_completed(tool_call)` | Per tool call (immediately after started in non-streaming) |
+| `Event.response_completed(usage)` | After all tool calls |
+| `Event.provider_error(redacted_reason)` | On failure instead of the above |
+
+Offline tests may inject `post_fn` via `request.options[:post_fn]` or `request.options[:http_post]` (both checked in `stream/2`).
+
+### `Muse.LLM.OpenAI.RequestBuilder.build_chat_completions/1`
+
+File: `lib/muse/llm/openai/request_builder.ex`
+
+```elixir
+@spec build_chat_completions(Request.t()) :: {:ok, spec()} | {:error, error_reason()}
+```
+
+Pure data-preparation function — no HTTP calls, no side effects. Returns `{:ok, spec}` where `spec` is a map:
+
+| Key | Description |
+|---|---|
+| `:url` | Full request URL: `base_url` (trimmed trailing slash) + `/chat/completions` |
+| `:endpoint_path` | `"/chat/completions"` |
+| `:payload` | JSON-ready map with string keys, `"stream" => false` forced |
+| `:headers` | Sorted list of `{name, value}` tuples from caller-provided options only |
+| `:req_options` | Keyword list with `:timeout_ms` / `:max_retries` when valid |
+
+**Key behaviour:**
+
+- Resolves `base_url` from `request.options[:base_url]` or `request.options["base_url"]`.
+- Validates `base_url` is HTTP(S), has a host, and contains no embedded credentials (userinfo). Returns `{:error, {:invalid_base_url, reason}}` on violation.
+- Only supports `wire_api` values `nil` and `:chat_completions`. Returns `{:error, {:unsupported_wire_api, :responses}}` for all other values.
+- Forces `"stream" => false` regardless of `request.stream`.
+- Carries **only explicit caller headers** from `request.options[:headers]` or `request.options["headers"]`. Does **not** synthesize auth headers, read env vars, or load `MUSE_OPENAI_API_KEY`.
+- Normalizes header keys to strings; atom keys are converted.
+
+**Error reasons:**
+
+| Error | When |
+|---|---|
+| `{:unsupported_wire_api, value}` | `wire_api` is not `nil` or `:chat_completions` |
+| `{:missing_base_url, message}` | `base_url` not provided, empty, or options is not a map |
+| `{:invalid_base_url, message}` | URL uses non-HTTP scheme, lacks host, or contains embedded credentials |
+
+### `Muse.LLM.OpenAI.ChatCompletionsDecoder.decode/1`
+
+File: `lib/muse/llm/openai/chat_completions_decoder.ex`
+
+```elixir
+@spec decode(map()) :: {:ok, Response.t()} | {:error, term()}
+def decode(body) when is_map(body)
+```
+
+Pure decoder that converts a parsed JSON Chat Completions response body into `Muse.LLM.Response`. Extracts:
+
+| Response Field | Source |
+|---|---|
+| `id` | `body["id"]` (optional; string or nil) |
+| `content` / `text` | `choices[0].message.content` |
+| `tool_calls` | `choices[0].message.tool_calls` decoded to `[%ToolCall{}]` |
+| `finish_reason` | `choices[0].finish_reason` (optional) |
+| `usage` | `body["usage"]` normalized to atom keys: `:prompt_tokens`, `:completion_tokens`, `:total_tokens` |
+| `raw` | The original body map |
+
+Error messages are redacted and truncated to 300 characters. The decoder handles both string-key and atom-key provider responses via a known-key map.
+
+**Tool call decoding** parses `arguments` from JSON string to map, handling `nil`, empty string, already-decoded map, and invalid JSON — never crashes the turn loop.
+
+### `Muse.LLM.ProviderRouter` & Conductor Integration
+
+File: `lib/muse/llm/provider_router.ex`
+
+`ProviderRouter` is a pure resolver mapping provider identifiers to provider modules. Known providers:
+
+| Identifier | Module |
+|---|---|
+| `:fake` / `"fake"` | `Muse.LLM.FakeProvider` |
+| `:openai_compatible` / `"openai_compatible"` | `Muse.LLM.OpenAICompatibleProvider` |
+
+`resolve/1` accepts an atom, string, or `%ProviderConfig{}` and returns `{:ok, module}` or `{:error, {:unknown_provider, value}}`. Never creates atoms from user input, never starts clients or reads environment variables.
+
+The Conductor (`Muse.Conductor`) uses `ProviderRouter.resolve/1` in `resolve_provider_module/2`. If the resolved module is not loaded (or resolution fails), it falls back to `FakeProvider`. This conservative approach ensures offline operation by default — real network calls only happen when an explicit `openai_compatible` config is present and the provider module is genuinely loaded.
+
+```elixir
+# Conductor excerpt — conservative fallback to FakeProvider
+defp resolve_provider_module(opts, request) do
+  if Keyword.has_key?(opts, :provider_module) do
+    Keyword.fetch!(opts, :provider_module)
+  else
+    case ProviderRouter.resolve(request.provider) do
+      {:ok, module} ->
+        if Code.ensure_loaded?(module), do: module, else: FakeProvider
+      {:error, _reason} ->
+        FakeProvider
     end
   end
 end
 ```
 
-**Decoder extracts:**
+### `Req` Dependency & Default `post_fn`
 
-| Field | Path | Maps to |
-|---|---|---|
-| `choices[0].message.content` | Assistant text | `Response.text` / `Response.content` |
-| `choices[0].message.tool_calls` | Tool call array | `Response.tool_calls` (list of `Muse.LLM.ToolCall`) |
-| `choices[0].finish_reason` | Stop reason | `Response.finish_reason` |
-| `usage` | Token counts | `Response.usage` |
-
-**Tool call conversion:**
+The `Req` library is a compile-time dependency in `mix.exs`. `OpenAICompatibleProvider` defaults to `&Req.post/2` for HTTP calls. Tests inject a custom `post_fn` (a two-arity function matching `Req.post/2`'s call shape: `(url, options) -> {:ok, %{status:, body:, headers:}}` or `{:error, reason}`).
 
 ```elixir
-%Muse.LLM.ToolCall{
-  id: "call_abc123",
-  name: "read_file",
-  arguments: %{"path" => "lib/muse.ex"},
-  raw: %{
-    "id" => "call_abc123",
-    "type" => "function",
-    "function" => %{
-      "name" => "read_file",
-      "arguments" => "{\"path\": \"lib/muse.ex\"}"
-    }
-  }
-}
+# Default: Req.post/2
+post_fn.(url, [json: payload, headers: headers] ++ req_options)
+
+# Test injection: custom function
+{:ok, response} = OpenAICompatibleProvider.complete(request, post_fn: fn _url, _opts ->
+  {:ok, %{status: 200, body: fixture_body, headers: []}}
+end)
 ```
 
-Arguments arrive as JSON strings from the API. Decode with `Jason.decode!/1`. If decoding fails, return a `:tool_call_validation_error` — never crash the turn loop.
+### Custom `base_url` Rules
+
+- Must be HTTP or HTTPS (`http://` or `https://`).
+- Must have a host (not empty, not IP-only without scheme).
+- Must **not** contain embedded credentials (`user:pass@host`). `RequestBuilder` returns `{:error, {:invalid_base_url, ...}}` in that case.
+- Trailing slashes are stripped before appending `/chat/completions`.
+
+The full request URL becomes `#{base_url}/chat/completions` (exactly one `/chat/completions` segment).
 
 ---
 
 ## 6. OpenAI Responses Request Mapper
 
-The OpenAI Responses API uses a different request shape than Chat Completions. In PR11, `Muse.LLM.OpenAI.ResponsesMapper` is a pure/offline mapper:
+The OpenAI Responses API uses a different request shape than Chat Completions. `Muse.LLM.OpenAI.ResponsesMapper` is a pure/offline mapper:
 
 - `endpoint_path/0` returns `"/responses"`.
 - `to_payload/1` converts `%Muse.LLM.Request{}` into a JSON-compatible map with string keys, ready for `Jason.encode!/1`.
@@ -445,7 +432,7 @@ The OpenAI Responses API uses a different request shape than Chat Completions. I
 /responses
 ```
 
-A future transport may `POST` to `{base_url}/responses`; the PR11 mapper only returns payload/path data.
+**PR12 limitation:** `Muse.LLM.OpenAI.RequestBuilder` only supports `wire_api` values `nil` and `:chat_completions`. Passing `:responses` returns `{:error, {:unsupported_wire_api, :responses}}`. Responses provider execution — and any transport POSTing to `{base_url}/responses` — remains future work, though the mapper itself exists and is tested.
 
 **Key differences from Chat Completions:**
 
@@ -457,7 +444,7 @@ A future transport may `POST` to `{base_url}/responses`; the PR11 mapper only re
 | Persistence | `store: false` | N/A |
 | Streaming flag | `stream: true` | `stream: true` |
 
-The Responses API can maintain conversation state server-side using `previous_response_id`, which reduces the size of subsequent requests once real provider support exists. PR11 only preserves/maps that field; it does not create server-side state.
+The Responses API can maintain conversation state server-side using `previous_response_id`, which reduces the size of subsequent requests once real provider support exists. The mapper preserves/maps that field; it does not create server-side state.
 
 ---
 
@@ -515,9 +502,9 @@ The Chat Completions API is the OpenAI-compatible fallback used by routers and l
 /chat/completions
 ```
 
-A future transport may `POST` to `{base_url}/chat/completions`; the PR11 mapper only returns payload/path data.
+PR12's `RequestBuilder.build_chat_completions/1` uses `ChatCompletionsMapper.to_payload/1` and `endpoint_path/0`, then assembles the full HTTP spec (URL, headers, Req options) and passes it to the provider for dispatch. See §5 for the complete request flow.
 
-The Chat Completions mapper includes the full message history (system prompt + all prior messages) because the API is stateless — there is no `previous_response_id` equivalent. Any network dispatch/auth wrapper belongs to later provider/auth PRs, not to this mapper.
+The Chat Completions mapper includes the full message history (system prompt + all prior messages) because the API is stateless — there is no `previous_response_id` equivalent. Auth header injection belongs to PR13, not to this mapper or the PR12 provider.
 
 ---
 

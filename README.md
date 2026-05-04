@@ -6,9 +6,12 @@ Muse gives you a CLI REPL and a web interface that both funnel through a
 single `Muse.submit/2` API — so adding real AI behavior later is a one-module
 change.
 
-> **⚠️ Placeholder AI** — `Muse.submit/2` currently returns a canned
-> `"Placeholder response: received …"` string.  No real LLM integration exists
-> yet.  Everything else (CLI, web, state, hot reload) is fully functional.
+> **⚠️ Provider-ready** — `Muse.submit/2` routes through the Conductor which
+> delegates to an LLM provider. The fake provider (offline, deterministic) is the
+> default. `Muse.LLM.OpenAICompatibleProvider` (`complete/1`, `complete/2`,
+> `stream/2`) is available for real HTTP calls against any OpenAI-compatible
+> Chat Completions endpoint with a custom `base_url`.  Auth/API-key loading
+> remains future work (PR13).
 
 ---
 
@@ -39,7 +42,21 @@ Muse defaults to the offline fake provider and needs no API key:
 MUSE_PROVIDER=fake mix muse
 ```
 
-PR11 supports provider config and offline request JSON mappers only. `MUSE_OPENAI_API_KEY` is not loaded yet, and no real provider/network calls are made. See [`docs/provider-roadmap.md`](docs/provider-roadmap.md) for the current env/config contract.
+To use a real OpenAI-compatible endpoint, set the provider and base URL:
+
+```bash
+MUSE_PROVIDER=openai_compatible \
+  MUSE_OPENAI_BASE_URL=https://api.openai.com/v1 \
+  MUSE_MODEL=gpt-4.1 \
+  mix muse
+```
+
+> PR12 adds `Muse.LLM.OpenAICompatibleProvider` which performs non-streaming
+> Chat Completions HTTP calls via Req. Caller-provided `request.options[:headers]`
+> can carry auth headers, but no env-var-based API-key loading exists yet —
+> that is PR13. The fake provider remains the default for offline operation.
+
+See [`docs/provider-roadmap.md`](docs/provider-roadmap.md) for the current env/config contract.
 
 ---
 
