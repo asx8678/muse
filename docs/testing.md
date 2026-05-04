@@ -96,9 +96,11 @@ All fixtures live under `test/fixtures/` and are version-controlled.
 | **Codex auth.json (redacted)** | `fixtures/codex/auth.json` | Simulated Codex `auth.json` with **fake** token values for testing credential loading. |
 | **Malformed provider events** | `fixtures/malformed/provider_events.jsonl` | ND-JSON with missing fields, invalid UTF-8, truncated JSON, and unknown event types. |
 | **Malformed tool calls** | `fixtures/malformed/tool_calls.json` | Tool calls with missing `name`, non-JSON `arguments`, and empty `call_id`. |
-| **Fake provider scripts — planning flow** | `fixtures/fake_provider/planning_flow.jsonl` | Scripted responses for a complete Planning Muse turn (search → read → plan). |
-| **Fake provider scripts — coding flow** | `fixtures/fake_provider/coding_flow.jsonl` | Scripted responses for a Coding Muse turn (propose patch). |
-| **Fake provider scripts — testing flow** | `fixtures/fake_provider/testing_flow.jsonl` | Scripted responses for a Testing Muse turn (run validation). |
+| **Fake provider scripts — planning flow** | `test/fixtures/fake_provider/planning_flow.jsonl` | Scripted responses for a complete Planning Muse turn: read-only tool calls then structured plan JSON. |
+| **Fake provider scripts — coding flow** | `test/fixtures/fake_provider/coding_flow.jsonl` | Scripted responses for a Coding Muse turn (propose patch). |
+| **Fake provider scripts — testing flow** | `test/fixtures/fake_provider/testing_flow.jsonl` | Scripted responses for a Testing Muse turn (run validation). |
+| **Fake provider scripts — planning flow (batched)** | `test/fixtures/fake_provider/planning_flow_batches.json` | Multi-batch fixture for E2E Planning Muse: two tool-call batches then structured plan JSON. |
+| **Fake provider scripts — tool calls + text** | `test/fixtures/fake_provider/tool_calls_then_text.jsonl` | Multiple tool calls followed by assistant text with usage. |
 
 ### Fixture Principles
 

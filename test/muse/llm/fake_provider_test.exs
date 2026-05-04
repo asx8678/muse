@@ -657,7 +657,7 @@ defmodule Muse.LLM.FakeProviderTest do
 
   describe "JSONL fixture loading" do
     @planning_fixture Path.expand(
-                        "../../support/fixtures/fake_provider/planning_flow.jsonl",
+                        "../../fixtures/fake_provider/planning_flow.jsonl",
                         __DIR__
                       )
 
@@ -682,13 +682,16 @@ defmodule Muse.LLM.FakeProviderTest do
       assert Enum.any?(events, &(&1.type == :tool_call_completed))
       assert Enum.any?(events, &(&1.type == :response_completed))
 
-      # Response content should prefer the assistant_completed text
-      assert response.content =~ "here is my plan"
+      # Response content should prefer the assistant_completed text (plan JSON)
+      assert response.content =~ "/version"
       assert response.tool_calls != []
+
+      # The fixture now includes a valid structured plan JSON
+      assert {:ok, _plan} = Muse.PlanParser.parse(response.content)
     end
 
     @tool_calls_fixture Path.expand(
-                          "../../support/fixtures/fake_provider/tool_calls_then_text.jsonl",
+                          "../../fixtures/fake_provider/tool_calls_then_text.jsonl",
                           __DIR__
                         )
 
