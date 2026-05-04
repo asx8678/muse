@@ -10,8 +10,9 @@ change.
 > delegates to an LLM provider. The fake provider (offline, deterministic) is the
 > default. `Muse.LLM.OpenAICompatibleProvider` (`complete/1`, `complete/2`,
 > `stream/2`) is available for real HTTP calls against any OpenAI-compatible
-> Chat Completions endpoint with a custom `base_url`.  Auth/API-key loading
-> remains future work (PR13).
+> Chat Completions endpoint with a custom `base_url`.  Auth/API-key resolution
+> is handled by the `Muse.Auth` layer (`Resolver`, `ApiKey`, `BearerCommand`,
+> `CodexCache`, `Credential`); use `/auth status` to inspect configuration.
 
 ---
 

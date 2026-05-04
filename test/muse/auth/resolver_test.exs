@@ -1,0 +1,90 @@
+defmodule Muse.Auth.ResolverTest do
+  use ExUnit.Case, async: true
+
+  alias Muse.Auth.{Credential, Resolver}
+
+  describe "resolve/2" do
+    test ":none returns no credential" do
+      assert Resolver.resolve(%{auth: :none}) == :none
+      assert Resolver.resolve(%{"auth" => "none"}) == :none
+    end
+
+    test "missing auth mode defaults to no credential" do
+      assert Resolver.resolve(%{}) == :none
+    end
+
+    test "api_key resolves from injected env map and redacts inspect output" do
+      assert {:ok, %Credential{} = credential} =
+               Resolver.resolve(
+                 %{auth: :api_key, env_key: "MUSE_TEST_API_KEY"},
+                 env: %{"MUSE_TEST_API_KEY" => "sk-resolver-secret"},
+                 system_env?: false
+               )
+
+      assert credential.type == :api_key
+      assert credential.source == :env
+      assert credential.value == "sk-resolver-secret"
+      assert credential.redacted =~ "REDACTED"
+
+      inspected = inspect(credential)
+      assert inspected =~ "REDACTED"
+      refute inspected =~ "sk-resolver-secret"
+    end
+
+    test "bearer_command resolves through injected runner without shelling out" do
+      runner = fn "print-token" -> {:ok, "tok-runner-secret\n"} end
+
+      assert {:ok, %Credential{} = credential} =
+               Resolver.resolve(%{
+                 auth: :bearer_command,
+                 bearer_command: "print-token",
+                 auth_runner: runner
+               })
+
+      assert credential.type == :bearer
+      assert credential.source == :command
+      assert credential.source_ref == "bearer_command"
+      assert credential.value == "tok-runner-secret"
+      refute inspect(credential) =~ "tok-runner-secret"
+    end
+
+    test "codex_cache resolves from temp JSON and carries permission warning" do
+      path = tmp_path("codex_auth.json")
+      File.write!(path, Jason.encode!(%{"access_token" => "tok-codex-secret"}))
+      File.chmod!(path, 0o644)
+
+      assert {:ok, %Credential{} = credential} =
+               Resolver.resolve(%{auth: :codex_cache, codex_cache_path: path})
+
+      assert credential.type == :bearer
+      assert credential.source == :codex_cache
+      assert credential.value == "tok-codex-secret"
+      assert {:permissive_permissions, "0600 recommended"} in credential.warnings
+      refute inspect(credential) =~ "tok-codex-secret"
+    after
+      path = tmp_path("codex_auth.json")
+      File.rm(path)
+    end
+
+    test "openai_oauth returns clear unsupported error" do
+      assert {:error,
+              {:unsupported_auth_mode, :openai_oauth, "OpenAI OAuth auth is not supported yet"}} =
+               Resolver.resolve(%{auth: :openai_oauth})
+    end
+
+    test "unsupported auth mode errors without leaking raw token-like values" do
+      assert {:error, {:unsupported_auth_mode, mode}} =
+               Resolver.resolve(%{auth: "Bearer sk-unsupported-secret"})
+
+      rendered = inspect(mode)
+      refute rendered =~ "sk-unsupported-secret"
+      refute rendered =~ "Bearer sk"
+    end
+  end
+
+  defp tmp_path(filename) do
+    dir = Path.join(System.tmp_dir!(), "muse-auth-resolver-test")
+    File.mkdir_p!(dir)
+    Path.join(dir, filename)
+  end
+end

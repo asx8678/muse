@@ -223,6 +223,11 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/rollback") == {:command, :rollback}
     end
 
+    test "parses /auth status" do
+      assert Commands.parse("/auth status") == {:command, :auth_status}
+      assert Commands.parse("/auth status extra") == {:command, :auth_status, "extra"}
+    end
+
     test "returns :empty for blank input" do
       assert Commands.parse("") == :empty
       assert Commands.parse("   ") == :empty
@@ -309,6 +314,7 @@ defmodule Muse.CommandsTest do
       assert text =~ "/disconnect runtime"
       assert text =~ "/prompt preview"
       assert text =~ "/prompt-preview"
+      assert text =~ "/auth status"
     end
 
     test "includes /muses but not /agents legacy alias" do
@@ -354,6 +360,7 @@ defmodule Muse.CommandsTest do
       assert "/plan show" in cmd_names
       assert "/approve plan" in cmd_names
       assert "/reject plan" in cmd_names
+      assert "/auth status" in cmd_names
     end
   end
 
@@ -382,6 +389,7 @@ defmodule Muse.CommandsTest do
       assert "/plan history" in cmd_names
       assert "/plan status" in cmd_names
       assert "/plan show" in cmd_names
+      assert "/auth status" in cmd_names
     end
   end
 end

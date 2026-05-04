@@ -144,7 +144,7 @@ This is the zero-config Muse-first experience. Running `muse` out of the box use
 
 ### 3.2 OpenAI-Compatible Config
 
-PR12 reads the OpenAI-compatible provider **configuration** and uses it to perform real HTTP calls against a configured `base_url` for non-streaming Chat Completions. Auth/API-key loading remains in the auth layer (PR13); the provider can send caller-provided headers but does not read `MUSE_OPENAI_API_KEY`.
+PR12 reads the OpenAI-compatible provider **configuration** and uses it to perform real HTTP calls against a configured `base_url` for non-streaming Chat Completions. Auth/API-key loading is in the auth layer (PR13, now implemented); the provider now resolves credentials via `Muse.Auth.Resolver` and injects the `Authorization` header.
 
 Example config values for an OpenAI-compatible provider:
 
@@ -167,7 +167,7 @@ MUSE_LLM_MAX_RETRIES=2
 | `MUSE_LLM_MAX_RETRIES` | No | `0` for fake; `2` for openai-compatible | Maximum retry attempts (carried as Req option) |
 | `MUSE_WIRE_API` | No (`Muse.Config` only) | `responses` for openai-compatible | `responses` or `chat_completions`; PR12 only supports `nil`/`:chat_completions`; `:responses` returns an unsupported error |
 | `MUSE_TRANSPORT` | No (`Muse.Config` only) | `sse` for openai-compatible; `none` for fake | `none`, `sse`, or `websocket`; unknown values resolve to `nil` |
-| `MUSE_OPENAI_API_KEY` | Not read in PR12 | — | Auth/API-key loading is deferred to the auth layer (PR13); caller-provided headers may be sent via `request.options[:headers]` but are redacted in errors/events |
+| `MUSE_OPENAI_API_KEY` | Not read in PR12 | — | Auth/API-key loading is in the auth layer (PR13, now implemented); caller-provided headers may be sent via `request.options[:headers]` but are redacted in errors/events |
 
 ### 3.3 App Config Example
 
@@ -204,7 +204,7 @@ Important boundaries:
 
 - The fake provider always validates and remains the safe default.
 - Validation never starts clients, opens sockets, or calls real provider APIs.
-- Validation does **not** read or require `MUSE_OPENAI_API_KEY`; auth loading remains PR13.
+- Validation does **not** read or require `MUSE_OPENAI_API_KEY`; auth loading is in PR13 (now implemented).
 - Startup wiring may call this validation before the provider makes its first HTTP call.
 - `ProviderConfig.redacted_inspect/1` and the `Inspect` implementation must be used for safe logging/debugging.
 
@@ -504,7 +504,7 @@ The Chat Completions API is the OpenAI-compatible fallback used by routers and l
 
 PR12's `RequestBuilder.build_chat_completions/1` uses `ChatCompletionsMapper.to_payload/1` and `endpoint_path/0`, then assembles the full HTTP spec (URL, headers, Req options) and passes it to the provider for dispatch. See §5 for the complete request flow.
 
-The Chat Completions mapper includes the full message history (system prompt + all prior messages) because the API is stateless — there is no `previous_response_id` equivalent. Auth header injection belongs to PR13, not to this mapper or the PR12 provider.
+The Chat Completions mapper includes the full message history (system prompt + all prior messages) because the API is stateless — there is no `previous_response_id` equivalent. Auth header injection is in PR13 (now implemented), not in the PR12 mapper or PR12 provider core.
 
 ---
 
@@ -741,7 +741,7 @@ Reconnection:
 
 ## 10. Auth Layer
 
-**Future auth phase (PR13+), not PR11.** PR11 provider config may record `auth` and `env_key`, but it does not read API keys, execute bearer commands, inspect Codex caches, or attach Authorization headers.
+**Auth phase is now PR13 (implemented).** PR11 provider config may record `auth` and `env_key`, but it does not read API keys, execute bearer commands, inspect Codex caches, or attach Authorization headers.
 
 ### 10.1 Auth Modes
 

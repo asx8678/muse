@@ -6,20 +6,22 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   the complete response into Muse's normalized response struct, and can replay
   the result as canonical Muse LLM events for callers using `stream/2`.
 
-  PR12 intentionally stays boring:
+  This adapter keeps auth resolution centralized in `Muse.Auth.Resolver`:
 
     * no SSE parser
     * no WebSocket client
-    * no auth lookup
-    * no synthesized Authorization header
+    * fake provider remains the offline/default provider
+    * configured auth modes resolve before any HTTP call
 
   Callers may pass explicit headers through `request.options[:headers]`; those
   headers are sent to the provider but are never included in returned/emitted
-  error data.
+  error data. If an explicit `Authorization` header is present, it wins and the
+  auth layer does not overwrite or duplicate it.
   """
 
   @behaviour Muse.LLM.Provider
 
+  alias Muse.Auth.Resolver
   alias Muse.{EventPayloadRedactor, MetadataSanitizer}
   alias Muse.LLM.OpenAI.RequestBuilder
   alias Muse.LLM.{Event, Request, Response, ToolCall}
@@ -42,6 +44,7 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   @spec complete(Request.t(), keyword()) :: {:ok, Response.t()} | {:error, term()}
   def complete(%Request{} = request, opts) when is_list(opts) do
     with {:ok, spec} <- RequestBuilder.build_chat_completions(request),
+         {:ok, spec} <- attach_auth(spec, request, opts),
          {:ok, post_fn} <- complete_post_fn(opts),
          {:ok, http_response} <- post(spec, post_fn) do
       decode_http_response(http_response)
@@ -65,6 +68,7 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
     result =
       request
       |> RequestBuilder.build_chat_completions()
+      |> with_auth(request, [])
       |> with_stream_post_fn(opts)
       |> complete_from_stream_spec()
 
@@ -79,6 +83,50 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
         {:error, redacted}
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Auth header attachment
+  # ---------------------------------------------------------------------------
+
+  defp with_auth({:ok, spec}, request, opts), do: attach_auth(spec, request, opts)
+  defp with_auth({:error, reason}, _request, _opts), do: {:error, reason}
+
+  defp attach_auth(%{headers: headers} = spec, request, opts)
+       when is_list(headers) do
+    if authorization_header?(headers) do
+      {:ok, spec}
+    else
+      resolve_and_attach_auth(spec, request, opts)
+    end
+  end
+
+  defp attach_auth(spec, request, opts), do: resolve_and_attach_auth(spec, request, opts)
+
+  defp resolve_and_attach_auth(spec, request, opts) do
+    case Resolver.resolve(request, opts) do
+      {:ok, credential} ->
+        {:ok, append_authorization_header(spec, credential)}
+
+      :none ->
+        {:ok, spec}
+
+      {:error, reason} ->
+        {:error, {:auth_error, safe_auth_reason(reason)}}
+    end
+  end
+
+  defp authorization_header?(headers) do
+    Enum.any?(headers, fn
+      {name, _value} when is_binary(name) -> String.downcase(name) == "authorization"
+      _other -> false
+    end)
+  end
+
+  defp append_authorization_header(%{headers: headers} = spec, credential) do
+    %{spec | headers: headers ++ [{"Authorization", "Bearer " <> credential.value}]}
+  end
+
+  defp safe_auth_reason(reason), do: EventPayloadRedactor.redact(reason)
 
   # ---------------------------------------------------------------------------
   # HTTP dispatch

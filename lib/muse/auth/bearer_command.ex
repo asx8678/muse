@@ -205,8 +205,11 @@ defmodule Muse.Auth.BearerCommand do
         {_output, _exit_code} -> {:error, {:exec_failed, "command exited with non-zero status"}}
       end
     catch
-      :error, :enoent -> {:error, {:exec_failed, "command not found: #{safe_prog_label(prog)}"}}
-      kind, reason -> {:error, {:exec_failed, "execution error (#{kind}): #{safe_exit_reason(reason)}"}}
+      :error, :enoent ->
+        {:error, {:exec_failed, "command not found: #{safe_prog_label(prog)}"}}
+
+      kind, reason ->
+        {:error, {:exec_failed, "execution error (#{kind}): #{safe_exit_reason(reason)}"}}
     end
   end
 

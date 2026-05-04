@@ -2,6 +2,7 @@ defmodule Muse.CommandDispatcherTest do
   use ExUnit.Case, async: true
 
   alias Muse.CommandDispatcher
+  alias Muse.LLM.ProviderConfig
 
   defp start_session_with_awaiting_plan(session_id, objective \\ "Approve dispatcher plan") do
     plan =
@@ -54,6 +55,25 @@ defmodule Muse.CommandDispatcherTest do
     defaults
     |> Keyword.merge(attrs)
     |> Muse.Plan.new()
+  end
+
+  defp openai_provider_config(overrides \\ []) do
+    %ProviderConfig{
+      id: "openai_compatible",
+      name: "OpenAI Compatible",
+      base_url: "https://api.openai.com/v1",
+      wire_api: :responses,
+      transport: :sse,
+      auth: :api_key,
+      env_key: "MUSE_OPENAI_API_KEY",
+      model: "gpt-4o-mini",
+      supports_streaming: true,
+      supports_websockets: true,
+      supports_tools: true,
+      timeout_ms: 120_000,
+      max_retries: 2
+    }
+    |> struct!(overrides)
   end
 
   # Most dispatch tests are pure — no process dependencies needed
@@ -872,6 +892,169 @@ defmodule Muse.CommandDispatcherTest do
     test "returns cleared message" do
       {:ok, output, effects} = CommandDispatcher.dispatch(:clear_history, nil, %{})
       assert output =~ "Command history cleared"
+      assert effects == []
+    end
+  end
+
+  describe "dispatch/3 — :auth_status" do
+    test "fake provider reports no authentication and no effects" do
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:auth_status, nil, %{provider_config: ProviderConfig.fake()})
+
+      assert output == "Auth status: fake provider uses no authentication."
+      assert effects == []
+    end
+
+    test "openai-compatible API key from context env reports configured with redacted credential" do
+      raw_key = "sk-auth-status-raw-secret"
+
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:auth_status, nil, %{
+          provider_config: openai_provider_config(),
+          env: %{"MUSE_OPENAI_API_KEY" => raw_key}
+        })
+
+      assert output =~ "Provider: openai_compatible (OpenAI Compatible)"
+      assert output =~ "Auth mode: api_key"
+      assert output =~ "Env key: MUSE_OPENAI_API_KEY"
+      assert output =~ "Status: configured"
+      assert output =~ "Credential source: env"
+      assert output =~ "Credential: sk-...REDACTED"
+      refute output =~ raw_key
+      assert effects == []
+    end
+
+    test "missing API key reports missing without an error stack" do
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:auth_status, nil, %{
+          provider_config: openai_provider_config(),
+          env: %{}
+        })
+
+      assert output =~ "Status: missing"
+      assert output =~ "MUSE_OPENAI_API_KEY"
+      refute output =~ "** ("
+      refute output =~ "stacktrace"
+      assert effects == []
+    end
+
+    test "extra args return usage error" do
+      {:error, output, effects} =
+        CommandDispatcher.dispatch(:auth_status, "please leak tokens", %{})
+
+      assert output == "Error: usage: /auth status"
+      assert effects == []
+    end
+
+    test "does not execute bearer commands or read Codex cache unless precomputed status is injected" do
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "muse_auth_status_no_side_effects_#{:erlang.unique_integer([:positive])}"
+        )
+
+      script_path = Path.join(tmp_dir, "bearer_runner")
+      sentinel_path = Path.join(tmp_dir, "bearer_was_executed")
+      codex_dir = Path.join(tmp_dir, ".codex")
+      codex_path = Path.join(codex_dir, "auth.json")
+      raw_codex_token = "sk-codex-cache-raw-secret"
+
+      File.mkdir_p!(codex_dir)
+
+      File.write!(script_path, "#!/bin/sh\necho ran > #{sentinel_path}\necho sk-runner-secret\n")
+      File.chmod!(script_path, 0o700)
+      File.write!(codex_path, Jason.encode!(%{"access_token" => raw_codex_token}))
+
+      try do
+        {:ok, bearer_output, bearer_effects} =
+          CommandDispatcher.dispatch(:auth_status, nil, %{
+            provider_config:
+              openai_provider_config(auth: :bearer_command, bearer_command: script_path)
+          })
+
+        refute File.exists?(sentinel_path)
+        assert bearer_output =~ "not executed"
+        refute bearer_output =~ script_path
+        refute bearer_output =~ "sk-runner-secret"
+        assert bearer_effects == []
+
+        {:ok, codex_output, codex_effects} =
+          CommandDispatcher.dispatch(:auth_status, nil, %{
+            provider_config: openai_provider_config(auth: :codex_cache),
+            auth_status: %{
+              status: :configured,
+              source: :codex_cache,
+              source_ref: codex_path,
+              value: raw_codex_token,
+              redacted: raw_codex_token
+            }
+          })
+
+        assert codex_output =~ "not read"
+        assert codex_output =~ "Precomputed status"
+        assert codex_output =~ "configured"
+        assert codex_output =~ "codex_cache"
+        refute codex_output =~ raw_codex_token
+        refute codex_output =~ codex_path
+        assert codex_effects == []
+      after
+        File.rm_rf!(tmp_dir)
+      end
+    end
+
+    test "redacts fake secrets from context config and precomputed status" do
+      raw_env_key = "sk-env-auth-status-secret"
+      raw_config_key = "sk-config-auth-status-secret"
+      raw_status_key = "sk-status-auth-status-secret"
+      raw_bearer = "Bearer bearer-status-secret"
+      raw_authorization = "Authorization: Bearer authorization-status-secret"
+      raw_jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZGFtIn0.signatureSecret"
+      raw_command_output = "sk-command-output-secret"
+      raw_codex_path = "/Users/adam/private/.codex/auth.json"
+
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:auth_status, nil, %{
+          provider_config: %{
+            "id" => "openai_compatible",
+            "name" => raw_bearer,
+            "auth" => "api_key",
+            "env_key" => "MUSE_OPENAI_API_KEY",
+            "api_key" => raw_config_key
+          },
+          env: %{"MUSE_OPENAI_API_KEY" => raw_env_key},
+          auth_status: [
+            %{
+              status: :configured,
+              source: :env,
+              value: raw_status_key,
+              redacted: raw_status_key,
+              authorization: raw_authorization,
+              jwt: raw_jwt,
+              source_ref: raw_codex_path,
+              command_output: raw_command_output
+            }
+          ]
+        })
+
+      assert output =~ "Status: configured"
+      assert output =~ "Credential: sk-...REDACTED"
+      assert output =~ "Precomputed status"
+      assert output =~ "~/.codex/auth.json"
+
+      for secret <- [
+            raw_env_key,
+            raw_config_key,
+            raw_status_key,
+            raw_bearer,
+            raw_authorization,
+            raw_jwt,
+            raw_command_output,
+            raw_codex_path,
+            "/Users/adam"
+          ] do
+        refute output =~ secret
+      end
+
       assert effects == []
     end
   end
