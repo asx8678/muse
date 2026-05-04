@@ -191,7 +191,7 @@ Codex auth tokens     Tokens from ~/.codex/auth.json
 | Embedded credentials in URL | `https://REDACTED:REDACTED@host/path` |
 | Codex auth token | (token omitted entirely) |
 
-**Implementation note:** The `Muse.Prompt.Redactor` module applies these rules to all prompt preview output, provider debug snapshots, and error messages. Redaction is performed at the event boundary — data is redacted *before* it enters `Muse.Event` structs, so downstream consumers (CLI, TUI, LiveView, WebSocket channels) never see raw secrets.
+**Implementation note:** Prompt previews use `Muse.Prompt.Redactor`; event/log payloads and provider config debug strings use the shared redaction/sanitization helpers (`Muse.EventPayloadRedactor`, `Muse.MetadataSanitizer`, and `ProviderConfig.redacted_inspect/1`). PR11 request mappers only build offline JSON payload maps and must not inject auth headers or raw API keys. Redaction is performed before data enters `Muse.Event` structs, so downstream consumers (CLI, TUI, LiveView, WebSocket channels) never see raw secrets.
 
 ---
 

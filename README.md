@@ -31,6 +31,16 @@ Run the test suite:
 mix test
 ```
 
+### Provider configuration
+
+Muse defaults to the offline fake provider and needs no API key:
+
+```bash
+MUSE_PROVIDER=fake mix muse
+```
+
+PR11 supports provider config and offline request JSON mappers only. `MUSE_OPENAI_API_KEY` is not loaded yet, and no real provider/network calls are made. See [`docs/provider-roadmap.md`](docs/provider-roadmap.md) for the current env/config contract.
+
 ---
 
 ## Commands

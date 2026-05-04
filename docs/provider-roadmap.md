@@ -52,7 +52,7 @@ This principle ensures:
 
 ## 2. Fake Provider
 
-The fake provider (`Muse.LLM.Providers.Fake`) implements the `Muse.LLM.Provider` behavior and produces scripted, deterministic responses for testing and development.
+The fake provider (`Muse.LLM.FakeProvider`) implements the `Muse.LLM.Provider` behavior and produces scripted, deterministic responses for testing and development.
 
 ### 2.1 Scenarios
 
@@ -132,158 +132,104 @@ end
 
 ### 3.1 Initial (Fake)
 
-The default configuration requires no API key and no network:
+The default provider is the fake provider. It requires **no API key, no auth flow, and no network**:
 
 ```text
+# Optional; leaving all provider env vars unset has the same effect.
 MUSE_PROVIDER=fake
 MUSE_MODEL=fake-planning-model
 ```
 
-This is the zero-config experience. Running `muse` out of the box uses the fake provider with deterministic responses.
+This is the zero-config Muse-first experience. Running `muse` out of the box uses deterministic offline responses suitable for local development and CI.
 
-### 3.2 OpenAI-Compatible (Later)
+### 3.2 OpenAI-Compatible Config (Offline in PR11)
 
-When connecting to an OpenAI-compatible endpoint:
+PR11 can resolve OpenAI-compatible provider **configuration** and build request JSON payloads, but it does **not** call OpenAI or any other real provider. Real HTTP providers/transports are later roadmap work; auth/API-key loading remains in the auth layer.
+
+Example config values for an OpenAI-compatible provider:
 
 ```text
 MUSE_PROVIDER=openai_compatible
 MUSE_OPENAI_BASE_URL=https://api.openai.com/v1
-MUSE_OPENAI_API_KEY=sk-...
 MUSE_MODEL=gpt-4.1
 MUSE_LLM_TIMEOUT_MS=60000
 MUSE_LLM_MAX_RETRIES=2
 ```
 
+`ProviderConfig.from_env/0` reads the variables below from `System.get_env/1` and returns a config struct. `Muse.Config.llm_provider_config/1` is pure/testable and accepts an explicit env map plus `config :muse, :llm` values before validating the resolved config.
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `MUSE_PROVIDER` | Yes | `fake` | Provider identifier: `fake`, `openai_compatible` |
-| `MUSE_OPENAI_BASE_URL` | If provider is `openai_compatible` | `https://api.openai.com/v1` | Base URL for the OpenAI-compatible API |
-| `MUSE_OPENAI_API_KEY` | If auth mode is `:api_key` | — | API key for authentication |
-| `MUSE_MODEL` | If provider is not `fake` | — | Model identifier (e.g., `gpt-4.1`, `gpt-4.1-mini`) |
-| `MUSE_LLM_TIMEOUT_MS` | No | `60000` | Per-request timeout in milliseconds |
-| `MUSE_LLM_MAX_RETRIES` | No | `2` | Maximum retry attempts on transient failures |
+| `MUSE_PROVIDER` | No | `fake` | Provider identifier: `fake`, `openai_compatible` |
+| `MUSE_MODEL` | Non-fake only | `fake-planning-model` for fake; none for non-fake | Model identifier (e.g., `gpt-4.1`, `gpt-4.1-mini`) |
+| `MUSE_OPENAI_BASE_URL` | No for `openai_compatible` defaults | `https://api.openai.com/v1` for `openai_compatible` | Base URL stored on the config; PR11 does not connect to it |
+| `MUSE_LLM_TIMEOUT_MS` | No | `120000` | Per-request timeout in milliseconds |
+| `MUSE_LLM_MAX_RETRIES` | No | `0` for fake; `2` for openai-compatible | Maximum retry attempts stored for future transports |
+| `MUSE_WIRE_API` | No (`Muse.Config` only) | `responses` for openai-compatible | `responses` or `chat_completions`; unknown values resolve to `nil` |
+| `MUSE_TRANSPORT` | No (`Muse.Config` only) | `sse` for openai-compatible; `none` for fake | `none`, `sse`, or `websocket`; unknown values resolve to `nil` |
+| `MUSE_OPENAI_API_KEY` | Not read in PR11 | — | Auth/API-key loading is deferred to the auth layer (PR13); PR11 stores `env_key: "MUSE_OPENAI_API_KEY"` only |
 
 ### 3.3 App Config Example
 
-For application-level configuration (e.g., `config/runtime.exs`):
+For application-level configuration (e.g., `config/runtime.exs`), keep secrets out of the provider config:
 
 ```elixir
 config :muse, :llm,
   provider: :openai_compatible,
   base_url: System.get_env("MUSE_OPENAI_BASE_URL") || "https://api.openai.com/v1",
-  api_key: System.get_env("MUSE_OPENAI_API_KEY"),
+  wire_api: :responses,
+  transport: :sse,
   model: System.get_env("MUSE_MODEL"),
-  timeout_ms: 60_000
+  timeout_ms: 120_000,
+  max_retries: 2
 ```
 
-**Config source priority (highest first):**
+Do **not** put `api_key` in this config for PR11. The config may record which env var should be checked later (`env_key`), but it must not read, validate, log, or store the secret value.
 
-1. Environment variables
-2. Workspace `.muse/config.toml` (when implemented)
-3. User config `~/.muse/config.toml` (optional, later)
-4. Application env defaults
+**Current config source priority (highest first):**
 
-Do not add TOML parsing until needed. A simple config map plus env support is acceptable first.
+1. Explicit env map passed to `Muse.Config.llm_provider_config/1`
+2. Application env (`config :muse, :llm, [...]`)
+3. Built-in safe defaults (`ProviderConfig.fake/0`)
+
+Workspace/user TOML config remains future work. Do not add TOML parsing until it is actually needed. YAGNI is not a suggestion, it's pest control.
 
 ---
 
-## 4. Configuration Validation at Startup
+## 4. Configuration Validation
 
-`Muse.Application.start/2` must validate LLM configuration before starting children. Invalid config fails fast with clear error messages; the fake provider serves as a safe fallback.
+PR11 validation is local and side-effect-free. `Muse.LLM.ProviderConfig.validate/1` returns `:ok` or `{:error, reason}`; `Muse.Config.llm_provider_config/1` returns `{:ok, config}` or `{:error, reason}` after resolving values from an explicit env map/app config.
 
-```elixir
-defmodule Muse.Config do
-  @moduledoc """
-  Validates LLM provider configuration at application startup.
-  Falls back to the fake provider when real provider config is invalid.
-  """
+Important boundaries:
 
-  require Logger
-
-  @spec validate!() :: :ok | :fallback_to_fake
-  def validate! do
-    config = load_config()
-
-    case validate_provider_config(config) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("Invalid LLM provider config: #{reason}. Falling back to fake provider.")
-        :fallback_to_fake
-    end
-  end
-
-  defp load_config do
-    Application.get_env(:muse, :llm, [])
-  end
-
-  defp validate_provider_config(config) do
-    provider = Keyword.get(config, :provider, :fake)
-
-    if provider == :fake do
-      :ok
-    else
-      with :ok <- validate_base_url(config),
-           :ok <- validate_api_key(config),
-           :ok <- validate_timeout(config),
-           :ok <- validate_retries(config) do
-        :ok
-      end
-    end
-  end
-
-  defp validate_base_url(config) do
-    case Keyword.get(config, :base_url) do
-      nil -> {:error, "base_url is required for non-fake providers"}
-      url ->
-        case URI.parse(url) do
-          %URI{scheme: scheme} when scheme in ["http", "https"] -> :ok
-          _ -> {:error, "base_url must be a valid HTTP(S) URL, got: #{url}"}
-        end
-    end
-  end
-
-  defp validate_api_key(config) do
-    case Keyword.get(config, :api_key) do
-      nil -> {:error, "api_key is not set. Set MUSE_OPENAI_API_KEY or configure auth."}
-      _ -> :ok
-    end
-  end
-
-  defp validate_timeout(config) do
-    case Keyword.get(config, :timeout_ms, 60_000) do
-      n when is_integer(n) and n > 0 -> :ok
-      other -> {:error, "timeout_ms must be a positive integer, got: #{inspect(other)}"}
-    end
-  end
-
-  defp validate_retries(config) do
-    case Keyword.get(config, :max_retries, 2) do
-      n when is_integer(n) and n >= 0 -> :ok
-      other -> {:error, "max_retries must be a non-negative integer, got: #{inspect(other)}"}
-    end
-  end
-end
-```
+- The fake provider always validates and remains the safe default.
+- Validation never starts clients, opens sockets, or calls real provider APIs.
+- Validation does **not** read or require `MUSE_OPENAI_API_KEY`; auth loading remains PR13.
+- Startup wiring may call this validation, but PR11 itself is config/request-mapper plumbing, not a real provider bootstrap.
+- `ProviderConfig.redacted_inspect/1` and the `Inspect` implementation must be used for safe logging/debugging.
 
 **Validation checks summary:**
 
 | Check | Condition | Behavior |
 |---|---|---|
-| Valid URL | `base_url` parses with `http` or `https` scheme | Error if invalid |
-| API key set | `api_key` is non-nil for non-fake providers | Warning (user might set it later) |
+| Known provider | `id` maps to `:fake` or `:openai_compatible` | Error if unknown; never creates atoms from user input |
+| Known wire API | `wire_api` is `:responses`, `:chat_completions`, or `nil` | Error if another atom reaches validation |
+| Known transport | `transport` is `:none`, `:sse`, `:websocket`, or `nil` | Error if another atom reaches validation |
+| Model present | Required for non-fake providers | Error if missing/empty |
+| Valid URL | Non-fake network configs need an HTTP(S) `base_url` unless `transport: :none` | Error if invalid |
 | Positive timeout | `timeout_ms` is integer > 0 | Error if non-positive |
 | Non-negative retries | `max_retries` is integer >= 0 | Error if negative |
-| Provider is `fake` | All checks bypassed | Always valid |
+| Provider is `fake` | All network/auth checks bypassed | Always valid and offline |
 
 ---
 
 ## 5. OpenAI-Compatible Non-Streaming Provider
 
-Implement non-streaming Chat Completions-compatible requests **before** SSE/WebSocket to reduce integration risk. A non-streaming provider validates the request/response shape, auth, and error handling without the complexity of incremental parsing.
+**Future provider phase, not PR11.** PR11 stops at provider config plus offline request mappers. It does not add an HTTP client, does not load credentials, and does not call real providers.
 
-**Add dependency only in the provider phase:**
+When real provider work begins, implement non-streaming Chat Completions-compatible requests **before** SSE/WebSocket to reduce integration risk. A non-streaming provider validates the request/response shape, auth, and error handling without the complexity of incremental parsing.
+
+**Add dependency only in the real provider phase:**
 
 ```elixir
 # mix.exs — only added when provider PRs begin
@@ -461,9 +407,16 @@ Arguments arrive as JSON strings from the API. Decode with `Jason.decode!/1`. If
 
 ## 6. OpenAI Responses Request Mapper
 
-The OpenAI Responses API uses a different request shape than Chat Completions. This mapper converts `Muse.LLM.Request` into the Responses API JSON format.
+The OpenAI Responses API uses a different request shape than Chat Completions. In PR11, `Muse.LLM.OpenAI.ResponsesMapper` is a pure/offline mapper:
 
-**Request shape for SSE:**
+- `endpoint_path/0` returns `"/responses"`.
+- `to_payload/1` converts `%Muse.LLM.Request{}` into a JSON-compatible map with string keys, ready for `Jason.encode!/1`.
+- It maps system messages to `"instructions"`, non-system text history to typed `"input"` messages, and tool-result messages to `"function_call_output"` items.
+- It maps tools into Responses function-tool shape and strips debug-only atom keys.
+- It maps `previous_response_id`, `stream`, `store`, `temperature`, `max_tokens` as `"max_output_tokens"`, and `response_format` as `"text" => %{"format" => ...}`.
+- It does **not** load auth, create headers, perform retries, parse SSE, or call a real provider.
+
+**Offline payload shape (streaming flag shown):**
 
 ```json
 {
@@ -486,11 +439,13 @@ The OpenAI Responses API uses a different request shape than Chat Completions. T
 }
 ```
 
-**Path:**
+**Endpoint path metadata:**
 
 ```text
-POST {base_url}/responses
+/responses
 ```
+
+A future transport may `POST` to `{base_url}/responses`; the PR11 mapper only returns payload/path data.
 
 **Key differences from Chat Completions:**
 
@@ -502,15 +457,21 @@ POST {base_url}/responses
 | Persistence | `store: false` | N/A |
 | Streaming flag | `stream: true` | `stream: true` |
 
-The Responses API can maintain conversation state server-side using `previous_response_id`, which reduces the size of subsequent requests.
+The Responses API can maintain conversation state server-side using `previous_response_id`, which reduces the size of subsequent requests once real provider support exists. PR11 only preserves/maps that field; it does not create server-side state.
 
 ---
 
 ## 7. Chat Completions Request Mapper
 
-The Chat Completions API is the OpenAI-compatible fallback used by routers and local providers (OpenRouter, Ollama, etc.).
+The Chat Completions API is the OpenAI-compatible fallback used by routers and local providers (OpenRouter, Ollama, etc.). In PR11, `Muse.LLM.OpenAI.ChatCompletionsMapper` is a pure/offline mapper:
 
-**Request shape for SSE:**
+- `endpoint_path/0` returns `"/chat/completions"`.
+- `to_payload/1` converts `%Muse.LLM.Request{}` into a JSON-compatible map with string keys, ready for `Jason.encode!/1`.
+- It maps messages, tools, `tool_choice`, `stream`, `temperature`, `max_tokens`, and `response_format`.
+- It strips debug-only atom keys such as `:name` from tool specs.
+- It does **not** load auth, create headers, perform retries, or call a real provider.
+
+**Offline payload shape (streaming flag shown):**
 
 ```json
 {
@@ -548,17 +509,21 @@ The Chat Completions API is the OpenAI-compatible fallback used by routers and l
 }
 ```
 
-**Path:**
+**Endpoint path metadata:**
 
 ```text
-POST {base_url}/chat/completions
+/chat/completions
 ```
 
-The Chat Completions mapper must include the full message history (system prompt + all prior messages) because the API is stateless — there is no `previous_response_id` equivalent.
+A future transport may `POST` to `{base_url}/chat/completions`; the PR11 mapper only returns payload/path data.
+
+The Chat Completions mapper includes the full message history (system prompt + all prior messages) because the API is stateless — there is no `previous_response_id` equivalent. Any network dispatch/auth wrapper belongs to later provider/auth PRs, not to this mapper.
 
 ---
 
 ## 8. HTTP SSE Transport
+
+**Future transport phase, not PR11.** The details below are the roadmap for real streaming provider support after offline config/mappers are in place.
 
 ### Responsibilities
 
@@ -789,9 +754,11 @@ Reconnection:
 
 ## 10. Auth Layer
 
+**Future auth phase (PR13+), not PR11.** PR11 provider config may record `auth` and `env_key`, but it does not read API keys, execute bearer commands, inspect Codex caches, or attach Authorization headers.
+
 ### 10.1 Auth Modes
 
-The auth layer supports multiple authentication strategies, selected by the provider config:
+The auth layer will support multiple authentication strategies, selected by the provider config:
 
 | Mode | Description | Use Case |
 |---|---|---|
