@@ -369,8 +369,10 @@ defmodule Muse.ConductorPlanningTest do
       assert prompt =~ "tasks"
     end
 
-    test "Plan.render/1 produces user-friendly output" do
+    test "Plan.render/1 produces user-friendly output for awaiting_approval plan" do
       {:ok, plan} = PlanParser.parse(valid_plan_json())
+      # Conductor transitions to awaiting_approval before rendering
+      {:ok, plan} = Plan.transition(plan, :awaiting_approval)
       rendered = Plan.render(plan)
 
       assert rendered =~ "Objective:"

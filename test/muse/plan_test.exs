@@ -431,6 +431,92 @@ defmodule Muse.PlanTest do
       assert rendered =~ "Muse Plan (approved)"
     end
 
+    test "awaiting_approval footer shows approve/reject guidance" do
+      plan = Plan.new(objective: "Test", status: :awaiting_approval)
+      rendered = Plan.render(plan)
+
+      assert rendered =~ "/approve plan"
+      assert rendered =~ "/reject plan"
+    end
+
+    test "approved footer shows ready for implementation" do
+      plan = Plan.new(objective: "Test", status: :approved)
+      rendered = Plan.render(plan)
+
+      refute rendered =~ "/approve plan"
+      refute rendered =~ "/reject plan"
+      assert rendered =~ "approved and is ready for implementation"
+    end
+
+    test "rejected footer shows rejection message" do
+      plan = Plan.new(objective: "Test", status: :rejected)
+      rendered = Plan.render(plan)
+
+      refute rendered =~ "/approve plan"
+      refute rendered =~ "/reject plan"
+      assert rendered =~ "was rejected"
+      assert rendered =~ "Ask Planning Muse for a revised plan"
+    end
+
+    test "completed footer shows completed message" do
+      plan = Plan.new(objective: "Test", status: :completed)
+      rendered = Plan.render(plan)
+
+      refute rendered =~ "/approve plan"
+      refute rendered =~ "/reject plan"
+      assert rendered =~ "has been completed"
+    end
+
+    test "cancelled footer shows cancelled message" do
+      plan = Plan.new(objective: "Test", status: :cancelled)
+      rendered = Plan.render(plan)
+
+      refute rendered =~ "/approve plan"
+      assert rendered =~ "has been cancelled"
+    end
+
+    test "superseded footer shows superseded message" do
+      plan = Plan.new(objective: "Test", status: :superseded)
+      rendered = Plan.render(plan)
+
+      refute rendered =~ "/approve plan"
+      assert rendered =~ "has been superseded"
+    end
+
+    test "draft footer shows draft guidance without approval instructions" do
+      plan = Plan.new(objective: "Test", status: :draft)
+      rendered = Plan.render(plan)
+
+      refute rendered =~ "/approve plan"
+      refute rendered =~ "/reject plan"
+      assert rendered =~ "draft"
+    end
+
+    test "needs_revision footer shows revision guidance without approval instructions" do
+      plan = Plan.new(objective: "Test", status: :needs_revision)
+      rendered = Plan.render(plan)
+
+      refute rendered =~ "/approve plan"
+      refute rendered =~ "/reject plan"
+      assert rendered =~ "needs revision"
+    end
+
+    test "in_progress footer shows in-progress message" do
+      plan = Plan.new(objective: "Test", status: :in_progress)
+      rendered = Plan.render(plan)
+
+      refute rendered =~ "/approve plan"
+      assert rendered =~ "in progress"
+    end
+
+    test "executing footer shows executing message" do
+      plan = Plan.new(objective: "Test", status: :executing)
+      rendered = Plan.render(plan)
+
+      refute rendered =~ "/approve plan"
+      assert rendered =~ "being executed"
+    end
+
     test "omits tasks section when tasks list is empty" do
       plan = Plan.new(objective: "Test")
       rendered = Plan.render(plan)

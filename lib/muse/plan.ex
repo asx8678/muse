@@ -322,7 +322,7 @@ defmodule Muse.Plan do
       render_objective(plan),
       render_tasks(plan),
       render_risks(plan),
-      render_footer()
+      render_footer(plan)
     ]
 
     parts
@@ -360,8 +360,44 @@ defmodule Muse.Plan do
     "Risks:\n" <> Enum.join(risk_lines, "\n")
   end
 
-  defp render_footer do
+  defp render_footer(%__MODULE__{status: :awaiting_approval}) do
     "Approve this plan with: /approve plan\nReject this plan with: /reject plan"
+  end
+
+  defp render_footer(%__MODULE__{status: :approved}) do
+    "This Muse Plan has been approved and is ready for implementation."
+  end
+
+  defp render_footer(%__MODULE__{status: :rejected}) do
+    "This Muse Plan was rejected. Ask Planning Muse for a revised plan."
+  end
+
+  defp render_footer(%__MODULE__{status: :completed}) do
+    "This Muse Plan has been completed."
+  end
+
+  defp render_footer(%__MODULE__{status: :cancelled}) do
+    "This Muse Plan has been cancelled."
+  end
+
+  defp render_footer(%__MODULE__{status: :superseded}) do
+    "This Muse Plan has been superseded."
+  end
+
+  defp render_footer(%__MODULE__{status: :in_progress}) do
+    "This Muse Plan is in progress."
+  end
+
+  defp render_footer(%__MODULE__{status: :executing}) do
+    "This Muse Plan is being executed."
+  end
+
+  defp render_footer(%__MODULE__{status: :draft}) do
+    "This Muse Plan is a draft and is not yet ready for approval."
+  end
+
+  defp render_footer(%__MODULE__{status: :needs_revision}) do
+    "This Muse Plan needs revision before it can be submitted for approval."
   end
 
   # -- Private ------------------------------------------------------------------
