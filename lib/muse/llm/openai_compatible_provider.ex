@@ -1,6 +1,6 @@
 defmodule Muse.LLM.OpenAICompatibleProvider do
   @moduledoc """
-  OpenAI-compatible provider adapter with SSE streaming support.
+  OpenAI-compatible provider adapter with SSE and Responses WebSocket streaming.
 
   This provider performs a single Chat Completions-compatible HTTP POST and
   decodes the complete response into Muse's normalized response struct.
@@ -10,6 +10,9 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
 
   ## Transport selection
 
+    * `wire_api == :responses` and `transport == :websocket` (on request
+      struct or `request.options[:transport]`): Responses WebSocket streaming
+      using the `response.create` / event frame protocol.
     * `transport == :sse` (on request struct or `request.options[:transport]`):
       streaming Chat Completions with `"stream" => true`, real SSE parsing,
       incremental event emission.
@@ -43,20 +46,47 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   Tests that want to exercise the default provider path without a network call
   may pass `request.options[:post_stream_fn]`, which is forwarded to ReqStream.
 
+  ## Responses WebSocket function injection
+
+  For Responses WebSocket streaming, callers **must** inject a `ws_stream_fn`
+  via `request.options[:ws_stream_fn]` (or `"ws_stream_fn"`). The shape is:
+
+      ws_stream_fn = fn url, ws_options, on_frame ->
+        # url:          WebSocket URL (wss://...)
+        # ws_options:   map with :headers, :create_frame, optional timeouts
+        # on_frame:     one-arity callback receiving JSON binaries or decoded maps
+        on_frame.(frame)
+        {:ok, %{}}
+      end
+
+  `ws_options` contains `:headers` (Authorization, etc.), `:create_frame`
+  (the `response.create` frame to send), and optional `:timeout_ms`,
+  `:receive_timeout`, `:max_retries`. The injected function must call
+  `on_frame` zero or more times and return `{:ok, result}` or
+  `{:error, reason}`.
+
   ## Error handling
 
-  On malformed JSON, midstream failure, transport error, or non-2xx HTTP
-  status, the provider emits exactly one `:provider_error` event and returns
-  an error. No `:assistant_completed` or `:response_completed` events are
-  emitted after a failure. All error data is redacted — raw tokens, request
-  bodies, and full response payloads never leak through.
+  On malformed JSON, midstream failure, transport error, `response.failed`,
+  or missing `response.completed`, the provider emits exactly one
+  `:provider_error` event and returns an error. No `:assistant_completed` or
+  `:response_completed` events are emitted after a failure. All error data is
+  redacted — raw tokens, request bodies, and full response payloads never
+  leak through.
   """
 
   @behaviour Muse.LLM.Provider
 
   alias Muse.Auth.Resolver
   alias Muse.{EventPayloadRedactor, MetadataSanitizer}
-  alias Muse.LLM.OpenAI.{ChatCompletionsStreamDecoder, RequestBuilder}
+
+  alias Muse.LLM.OpenAI.{
+    ChatCompletionsStreamDecoder,
+    RequestBuilder,
+    ResponsesMapper,
+    ResponsesWSDecoder
+  }
+
   alias Muse.LLM.Transport.SSE.Parser, as: SSEParser
   alias Muse.LLM.Transport.SSE.ReqStream
   alias Muse.LLM.{Event, Request, Response, ToolCall}
@@ -68,6 +98,10 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   @type sse_post_fn ::
           (String.t(), keyword(), (String.t() -> :ok) ->
              {:ok, %{status: integer()}} | {:error, term()})
+
+  @type ws_stream_fn ::
+          (String.t(), map(), (binary() | map() -> :ok) ->
+             {:ok, term()} | {:error, term()})
 
   @doc """
   Complete a request through an OpenAI-compatible Chat Completions endpoint.
@@ -109,10 +143,10 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   @impl true
   @spec stream(Request.t(), (Event.t() -> :ok)) :: {:ok, Response.t()} | {:error, term()}
   def stream(%Request{} = request, emit_fn) when is_function(emit_fn, 1) do
-    if sse_transport?(request) do
-      stream_sse(request, emit_fn)
-    else
-      stream_non_streaming(request, emit_fn)
+    cond do
+      responses_ws_transport?(request) -> stream_responses_ws(request, emit_fn)
+      sse_transport?(request) -> stream_sse(request, emit_fn)
+      true -> stream_non_streaming(request, emit_fn)
     end
   end
 
@@ -124,6 +158,19 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   defp sse_transport?(%Request{options: %{transport: :sse}}), do: true
   defp sse_transport?(%Request{options: %{"transport" => :sse}}), do: true
   defp sse_transport?(_request), do: false
+
+  defp responses_ws_transport?(%Request{wire_api: :responses, transport: :websocket}), do: true
+
+  defp responses_ws_transport?(%Request{wire_api: :responses, options: %{transport: :websocket}}),
+    do: true
+
+  defp responses_ws_transport?(%Request{
+         wire_api: :responses,
+         options: %{"transport" => :websocket}
+       }),
+       do: true
+
+  defp responses_ws_transport?(_request), do: false
 
   defp stream_sse(request, emit_fn) do
     with {:ok, spec} <- RequestBuilder.build_chat_completions_stream(request),
@@ -300,6 +347,249 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   end
 
   defp req_stream_adapter_options(_options), do: []
+
+  # ---------------------------------------------------------------------------
+  # Responses WebSocket streaming path
+  # ---------------------------------------------------------------------------
+
+  defp stream_responses_ws(request, emit_fn) do
+    with {:ok, spec} <- build_responses_ws_spec(request),
+         {:ok, spec} <- attach_auth(spec, request, []),
+         {:ok, ws_stream_fn} <- resolve_ws_stream_fn(request.options) do
+      {:ok, agent} = Agent.start_link(fn -> ResponsesWSDecoder.new() end)
+
+      on_frame = fn frame ->
+        pending_events =
+          Agent.get_and_update(agent, fn state ->
+            if state.failed? do
+              {[], state}
+            else
+              case decode_ws_frame(frame) do
+                {:ok, frame_map} when is_map(frame_map) ->
+                  {new_state, events} = ResponsesWSDecoder.feed(state, frame_map)
+                  {events, new_state}
+
+                {:error, _reason} ->
+                  error_event =
+                    Event.provider_error(redact_error({:ws_decode_error, "malformed JSON"}))
+
+                  {[error_event], %{state | failed?: true}}
+              end
+            end
+          end)
+
+        Enum.each(pending_events, &emit_fn.(&1))
+        :ok
+      end
+
+      try do
+        emit_fn.(Event.response_started())
+
+        ws_options = build_ws_options(spec)
+
+        case safe_ws_stream(ws_stream_fn, spec.url, ws_options, on_frame) do
+          {:ok, _result} ->
+            state = Agent.get(agent, & &1)
+
+            cond do
+              state.failed? ->
+                {:error, {:provider_ws_error, "stream failed"}}
+
+              state.response_id == nil ->
+                redacted =
+                  redact_error({:ws_missing_completion, "response.completed not received"})
+
+                emit_fn.(Event.provider_error(redacted))
+                {:error, redacted}
+
+              true ->
+                {response, final_events} = ResponsesWSDecoder.finalize(state)
+                Enum.each(final_events, &emit_fn.(&1))
+                {:ok, response}
+            end
+
+          {:error, reason} ->
+            redacted = redact_error({:ws_transport_error, reason})
+            emit_fn.(Event.provider_error(redacted))
+            {:error, redacted}
+        end
+      after
+        Agent.stop(agent, :normal, 5000)
+      end
+    else
+      {:error, reason} ->
+        redacted = redact_error(reason)
+        emit_fn.(Event.provider_error(redacted))
+        {:error, redacted}
+    end
+  end
+
+  defp build_responses_ws_spec(request) do
+    case resolve_ws_base_url(request.options) do
+      {:ok, ws_url} ->
+        payload = ResponsesMapper.to_payload(request)
+        create_frame = %{"type" => "response.create", "response" => payload}
+        headers = resolve_ws_headers(request.options)
+        req_options = resolve_ws_req_options(request.options)
+
+        {:ok,
+         %{
+           url: ws_url,
+           headers: headers,
+           create_frame: create_frame,
+           payload: payload,
+           req_options: req_options
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp build_ws_options(spec) do
+    %{
+      headers: spec.headers,
+      create_frame: spec.create_frame
+    }
+    |> maybe_put_ws_opt(:timeout_ms, spec.req_options[:timeout_ms])
+    |> maybe_put_ws_opt(:receive_timeout, spec.req_options[:receive_timeout])
+    |> maybe_put_ws_opt(:max_retries, spec.req_options[:max_retries])
+  end
+
+  defp maybe_put_ws_opt(map, _key, nil), do: map
+  defp maybe_put_ws_opt(map, key, value), do: Map.put(map, key, value)
+
+  defp resolve_ws_base_url(options) when is_map(options) do
+    base_url = option_value(options, :base_url) || option_value(options, "base_url")
+
+    case base_url do
+      nil ->
+        {:error, {:missing_base_url, "base_url is required for Responses WebSocket requests"}}
+
+      value when not is_binary(value) ->
+        {:error, {:invalid_base_url, "base_url must be a string"}}
+
+      value when is_binary(value) ->
+        if String.trim(value) == "" do
+          {:error, {:missing_base_url, "base_url is required for Responses WebSocket requests"}}
+        else
+          {:ok, ws_url_from_base_url(value)}
+        end
+    end
+  end
+
+  defp resolve_ws_base_url(_options),
+    do: {:error, {:missing_base_url, "base_url is required for Responses WebSocket requests"}}
+
+  defp ws_url_from_base_url(base_url) do
+    trimmed = String.trim_trailing(base_url, "/")
+    http_url = trimmed <> ResponsesMapper.endpoint_path()
+    uri = URI.parse(http_url)
+
+    ws_scheme =
+      case uri.scheme do
+        "https" -> "wss"
+        "http" -> "ws"
+        other -> other
+      end
+
+    URI.to_string(%{uri | scheme: ws_scheme})
+  end
+
+  defp resolve_ws_headers(options) when is_map(options) do
+    case option_value(options, :headers) || option_value(options, "headers") do
+      nil -> []
+      headers when is_map(headers) -> normalize_ws_headers(headers)
+      headers when is_list(headers) -> normalize_ws_headers(headers)
+      _ -> []
+    end
+  end
+
+  defp resolve_ws_headers(_options), do: []
+
+  defp normalize_ws_headers(headers) when is_map(headers) do
+    headers
+    |> Enum.flat_map(fn
+      {key, value} when is_binary(key) and is_binary(value) -> [{key, value}]
+      {key, value} when is_atom(key) and is_binary(value) -> [{Atom.to_string(key), value}]
+      _ -> []
+    end)
+    |> Enum.sort_by(fn {k, _v} -> k end)
+  end
+
+  defp normalize_ws_headers(headers) when is_list(headers) do
+    headers
+    |> Enum.flat_map(fn
+      {key, value} when is_binary(key) and is_binary(value) -> [{key, value}]
+      {key, value} when is_atom(key) and is_binary(value) -> [{Atom.to_string(key), value}]
+      _ -> []
+    end)
+    |> Enum.sort_by(fn {k, _v} -> k end)
+  end
+
+  defp resolve_ws_req_options(options) when is_map(options) do
+    opts = []
+
+    opts =
+      case option_value(options, :timeout_ms) || option_value(options, "timeout_ms") do
+        n when is_integer(n) and n > 0 -> Keyword.put(opts, :timeout_ms, n)
+        _ -> opts
+      end
+
+    opts =
+      case option_value(options, :receive_timeout) || option_value(options, "receive_timeout") do
+        n when is_integer(n) and n > 0 -> Keyword.put(opts, :receive_timeout, n)
+        _ -> opts
+      end
+
+    opts =
+      case option_value(options, :max_retries) || option_value(options, "max_retries") do
+        n when is_integer(n) and n >= 0 -> Keyword.put(opts, :max_retries, n)
+        _ -> opts
+      end
+
+    opts
+  end
+
+  defp resolve_ws_req_options(_options), do: []
+
+  defp resolve_ws_stream_fn(opts) when is_map(opts) do
+    case Map.get(opts, :ws_stream_fn) || Map.get(opts, "ws_stream_fn") do
+      nil ->
+        {:error,
+         {:ws_stream_fn_required, "WebSocket streaming requires a ws_stream_fn to be provided"}}
+
+      ws_stream_fn when is_function(ws_stream_fn, 3) ->
+        {:ok, ws_stream_fn}
+
+      _other ->
+        {:error, {:invalid_ws_stream_fn, "ws_stream_fn must be a three-arity function"}}
+    end
+  end
+
+  defp resolve_ws_stream_fn(_opts),
+    do:
+      {:error,
+       {:ws_stream_fn_required, "WebSocket streaming requires a ws_stream_fn to be provided"}}
+
+  defp safe_ws_stream(ws_stream_fn, url, ws_options, on_frame) do
+    ws_stream_fn.(url, ws_options, on_frame)
+  rescue
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp decode_ws_frame(frame) when is_binary(frame) do
+    case Jason.decode(frame) do
+      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+      {:ok, _other} -> {:error, :not_a_map}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_ws_frame(frame) when is_map(frame), do: {:ok, frame}
+  defp decode_ws_frame(_), do: {:error, :invalid_frame}
 
   # ---------------------------------------------------------------------------
   # Non-streaming replay path
