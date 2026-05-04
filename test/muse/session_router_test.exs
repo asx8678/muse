@@ -105,26 +105,30 @@ defmodule Muse.SessionRouterTest do
   describe "runtime child smoke" do
     test "Muse.submit/2 does not raise when registry and supervisor are running" do
       assert {:ok, text} = Muse.submit(:cli, "smoke test")
-      assert text == "Placeholder response: received \"smoke test\""
+      assert text =~ "Placeholder response"
 
       events = State.events()
-      # 5 events: user_message, turn_started, assistant_delta, assistant_message, turn_completed
-      assert length(events) == 5
+      # 12 events after Conductor integration:
+      # user_message, turn_started, muse_selected, session_status_changed,
+      # prompt_prepared, provider_request_started, provider_response_started,
+      # assistant_delta, provider_response_completed, assistant_message,
+      # session_status_changed, turn_completed
+      assert length(events) == 12
     end
   end
 
   describe "submit/2" do
     test "returns {:ok, text} with placeholder response" do
       assert {:ok, text} = Muse.SessionRouter.submit("test-session", :cli, "hello")
-      assert text == "Placeholder response: received \"hello\""
+      assert text =~ "Placeholder response"
     end
 
     test "appends events to State" do
       Muse.SessionRouter.submit("event-session", :cli, "test event")
       events = State.events()
 
-      # 5 events: user_message, turn_started, assistant_delta, assistant_message, turn_completed
-      assert length(events) == 5
+      # 12 events after Conductor integration
+      assert length(events) == 12
 
       user_event = Enum.find(events, &(&1.type == :user_message))
       assistant_event = Enum.find(events, &(&1.type == :assistant_message))
@@ -149,8 +153,8 @@ defmodule Muse.SessionRouterTest do
       {:ok, text1} = Muse.SessionRouter.submit("multi-submit", :cli, "first")
       {:ok, text2} = Muse.SessionRouter.submit("multi-submit", :cli, "second")
 
-      assert text1 == "Placeholder response: received \"first\""
-      assert text2 == "Placeholder response: received \"second\""
+      assert text1 =~ "Placeholder response"
+      assert text2 =~ "Placeholder response"
 
       # Only one session process
       assert length(

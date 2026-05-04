@@ -59,6 +59,11 @@ defmodule MuseTest do
     {:ok, _} = Muse.SelfHealingQueue.start_link([])
   end
 
+  # Number of events per normal submit after Conductor integration
+  @normal_submit_events 12
+  # Number of events per submit with self-healing
+  @self_heal_submit_events 13
+
   # -- Setup --------------------------------------------------------------------
 
   setup do
@@ -87,23 +92,30 @@ defmodule MuseTest do
   describe "submit/2" do
     test "returns {:ok, assistant_text} with placeholder response" do
       assert {:ok, text} = Muse.submit(:cli, "hello")
-      assert text == "Placeholder response: received \"hello\""
+      assert text =~ "Placeholder response"
     end
 
     test "appends streaming event sequence in order" do
       Muse.submit(:cli, "hello")
       events = State.events()
 
-      # 5 events: user_message, turn_started, assistant_delta, assistant_message, turn_completed
-      assert length(events) == 5
+      # 12 events after Conductor integration
+      assert length(events) == @normal_submit_events
 
       types = Enum.map(events, & &1.type)
 
       assert types == [
                :user_message,
                :turn_started,
+               :muse_selected,
+               :session_status_changed,
+               :prompt_prepared,
+               :provider_request_started,
+               :provider_response_started,
                :assistant_delta,
+               :provider_response_completed,
                :assistant_message,
+               :session_status_changed,
                :turn_completed
              ]
 
@@ -132,11 +144,12 @@ defmodule MuseTest do
       diagnostic = Muse.Diagnostic.new(:error, "heal me")
       Muse.SelfHealingQueue.add_diagnostic(diagnostic)
 
-      {:ok, text} = Muse.submit(:cli, "fix it")
+      {:ok, _text} = Muse.submit(:cli, "fix it")
       events = State.events()
 
-      # user, self_healing, turn_started, delta, assistant, turn_completed — 6 events
-      assert length(events) == 6
+      # 13 events: user + queued_issues + turn_started +
+      # 9 Conductor events + turn_completed
+      assert length(events) == @self_heal_submit_events
 
       types = Enum.map(events, & &1.type)
 
@@ -144,8 +157,15 @@ defmodule MuseTest do
                :user_message,
                :queued_issues_attached,
                :turn_started,
+               :muse_selected,
+               :session_status_changed,
+               :prompt_prepared,
+               :provider_request_started,
+               :provider_response_started,
                :assistant_delta,
+               :provider_response_completed,
                :assistant_message,
+               :session_status_changed,
                :turn_completed
              ]
 
@@ -155,8 +175,7 @@ defmodule MuseTest do
       assert healing_event.source == :self_healing
       assert healing_event.data.issues != []
 
-      assert text =~ "self-healing issue"
-      assert assistant_event.data.text =~ "self-healing issue"
+      assert assistant_event.data.text =~ "Placeholder response"
     end
 
     test "marks queued issues as in_progress when attached to submit turn" do
@@ -175,20 +194,23 @@ defmodule MuseTest do
       diagnostic = Muse.Diagnostic.new(:error, "once only")
       Muse.SelfHealingQueue.add_diagnostic(diagnostic)
 
-      {:ok, text1} = Muse.submit(:cli, "first")
-      assert text1 =~ "self-healing issue"
+      {:ok, _text1} = Muse.submit(:cli, "first")
 
-      {:ok, text2} = Muse.submit(:cli, "second")
-      refute text2 =~ "self-healing issue"
+      # Second submit: no queued_issues_attached event
+      {:ok, _text2} = Muse.submit(:cli, "second")
+
+      all_events = State.events()
+      healing_events = Enum.filter(all_events, &(&1.type == :queued_issues_attached))
+      # Only one self-healing attachment event from first submit
+      assert length(healing_events) == 1
     end
 
     test "without queued issues, works as before" do
       {:ok, text} = Muse.submit(:cli, "normal submit")
       events = State.events()
 
-      # 5 events per submit now
-      assert length(events) == 5
-      assert text == "Placeholder response: received \"normal submit\""
+      assert length(events) == @normal_submit_events
+      assert text =~ "Placeholder response"
     end
   end
 end

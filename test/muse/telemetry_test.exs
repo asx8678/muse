@@ -252,6 +252,52 @@ defmodule Muse.TelemetryTest do
     end
   end
 
+  describe "exception reason redaction" do
+    test "turn_exception_metadata redacts secrets embedded in reason string" do
+      meta =
+        Telemetry.turn_exception_metadata(
+          session_id: "sess_1",
+          turn_id: "turn_1",
+          kind: :error,
+          reason: "Connection failed: API key sk-test-12345 is invalid"
+        )
+
+      refute meta.reason =~ "sk-test-12345",
+             "Secret leaked through turn_exception_metadata reason"
+
+      assert meta.reason =~ "[REDACTED]"
+    end
+
+    test "tool_exception_metadata redacts secrets embedded in reason string" do
+      meta =
+        Telemetry.tool_exception_metadata(
+          session_id: "sess_1",
+          turn_id: "turn_1",
+          tool_name: :shell,
+          reason: "Bearer token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.sig was rejected"
+        )
+
+      refute meta.reason =~ "eyJhbGciOiJSUzI1NiJ9",
+             "JWT leaked through tool_exception_metadata reason"
+
+      assert meta.reason =~ "[REDACTED]"
+    end
+
+    test "turn_exception_metadata redacts atom reason" do
+      meta =
+        Telemetry.turn_exception_metadata(
+          session_id: "sess_1",
+          turn_id: "turn_1",
+          kind: :exit,
+          reason: :timeout
+        )
+
+      # Atom is converted to string and passed through redact_text;
+      # "timeout" has no secret patterns, so it stays intact.
+      assert meta.reason =~ "timeout"
+    end
+  end
+
   describe "secret sanitization" do
     test "metadata helpers redact sensitive keys" do
       meta = Telemetry.turn_start_metadata(session_id: "sess_1", turn_id: "turn_1", muse_id: "m1")

@@ -27,6 +27,7 @@ defmodule Muse.Telemetry do
   """
 
   alias Muse.MetadataSanitizer
+  alias Muse.Prompt.Redactor
 
   # -- Turn events --------------------------------------------------------------
 
@@ -83,7 +84,7 @@ defmodule Muse.Telemetry do
       session_id: opts[:session_id],
       turn_id: opts[:turn_id],
       kind: opts[:kind],
-      reason: opts[:reason],
+      reason: redact_reason(opts[:reason]),
       stacktrace: opts[:stacktrace]
     }
     |> sanitize_metadata()
@@ -131,7 +132,7 @@ defmodule Muse.Telemetry do
       session_id: opts[:session_id],
       turn_id: opts[:turn_id],
       tool_name: opts[:tool_name],
-      reason: opts[:reason]
+      reason: redact_reason(opts[:reason])
     }
     |> sanitize_metadata()
   end
@@ -290,4 +291,15 @@ defmodule Muse.Telemetry do
   defp sanitize_metadata(metadata) when is_map(metadata) do
     MetadataSanitizer.sanitize(metadata)
   end
+
+  # Redact exception messages / reason strings before they enter telemetry
+  # metadata. MetadataSanitizer only redacts *sensitive keys*, not secret
+  # patterns embedded in arbitrary string values. Redactor.redact_text/1
+  # catches API keys, tokens, etc. within the string body.
+  defp redact_reason(binary) when is_binary(binary), do: Redactor.redact_text(binary)
+
+  defp redact_reason(atom) when is_atom(atom),
+    do: atom |> Atom.to_string() |> Redactor.redact_text()
+
+  defp redact_reason(other), do: Redactor.redact_text(inspect(other))
 end

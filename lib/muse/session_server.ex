@@ -12,23 +12,24 @@ defmodule Muse.SessionServer do
 
   ## Responsibility scope
 
-  This server is intentionally **thin**:
+  This server currently runs `Conductor.run/3` **synchronously** inside
+  `handle_call({:submit, ...})`, which means the GenServer is blocked for
+  the duration of the provider call. `status` queries will **not** be
+  answered until the turn completes.
 
-    * It appends user/assistant events to the global `Muse.State` log for
-      backward compatibility.
-    * It does **not** run model calls, tool loops, or any long-blocking
-      work — those belong in a `Muse.Conductor.TurnRunner` Task that will
-      be introduced by a later PR.
-    * It remains responsive for `status` queries even while a turn is
-      notionally "in progress".
+  **TODO (PR07b):** Introduce a `Muse.Conductor.TurnRunner` Task that
+  moves `Conductor.run/3` *outside* the GenServer process. This will
+  restore responsiveness for `status` queries during a turn and provide
+  crash isolation — a provider error will terminate the Task, not the
+  SessionServer.
+
+  For now, the server appends user/assistant events to the global
+  `Muse.State` log and returns `{:ok, assistant_text}` synchronously.
   """
 
   use GenServer, restart: :temporary
 
-  alias Muse.Event
-  alias Muse.EventPayloadRedactor
-  alias Muse.State
-  alias Muse.Turn
+  alias Muse.{Conductor, Event, Prompt.Redactor, Session, State, Turn}
 
   # -- Public API ---------------------------------------------------------------
 
@@ -70,11 +71,12 @@ defmodule Muse.SessionServer do
     # If we reach init, the name was successfully registered.
     # `seq` is a session-local monotonic counter starting at 0; each
     # emitted event increments it, so the first event gets seq=1.
-    {:ok, %{session_id: session_id, status: :idle, seq: 0, events: []}}
+    {:ok, %{session_id: session_id, status: :idle, seq: 0, events: [], active_muse: nil}}
   end
 
   @impl true
   def handle_call({:submit, source, text}, _from, state) do
+    turn_start_time = System.monotonic_time(:millisecond)
     turn_id = generate_turn_id()
 
     # Build a Turn struct for this submission
@@ -135,52 +137,53 @@ defmodule Muse.SessionServer do
     # Transition turn to running
     {:ok, turn} = Turn.transition(turn, :running)
 
-    # 3. Build assistant response (placeholder)
-    assistant_text =
-      if claimed_issues != [] do
-        count = length(claimed_issues)
+    # 3. Delegate assistant generation to Conductor
+    session = Session.new(id: state.session_id, workspace: get_workspace(), status: state.status)
 
-        "Placeholder response: received #{inspect(text)} " <>
-          "(#{count} self-healing issue#{if count != 1, do: "s", else: ""} attached)"
-      else
-        "Placeholder response: received #{inspect(text)}"
+    {assistant_text, state, session_events} =
+      case Conductor.run(session, turn) do
+        {:ok, result} ->
+          # Fold Conductor event specs through emit_session_event
+          {conductor_events, state} = emit_event_specs(state, result.event_specs, turn_id)
+          session_events = session_events ++ conductor_events
+
+          state = %{state | status: :idle, active_muse: Atom.to_string(result.selected_muse.id)}
+
+          {result.assistant_text, state, session_events}
+
+        {:error, %{event_specs: event_specs}} ->
+          # Fold partial event specs collected before the error
+          {conductor_events, state} = emit_event_specs(state, event_specs, turn_id)
+          session_events = session_events ++ conductor_events
+
+          # Emit a user-visible assistant_message so CLI/State consumers
+          # see the failure in the event stream (not just the return value).
+          error_text = "Error: provider error occurred"
+
+          {error_event, state} =
+            emit_session_event(
+              state,
+              :system,
+              :assistant_message,
+              %{text: error_text, streamed?: false},
+              turn_id: turn_id,
+              visibility: :user
+            )
+
+          session_events = session_events ++ [error_event]
+          state = %{state | status: :idle}
+
+          {error_text, state, session_events}
       end
 
-    # 4. Emit assistant delta(s) — single chunk for placeholder
-    # Note: text is redacted centrally by emit_session_event/5
-    delta_data = %{text: assistant_text, index: 0}
-
-    {delta_event, state} =
-      emit_session_event(state, :muse, :assistant_delta, delta_data,
-        turn_id: turn_id,
-        visibility: :user
-      )
-
-    session_events = session_events ++ [delta_event]
-
-    # 5. Mark turn as streamed (deltas have been emitted)
-    turn = Turn.mark_streamed(turn)
-
-    # 6. Emit final assistant_message with streamed? flag
-    # Note: text is redacted centrally by emit_session_event/5
-    final_data = %{text: assistant_text, streamed?: true}
-
-    {assistant_event, state} =
-      emit_session_event(state, :muse, :assistant_message, final_data,
-        turn_id: turn_id,
-        visibility: :user
-      )
-
-    session_events = session_events ++ [assistant_event]
-
-    # 7. Transition turn to completed and emit turn_completed
-    {:ok, turn} =
-      Turn.transition(turn, :completed, completed_at: DateTime.utc_now())
+    # 4. Emit turn_completed
+    delta_count = Enum.count(session_events, &(&1.type == :assistant_delta))
+    duration_ms = System.monotonic_time(:millisecond) - turn_start_time
 
     turn_completed_data = %{
-      streamed?: turn.streamed?,
-      delta_count: 1,
-      duration_ms: 0
+      streamed?: true,
+      delta_count: delta_count,
+      duration_ms: duration_ms
     }
 
     {turn_completed_event, state} =
@@ -200,6 +203,7 @@ defmodule Muse.SessionServer do
     reply = %{
       session_id: state.session_id,
       status: state.status,
+      active_muse: state.active_muse,
       seq: state.seq,
       event_count: length(state.events)
     }
@@ -210,7 +214,40 @@ defmodule Muse.SessionServer do
   # -- Private helpers ----------------------------------------------------------
 
   defp safe_append_state(event) do
-    State.append(event)
+    case Process.whereis(Muse.State) do
+      nil -> :ok
+      pid -> if Process.alive?(pid), do: State.append(event), else: :ok
+    end
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp get_workspace do
+    case Process.whereis(Muse.Workspace) do
+      nil -> default_workspace()
+      pid -> if Process.alive?(pid), do: Muse.Workspace.root(), else: default_workspace()
+    end
+  rescue
+    _ -> default_workspace()
+  end
+
+  defp default_workspace, do: "/tmp/muse_workspace"
+
+  defp normalize_muse_id(nil), do: nil
+  defp normalize_muse_id(muse_id) when is_atom(muse_id), do: Atom.to_string(muse_id)
+  defp normalize_muse_id(muse_id) when is_binary(muse_id), do: muse_id
+
+  defp emit_event_specs(state, event_specs, turn_id) do
+    {events_rev, final_state} =
+      Enum.reduce(event_specs, {[], state}, fn {source, type, data, opts}, {acc, s} ->
+        merged_opts = Keyword.put(opts, :turn_id, turn_id)
+        {event, new_state} = emit_session_event(s, source, type, data, merged_opts)
+        {[event | acc], new_state}
+      end)
+
+    {Enum.reverse(events_rev), final_state}
   end
 
   defp safe_claim_queued do
@@ -241,22 +278,24 @@ defmodule Muse.SessionServer do
 
   @doc false
   # Emits an event with session-scoped metadata and increments the seq counter.
-  # Data is redacted centrally via `Muse.EventPayloadRedactor.redact/1` before
+  # Data is redacted centrally via `Muse.Prompt.Redactor.redact_term/1` before
   # event creation so no secret values can leak into the event stream.
   # Returns `{event, updated_state}` so the caller can track the event.
   @spec emit_session_event(map(), atom(), atom(), map(), keyword()) :: {Event.t(), map()}
   def emit_session_event(state, source, type, data, opts) do
     seq = state.seq + 1
 
-    # Central redaction: all event data passes through the redactor
-    redacted_data = EventPayloadRedactor.redact(data)
+    # Central redaction: all event data passes through the prompt redactor
+    # which applies EventPayloadRedactor plus prompt-specific patterns
+    redacted_data = Redactor.redact_term(data)
 
     event =
       Event.new(source, type, redacted_data,
         session_id: state.session_id,
         turn_id: Keyword.get(opts, :turn_id),
         seq: seq,
-        visibility: Keyword.get(opts, :visibility)
+        visibility: Keyword.get(opts, :visibility),
+        muse_id: normalize_muse_id(Keyword.get(opts, :muse_id))
       )
 
     :ok = safe_append_state(event)
