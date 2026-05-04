@@ -66,14 +66,21 @@ defmodule Muse.SessionServer do
   def init(session_id) do
     # Registration is handled atomically by the :via tuple in start_link.
     # If we reach init, the name was successfully registered.
-    {:ok, %{session_id: session_id, status: :idle, events: []}}
+    # `seq` is a session-local monotonic counter starting at 0; each
+    # emitted event increments it, so the first event gets seq=1.
+    {:ok, %{session_id: session_id, status: :idle, seq: 0, events: []}}
   end
 
   @impl true
   def handle_call({:submit, source, text}, _from, state) do
-    # Append user event to global state
-    user_event = Event.new(source, :user_message, %{text: text})
-    :ok = safe_append_state(user_event)
+    turn_id = generate_turn_id()
+
+    # Emit user event with session metadata
+    {user_event, state} =
+      emit_session_event(state, source, :user_message, %{text: text},
+        turn_id: turn_id,
+        visibility: :user
+      )
 
     # Track all session-local events in order
     session_events = [user_event]
@@ -81,11 +88,21 @@ defmodule Muse.SessionServer do
     # Atomically claim queued self-healing issues
     claimed_issues = safe_claim_queued()
 
-    self_healing_event =
+    {self_healing_event, state} =
       if claimed_issues != [] do
-        event = build_self_healing_event(claimed_issues)
-        safe_append_state(event)
-        event
+        {evt, s} =
+          emit_session_event(
+            state,
+            :self_healing,
+            :queued_issues_attached,
+            build_self_healing_data(claimed_issues),
+            turn_id: turn_id,
+            visibility: :debug
+          )
+
+        {evt, s}
+      else
+        {nil, state}
       end
 
     session_events =
@@ -101,8 +118,12 @@ defmodule Muse.SessionServer do
         "Placeholder response: received #{inspect(text)}"
       end
 
-    assistant_event = Event.new(:muse, :assistant_message, %{text: assistant_text})
-    :ok = safe_append_state(assistant_event)
+    # Emit assistant event with session metadata
+    {assistant_event, state} =
+      emit_session_event(state, :muse, :assistant_message, %{text: assistant_text},
+        turn_id: turn_id,
+        visibility: :user
+      )
 
     session_events = session_events ++ [assistant_event]
     updated_events = state.events ++ session_events
@@ -114,6 +135,7 @@ defmodule Muse.SessionServer do
     reply = %{
       session_id: state.session_id,
       status: state.status,
+      seq: state.seq,
       event_count: length(state.events)
     }
 
@@ -137,7 +159,7 @@ defmodule Muse.SessionServer do
     :exit, _ -> []
   end
 
-  defp build_self_healing_event(issues) do
+  defp build_self_healing_data(issues) do
     sanitized =
       Enum.map(issues, fn issue ->
         %{
@@ -149,6 +171,34 @@ defmodule Muse.SessionServer do
         }
       end)
 
-    Event.new(:self_healing, :queued_issues_attached, %{issues: sanitized})
+    %{issues: sanitized}
+  end
+
+  @doc false
+  # Emits an event with session-scoped metadata and increments the seq counter.
+  # Returns `{event, updated_state}` so the caller can track the event.
+  @spec emit_session_event(map(), atom(), atom(), map(), keyword()) :: {Event.t(), map()}
+  def emit_session_event(state, source, type, data, opts) do
+    seq = state.seq + 1
+
+    event =
+      Event.new(source, type, data,
+        session_id: state.session_id,
+        turn_id: Keyword.get(opts, :turn_id),
+        seq: seq,
+        visibility: Keyword.get(opts, :visibility)
+      )
+
+    :ok = safe_append_state(event)
+
+    {event, %{state | seq: seq}}
+  end
+
+  defp generate_turn_id do
+    hex =
+      :crypto.strong_rand_bytes(8)
+      |> Base.encode16(case: :lower)
+
+    "turn_#{hex}"
   end
 end

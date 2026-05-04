@@ -418,6 +418,27 @@ defmodule Muse.SessionStoreTest do
       assert loaded["data"]["status"] == "running"
       assert loaded["data"]["mode"] == "streaming"
     end
+
+    test "Event.new/4 metadata round-trip persists session_id, turn_id, seq, visibility",
+         %{base_dir: base_dir, session_id: session_id} do
+      event =
+        Muse.Event.new(:planning_muse, :assistant_delta, %{text: "..."},
+          session_id: "sess_42",
+          turn_id: "turn_abc",
+          seq: 7,
+          visibility: :user,
+          muse_id: "planning_muse"
+        )
+
+      assert :ok = SessionStore.append_event(base_dir, session_id, event)
+      assert {:ok, [loaded], %{skipped: 0}} = SessionStore.load_events(base_dir, session_id)
+
+      assert loaded["session_id"] == "sess_42"
+      assert loaded["turn_id"] == "turn_abc"
+      assert loaded["seq"] == 7
+      assert loaded["visibility"] == "user"
+      assert loaded["muse_id"] == "planning_muse"
+    end
   end
 
   # ── Sensitive key redaction ────────────────────────────────────────────

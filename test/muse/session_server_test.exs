@@ -239,6 +239,142 @@ defmodule Muse.SessionServerTest do
     end
   end
 
+  describe "session-scoped event metadata" do
+    test "emitted events carry session_id matching the server" do
+      pid = start_server("meta-session")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+
+      for event <- events do
+        assert event.session_id == "meta-session"
+      end
+    end
+
+    test "emitted events carry monotonically increasing seq values" do
+      pid = start_server("seq-session")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      seqs = Enum.map(events, & &1.seq)
+      # seq starts at 1 for the first event in a session
+      assert seqs == [1, 2]
+    end
+
+    test "seq continues incrementing across multiple submits" do
+      pid = start_server("seq-multi-session")
+      Muse.SessionServer.submit(pid, :cli, "first")
+      Muse.SessionServer.submit(pid, :cli, "second")
+
+      events = State.events()
+      seqs = Enum.map(events, & &1.seq)
+      assert seqs == [1, 2, 3, 4]
+    end
+
+    test "events within the same submit share the same turn_id" do
+      pid = start_server("turn-id-session")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      turn_ids = Enum.map(events, & &1.turn_id)
+      assert length(Enum.uniq(turn_ids)) == 1
+      assert String.starts_with?(hd(turn_ids), "turn_")
+    end
+
+    test "different submits produce different turn_ids" do
+      pid = start_server("turn-diff-session")
+      Muse.SessionServer.submit(pid, :cli, "first")
+      Muse.SessionServer.submit(pid, :cli, "second")
+
+      events = State.events()
+      [first_turn | _] = Enum.map(events, & &1.turn_id)
+      [second_turn | _] = Enum.drop(events, 2) |> Enum.map(& &1.turn_id)
+      assert first_turn != second_turn
+    end
+
+    test "user and assistant events have :user visibility" do
+      pid = start_server("vis-session")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      [user_event, assistant_event] = events
+      assert user_event.visibility == :user
+      assert assistant_event.visibility == :user
+    end
+
+    test "self-healing attachment events have :debug visibility" do
+      started_queue? =
+        case Process.whereis(Muse.SelfHealingQueue) do
+          nil ->
+            {:ok, _} = Muse.SelfHealingQueue.start_link([])
+            true
+
+          _pid ->
+            false
+        end
+
+      if started_queue? do
+        on_exit(fn ->
+          case Process.whereis(Muse.SelfHealingQueue) do
+            nil ->
+              :ok
+
+            pid ->
+              try do
+                GenServer.stop(pid)
+              catch
+                :exit, _ -> :ok
+              end
+          end
+        end)
+      end
+
+      diagnostic = Muse.Diagnostic.new(:error, "heal me")
+      Muse.SelfHealingQueue.add_diagnostic(diagnostic)
+
+      pid = start_server("vis-self-heal-session")
+      Muse.SessionServer.submit(pid, :cli, "fix it")
+
+      events = State.events()
+      # 3 events: user (:user), self_healing (:debug), assistant (:user)
+      [user_event, sh_event, assistant_event] = events
+      assert user_event.visibility == :user
+      assert sh_event.visibility == :debug
+      assert assistant_event.visibility == :user
+    end
+  end
+
+  describe "independent seq counters per session" do
+    test "seq starts at 1 independently for each session" do
+      pid_a = start_server("seq-indep-a")
+      pid_b = start_server("seq-indep-b")
+
+      Muse.SessionServer.submit(pid_a, :cli, "hello from a")
+      Muse.SessionServer.submit(pid_b, :cli, "hello from b")
+
+      events_a = State.events() |> Enum.filter(&(&1.session_id == "seq-indep-a"))
+      events_b = State.events() |> Enum.filter(&(&1.session_id == "seq-indep-b"))
+
+      seqs_a = Enum.map(events_a, & &1.seq)
+      seqs_b = Enum.map(events_b, & &1.seq)
+
+      # Both sessions start at seq=1
+      assert seqs_a == [1, 2]
+      assert seqs_b == [1, 2]
+    end
+
+    test "status reports seq counter" do
+      pid = start_server("seq-status-session")
+
+      status = Muse.SessionServer.status(pid)
+      assert status.seq == 0
+
+      Muse.SessionServer.submit(pid, :cli, "hello")
+      status = Muse.SessionServer.status(pid)
+      assert status.seq == 2
+    end
+  end
+
   describe "process lifecycle" do
     test "different session ids have different processes" do
       pid_a = start_server("lifecycle-a")
