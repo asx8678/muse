@@ -1,6 +1,6 @@
 defmodule Muse.LLM.OpenAICompatibleProvider do
   @moduledoc """
-  OpenAI-compatible provider adapter with SSE streaming support.
+  OpenAI-compatible provider adapter with SSE and Responses WebSocket streaming.
 
   This provider performs a single Chat Completions-compatible HTTP POST and
   decodes the complete response into Muse's normalized response struct.
@@ -10,6 +10,12 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
 
   ## Transport selection
 
+    * `wire_api == :responses` and `transport == :websocket` (on request
+      struct or `request.options[:transport]`): Responses WebSocket streaming
+      using the `response.create` / event frame protocol.
+    * `wire_api == :responses` and `transport == :sse` (on request
+      struct or `request.options[:transport]`): Responses HTTP SSE streaming
+      using the shared `ResponsesStreamDecoder`.
     * `transport == :sse` (on request struct or `request.options[:transport]`):
       streaming Chat Completions with `"stream" => true`, real SSE parsing,
       incremental event emission.
@@ -43,20 +49,57 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   Tests that want to exercise the default provider path without a network call
   may pass `request.options[:post_stream_fn]`, which is forwarded to ReqStream.
 
+  ## Responses WebSocket function injection
+
+  For Responses WebSocket streaming, callers **must** inject a `ws_stream_fn`
+  via `request.options[:ws_stream_fn]` (or `"ws_stream_fn"`). The shape is:
+
+      ws_stream_fn = fn url, ws_options, on_frame ->
+        # url:          WebSocket URL (wss://...)
+        # ws_options:   keyword list with :headers, :create_frame, optional timeouts
+        # on_frame:     one-arity callback receiving JSON binary frames
+        on_frame.(frame)
+        {:ok, %{}}
+      end
+
+  `ws_options` contains `:headers` (Authorization, etc.), `:create_frame`
+  (the `response.create` frame to send), and optional `:timeout_ms`,
+  `:receive_timeout`, `:max_retries`. The injected function must call
+  `on_frame` zero or more times and return `{:ok, result}` or
+  `{:error, reason}`.
+
+  ## SSE Fallback
+
+  When WebSocket setup fails before any inbound provider frame is received,
+  callers can enable SSE fallback via `request.options[:fallback_transport]`
+  set to `:sse`, or `request.options[:fallback_to_sse]` set to `true`.
+  Fallback is NOT attempted after midstream failure (after any inbound
+  frame/delta). On midstream failure, a redacted `:provider_error` is emitted
+  with no completed events.
+
   ## Error handling
 
-  On malformed JSON, midstream failure, transport error, or non-2xx HTTP
-  status, the provider emits exactly one `:provider_error` event and returns
-  an error. No `:assistant_completed` or `:response_completed` events are
-  emitted after a failure. All error data is redacted — raw tokens, request
-  bodies, and full response payloads never leak through.
+  On malformed JSON, midstream failure, transport error, `response.failed`,
+  or missing `response.completed`, the provider emits exactly one
+  `:provider_error` event and returns an error. No `:assistant_completed` or
+  `:response_completed` events are emitted after a failure. All error data is
+  redacted — raw tokens, request bodies, and full response payloads never
+  leak through.
   """
 
   @behaviour Muse.LLM.Provider
 
   alias Muse.Auth.Resolver
   alias Muse.{EventPayloadRedactor, MetadataSanitizer}
-  alias Muse.LLM.OpenAI.{ChatCompletionsStreamDecoder, RequestBuilder}
+
+  alias Muse.LLM.OpenAI.{
+    ChatCompletionsStreamDecoder,
+    RequestBuilder,
+    ResponsesMapper,
+    ResponsesStreamDecoder,
+    ResponsesWebSocket
+  }
+
   alias Muse.LLM.Transport.SSE.Parser, as: SSEParser
   alias Muse.LLM.Transport.SSE.ReqStream
   alias Muse.LLM.{Event, Request, Response, ToolCall}
@@ -68,6 +111,9 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   @type sse_post_fn ::
           (String.t(), keyword(), (String.t() -> :ok) ->
              {:ok, %{status: integer()}} | {:error, term()})
+  @type ws_stream_fn ::
+          (String.t(), keyword(), (binary() -> :ok) ->
+             {:ok, term()} | {:error, term()})
 
   @doc """
   Complete a request through an OpenAI-compatible Chat Completions endpoint.
@@ -109,10 +155,11 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   @impl true
   @spec stream(Request.t(), (Event.t() -> :ok)) :: {:ok, Response.t()} | {:error, term()}
   def stream(%Request{} = request, emit_fn) when is_function(emit_fn, 1) do
-    if sse_transport?(request) do
-      stream_sse(request, emit_fn)
-    else
-      stream_non_streaming(request, emit_fn)
+    cond do
+      responses_ws_transport?(request) -> stream_responses_ws(request, emit_fn)
+      responses_sse_transport?(request) -> stream_responses_sse(request, emit_fn)
+      sse_transport?(request) -> stream_sse(request, emit_fn)
+      true -> stream_non_streaming(request, emit_fn)
     end
   end
 
@@ -124,6 +171,426 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   defp sse_transport?(%Request{options: %{transport: :sse}}), do: true
   defp sse_transport?(%Request{options: %{"transport" => :sse}}), do: true
   defp sse_transport?(_request), do: false
+
+  defp responses_ws_transport?(%Request{wire_api: :responses, transport: :websocket}), do: true
+
+  defp responses_ws_transport?(%Request{wire_api: :responses, options: %{transport: :websocket}}),
+    do: true
+
+  defp responses_ws_transport?(%Request{
+         wire_api: :responses,
+         options: %{"transport" => :websocket}
+       }),
+       do: true
+
+  defp responses_ws_transport?(_request), do: false
+
+  defp responses_sse_transport?(%Request{wire_api: :responses, transport: :sse}), do: true
+
+  defp responses_sse_transport?(%Request{wire_api: :responses, options: %{transport: :sse}}),
+    do: true
+
+  defp responses_sse_transport?(%Request{wire_api: :responses, options: %{"transport" => :sse}}),
+    do: true
+
+  defp responses_sse_transport?(_request), do: false
+
+  # ---------------------------------------------------------------------------
+  # Responses SSE streaming path
+  # ---------------------------------------------------------------------------
+
+  defp stream_responses_sse(request, emit_fn) do
+    with {:ok, spec} <- build_responses_sse_spec(request),
+         {:ok, spec} <- attach_auth(spec, request, []),
+         {:ok, sse_post_fn} <- resolve_sse_post_fn(request.options) do
+      {:ok, agent} =
+        Agent.start_link(fn ->
+          {SSEParser.new(), ResponsesStreamDecoder.new(), false}
+        end)
+
+      on_chunk = fn raw_chunk when is_binary(raw_chunk) ->
+        pending_events =
+          Agent.get_and_update(agent, fn {parser_state, decoder_state, failed?} ->
+            if failed? do
+              {[], {parser_state, decoder_state, true}}
+            else
+              {sse_events, new_parser} = SSEParser.parse_chunk(raw_chunk, parser_state)
+
+              {events, new_decoder, now_failed?} =
+                process_responses_sse_events(sse_events, decoder_state, failed?)
+
+              {events, {new_parser, new_decoder, now_failed?}}
+            end
+          end)
+
+        Enum.each(pending_events, &emit_fn.(&1))
+        :ok
+      end
+
+      try do
+        emit_fn.(Event.response_started())
+
+        case safe_sse_post(
+               sse_post_fn,
+               spec.url,
+               sse_request_options(spec, request.options),
+               on_chunk
+             ) do
+          {:ok, %{status: status}} when is_integer(status) and status >= 200 and status <= 299 ->
+            {parser_state, decoder_state, failed?} = Agent.get(agent, & &1)
+
+            if failed? do
+              {:error, {:provider_sse_error, "stream failed mid-flight"}}
+            else
+              {remaining_events, _final_parser} = SSEParser.flush(parser_state)
+
+              {flush_events, final_decoder, flush_failed?} =
+                process_responses_sse_events(remaining_events, decoder_state, false)
+
+              Enum.each(flush_events, &emit_fn.(&1))
+
+              if flush_failed? do
+                {:error, {:provider_sse_error, "malformed data in final flush"}}
+              else
+                {response, final_events} = ResponsesStreamDecoder.finalize(final_decoder)
+                Enum.each(final_events, &emit_fn.(&1))
+                {:ok, response}
+              end
+            end
+
+          {:ok, %{status: status}} when is_integer(status) ->
+            redacted = redact_error({:provider_http_error, %{status: status}})
+            emit_fn.(Event.provider_error(redacted))
+            {:error, redacted}
+
+          {:ok, other} ->
+            redacted = redact_error({:unexpected_sse_response, other})
+            emit_fn.(Event.provider_error(redacted))
+            {:error, redacted}
+
+          {:error, reason} ->
+            redacted = redact_error({:sse_transport_error, reason})
+            emit_fn.(Event.provider_error(redacted))
+            {:error, redacted}
+        end
+      after
+        Agent.stop(agent, :normal, 5000)
+      end
+    else
+      {:error, reason} ->
+        redacted = redact_error(reason)
+        emit_fn.(Event.provider_error(redacted))
+        {:error, redacted}
+    end
+  end
+
+  defp build_responses_sse_spec(request) do
+    case resolve_base_url(request.options) do
+      {:ok, base_url} ->
+        trimmed = String.trim_trailing(base_url, "/")
+        url = trimmed <> ResponsesMapper.endpoint_path()
+        payload = ResponsesMapper.to_payload(request) |> Map.put("stream", true)
+        headers = resolve_headers_from_options(request.options)
+        headers = ensure_sse_accept_header(headers)
+        req_options = resolve_req_options(request.options)
+
+        {:ok,
+         %{
+           url: url,
+           endpoint_path: ResponsesMapper.endpoint_path(),
+           payload: payload,
+           headers: headers,
+           req_options: req_options
+         }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp process_responses_sse_events(sse_events, decoder_state, failed?) do
+    Enum.reduce(sse_events, {[], decoder_state, failed?}, fn sse_event, {acc_events, ds, f?} ->
+      if f? do
+        {acc_events, ds, true}
+      else
+        process_one_responses_sse_event(sse_event, ds, acc_events)
+      end
+    end)
+  end
+
+  defp process_one_responses_sse_event(%{done?: true}, decoder_state, acc_events) do
+    {acc_events, decoder_state, false}
+  end
+
+  defp process_one_responses_sse_event(%{data: data}, decoder_state, acc_events) do
+    case Jason.decode(data) do
+      {:ok, chunk_map} when is_map(chunk_map) ->
+        {new_decoder, events} = ResponsesStreamDecoder.feed(decoder_state, chunk_map)
+        {acc_events ++ events, new_decoder, false}
+
+      {:ok, _other} ->
+        {acc_events, decoder_state, false}
+
+      {:error, _reason} ->
+        error_event = Event.provider_error(redact_error({:sse_decode_error, "malformed JSON"}))
+        {acc_events ++ [error_event], decoder_state, true}
+    end
+  end
+
+  defp process_one_responses_sse_event(_sse_event, decoder_state, acc_events) do
+    {acc_events, decoder_state, false}
+  end
+
+  # ---------------------------------------------------------------------------
+  # Responses WebSocket streaming path
+  # ---------------------------------------------------------------------------
+
+  defp stream_responses_ws(request, emit_fn) do
+    with {:ok, spec} <- ResponsesWebSocket.RequestBuilder.build(request),
+         {:ok, spec} <- attach_auth(spec, request, []),
+         {:ok, ws_stream_fn} <- resolve_ws_stream_fn(request.options) do
+      {:ok, agent} = Agent.start_link(fn -> {ResponsesStreamDecoder.new(), false} end)
+
+      on_frame = fn frame ->
+        pending_events =
+          Agent.get_and_update(agent, fn {decoder_state, failed?} ->
+            if failed? do
+              {[], {decoder_state, true}}
+            else
+              case decode_ws_frame(frame) do
+                {:ok, frame_map} when is_map(frame_map) ->
+                  {new_state, events} = ResponsesStreamDecoder.feed(decoder_state, frame_map)
+                  {events, {new_state, new_state.failed?}}
+
+                {:error, _reason} ->
+                  error_event =
+                    Event.provider_error(redact_error({:ws_decode_error, "malformed JSON"}))
+
+                  {[error_event], {decoder_state, true}}
+              end
+            end
+          end)
+
+        Enum.each(pending_events, &emit_fn.(&1))
+        :ok
+      end
+
+      try do
+        emit_fn.(Event.response_started())
+
+        ws_options = build_ws_options(spec)
+
+        case safe_ws_stream(ws_stream_fn, spec.websocket_url, ws_options, on_frame) do
+          {:ok, _result} ->
+            {decoder_state, failed?} = Agent.get(agent, & &1)
+
+            cond do
+              failed? ->
+                {:error, {:provider_ws_error, "stream failed mid-flight"}}
+
+              decoder_state.response_id == nil and not decoder_state.failed? ->
+                # No response.completed received — check for SSE fallback
+                # before any inbound frame was processed
+                if ws_fallback_to_sse?(request) do
+                  fallback_to_responses_sse(request, emit_fn)
+                else
+                  redacted =
+                    redact_error({:ws_missing_completion, "response.completed not received"})
+
+                  emit_fn.(Event.provider_error(redacted))
+                  {:error, redacted}
+                end
+
+              true ->
+                {response, final_events} = ResponsesStreamDecoder.finalize(decoder_state)
+                Enum.each(final_events, &emit_fn.(&1))
+                {:ok, response}
+            end
+
+          {:error, reason} ->
+            # Transport-level error before any frames — try SSE fallback
+            if ws_fallback_to_sse?(request) do
+              fallback_to_responses_sse(request, emit_fn)
+            else
+              redacted = redact_error({:ws_transport_error, reason})
+              emit_fn.(Event.provider_error(redacted))
+              {:error, redacted}
+            end
+        end
+      after
+        Agent.stop(agent, :normal, 5000)
+      end
+    else
+      {:error, reason} ->
+        redacted = redact_error(reason)
+        emit_fn.(Event.provider_error(redacted))
+        {:error, redacted}
+    end
+  end
+
+  defp ws_fallback_to_sse?(request) do
+    request.options[:fallback_transport] == :sse or
+      request.options["fallback_transport"] == :sse or
+      request.options[:fallback_to_sse] == true or
+      request.options["fallback_to_sse"] == true
+  end
+
+  defp fallback_to_responses_sse(request, emit_fn) do
+    stream_responses_sse(request, emit_fn)
+  end
+
+  defp build_ws_options(spec) do
+    opts = [
+      headers: spec.headers,
+      create_frame: spec.frame
+    ]
+
+    opts =
+      if spec.req_options[:timeout_ms],
+        do: Keyword.put(opts, :timeout_ms, spec.req_options[:timeout_ms]),
+        else: opts
+
+    opts =
+      if spec.req_options[:receive_timeout],
+        do: Keyword.put(opts, :receive_timeout, spec.req_options[:receive_timeout]),
+        else: opts
+
+    opts =
+      if spec.req_options[:max_retries],
+        do: Keyword.put(opts, :max_retries, spec.req_options[:max_retries]),
+        else: opts
+
+    opts
+  end
+
+  defp resolve_ws_stream_fn(opts) when is_map(opts) do
+    case Map.get(opts, :ws_stream_fn) || Map.get(opts, "ws_stream_fn") do
+      nil ->
+        {:error,
+         {:ws_stream_fn_required, "WebSocket streaming requires a ws_stream_fn to be provided"}}
+
+      ws_stream_fn when is_function(ws_stream_fn, 3) ->
+        {:ok, ws_stream_fn}
+
+      _other ->
+        {:error, {:invalid_ws_stream_fn, "ws_stream_fn must be a three-arity function"}}
+    end
+  end
+
+  defp resolve_ws_stream_fn(_opts),
+    do:
+      {:error,
+       {:ws_stream_fn_required, "WebSocket streaming requires a ws_stream_fn to be provided"}}
+
+  defp safe_ws_stream(ws_stream_fn, url, ws_options, on_frame) do
+    ws_stream_fn.(url, ws_options, on_frame)
+  rescue
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp decode_ws_frame(frame) when is_binary(frame) do
+    case Jason.decode(frame) do
+      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
+      {:ok, _other} -> {:error, :not_a_map}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp decode_ws_frame(frame) when is_map(frame), do: {:ok, frame}
+  defp decode_ws_frame(_), do: {:error, :invalid_frame}
+
+  defp resolve_base_url(options) when is_map(options) do
+    base_url = option_value(options, :base_url) || option_value(options, "base_url")
+
+    case base_url do
+      nil ->
+        {:error, {:missing_base_url, "base_url is required for OpenAI provider requests"}}
+
+      value when not is_binary(value) ->
+        {:error, {:invalid_base_url, "base_url must be a string"}}
+
+      value when is_binary(value) ->
+        if String.trim(value) == "" do
+          {:error, {:missing_base_url, "base_url is required for OpenAI provider requests"}}
+        else
+          {:ok, value}
+        end
+    end
+  end
+
+  defp resolve_base_url(_options),
+    do: {:error, {:missing_base_url, "base_url is required for OpenAI provider requests"}}
+
+  defp resolve_headers_from_options(options) when is_map(options) do
+    case option_value(options, :headers) || option_value(options, "headers") do
+      nil -> []
+      headers when is_map(headers) -> normalize_provider_headers(headers)
+      headers when is_list(headers) -> normalize_provider_headers(headers)
+      _ -> []
+    end
+  end
+
+  defp resolve_headers_from_options(_options), do: []
+
+  defp resolve_req_options(options) when is_map(options) do
+    opts = []
+
+    opts =
+      case option_value(options, :timeout_ms) || option_value(options, "timeout_ms") do
+        n when is_integer(n) and n > 0 -> Keyword.put(opts, :timeout_ms, n)
+        _ -> opts
+      end
+
+    opts =
+      case option_value(options, :receive_timeout) || option_value(options, "receive_timeout") do
+        n when is_integer(n) and n > 0 -> Keyword.put(opts, :receive_timeout, n)
+        _ -> opts
+      end
+
+    opts =
+      case option_value(options, :max_retries) || option_value(options, "max_retries") do
+        n when is_integer(n) and n >= 0 -> Keyword.put(opts, :max_retries, n)
+        _ -> opts
+      end
+
+    opts
+  end
+
+  defp resolve_req_options(_options), do: []
+
+  defp normalize_provider_headers(headers) when is_map(headers) do
+    headers
+    |> Enum.flat_map(fn
+      {key, value} when is_binary(key) and is_binary(value) -> [{key, value}]
+      {key, value} when is_atom(key) and is_binary(value) -> [{Atom.to_string(key), value}]
+      _ -> []
+    end)
+    |> Enum.sort_by(fn {k, _v} -> k end)
+  end
+
+  defp normalize_provider_headers(headers) when is_list(headers) do
+    headers
+    |> Enum.flat_map(fn
+      {key, value} when is_binary(key) and is_binary(value) -> [{key, value}]
+      {key, value} when is_atom(key) and is_binary(value) -> [{Atom.to_string(key), value}]
+      _ -> []
+    end)
+    |> Enum.sort_by(fn {k, _v} -> k end)
+  end
+
+  defp ensure_sse_accept_header(headers) do
+    if Enum.any?(headers, fn {name, _value} -> String.downcase(name) == "accept" end) do
+      headers
+    else
+      headers ++ [{"Accept", "text/event-stream"}]
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Chat Completions SSE streaming path
+  # ---------------------------------------------------------------------------
 
   defp stream_sse(request, emit_fn) do
     with {:ok, spec} <- RequestBuilder.build_chat_completions_stream(request),

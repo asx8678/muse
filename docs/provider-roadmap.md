@@ -617,16 +617,41 @@ streaming accumulator shape.
 
 ## 9. OpenAI Responses WebSocket Transport
 
-**Future — PR15.** Not yet implemented. The SSE transport (PR14) is the first real streaming path. WebSocket support for the OpenAI Responses API will be added in a future PR.
+**PR15 MVP — implemented.** The Responses WebSocket path is now available alongside the SSE transport. The architecture is dependency-free at the transport layer: callers inject a `ws_stream_fn` for both production use and offline testing.
 
-**Add dependency only in this phase:**
+### Modules
 
-```elixir
-# Choose after checking current Elixir/OTP version and project style:
-{:websockex, "~> 0.5"}
-# or
-{:mint_web_socket, "~> 0.1"}  # if using Mint for HTTP already
-```
+| Module | Role |
+|--------|------|
+| `Muse.LLM.OpenAI.ResponsesStreamDecoder` | Shared pure decoder for both WS JSON frames and SSE data frames; `new/0`, `feed/2`, `finalize/1` API |
+| `Muse.LLM.OpenAI.ResponsesWebSocket.RequestBuilder` | Pure WS request spec builder; URL derivation (https→wss), create frame, headers, options |
+| `Muse.LLM.Transport.WebSocket.Stream` | Dependency-free WS transport lifecycle; canonical `ws_stream_fn` injection; `:websocket_client_not_configured` when no low-level client |
+| `Muse.LLM.Transport.WebSocket.SafeError` | Redacting error summaries for WS transport errors |
+
+### Provider dispatch
+
+In `OpenAICompatibleProvider.stream/2`:
+
+- `wire_api == :responses` + `transport == :websocket` → Responses WebSocket path
+- `wire_api == :responses` + `transport == :sse` → Responses HTTP SSE path (shared decoder)
+- `wire_api == :chat_completions`/`nil` + `transport == :sse` → existing Chat Completions SSE path
+- Otherwise → non-streaming Chat Completions
+
+### SSE fallback
+
+When WebSocket setup fails **before any inbound provider frame**, callers can enable SSE fallback via `request.options[:fallback_transport] == :sse` or `request.options[:fallback_to_sse] == true`. Fallback uses the Responses HTTP SSE path. **No fallback after midstream failure** — a redacted `:provider_error` is emitted instead.
+
+### Conductor/session continuity
+
+- `Conductor.hydrate_previous_response_id/3` copies `session.provider_state[:previous_response_id]` into `request.previous_response_id` when not explicitly set.
+- `Conductor.merge_provider_state/2` merges safe keys (`:previous_response_id`) back from `response.provider_state` into `session.provider_state`.
+- `ToolLoop.advance_provider_state/2` carries `provider_state` between iterations for Responses API conversation continuity.
+
+### Limitations (PR16 scope)
+
+- No built-in low-level WebSocket client dependency — callers must provide `ws_stream_fn` or configure a `:websocket_client`. The `default_stream/3` returns `{:error, {:transport_error, :websocket_client_not_configured}}` without one.
+- External Phoenix WebSocket channel remains **future/PR16** scope.
+- No automatic reconnection or subscription-style persistent connections.
 
 ### Responsibilities
 

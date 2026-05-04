@@ -39,6 +39,18 @@ defmodule Muse.Conductor.ToolLoop do
   via `emit_session_event/5`, ensuring proper session_id/turn_id/seq.
   The ToolLoop does NOT emit directly to State when `emit_events?: false`
   is set in the runner context.
+
+  ## Provider state carry-over
+
+  The ToolLoop tracks `provider_state` from the latest provider response
+  and includes it in the result map. The Conductor uses this to merge
+  safe keys (e.g. `:previous_response_id`) back into the session's
+  `provider_state` after the tool loop completes.
+
+  Between iterations, `response.provider_state.previous_response_id` is
+  automatically hydrated into the next provider request's
+  `previous_response_id` field for conversation continuity (OpenAI
+  Responses API).
   """
 
   alias Muse.Tool
@@ -75,11 +87,13 @@ defmodule Muse.Conductor.ToolLoop do
     * `:provider_module` — provider module (default `Muse.LLM.FakeProvider`)
     * `:tool_runner`     — tool runner module (default `Muse.Tool.Runner`)
     * `:limits`          — map of loop limits (see `@default_limits`)
+    * `:request_options` — original safe request opts; an explicit
+      `:previous_response_id` here is respected instead of provider state
 
   ## Returns
 
     * `{:ok, result}` — map with `:assistant_text`, `:event_specs`, `:iterations`,
-      `:total_tool_calls`, `:limit_reached?`
+      `:total_tool_calls`, `:limit_reached?`, `:provider_state`
     * `{:cancelled, result}` — partial result with cancellation flag
   """
   @spec run(map(), map(), map(), map(), map(), map(), [event_spec()], keyword()) ::
@@ -100,6 +114,8 @@ defmodule Muse.Conductor.ToolLoop do
       limits: limits,
       messages: request.messages,
       event_specs: initial_event_specs,
+      provider_state: initial_response.provider_state || %{},
+      previous_response_id_override: previous_response_id_override(opts),
       total_tool_calls: 0,
       iterations: 0,
       limit_reached: false,
@@ -113,6 +129,12 @@ defmodule Muse.Conductor.ToolLoop do
   # -- Process a response with tool calls ---------------------------------------
 
   defp process_tool_call_response(state, response) do
+    # Provider-side conversation state is advanced exactly once per provider
+    # response, before the continuation request is built. If the next provider
+    # call fails mid-turn, this function returns a safe error/fallback; it does
+    # not re-enter this response and does not re-run already executed tools.
+    state = advance_provider_state(state, response)
+
     # Check cancellation before tool execution
     if TurnRunner.cancelled?() do
       {:cancelled, build_result(%{state | cancelled: true}, "Turn cancelled during tool loop.")}
@@ -136,8 +158,11 @@ defmodule Muse.Conductor.ToolLoop do
       new_messages = state.messages ++ [assistant_msg] ++ tool_messages
 
       # Rebuild request with updated messages and increment fake_iteration
-      # so that FakeProvider with :fake_event_batches returns the next batch
+      # so that FakeProvider with :fake_event_batches returns the next batch.
+      # Also carry response.provider_state.previous_response_id into the
+      # next request for conversation continuity (OpenAI Responses API).
       new_request = %{state.request | messages: new_messages}
+      new_request = put_previous_response_id(new_request, state)
       new_request = increment_fake_iteration(new_request, state.iterations + 1)
 
       state = %{
@@ -154,8 +179,12 @@ defmodule Muse.Conductor.ToolLoop do
         # If limit was reached, do one final provider call with tools disabled
         if state.limit_reached do
           case final_provider_call(state) do
-            {:ok, text, specs} ->
-              state = %{state | event_specs: state.event_specs ++ specs}
+            {:ok, text, specs, response} ->
+              state =
+                state
+                |> advance_provider_state(response)
+                |> Map.update!(:event_specs, &(&1 ++ specs))
+
               {:ok, build_result(state, text)}
 
             {:error, _reason, specs} ->
@@ -180,8 +209,12 @@ defmodule Muse.Conductor.ToolLoop do
     state = mark_limit_reached(state)
 
     case final_provider_call(state) do
-      {:ok, text, specs} ->
-        state = %{state | event_specs: state.event_specs ++ specs}
+      {:ok, text, specs, response} ->
+        state =
+          state
+          |> advance_provider_state(response)
+          |> Map.update!(:event_specs, &(&1 ++ specs))
+
         {:ok, build_result(state, text)}
 
       {:error, _reason, specs} ->
@@ -197,12 +230,18 @@ defmodule Muse.Conductor.ToolLoop do
       loop(state)
     else
       case run_iteration(state) do
-        {:no_tool_calls, text, specs} ->
-          state = %{state | event_specs: state.event_specs ++ specs}
+        {:no_tool_calls, text, specs, response} ->
+          state =
+            state
+            |> advance_provider_state(response)
+            |> Map.update!(:event_specs, &(&1 ++ specs))
+
           {:ok, build_result(state, text)}
 
         {:tool_calls, _tc_specs, provider_specs, response} ->
           state = %{state | event_specs: state.event_specs ++ provider_specs}
+          # Update provider_state from this iteration's response
+          state = advance_provider_state(state, response)
           process_tool_call_response(state, response)
 
         {:error, _reason, specs} ->
@@ -238,7 +277,7 @@ defmodule Muse.Conductor.ToolLoop do
           {:tool_calls, [], event_specs, response}
         else
           text = response.content || ""
-          {:no_tool_calls, text, event_specs}
+          {:no_tool_calls, text, event_specs, response}
         end
 
       {:error, reason} ->
@@ -424,7 +463,7 @@ defmodule Muse.Conductor.ToolLoop do
 
     case result do
       {:ok, response} ->
-        {:ok, response.content || "", event_specs}
+        {:ok, response.content || "", event_specs, response}
 
       {:error, reason} ->
         {:error, reason, event_specs}
@@ -458,7 +497,8 @@ defmodule Muse.Conductor.ToolLoop do
       tool_results: [],
       iterations: state.iterations,
       total_tool_calls: state.total_tool_calls,
-      limit_reached?: state.limit_reached
+      limit_reached?: state.limit_reached,
+      provider_state: state.provider_state
     }
   end
 
@@ -581,4 +621,100 @@ defmodule Muse.Conductor.ToolLoop do
       request
     end
   end
+
+  # -- Provider state continuation ---------------------------------------------
+
+  @no_previous_response_id_override :__muse_no_previous_response_id_override__
+
+  defp previous_response_id_override(opts) do
+    cond do
+      Keyword.has_key?(opts, :previous_response_id) ->
+        {:override, Keyword.fetch!(opts, :previous_response_id)}
+
+      match?({:override, _value}, request_options_previous_response_id(opts)) ->
+        request_options_previous_response_id(opts)
+
+      true ->
+        @no_previous_response_id_override
+    end
+  end
+
+  defp request_options_previous_response_id(opts) do
+    opts
+    |> Keyword.get(:request_options, [])
+    |> explicit_previous_response_id_from_options()
+  end
+
+  defp explicit_previous_response_id_from_options(options) when is_list(options) do
+    if Keyword.has_key?(options, :previous_response_id) do
+      {:override, Keyword.fetch!(options, :previous_response_id)}
+    else
+      @no_previous_response_id_override
+    end
+  end
+
+  defp explicit_previous_response_id_from_options(options) when is_map(options) do
+    cond do
+      Map.has_key?(options, :previous_response_id) ->
+        {:override, Map.fetch!(options, :previous_response_id)}
+
+      Map.has_key?(options, "previous_response_id") ->
+        {:override, Map.fetch!(options, "previous_response_id")}
+
+      true ->
+        @no_previous_response_id_override
+    end
+  end
+
+  defp explicit_previous_response_id_from_options(_options), do: @no_previous_response_id_override
+
+  defp advance_provider_state(%{request: %{wire_api: :responses}} = state, response) do
+    case response_previous_response_id(response) do
+      nil ->
+        state
+
+      previous_response_id ->
+        provider_state =
+          Map.put(state.provider_state || %{}, :previous_response_id, previous_response_id)
+
+        %{state | provider_state: provider_state}
+    end
+  end
+
+  defp advance_provider_state(state, _response), do: state
+
+  defp response_previous_response_id(%{provider_state: provider_state})
+       when is_map(provider_state) do
+    provider_state
+    |> previous_response_id_from_provider_state()
+    |> normalize_previous_response_id()
+  end
+
+  defp response_previous_response_id(_response), do: nil
+
+  defp previous_response_id_from_provider_state(provider_state) do
+    Map.get(provider_state, :previous_response_id) ||
+      Map.get(provider_state, "previous_response_id")
+  end
+
+  defp normalize_previous_response_id(value) when is_binary(value) do
+    if String.trim(value) == "", do: nil, else: value
+  end
+
+  defp normalize_previous_response_id(_value), do: nil
+
+  defp put_previous_response_id(request, %{previous_response_id_override: {:override, value}}) do
+    %{request | previous_response_id: value}
+  end
+
+  defp put_previous_response_id(%{wire_api: :chat_completions} = request, _state), do: request
+
+  defp put_previous_response_id(%{wire_api: :responses} = request, state) do
+    case Map.get(state.provider_state || %{}, :previous_response_id) do
+      nil -> request
+      previous_response_id -> %{request | previous_response_id: previous_response_id}
+    end
+  end
+
+  defp put_previous_response_id(request, _state), do: request
 end

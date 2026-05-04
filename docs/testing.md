@@ -84,7 +84,7 @@ The shared macro injects all six scenario tests automatically. The provider modu
 
 ## 3. Fixture Types
 
-All fixtures live under `test/support/fixtures/` and are version-controlled.
+All fixtures live under `test/fixtures/` and are version-controlled.
 
 | Fixture | Path | Description |
 |---------|------|-------------|
