@@ -1015,6 +1015,16 @@ defmodule Muse.CommandDispatcher do
     {:error, "Error: active Muse Plan is #{status}, not awaiting approval.", []}
   end
 
+  defp format_plan_lifecycle_result({:error, {:stale_approval, metadata}}, _action) do
+    plan_id = Map.get(metadata, :plan_id) || "active plan"
+    expected_version = Map.get(metadata, :expected_plan_version)
+    actual_version = Map.get(metadata, :actual_plan_version)
+
+    {:error,
+     "Error: approval for Muse Plan #{plan_id} is stale (expected version #{expected_version}, current version #{actual_version}). Ask Planning Muse to show or regenerate the current plan.",
+     []}
+  end
+
   defp format_plan_lifecycle_result({:error, reason}, _action) do
     {:error, "Error: unable to update Muse Plan (#{inspect(reason)}).", []}
   end

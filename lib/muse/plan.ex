@@ -114,7 +114,7 @@ defmodule Muse.Plan do
           risks: [String.t()],
           alternatives: [map()],
           validation: [String.t()],
-          approvals: [map()],
+          approvals: [Muse.Approval.t() | map()],
           metadata: map()
         }
 
@@ -239,7 +239,7 @@ defmodule Muse.Plan do
       risks: Map.get(normalized, :risks, []),
       alternatives: Map.get(normalized, :alternatives, []),
       validation: Map.get(normalized, :validation, []),
-      approvals: Map.get(normalized, :approvals, []),
+      approvals: normalize_approvals(Map.get(normalized, :approvals, [])),
       metadata: normalize_metadata(Map.get(normalized, :metadata, %{}))
     }
   end
@@ -319,6 +319,7 @@ defmodule Muse.Plan do
     plan
     |> Map.from_struct()
     |> Map.update!(:tasks, fn tasks -> Enum.map(tasks, &Muse.Task.to_map/1) end)
+    |> Map.update!(:approvals, &approval_maps/1)
     |> Map.update!(:metadata, &normalize_metadata/1)
     |> drop_nil_values()
   end
@@ -559,6 +560,23 @@ defmodule Muse.Plan do
   end
 
   defp normalize_map_list(_values), do: []
+
+  defp normalize_approvals(approvals) do
+    if Code.ensure_loaded?(Muse.Approval) do
+      Muse.Approval.normalize_list(approvals)
+    else
+      normalize_map_list(approvals)
+    end
+  end
+
+  defp approval_maps(approvals) do
+    approvals
+    |> normalize_approvals()
+    |> Enum.map(fn
+      %Muse.Approval{} = approval -> Muse.Approval.to_map(approval)
+      approval when is_map(approval) -> normalize_metadata(approval)
+    end)
+  end
 
   defp normalize_metadata(metadata) when is_map(metadata) do
     metadata

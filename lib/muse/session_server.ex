@@ -42,7 +42,7 @@ defmodule Muse.SessionServer do
 
   use GenServer, restart: :temporary
 
-  alias Muse.{Event, Prompt.Redactor, Session, State, Turn, Plan, SessionStore}
+  alias Muse.{ApprovalGate, Event, Prompt.Redactor, Session, State, Turn, Plan, SessionStore}
   alias Muse.Conductor.TurnRunner
 
   # -- Public API ---------------------------------------------------------------
@@ -102,7 +102,10 @@ defmodule Muse.SessionServer do
   @spec approve_plan(pid(), atom()) ::
           {:ok, Plan.t()}
           | {:error,
-             :turn_running | :no_active_plan | {:plan_not_awaiting_approval, Plan.status()}}
+             :turn_running
+             | :no_active_plan
+             | {:plan_not_awaiting_approval, Plan.status()}
+             | {:stale_approval, map()}}
   def approve_plan(pid, source \\ :system) do
     GenServer.call(pid, {:approve_plan, source})
   end
@@ -116,7 +119,10 @@ defmodule Muse.SessionServer do
   @spec reject_plan(pid(), atom()) ::
           {:ok, Plan.t()}
           | {:error,
-             :turn_running | :no_active_plan | {:plan_not_awaiting_approval, Plan.status()}}
+             :turn_running
+             | :no_active_plan
+             | {:plan_not_awaiting_approval, Plan.status()}
+             | {:stale_approval, map()}}
   def reject_plan(pid, source \\ :system) do
     GenServer.call(pid, {:reject_plan, source})
   end
@@ -138,6 +144,7 @@ defmodule Muse.SessionServer do
       active_plan_id: nil,
       plan: nil,
       plans: %{},
+      approvals: [],
       # TurnRunner state
       active_turn_id: nil,
       runner_pid: nil,
@@ -172,6 +179,7 @@ defmodule Muse.SessionServer do
       active_plan_id: state.active_plan_id,
       plan: state.plan,
       plans: state.plans,
+      approvals: state.approvals,
       seq: state.seq,
       event_count: length(state.events),
       active_turn_id: state.active_turn_id,
@@ -313,7 +321,8 @@ defmodule Muse.SessionServer do
       )
       | active_muse: state.active_muse,
         active_plan_id: state.active_plan_id,
-        plans: turn_session_plans(state)
+        plans: turn_session_plans(state),
+        approvals: state.approvals
     }
   end
 
@@ -404,25 +413,13 @@ defmodule Muse.SessionServer do
         active_muse: Atom.to_string(result.selected_muse.id)
     }
 
-    # Store plan if present in the result
+    # Store plan if present in the result and expose its pending approval.
     state =
       if Map.has_key?(result, :plan) and not is_nil(result.plan) do
-        plan = result.plan
-        active_plan_id = plan.id || state.active_plan_id
-
-        plans =
-          if active_plan_id do
-            Map.put(state.plans || %{}, active_plan_id, plan)
-          else
-            state.plans || %{}
-          end
-
-        maybe_persist_snapshot(%{
-          state
-          | active_plan_id: active_plan_id,
-            plan: plan,
-            plans: plans
-        })
+        state
+        |> put_active_plan(result.plan, result.plan.id || state.active_plan_id)
+        |> ensure_pending_plan_approval()
+        |> maybe_persist_snapshot()
       else
         state
       end
@@ -659,38 +656,99 @@ defmodule Muse.SessionServer do
     if plan.status != :awaiting_approval do
       {{:error, {:plan_not_awaiting_approval, plan.status}}, state}
     else
-      {:ok, plan} = Plan.transition(plan, target_status)
-
       previous_status = state.status
+      approvals = session_plan_approvals(state, plan)
 
-      state =
-        state
-        |> put_active_plan(plan, active_plan_id)
-        |> Map.put(:status, :idle)
+      case transition_plan_approval_record(
+             target_status,
+             state.session_id,
+             plan,
+             approvals,
+             source
+           ) do
+        {:ok, approval, approvals, plan} ->
+          {:ok, plan} = Plan.transition(plan, target_status)
+          plan = ApprovalGate.put_plan_approval(plan, approval)
 
-      {plan_event, state} =
-        emit_session_event(
-          state,
-          source,
-          plan_lifecycle_event_type(target_status),
-          plan_lifecycle_event_data(plan),
-          visibility: :user
-        )
+          state =
+            state
+            |> Map.put(:approvals, approvals)
+            |> put_active_plan(plan, active_plan_id)
+            |> Map.put(:status, :idle)
 
-      {status_event, state} = maybe_emit_plan_lifecycle_status_event(state, previous_status)
+          {approval_event, state} =
+            emit_session_event(
+              state,
+              source,
+              approval_lifecycle_event_type(target_status),
+              ApprovalGate.approval_event_data(approval),
+              visibility: :internal
+            )
 
-      events = [plan_event, status_event] |> Enum.reject(&is_nil/1)
+          {plan_event, state} =
+            emit_session_event(
+              state,
+              source,
+              plan_lifecycle_event_type(target_status),
+              plan_lifecycle_event_data(plan, approval),
+              visibility: :user
+            )
 
-      state =
-        state
-        |> append_session_events(events)
-        |> maybe_persist_snapshot()
+          {status_event, state} = maybe_emit_plan_lifecycle_status_event(state, previous_status)
 
-      {{:ok, plan}, state}
+          events = [approval_event, plan_event, status_event] |> Enum.reject(&is_nil/1)
+
+          state =
+            state
+            |> append_session_events(events)
+            |> maybe_persist_snapshot()
+
+          {{:ok, plan}, state}
+
+        {:error, {:stale_approval, metadata}} ->
+          {{:error, {:stale_approval, metadata}}, state}
+
+        {:error, reason} ->
+          {{:error, reason}, state}
+      end
     end
   end
 
   defp turn_running?(state), do: state.status == :running or not is_nil(state.runner_pid)
+
+  defp transition_plan_approval_record(:approved, session_id, plan, approvals, source) do
+    ApprovalGate.approve_plan(session_id, plan, approvals, approved_by: source, actor: source)
+  end
+
+  defp transition_plan_approval_record(:rejected, session_id, plan, approvals, source) do
+    ApprovalGate.reject_plan(session_id, plan, approvals,
+      rejected_by: source,
+      actor: source,
+      reason: "Plan rejected by #{source}"
+    )
+  end
+
+  defp session_plan_approvals(state, %Plan{} = plan) do
+    ApprovalGate.merge_approvals(state.approvals || [], plan.approvals || [])
+  end
+
+  defp ensure_pending_plan_approval(%{plan: %Plan{status: :awaiting_approval} = plan} = state) do
+    approvals = session_plan_approvals(state, plan)
+
+    case ApprovalGate.ensure_pending_plan_approval(state.session_id, plan, approvals,
+           requested_by: :planning
+         ) do
+      {:ok, _approval, approvals, plan} ->
+        state
+        |> Map.put(:approvals, approvals)
+        |> put_active_plan(plan, plan.id || state.active_plan_id)
+
+      _ ->
+        state
+    end
+  end
+
+  defp ensure_pending_plan_approval(state), do: state
 
   defp resolve_active_plan_state(state) do
     cond do
@@ -730,16 +788,22 @@ defmodule Muse.SessionServer do
 
   defp maybe_emit_plan_lifecycle_status_event(state, _previous_status), do: {nil, state}
 
+  defp approval_lifecycle_event_type(:approved), do: :approval_approved
+  defp approval_lifecycle_event_type(:rejected), do: :approval_rejected
+
   defp plan_lifecycle_event_type(:approved), do: :plan_approved
   defp plan_lifecycle_event_type(:rejected), do: :plan_rejected
 
-  defp plan_lifecycle_event_data(plan) do
+  defp plan_lifecycle_event_data(plan, approval) do
     %{
       plan_id: plan.id,
       version: plan.version,
       status: plan.status,
       objective: plan.objective,
-      task_count: length(plan.tasks)
+      task_count: length(plan.tasks),
+      approval_id: approval.id,
+      approval_status: approval.status,
+      content_hash: approval.content_hash
     }
   end
 
@@ -756,6 +820,8 @@ defmodule Muse.SessionServer do
         plans_data = Map.get(data, "plans", %{})
         active_plan_id = Map.get(data, "active_plan_id")
         status_str = Map.get(data, "status", "idle")
+        active_muse = Map.get(data, "active_muse")
+        approvals_data = Map.get(data, "approvals", [])
 
         plans = restore_plans(plans_data)
         plan = restore_plan(plan_data) || active_plan_from_plans(plans, active_plan_id)
@@ -765,15 +831,20 @@ defmodule Muse.SessionServer do
             if plan, do: plan.id, else: nil
 
         plans = put_restored_plan(plans, plan, active_id)
+        approvals = restore_approvals(approvals_data, plan, plans)
         status = safely_atom_status(status_str)
 
         %{
           state
           | status: status,
+            active_muse: active_muse,
             plan: plan,
             plans: plans,
-            active_plan_id: active_id
+            active_plan_id: active_id,
+            approvals: approvals
         }
+        |> ensure_pending_plan_approval()
+        |> maybe_persist_snapshot()
 
       _ ->
         state
@@ -806,6 +877,17 @@ defmodule Muse.SessionServer do
 
   defp restore_plans(_), do: %{}
 
+  defp restore_approvals(approvals_data, plan, plans) do
+    plan_approvals =
+      [plan | Map.values(plans || %{})]
+      |> Enum.flat_map(fn
+        %Plan{} = p -> p.approvals || []
+        _ -> []
+      end)
+
+    ApprovalGate.merge_approvals(approvals_data, plan_approvals)
+  end
+
   defp active_plan_from_plans(plans, active_plan_id) when is_map(plans) do
     cond do
       is_binary(active_plan_id) and match?(%Plan{}, Map.get(plans, active_plan_id)) ->
@@ -822,6 +904,12 @@ defmodule Muse.SessionServer do
 
   defp put_restored_plan(plans, _plan, _active_plan_id), do: plans
 
+  defp approval_maps(approvals) do
+    approvals
+    |> ApprovalGate.normalize_approvals()
+    |> Enum.map(&Muse.Approval.to_map/1)
+  end
+
   defp maybe_persist_snapshot(state) do
     # Persist plan-related state as a session snapshot.
     # Only writes when a plan exists to avoid unnecessary I/O.
@@ -830,6 +918,7 @@ defmodule Muse.SessionServer do
         status: Atom.to_string(state.status),
         active_muse: state.active_muse,
         active_plan_id: state.active_plan_id,
+        approvals: approval_maps(state.approvals),
         plan: Plan.to_map(state.plan),
         plans:
           state.plans

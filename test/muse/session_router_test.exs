@@ -201,6 +201,11 @@ defmodule Muse.SessionRouterTest do
       plan = persist_awaiting_plan(session_id)
       {:ok, pid} = Muse.SessionRouter.find_or_start_session(session_id)
 
+      before = Muse.SessionServer.status(pid)
+      assert [pending_approval] = before.approvals
+      assert pending_approval.status == :pending
+      assert pending_approval.plan_id == plan.id
+
       assert {:ok, approved_plan} = Muse.SessionRouter.approve_plan(session_id, :cli)
       assert approved_plan.status == :approved
 
@@ -208,12 +213,21 @@ defmodule Muse.SessionRouterTest do
       assert status.status == :idle
       assert status.plan.status == :approved
       assert status.active_plan_id == plan.id
+      assert [approval] = status.approvals
+      assert approval.id == pending_approval.id
+      assert approval.status == :approved
+      assert approval.content_hash == pending_approval.content_hash
     end
 
     test "routes rejection to an existing session" do
       session_id = "router-reject-#{:erlang.unique_integer([:positive])}"
       plan = persist_awaiting_plan(session_id)
       {:ok, pid} = Muse.SessionRouter.find_or_start_session(session_id)
+
+      before = Muse.SessionServer.status(pid)
+      assert [pending_approval] = before.approvals
+      assert pending_approval.status == :pending
+      assert pending_approval.plan_id == plan.id
 
       assert {:ok, rejected_plan} = Muse.SessionRouter.reject_plan(session_id, :web)
       assert rejected_plan.status == :rejected
@@ -222,6 +236,10 @@ defmodule Muse.SessionRouterTest do
       assert status.status == :idle
       assert status.plan.status == :rejected
       assert status.active_plan_id == plan.id
+      assert [approval] = status.approvals
+      assert approval.id == pending_approval.id
+      assert approval.status == :rejected
+      assert approval.content_hash == pending_approval.content_hash
     end
   end
 

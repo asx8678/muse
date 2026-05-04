@@ -74,7 +74,8 @@ defmodule Muse.SessionRouter do
              :not_found
              | :turn_running
              | :no_active_plan
-             | {:plan_not_awaiting_approval, Muse.Plan.status()}}
+             | {:plan_not_awaiting_approval, Muse.Plan.status()}
+             | {:stale_approval, map()}}
   def approve_plan(session_id \\ @default_session_id, source \\ :system) do
     case Registry.lookup(Muse.SessionRegistry, session_id) do
       [{pid, _}] -> Muse.SessionServer.approve_plan(pid, source)
@@ -93,7 +94,8 @@ defmodule Muse.SessionRouter do
              :not_found
              | :turn_running
              | :no_active_plan
-             | {:plan_not_awaiting_approval, Muse.Plan.status()}}
+             | {:plan_not_awaiting_approval, Muse.Plan.status()}
+             | {:stale_approval, map()}}
   def reject_plan(session_id \\ @default_session_id, source \\ :system) do
     case Registry.lookup(Muse.SessionRegistry, session_id) do
       [{pid, _}] -> Muse.SessionServer.reject_plan(pid, source)
