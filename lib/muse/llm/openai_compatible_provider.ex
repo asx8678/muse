@@ -349,25 +349,27 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
     with {:ok, spec} <- ResponsesWebSocket.RequestBuilder.build(request),
          {:ok, spec} <- attach_auth(spec, request, []),
          {:ok, ws_stream_fn} <- resolve_ws_stream_fn(request.options) do
-      {:ok, agent} = Agent.start_link(fn -> {ResponsesStreamDecoder.new(), false} end)
+      {:ok, agent} = Agent.start_link(fn -> {ResponsesStreamDecoder.new(), false, false} end)
 
       on_frame = fn frame ->
         pending_events =
-          Agent.get_and_update(agent, fn {decoder_state, failed?} ->
-            if failed? do
-              {[], {decoder_state, true}}
-            else
-              case decode_ws_frame(frame) do
-                {:ok, frame_map} when is_map(frame_map) ->
-                  {new_state, events} = ResponsesStreamDecoder.feed(decoder_state, frame_map)
-                  {events, {new_state, new_state.failed?}}
+          Agent.get_and_update(agent, fn {decoder_state, failed?, _received_frame?} ->
+            cond do
+              failed? ->
+                {[], {decoder_state, true, true}}
 
-                {:error, _reason} ->
-                  error_event =
-                    Event.provider_error(redact_error({:ws_decode_error, "malformed JSON"}))
+              true ->
+                case decode_ws_frame(frame) do
+                  {:ok, frame_map} when is_map(frame_map) ->
+                    {new_state, events} = ResponsesStreamDecoder.feed(decoder_state, frame_map)
+                    {events, {new_state, new_state.failed?, true}}
 
-                  {[error_event], {decoder_state, true}}
-              end
+                  {:error, _reason} ->
+                    error_event =
+                      Event.provider_error(redact_error({:ws_decode_error, "malformed JSON"}))
+
+                    {[error_event], {decoder_state, true, true}}
+                end
             end
           end)
 
@@ -382,16 +384,14 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
 
         case safe_ws_stream(ws_stream_fn, spec.websocket_url, ws_options, on_frame) do
           {:ok, _result} ->
-            {decoder_state, failed?} = Agent.get(agent, & &1)
+            {decoder_state, failed?, received_frame?} = Agent.get(agent, & &1)
 
             cond do
               failed? ->
                 {:error, {:provider_ws_error, "stream failed mid-flight"}}
 
               decoder_state.response_id == nil and not decoder_state.failed? ->
-                # No response.completed received — check for SSE fallback
-                # before any inbound frame was processed
-                if ws_fallback_to_sse?(request) do
+                if not received_frame? and ws_fallback_to_sse?(request) do
                   fallback_to_responses_sse(request, emit_fn)
                 else
                   redacted =
@@ -408,13 +408,19 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
             end
 
           {:error, reason} ->
-            # Transport-level error before any frames — try SSE fallback
-            if ws_fallback_to_sse?(request) do
-              fallback_to_responses_sse(request, emit_fn)
-            else
-              redacted = redact_error({:ws_transport_error, reason})
-              emit_fn.(Event.provider_error(redacted))
-              {:error, redacted}
+            {_decoder_state, failed?, received_frame?} = Agent.get(agent, & &1)
+
+            cond do
+              failed? ->
+                {:error, {:provider_ws_error, "stream failed mid-flight"}}
+
+              ws_should_fallback_to_sse?(request, received_frame?, reason) ->
+                fallback_to_responses_sse(request, emit_fn)
+
+              true ->
+                redacted = redact_error({:ws_transport_error, reason})
+                emit_fn.(Event.provider_error(redacted))
+                {:error, redacted}
             end
         end
       after
@@ -434,6 +440,47 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
       request.options[:fallback_to_sse] == true or
       request.options["fallback_to_sse"] == true
   end
+
+  defp ws_should_fallback_to_sse?(request, false, reason) do
+    ws_fallback_to_sse?(request) and ws_safe_setup_error?(reason)
+  end
+
+  defp ws_should_fallback_to_sse?(_request, _received_frame?, _reason), do: false
+
+  defp ws_safe_setup_error?(reason)
+       when reason in [
+              :connection_refused,
+              :econnrefused,
+              :websocket_client_not_configured,
+              :no_websocket_client
+            ] do
+    true
+  end
+
+  defp ws_safe_setup_error?({:transport_error, reason}), do: ws_safe_setup_error?(reason)
+
+  defp ws_safe_setup_error?({phase, _reason})
+       when phase in [:connect_failed, :setup_failed, :websocket_client_not_configured] do
+    true
+  end
+
+  defp ws_safe_setup_error?(reason) when is_binary(reason) do
+    normalized = String.downcase(reason)
+
+    Enum.any?(
+      [
+        "connect_failed",
+        "connection_refused",
+        "econnrefused",
+        "websocket_client_not_configured",
+        "client_not_configured",
+        "no_websocket_client"
+      ],
+      &String.contains?(normalized, &1)
+    )
+  end
+
+  defp ws_safe_setup_error?(_reason), do: false
 
   defp fallback_to_responses_sse(request, emit_fn) do
     stream_responses_sse(request, emit_fn)

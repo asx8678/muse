@@ -86,6 +86,38 @@ defmodule Muse.LLM.OpenAI.ResponsesWebSocket.RequestBuilderTest do
       assert msg =~ "userinfo"
     end
 
+    test "rejects base_url with query without leaking the query" do
+      request = base_request(options: %{base_url: "https://api.openai.com/v1?api_key=sk-secret"})
+      assert {:error, {:invalid_base_url, msg}} = RequestBuilder.build(request)
+      assert msg =~ "query"
+      refute msg =~ "sk-secret"
+      refute msg =~ "api_key"
+    end
+
+    test "rejects base_url with fragment without leaking the fragment" do
+      request = base_request(options: %{base_url: "https://api.openai.com/v1#token=sk-secret"})
+      assert {:error, {:invalid_base_url, msg}} = RequestBuilder.build(request)
+      assert msg =~ "fragment"
+      refute msg =~ "sk-secret"
+      refute msg =~ "token"
+    end
+
+    test "rejects base_url with control characters" do
+      request =
+        base_request(options: %{base_url: "https://api.openai.com/v1\r\nX-Secret: sk-secret"})
+
+      assert {:error, {:invalid_base_url, msg}} = RequestBuilder.build(request)
+      assert msg =~ "control characters"
+      refute msg =~ "sk-secret"
+      refute msg =~ "X-Secret"
+    end
+
+    test "rejects base_url with NUL control character" do
+      request = base_request(options: %{base_url: "https://api.openai.com/v1" <> <<0>>})
+      assert {:error, {:invalid_base_url, msg}} = RequestBuilder.build(request)
+      assert msg =~ "control characters"
+    end
+
     test "rejects base_url with unsupported scheme" do
       request = base_request(options: %{base_url: "ftp://api.openai.com/v1"})
       assert {:error, {:invalid_base_url, msg}} = RequestBuilder.build(request)
@@ -122,6 +154,44 @@ defmodule Muse.LLM.OpenAI.ResponsesWebSocket.RequestBuilderTest do
 
       assert {:error, {:invalid_websocket_url, msg}} = RequestBuilder.build(request)
       assert msg =~ "userinfo"
+    end
+
+    test "rejects websocket_url with query without leaking the query" do
+      request =
+        base_request(
+          options: %{websocket_url: "wss://api.openai.com/v1/responses?api_key=sk-secret"}
+        )
+
+      assert {:error, {:invalid_websocket_url, msg}} = RequestBuilder.build(request)
+      assert msg =~ "query"
+      refute msg =~ "sk-secret"
+      refute msg =~ "api_key"
+    end
+
+    test "rejects websocket_url with fragment without leaking the fragment" do
+      request =
+        base_request(
+          options: %{websocket_url: "wss://api.openai.com/v1/responses#token=sk-secret"}
+        )
+
+      assert {:error, {:invalid_websocket_url, msg}} = RequestBuilder.build(request)
+      assert msg =~ "fragment"
+      refute msg =~ "sk-secret"
+      refute msg =~ "token"
+    end
+
+    test "rejects websocket_url with control characters" do
+      request =
+        base_request(
+          options: %{
+            websocket_url: "wss://api.openai.com/v1/responses\r\nAuthorization: Bearer sk-secret"
+          }
+        )
+
+      assert {:error, {:invalid_websocket_url, msg}} = RequestBuilder.build(request)
+      assert msg =~ "control characters"
+      refute msg =~ "sk-secret"
+      refute msg =~ "Authorization"
     end
   end
 

@@ -216,6 +216,54 @@ defmodule Muse.LLM.Transport.WebSocket.StreamTest do
       refute summary =~ "sk-redaction-secret"
       refute summary =~ "token=top-secret"
     end
+
+    test "rejects lower-level websocket URL with query without leaking it" do
+      assert {:error, {:transport_error, summary}} =
+               Stream.request(
+                 [
+                   url: "wss://api.test.example/v1/responses?api_key=sk-secret",
+                   create_frame: "response.create"
+                 ],
+                 fn frame -> send(self(), {:unexpected_frame, frame}) end
+               )
+
+      assert summary =~ "websocket_url_contains_query"
+      refute summary =~ "sk-secret"
+      refute summary =~ "api_key"
+      refute_received {:unexpected_frame, _frame}
+    end
+
+    test "rejects lower-level websocket URL with fragment without leaking it" do
+      assert {:error, {:transport_error, summary}} =
+               Stream.request(
+                 [
+                   url: "wss://api.test.example/v1/responses#token=sk-secret",
+                   create_frame: "response.create"
+                 ],
+                 fn frame -> send(self(), {:unexpected_frame, frame}) end
+               )
+
+      assert summary =~ "websocket_url_contains_fragment"
+      refute summary =~ "sk-secret"
+      refute summary =~ "token"
+      refute_received {:unexpected_frame, _frame}
+    end
+
+    test "rejects lower-level websocket URL with control characters without leaking it" do
+      assert {:error, {:transport_error, summary}} =
+               Stream.request(
+                 [
+                   url: "wss://api.test.example/v1/responses\r\nAuthorization: Bearer sk-secret",
+                   create_frame: "response.create"
+                 ],
+                 fn frame -> send(self(), {:unexpected_frame, frame}) end
+               )
+
+      assert summary =~ "websocket_url_contains_control_characters"
+      refute summary =~ "sk-secret"
+      refute summary =~ "Authorization"
+      refute_received {:unexpected_frame, _frame}
+    end
   end
 
   defp ok_connect_fn(parent) do

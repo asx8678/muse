@@ -112,7 +112,7 @@ defmodule Muse.LLM.OpenAI.ResponsesStreamDecoderTest do
         }
       })
       |> then(fn {state, _} ->
-        {state, events} =
+        {_state, events} =
           ResponsesStreamDecoder.feed(state, %{
             "type" => "response.function_call_arguments.delta",
             "item_id" => "call_1",
@@ -236,7 +236,7 @@ defmodule Muse.LLM.OpenAI.ResponsesStreamDecoderTest do
       state = ResponsesStreamDecoder.new()
       {state, _} = ResponsesStreamDecoder.feed(state, %{"type" => "response.failed"})
 
-      {state, events} =
+      {_state, events} =
         ResponsesStreamDecoder.feed(state, %{
           "type" => "response.output_text.delta",
           "delta" => "Should be ignored"

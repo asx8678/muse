@@ -18,8 +18,9 @@ defmodule Muse.LLM.OpenAI.ResponsesWebSocket.RequestBuilder do
     * Carries explicit headers from `request.options[:headers]`; does not read
       env vars or synthesize Authorization headers.
     * Timeout/retry options forwarded from `request.options`.
-    * Validates `base_url`/`websocket_url` is ws/wss with a host, no userinfo.
-      Returns `{:error, reason}` — never raises.
+    * Validates `base_url`/`websocket_url` has an allowed scheme and host, with
+      no userinfo, query, fragment, or control characters. Returns
+      `{:error, reason}` — never raises.
 
   ## Supported `wire_api` values
 
@@ -132,37 +133,36 @@ defmodule Muse.LLM.OpenAI.ResponsesWebSocket.RequestBuilder do
         {:error, {:invalid_base_url, "base_url must be a string"}}
 
       value when is_binary(value) ->
-        if String.trim(value) == "" do
-          {:error, {:missing_base_url, "base_url is required for OpenAI WebSocket requests"}}
-        else
-          {:ok, value}
+        cond do
+          contains_control_character?(value) ->
+            {:error, {:invalid_base_url, "base_url must not contain control characters"}}
+
+          String.trim(value) == "" ->
+            {:error, {:missing_base_url, "base_url is required for OpenAI WebSocket requests"}}
+
+          true ->
+            {:ok, value}
         end
     end
   end
 
   defp base_url_to_websocket_url(base_url) do
-    trimmed = String.trim_trailing(base_url, "/")
-    path = ResponsesMapper.endpoint_path()
+    case URI.parse(base_url) do
+      %URI{scheme: scheme, host: host} = uri
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        cond do
+          has_component?(uri.userinfo) ->
+            {:error,
+             {:invalid_base_url, "base_url must not contain embedded credentials (userinfo)"}}
 
-    case URI.parse(trimmed) do
-      %URI{scheme: "https", host: host, userinfo: userinfo}
-      when is_binary(host) and host != "" ->
-        if has_userinfo?(userinfo) do
-          {:error,
-           {:invalid_base_url, "base_url must not contain embedded credentials (userinfo)"}}
-        else
-          ws_url = String.replace_prefix(trimmed, "https", "wss") <> path
-          {:ok, ws_url}
-        end
+          has_component?(uri.query) ->
+            {:error, {:invalid_base_url, "base_url must not contain query parameters"}}
 
-      %URI{scheme: "http", host: host, userinfo: userinfo}
-      when is_binary(host) and host != "" ->
-        if has_userinfo?(userinfo) do
-          {:error,
-           {:invalid_base_url, "base_url must not contain embedded credentials (userinfo)"}}
-        else
-          ws_url = String.replace_prefix(trimmed, "http", "ws") <> path
-          {:ok, ws_url}
+          has_component?(uri.fragment) ->
+            {:error, {:invalid_base_url, "base_url must not contain URL fragments"}}
+
+          true ->
+            {:ok, rebuild_base_url_as_websocket(uri)}
         end
 
       %URI{scheme: scheme} when is_binary(scheme) and scheme != "" ->
@@ -184,23 +184,36 @@ defmodule Muse.LLM.OpenAI.ResponsesWebSocket.RequestBuilder do
   end
 
   defp validate_websocket_url(url) when is_binary(url) do
-    if String.trim(url) == "" do
-      {:error, {:missing_websocket_url, "websocket_url must not be empty"}}
-    else
-      validate_websocket_url_parsed(url)
+    cond do
+      contains_control_character?(url) ->
+        {:error, {:invalid_websocket_url, "websocket_url must not contain control characters"}}
+
+      String.trim(url) == "" ->
+        {:error, {:missing_websocket_url, "websocket_url must not be empty"}}
+
+      true ->
+        validate_websocket_url_parsed(url)
     end
   end
 
   defp validate_websocket_url_parsed(url) do
     case URI.parse(url) do
-      %URI{scheme: scheme, host: host, userinfo: userinfo}
+      %URI{scheme: scheme, host: host} = uri
       when scheme in ["ws", "wss"] and is_binary(host) and host != "" ->
-        if has_userinfo?(userinfo) do
-          {:error,
-           {:invalid_websocket_url,
-            "websocket_url must not contain embedded credentials (userinfo)"}}
-        else
-          {:ok, url}
+        cond do
+          has_component?(uri.userinfo) ->
+            {:error,
+             {:invalid_websocket_url,
+              "websocket_url must not contain embedded credentials (userinfo)"}}
+
+          has_component?(uri.query) ->
+            {:error, {:invalid_websocket_url, "websocket_url must not contain query parameters"}}
+
+          has_component?(uri.fragment) ->
+            {:error, {:invalid_websocket_url, "websocket_url must not contain URL fragments"}}
+
+          true ->
+            {:ok, url}
         end
 
       %URI{scheme: scheme} when is_binary(scheme) and scheme != "" ->
@@ -309,9 +322,37 @@ defmodule Muse.LLM.OpenAI.ResponsesWebSocket.RequestBuilder do
     end
   end
 
-  defp has_userinfo?(nil), do: false
-  defp has_userinfo?(""), do: false
-  defp has_userinfo?(_), do: true
+  defp rebuild_base_url_as_websocket(%URI{} = uri) do
+    scheme = if uri.scheme == "https", do: "wss", else: "ws"
+
+    %URI{
+      scheme: scheme,
+      authority: nil,
+      userinfo: nil,
+      host: uri.host,
+      port: uri.port,
+      path: websocket_path(uri.path),
+      query: nil,
+      fragment: nil
+    }
+    |> URI.to_string()
+  end
+
+  defp websocket_path(path) when is_binary(path) do
+    String.trim_trailing(path, "/") <> ResponsesMapper.endpoint_path()
+  end
+
+  defp websocket_path(_path), do: ResponsesMapper.endpoint_path()
+
+  defp has_component?(nil), do: false
+  defp has_component?(""), do: false
+  defp has_component?(_), do: true
+
+  defp contains_control_character?(value) when is_binary(value) do
+    value
+    |> :binary.bin_to_list()
+    |> Enum.any?(fn byte -> byte < 32 or byte == 127 end)
+  end
 
   # Redact the scheme for error messages — never leak full URLs in errors.
   defp redact_scheme(scheme), do: scheme <> "://[REDACTED]"

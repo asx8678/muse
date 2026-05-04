@@ -261,13 +261,26 @@ defmodule Muse.LLM.Transport.WebSocket.Stream do
   defp missing_reason(:create_frame), do: :missing_create_frame
 
   defp validate_url(url) when is_binary(url) do
+    cond do
+      contains_control_character?(url) ->
+        {:error, :websocket_url_contains_control_characters}
+
+      true ->
+        validate_parsed_url(url)
+    end
+  end
+
+  defp validate_url(_url), do: {:error, :invalid_websocket_url}
+
+  defp validate_parsed_url(url) do
     case URI.parse(url) do
-      %URI{scheme: scheme, host: host, userinfo: userinfo}
+      %URI{scheme: scheme, host: host} = uri
       when scheme in ["ws", "wss"] and is_binary(host) and host != "" ->
-        if userinfo in [nil, ""] do
-          {:ok, url}
-        else
-          {:error, :websocket_url_contains_userinfo}
+        cond do
+          has_component?(uri.userinfo) -> {:error, :websocket_url_contains_userinfo}
+          has_component?(uri.query) -> {:error, :websocket_url_contains_query}
+          has_component?(uri.fragment) -> {:error, :websocket_url_contains_fragment}
+          true -> {:ok, url}
         end
 
       _other ->
@@ -275,7 +288,15 @@ defmodule Muse.LLM.Transport.WebSocket.Stream do
     end
   end
 
-  defp validate_url(_url), do: {:error, :invalid_websocket_url}
+  defp has_component?(nil), do: false
+  defp has_component?(""), do: false
+  defp has_component?(_component), do: true
+
+  defp contains_control_character?(value) when is_binary(value) do
+    value
+    |> :binary.bin_to_list()
+    |> Enum.any?(fn byte -> byte < 32 or byte == 127 end)
+  end
 
   defp option_value(options, key, default \\ nil)
 
