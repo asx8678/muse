@@ -1,6 +1,6 @@
 defmodule Muse.LLM.OpenAI.RequestBuilder do
   @moduledoc """
-  Builds a non-streaming Chat Completions HTTP request spec from a `Muse.LLM.Request`.
+  Builds pure Chat Completions HTTP request specs from a `Muse.LLM.Request`.
 
   This module is pure data preparation — it constructs a request specification
   (URL, headers, payload, Req options) but performs no HTTP calls. The spec can
@@ -10,16 +10,19 @@ defmodule Muse.LLM.OpenAI.RequestBuilder do
 
     * Uses `Muse.LLM.OpenAI.ChatCompletionsMapper.to_payload/1` for the wire
       payload and `endpoint_path/0` for the path component.
-    * **Forces `"stream" => false`** in the payload regardless of the incoming
-      `request.stream` value. Non-streaming is the only mode supported in PR12.
+    * `build_chat_completions/1` **forces `"stream" => false`** in the payload
+      regardless of the incoming `request.stream` value.
+    * `build_chat_completions_stream/1` **forces `"stream" => true`**, adds
+      default stream usage options, and prepares SSE-friendly headers.
     * Resolves `base_url` from `request.options[:base_url]` or
       `request.options["base_url"]`; trims trailing slashes and appends
       `/chat/completions` exactly once.
     * Validates `base_url` is HTTP(S), has a host, and uses no unsupported
       scheme. Returns `{:error, reason}` — never raises.
     * Carries explicit headers from `request.options[:headers]` or
-      `request.options["headers"]`. Does **not** read env vars or synthesize
-      auth headers in PR12.
+      `request.options["headers"]`. Streaming specs add
+      `Accept: text/event-stream` unless the caller already provided an Accept
+      header. Does **not** read env vars or synthesize auth headers.
     * Carries `timeout_ms` and `max_retries` from `request.options` when valid.
     * The result payload and headers are JSON/request-safe: no atom keys, no
       `metadata`, `options`, or debug data.
@@ -36,6 +39,8 @@ defmodule Muse.LLM.OpenAI.RequestBuilder do
 
   alias Muse.LLM.OpenAI.ChatCompletionsMapper
   alias Muse.LLM.Request
+
+  @default_stream_options %{"include_usage" => true}
 
   @type spec :: %{
           url: String.t(),
@@ -74,6 +79,48 @@ defmodule Muse.LLM.OpenAI.RequestBuilder do
         |> Map.put("stream", false)
 
       headers = resolve_headers(request.options)
+      req_options = resolve_req_options(request.options)
+
+      {:ok,
+       %{
+         url: url,
+         endpoint_path: ChatCompletionsMapper.endpoint_path(),
+         payload: payload,
+         headers: headers,
+         req_options: req_options
+       }}
+    end
+  end
+
+  @doc """
+  Build a streaming Chat Completions request spec from a `Muse.LLM.Request`.
+
+  Returns `{:ok, spec}` or `{:error, reason}`.
+
+  The streaming spec uses the same URL, payload mapper, caller headers, and Req
+  option handling as `build_chat_completions/1`, with streaming-specific wire
+  settings:
+
+    * `"stream" => true` is forced in the payload
+    * `"stream_options" => %{"include_usage" => true}` is included by default
+    * `Accept: text/event-stream` is added unless an Accept header already exists
+  """
+  @spec build_chat_completions_stream(Request.t()) :: {:ok, spec()} | {:error, error_reason()}
+  def build_chat_completions_stream(%Request{} = request) do
+    with :ok <- validate_wire_api(request.wire_api),
+         {:ok, base_url} <- resolve_base_url(request.options),
+         {:ok, url} <- build_url(base_url) do
+      payload =
+        request
+        |> ChatCompletionsMapper.to_payload()
+        |> Map.put("stream", true)
+        |> put_stream_options(request.options)
+
+      headers =
+        request.options
+        |> resolve_headers()
+        |> ensure_sse_accept_header()
+
       req_options = resolve_req_options(request.options)
 
       {:ok,
@@ -167,6 +214,18 @@ defmodule Muse.LLM.OpenAI.RequestBuilder do
 
   defp resolve_headers(_options), do: []
 
+  defp ensure_sse_accept_header(headers) do
+    if has_header?(headers, "accept") do
+      headers
+    else
+      headers ++ [{"Accept", "text/event-stream"}]
+    end
+  end
+
+  defp has_header?(headers, wanted_name) do
+    Enum.any?(headers, fn {name, _value} -> String.downcase(name) == wanted_name end)
+  end
+
   defp normalize_headers(headers) when is_map(headers) do
     headers
     |> Enum.flat_map(fn
@@ -186,6 +245,37 @@ defmodule Muse.LLM.OpenAI.RequestBuilder do
     end)
     |> Enum.sort_by(fn {k, _v} -> k end)
   end
+
+  # ---------------------------------------------------------------------------
+  # Streaming options resolution
+  # ---------------------------------------------------------------------------
+
+  defp put_stream_options(payload, options) do
+    case resolve_stream_options(options) do
+      :omit -> Map.delete(payload, "stream_options")
+      stream_options -> Map.put(payload, "stream_options", stream_options)
+    end
+  end
+
+  defp resolve_stream_options(options) when is_map(options) do
+    case fetch_stream_options(options) do
+      {:ok, value} -> normalize_stream_options(value)
+      :error -> @default_stream_options
+    end
+  end
+
+  defp resolve_stream_options(_options), do: @default_stream_options
+
+  defp fetch_stream_options(options) do
+    case Map.fetch(options, :stream_options) do
+      {:ok, value} -> {:ok, value}
+      :error -> Map.fetch(options, "stream_options")
+    end
+  end
+
+  defp normalize_stream_options(value) when value in [nil, false], do: :omit
+  defp normalize_stream_options(value) when is_map(value), do: json_value(value)
+  defp normalize_stream_options(_value), do: @default_stream_options
 
   # ---------------------------------------------------------------------------
   # Req options resolution
@@ -221,6 +311,25 @@ defmodule Muse.LLM.OpenAI.RequestBuilder do
       :error -> nil
     end
   end
+
+  defp json_value(value)
+       when is_binary(value) or is_boolean(value) or is_number(value) or is_nil(value) do
+    value
+  end
+
+  defp json_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp json_value(value) when is_list(value), do: Enum.map(value, &json_value/1)
+
+  defp json_value(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} -> {json_key(key), json_value(nested_value)} end)
+  end
+
+  defp json_value(value), do: inspect(value, limit: :infinity, printable_limit: :infinity)
+
+  defp json_key(key) when is_binary(key), do: key
+  defp json_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp json_key(key) when is_number(key), do: to_string(key)
+  defp json_key(key), do: inspect(key, limit: :infinity, printable_limit: :infinity)
 
   # Redact the scheme for error messages — never leak full URLs in errors.
   defp redact_url(scheme), do: scheme <> "://[REDACTED]"
