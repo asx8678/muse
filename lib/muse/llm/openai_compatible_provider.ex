@@ -1,35 +1,61 @@
 defmodule Muse.LLM.OpenAICompatibleProvider do
   @moduledoc """
-  OpenAI-compatible non-streaming provider adapter.
+  OpenAI-compatible provider adapter with SSE streaming support.
 
-  This provider performs a single Chat Completions-compatible HTTP POST, decodes
-  the complete response into Muse's normalized response struct, and can replay
-  the result as canonical Muse LLM events for callers using `stream/2`.
+  This provider performs a single Chat Completions-compatible HTTP POST and
+  decodes the complete response into Muse's normalized response struct.
+  When the caller selects SSE transport (`request.transport == :sse` or
+  `request.options[:transport] == :sse`), `stream/2` opens an HTTP stream
+  and emits canonical events incrementally as chunks arrive.
 
-  This adapter keeps auth resolution centralized in `Muse.Auth.Resolver`:
+  ## Transport selection
 
-    * no SSE parser
-    * no WebSocket client
-    * fake provider remains the offline/default provider
-    * configured auth modes resolve before any HTTP call
+  * `transport == :sse` (on request struct or `request.options[:transport]`):
+    streaming Chat Completions with `"stream" => true`, real SSE parsing,
+    incremental event emission.
+  * Otherwise (default): non-streaming POST with full-response replay.
 
-  Callers may pass explicit headers through `request.options[:headers]`; those
-  headers are sent to the provider but are never included in returned/emitted
-  error data. If an explicit `Authorization` header is present, it wins and the
-  auth layer does not overwrite or duplicate it.
+  ## Auth
+
+  Auth resolution is centralized in `Muse.Auth.Resolver`. Callers may pass
+  explicit headers through `request.options[:headers]`; those headers are sent
+  to the provider but are never included in returned/emitted error data. If an
+  explicit `Authorization` header is present, it wins and the auth layer does
+  not overwrite or duplicate it.
+
+  ## SSE function injection
+
+  For SSE streaming, callers can inject an `sse_post_fn` via
+  `request.options[:sse_post_fn]` to avoid network calls in tests. The shape
+  is:
+
+      sse_post_fn = fn url, req_options, on_chunk ->
+        on_chunk.(raw_sse_chunk)
+        {:ok, %{status: 200}}
+      end
+
+  `on_chunk` is a one-arity function receiving raw SSE text (possibly partial).
+  The injected function must call `on_chunk` zero or more times and return
+  `{:ok, %{status: integer}}` or `{:error, reason}`.
+
+  The default `sse_post_fn` uses `Req.post/2` with `into: fun` streaming.
   """
 
   @behaviour Muse.LLM.Provider
 
   alias Muse.Auth.Resolver
   alias Muse.{EventPayloadRedactor, MetadataSanitizer}
-  alias Muse.LLM.OpenAI.RequestBuilder
+  alias Muse.LLM.OpenAI.{ChatCompletionsStreamDecoder, RequestBuilder}
+  alias Muse.LLM.Transport.SSE.Parser, as: SSEParser
   alias Muse.LLM.{Event, Request, Response, ToolCall}
 
   @chat_completions_decoder Module.concat(Muse.LLM.OpenAI, ChatCompletionsDecoder)
   @max_summary_string_length 500
 
   @type post_fn :: (String.t(), keyword() -> {:ok, term()} | {:error, term()})
+  @type sse_post_fn ::
+          (String.t(), keyword(), (String.t() -> :ok) ->
+             {:ok, %{status: integer()}} | {:error, term()})
 
   @doc """
   Complete a request through an OpenAI-compatible Chat Completions endpoint.
@@ -54,15 +80,195 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   def complete(%Request{}, _opts), do: {:error, {:invalid_options, "opts must be a keyword list"}}
 
   @doc """
-  Emit canonical Muse events by performing the same non-streaming HTTP call.
+  Stream a request, emitting canonical Muse events incrementally.
 
-  Because the provider behaviour only passes `(request, emit_fn)` for streaming,
-  offline tests may inject a post function via `request.options[:post_fn]` or
-  `request.options[:http_post]`.
+  ## Transport dispatch
+
+    * When `request.transport == :sse` or `request.options[:transport] == :sse`,
+      opens an SSE streaming connection and emits events incrementally.
+    * Otherwise, performs a non-streaming POST and replays the full response
+      as events.
+
+  ## Injection
+
+  Non-SSE path: inject `post_fn` or `http_post` in `request.options`.
+  SSE path: inject `sse_post_fn` in `request.options`.
   """
   @impl true
   @spec stream(Request.t(), (Event.t() -> :ok)) :: {:ok, Response.t()} | {:error, term()}
   def stream(%Request{} = request, emit_fn) when is_function(emit_fn, 1) do
+    if sse_transport?(request) do
+      stream_sse(request, emit_fn)
+    else
+      stream_non_streaming(request, emit_fn)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # SSE streaming path
+  # ---------------------------------------------------------------------------
+
+  defp sse_transport?(%Request{transport: :sse}), do: true
+
+  defp sse_transport?(%Request{options: %{transport: :sse}}), do: true
+  defp sse_transport?(%Request{options: %{"transport" => :sse}}), do: true
+
+  defp sse_transport?(_request), do: false
+
+  defp stream_sse(request, emit_fn) do
+    with {:ok, spec} <- build_sse_spec(request),
+         {:ok, spec} <- attach_auth(spec, request, []),
+         {:ok, sse_post_fn} <- resolve_sse_post_fn(request.options) do
+      # We accumulate state in the process dictionary to allow the on_chunk
+      # callback to mutate state across calls. This is safe because stream/2
+      # is synchronous and single-threaded.
+      Process.put(:muse_sse_decoder_acc, ChatCompletionsStreamDecoder.new())
+      Process.put(:muse_sse_buffer, "")
+      Process.put(:muse_sse_emit_fn, emit_fn)
+
+      try do
+        on_chunk = fn raw_chunk when is_binary(raw_chunk) ->
+          handle_sse_chunk(raw_chunk)
+        end
+
+        case safe_sse_post(sse_post_fn, spec.url, sse_request_options(spec), on_chunk) do
+          {:ok, %{status: status}} when is_integer(status) and status >= 200 and status <= 299 ->
+            acc = Process.get(:muse_sse_decoder_acc)
+            {final_events, response} = ChatCompletionsStreamDecoder.finalize(acc)
+            Enum.each(final_events, &emit_fn.(&1))
+            {:ok, response}
+
+          {:ok, %{status: status}} when is_integer(status) ->
+            redacted = {:provider_http_error, %{status: status}}
+            emit_fn.(Event.provider_error(redacted))
+            {:error, redacted}
+
+          {:ok, other} ->
+            redacted = redact_error({:unexpected_sse_response, other})
+            emit_fn.(Event.provider_error(redacted))
+            {:error, redacted}
+
+          {:error, reason} ->
+            redacted = redact_error({:sse_transport_error, reason})
+            emit_fn.(Event.provider_error(redacted))
+            {:error, redacted}
+        end
+      after
+        Process.delete(:muse_sse_decoder_acc)
+        Process.delete(:muse_sse_buffer)
+        Process.delete(:muse_sse_emit_fn)
+      end
+    else
+      {:error, reason} ->
+        redacted = redact_error(reason)
+        emit_fn.(Event.provider_error(redacted))
+        {:error, redacted}
+    end
+  end
+
+  defp handle_sse_chunk(raw_chunk) do
+    acc = Process.get(:muse_sse_decoder_acc)
+    buffer = Process.get(:muse_sse_buffer)
+    emit = Process.get(:muse_sse_emit_fn)
+
+    {sse_events, new_buffer} = SSEParser.parse(raw_chunk, buffer)
+    Process.put(:muse_sse_buffer, new_buffer)
+
+    Enum.each(sse_events, fn %{data: data} ->
+      if SSEParser.done_sentinel?(data) do
+        :ok
+      else
+        case Jason.decode(data) do
+          {:ok, chunk_map} when is_map(chunk_map) ->
+            {events, new_acc} = ChatCompletionsStreamDecoder.decode_chunk(chunk_map, acc)
+            Process.put(:muse_sse_decoder_acc, new_acc)
+            _acc = new_acc
+            Enum.each(events, &emit.(&1))
+
+          {:ok, _other} ->
+            :ok
+
+          {:error, _reason} ->
+            # Decode error in a chunk — emit provider_error but continue
+            redacted = redact_error({:sse_decode_error, "(redacted chunk data)"})
+            emit.(Event.provider_error(redacted))
+        end
+      end
+    end)
+
+    :ok
+  end
+
+  defp build_sse_spec(request) do
+    case RequestBuilder.build_chat_completions(request) do
+      {:ok, spec} ->
+        # Override stream flag to true for SSE
+        {:ok, %{spec | payload: Map.put(spec.payload, "stream", true)}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp resolve_sse_post_fn(opts) when is_map(opts) do
+    case Map.get(opts, :sse_post_fn) do
+      nil ->
+        {:ok, &default_sse_post/3}
+
+      sse_post_fn when is_function(sse_post_fn, 3) ->
+        {:ok, sse_post_fn}
+
+      _other ->
+        {:error, {:invalid_sse_post_fn, "sse_post_fn must be a three-arity function"}}
+    end
+  end
+
+  defp resolve_sse_post_fn(_opts), do: {:ok, &default_sse_post/3}
+
+  # Default SSE post using Req streaming.
+  # Isolated behind a private function so tests never call real network.
+  # Req 0.5+ supports `into: fun` for streaming response bodies.
+  @doc false
+  defp default_sse_post(url, req_options, on_chunk) do
+    stream_options =
+      req_options ++
+        [
+          into: fn {:data, chunk}, acc ->
+            on_chunk.(chunk)
+            {:cont, acc}
+          end
+        ]
+
+    case Req.post(url, stream_options) do
+      {:ok, %Req.Response{status: status} = _response} ->
+        {:ok, %{status: status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  rescue
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp safe_sse_post(sse_post_fn, url, req_options, on_chunk) do
+    sse_post_fn.(url, req_options, on_chunk)
+  rescue
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp sse_request_options(spec) do
+    [json: spec.payload, headers: spec.headers] ++ spec.req_options
+  end
+
+  # ---------------------------------------------------------------------------
+  # Non-streaming replay path (PR12/PR13 preserved)
+  # ---------------------------------------------------------------------------
+
+  defp stream_non_streaming(request, emit_fn) do
     opts = request_options(request)
 
     result =
@@ -494,10 +700,13 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   defp atom_key("choices"), do: :choices
   defp atom_key("completion_tokens"), do: :completion_tokens
   defp atom_key("content"), do: :content
+  defp atom_key("delta"), do: :delta
   defp atom_key("finish_reason"), do: :finish_reason
   defp atom_key("function"), do: :function
   defp atom_key("id"), do: :id
+  defp atom_key("index"), do: :index
   defp atom_key("message"), do: :message
+  defp atom_key("model"), do: :model
   defp atom_key("name"), do: :name
   defp atom_key("prompt_tokens"), do: :prompt_tokens
   defp atom_key("tool_calls"), do: :tool_calls
