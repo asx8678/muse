@@ -36,6 +36,8 @@ defmodule Muse.Prompt.ModelPreparer do
     * `:temperature` — float override
     * `:max_tokens`  — max output tokens
     * `:store`       — whether the provider should persist the response
+    * `:response_format` — structured output format when the bundle has none
+    * `:previous_response_id` — provider conversation continuity token
 
   ## Examples
 
@@ -84,12 +86,13 @@ defmodule Muse.Prompt.ModelPreparer do
       messages: bundle.messages,
       prompt_bundle: bundle,
       tools: bundle.tools,
-      tool_choice: opts[:tool_choice],
+      tool_choice: option_or_config(opts, provider_map, :tool_choice),
+      previous_response_id: option_or_config(opts, provider_map, :previous_response_id),
       stream: Keyword.get(opts, :stream, true),
-      store: opts[:store],
-      temperature: opts[:temperature],
-      max_tokens: opts[:max_tokens],
-      response_format: bundle.response_format || opts[:response_format],
+      store: option_or_config(opts, provider_map, :store),
+      temperature: option_or_config(opts, provider_map, :temperature),
+      max_tokens: option_or_config(opts, provider_map, :max_tokens),
+      response_format: bundle.response_format || option_or_config(opts, provider_map, :response_format),
       metadata: %{
         bundle_id: bundle.id,
         muse_id: bundle.muse_id,
@@ -97,5 +100,13 @@ defmodule Muse.Prompt.ModelPreparer do
       },
       options: Map.drop(provider_map, [:provider, :wire_api, :transport])
     }
+  end
+
+  defp option_or_config(opts, provider_map, key, default \\ nil) do
+    if Keyword.has_key?(opts, key) do
+      Keyword.fetch!(opts, key)
+    else
+      Map.get(provider_map, key, default)
+    end
   end
 end
