@@ -93,6 +93,20 @@ defmodule Muse.Prompt.ModelPreparerTest do
       assert request.transport == :sse
     end
 
+    test "keeps fake provider scripting options in request options", %{bundle: bundle} do
+      fake_events = [%{type: :assistant_delta, text: "scripted"}]
+
+      request =
+        ModelPreparer.to_request(bundle,
+          provider: :fake,
+          fake_events: fake_events,
+          fake_error: :scripted_failure
+        )
+
+      assert request.options.fake_events == fake_events
+      assert request.options.fake_error == :scripted_failure
+    end
+
     test "opts override provider config", %{bundle: bundle} do
       request =
         ModelPreparer.to_request(
@@ -169,6 +183,29 @@ defmodule Muse.Prompt.ModelPreparerTest do
       request = ModelPreparer.to_request(bundle, %{provider: :fake})
       assert request.provider == :fake
     end
+
+    test "uses provider map defaults for mapper options but opts win", %{bundle: bundle} do
+      fallback_request =
+        ModelPreparer.to_request(bundle, %{
+          provider: :fake,
+          temperature: 0.2,
+          max_tokens: 512
+        })
+
+      assert fallback_request.temperature == 0.2
+      assert fallback_request.max_tokens == 512
+
+      override_request =
+        ModelPreparer.to_request(
+          bundle,
+          %{provider: :fake, temperature: 0.2, max_tokens: 512},
+          temperature: 0.7,
+          max_tokens: 4096
+        )
+
+      assert override_request.temperature == 0.7
+      assert override_request.max_tokens == 4096
+    end
   end
 
   describe "to_request/3 model fallback" do
@@ -221,6 +258,23 @@ defmodule Muse.Prompt.ModelPreparerTest do
     test "includes max_tokens when provided", %{bundle: bundle} do
       request = ModelPreparer.to_request(bundle, [], max_tokens: 4096)
       assert request.max_tokens == 4096
+    end
+
+    test "includes store, response_format, and previous_response_id when provided", %{
+      bundle: bundle
+    } do
+      response_format = %{type: "json_object"}
+
+      request =
+        ModelPreparer.to_request(bundle, [],
+          store: false,
+          response_format: response_format,
+          previous_response_id: "resp_previous_123"
+        )
+
+      assert request.store == false
+      assert request.response_format == response_format
+      assert request.previous_response_id == "resp_previous_123"
     end
   end
 

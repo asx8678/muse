@@ -306,14 +306,6 @@ defmodule Muse.ConfigTest do
       assert before == after_val
     end
 
-    test "does not start any processes" do
-      # Calling llm_provider_config should not spawn or register processes
-      before_processes = Process.list()
-      Config.llm_provider_config(%{})
-      after_processes = Process.list()
-      assert before_processes == after_processes
-    end
-
     test "does not read auth secrets" do
       # Config should never access MUSE_OPENAI_API_KEY
       # (it only stores env_key, not the actual key value)

@@ -92,7 +92,8 @@ defmodule Muse.Prompt.ModelPreparer do
       store: option_or_config(opts, provider_map, :store),
       temperature: option_or_config(opts, provider_map, :temperature),
       max_tokens: option_or_config(opts, provider_map, :max_tokens),
-      response_format: bundle.response_format || option_or_config(opts, provider_map, :response_format),
+      response_format:
+        bundle.response_format || option_or_config(opts, provider_map, :response_format),
       metadata: %{
         bundle_id: bundle.id,
         muse_id: bundle.muse_id,
