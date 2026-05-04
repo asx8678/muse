@@ -66,6 +66,7 @@ defmodule Muse.PlanHistory do
     [
       "Active Muse Plan status:",
       "- Active plan id: #{display_plan_id(plan)}",
+      "- Version: #{plan.version}",
       "- Plan status: #{format_status(plan.status)}",
       maybe_line(
         "- Session status: #{format_status(query.session_status)}",

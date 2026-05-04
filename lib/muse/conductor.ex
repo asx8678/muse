@@ -555,24 +555,22 @@ defmodule Muse.Conductor do
   # When the selected muse is :planning, attempts to parse the assistant
   # text as a structured plan via PlanParser. On success, replaces the
   # assistant message with Plan.render/1 output, emits :plan_created event,
-  # and transitions session to :awaiting_plan_approval. On failure, attempts
-  # one repair call to the provider. If repair also fails, returns the
-  # original result with a safe error message about invalid plan output.
+  # persists the plan on the session, and transitions the session to
+  # :awaiting_plan_approval. On failure, attempts one repair call to the
+  # provider only when the output carries plan-specific markers; plain text
+  # and generic non-plan JSON remain normal assistant responses.
   defp maybe_add_plan_to_result(result, session, turn, muse, start_time, opts) do
     if muse.id == :planning do
       assistant_text = result.assistant_text
 
-      case PlanParser.parse(assistant_text) do
+      case parse_plan_output(assistant_text) do
         {:ok, plan} ->
           finalize_as_plan(result, session, turn, muse, plan, start_time)
 
         {:error, _parse_errors} ->
-          # Only attempt repair if the text looks like it's trying to be JSON
-          # (starts with '{' or contains a fenced JSON code block or has JSON-like plan markers)
           if looks_like_plan_json?(assistant_text) do
             do_plan_repair(result, session, turn, muse, assistant_text, start_time, opts)
           else
-            # Plain text response from Planning Muse for non-plan queries — pass through
             {:ok, result}
           end
       end
@@ -581,13 +579,15 @@ defmodule Muse.Conductor do
     end
   end
 
-  # Check if text looks like it's trying to be a structured plan JSON
-  defp looks_like_plan_json?(text) when is_binary(text) do
-    trimmed = String.trim(text)
+  defp parse_plan_output(text) do
+    PlanParser.parse(text, extract: :auto)
+  end
 
-    String.starts_with?(trimmed, "{") or
-      String.starts_with?(trimmed, "```") or
-      String.contains?(text, "\"objective\"") or
+  # Check if text looks like it is trying to be structured plan JSON.
+  # A generic JSON object (for example {"status": "ok"}) is not enough:
+  # repair should only run when the output carries plan-specific markers.
+  defp looks_like_plan_json?(text) when is_binary(text) do
+    String.contains?(text, "\"objective\"") or
       String.contains?(text, "\"tasks\"") or
       String.contains?(text, "'objective'") or
       String.contains?(text, "'tasks'")
@@ -595,22 +595,21 @@ defmodule Muse.Conductor do
 
   defp looks_like_plan_json?(_), do: false
 
-  defp finalize_as_plan(result, _session, _turn, _muse, plan, _start_time) do
-    # Transition plan to awaiting_approval
-    {:ok, plan} = Plan.transition(plan, :awaiting_approval)
+  defp finalize_as_plan(result, _session, turn, muse, plan, _start_time) do
+    plan = prepare_plan_identity(plan, result.session, turn, muse)
 
-    # Build user-friendly text from plan render
+    {:ok, plan} = Plan.transition(plan, :awaiting_approval)
     plan_text = Plan.render(plan)
 
-    # Replace old specs with clean plan-oriented specs.
-    # We remove the old session_status_changed(:running, :idle)
-    # AND the old :assistant_message (which contained raw JSON text).
-    existing_specs = result.event_specs
-
+    # Remove the old session_status_changed(:running, :idle) plus every
+    # user-visible assistant delta/message that could contain raw structured
+    # JSON. Keeping streamed deltas would make EventStream render raw JSON or
+    # prose alongside the final rendered plan.
     clean_specs =
-      Enum.reject(existing_specs, fn
+      result.event_specs
+      |> drop_assistant_output_specs()
+      |> Enum.reject(fn
         {:conductor, :session_status_changed, %{to: :idle}, _opts} -> true
-        {:muse, :assistant_message, _data, _opts} -> true
         _ -> false
       end)
 
@@ -621,51 +620,143 @@ defmodule Muse.Conductor do
        %{
          plan_id: plan.id,
          version: plan.version,
-         objective: plan.objective,
+         objective: safe_objective_summary(plan.objective),
          task_count: length(plan.tasks)
        }, [visibility: :user]},
       session_status_changed_spec(:running, :awaiting_plan_approval)
     ]
 
-    all_specs = clean_specs ++ plan_specs
-
-    # Transition from running (already in result.session) to awaiting_plan_approval
     {:ok, plan_session} = Session.transition(result.session, :awaiting_plan_approval)
+    plan_session = store_plan_in_session(plan_session, plan)
 
-    # Build the result with plan data
     plan_result =
       result
       |> Map.put(:assistant_text, plan_text)
       |> Map.put(:session, plan_session)
-      |> Map.put(:event_specs, all_specs)
+      |> Map.put(:event_specs, clean_specs ++ plan_specs)
       |> Map.put(:plan, plan)
 
     {:ok, plan_result}
   end
+
+  defp prepare_plan_identity(%Plan{} = plan, %Session{} = session, %Turn{} = turn, muse) do
+    plan
+    |> put_plan_session_id(session)
+    |> put_plan_version(session)
+    |> put_plan_id(turn)
+    |> put_plan_created_by(muse)
+  end
+
+  defp put_plan_session_id(%Plan{} = plan, %Session{id: session_id}) do
+    put_plan_field_if_blank(plan, :session_id, session_id)
+  end
+
+  defp put_plan_version(%Plan{} = plan, %Session{} = session) do
+    version = max(plan_version(plan), next_plan_version(session))
+    %{plan | version: version}
+  end
+
+  defp next_plan_version(%Session{plans: plans}) when is_map(plans) and map_size(plans) > 0 do
+    plans
+    |> Map.values()
+    |> Enum.map(&plan_version/1)
+    |> Enum.max(fn -> 0 end)
+    |> Kernel.+(1)
+  end
+
+  defp next_plan_version(_session), do: 1
+
+  defp plan_version(%Plan{version: version}) when is_integer(version), do: version
+  defp plan_version(_plan), do: 0
+
+  defp put_plan_id(%Plan{} = plan, %Turn{id: turn_id}) do
+    put_plan_field_if_blank(plan, :id, generated_plan_id(turn_id))
+  end
+
+  defp put_plan_created_by(%Plan{} = plan, %{id: muse_id}) when is_atom(muse_id) do
+    put_plan_field_if_blank(plan, :created_by, Atom.to_string(muse_id))
+  end
+
+  defp put_plan_created_by(%Plan{} = plan, %{id: muse_id}) when is_binary(muse_id) do
+    put_plan_field_if_blank(plan, :created_by, muse_id)
+  end
+
+  defp put_plan_created_by(%Plan{} = plan, _muse), do: plan
+
+  defp put_plan_field_if_blank(plan, _field, nil), do: plan
+
+  defp put_plan_field_if_blank(plan, field, value) do
+    if blank_plan_field?(Map.get(plan, field)) do
+      Map.put(plan, field, value)
+    else
+      plan
+    end
+  end
+
+  defp blank_plan_field?(nil), do: true
+  defp blank_plan_field?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_plan_field?(_value), do: false
+
+  defp generated_plan_id(turn_id) when is_binary(turn_id) do
+    case sanitize_plan_id_part(turn_id) do
+      "" -> random_plan_id()
+      sanitized -> "plan_" <> sanitized
+    end
+  end
+
+  defp generated_plan_id(_turn_id), do: random_plan_id()
+
+  defp random_plan_id do
+    suffix =
+      :crypto.strong_rand_bytes(8)
+      |> Base.encode16(case: :lower)
+
+    "plan_#{suffix}"
+  end
+
+  defp sanitize_plan_id_part(value) do
+    value
+    |> String.trim()
+    |> String.replace(~r/[^A-Za-z0-9_.-]+/, "-")
+  end
+
+  defp store_plan_in_session(%Session{} = session, %Plan{} = plan) do
+    plans = Map.put(session.plans || %{}, plan.id, plan)
+
+    %{session | active_plan_id: plan.id, plans: plans}
+  end
+
+  defp drop_assistant_output_specs(event_specs) do
+    Enum.reject(event_specs, fn
+      {:muse, type, _data, _opts} when type in [:assistant_delta, :assistant_message] -> true
+      _ -> false
+    end)
+  end
+
+  defp safe_objective_summary(objective) when is_binary(objective) do
+    Redactor.preview_text(objective, max_length: 200)
+  end
+
+  defp safe_objective_summary(_objective), do: nil
 
   defp do_plan_repair(result, session, turn, muse, assistant_text, start_time, opts) do
     provider_module = Keyword.get(opts, :provider_module)
     request = Keyword.get(opts, :request)
 
     if is_nil(provider_module) or is_nil(request) do
-      # No provider available for repair (e.g. tool_loop without context) —
-      # return original result with safe error message
       {:ok, safe_invalid_plan_result(result, session)}
     else
-      # Build repair prompt from failed text
       errors =
-        case PlanParser.parse(assistant_text) do
+        case parse_plan_output(assistant_text) do
           {:error, errs} -> errs
           _ -> ["Invalid plan format"]
         end
 
       repair_prompt_text = PlanParser.repair_prompt(assistant_text, errors: errors)
+      request_options = request.options || %{}
 
-      # Create a repair message and rebuild request with tools disabled
-      # Increment fake_iteration so FakeProvider uses the next batch for repair
       repair_options =
-        request.options
-        |> Map.put(:fake_iteration, (request.options[:fake_iteration] || 0) + 1)
+        Map.put(request_options, :fake_iteration, (request_options[:fake_iteration] || 0) + 1)
 
       repair_message = Message.user(repair_prompt_text)
 
@@ -677,25 +768,21 @@ defmodule Muse.Conductor do
           options: repair_options
       }
 
-      # Call provider once for repair
       emit_fn = fn _llm_event -> :ok end
 
       case provider_module.stream(repair_request, emit_fn) do
         {:ok, repair_response} ->
           repair_text = repair_response.content || ""
 
-          case PlanParser.parse(repair_text) do
+          case parse_plan_output(repair_text) do
             {:ok, plan} ->
-              # Repair succeeded — finalize with plan
               finalize_as_plan(result, session, turn, muse, plan, start_time)
 
             {:error, _repair_errors} ->
-              # Repair also failed — return safe message
               {:ok, safe_invalid_plan_result(result, session)}
           end
 
         {:error, _reason} ->
-          # Provider error during repair — return safe message
           {:ok, safe_invalid_plan_result(result, session)}
       end
     end
@@ -708,10 +795,25 @@ defmodule Muse.Conductor do
       "I was unable to generate a valid structured plan from the output. " <>
         "Please try again or rephrase your request."
 
+    safe_specs =
+      result.event_specs
+      |> drop_assistant_output_specs()
+      |> Kernel.++([
+        {:muse, :assistant_message, %{text: safe_text, streamed?: false},
+         safe_assistant_message_opts(result)}
+      ])
+
     result
     |> Map.put(:assistant_text, safe_text)
     |> Map.put(:session, safe_session)
+    |> Map.put(:event_specs, safe_specs)
   end
+
+  defp safe_assistant_message_opts(%{selected_muse: %{id: muse_id}}) do
+    [visibility: :user, muse_id: muse_id]
+  end
+
+  defp safe_assistant_message_opts(_result), do: [visibility: :user]
 
   # -- Event spec builders ------------------------------------------------------
 

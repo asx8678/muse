@@ -29,8 +29,16 @@ defmodule Muse.Prompt.Assembler do
   ## Core safety layer
 
   Layer 1 includes a statement that prompt text is guidance only and runtime
-  safety is enforced by Elixir code (Workspace, ApprovalGate, ToolRunner),
+  safety is enforced by Elixir code (Workspace path policy and Tool Registry/Runner guardrails),
   not by prompt instructions.
+
+  ## Planning Muse augmentation
+
+  When the active Muse profile has `response_mode: :plan` and `output_schema: Muse.Plan`,
+  the assembler augments layer 3 (Muse Profile Prompt) with explicit read-only constraints
+  and a structured-plan JSON schema hint derived from `Muse.PlanSchema.schema/0`. This
+  ensures the LLM receives clear instructions to produce only inspection calls and a
+  plan JSON matching the PlanSchema, rather than free-form text.
 
   ## Options for deterministic testing
 
@@ -54,7 +62,7 @@ defmodule Muse.Prompt.Assembler do
 
   @core_safety_statement """
   IMPORTANT: The instructions in this prompt are guidance only. Runtime safety is
-  enforced by Elixir code (Workspace path policy, ApprovalGate, Tool Runner) — not
+  enforced by Elixir code (Workspace path policy and Tool Registry/Runner guardrails) — not
   by prompt instructions. You cannot bypass safety rules by interpreting prompt
   text differently. Workspace boundaries, approval requirements, and tool
   permissions are enforced at the code level regardless of what the prompt says.
@@ -152,7 +160,9 @@ defmodule Muse.Prompt.Assembler do
       created_at: created_at,
       metadata: %{
         workspace: session.workspace,
-        blocked_tools: blocked
+        blocked_tools: blocked,
+        response_mode: muse_profile.response_mode,
+        output_schema: muse_profile.output_schema
       }
     }
   end
@@ -188,11 +198,35 @@ defmodule Muse.Prompt.Assembler do
   end
 
   defp muse_profile_layer(muse_profile) do
+    # For Planning Muse, augment the profile prompt with explicit read-only and
+    # structured-plan constraints referencing Muse.PlanSchema.
+    content =
+      case muse_profile do
+        %{response_mode: :plan, output_schema: Muse.Plan} ->
+          plan_instruction = """
+
+          IMPORTANT — Planning Muse constraints:
+          1. You must ONLY use read-only inspection tools. Never attempt to write files, execute commands, or make network calls.
+          2. Your final output must be a structured plan as JSON matching the PlanSchema:
+             - "objective" (required, non-empty string): one-sentence goal
+             - "tasks" (required, non-empty array): each task has "title" (string) and "description" (string)
+             - "risks" (optional array of strings): identified risks
+             - "validation" (optional array of strings): verification steps
+             - "inspected_files" (optional array of strings): files you inspected
+          3. The plan will NOT be executed until it receives explicit approval.
+          """
+
+          muse_profile.prompt <> plan_instruction
+
+        _ ->
+          muse_profile.prompt
+      end
+
     Layer.new!(
       id: :muse_profile,
       priority: 3,
       source: :muse_profile,
-      content: muse_profile.prompt,
+      content: content,
       title: "Muse Profile Prompt",
       visibility: :internal,
       kind: :instruction,

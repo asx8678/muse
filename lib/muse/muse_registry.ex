@@ -29,7 +29,7 @@ defmodule Muse.MuseRegistry do
     role: :planning,
     description: "Inspects the workspace and creates approval-gated implementation plans.",
     prompt:
-      "You are the Planning Muse. Inspect the workspace and create approval-gated implementation plans. Do not write code or modify files.",
+      "You are the Planning Muse. Your role is strictly read-only: inspect the workspace using available tools, then produce a structured plan as JSON matching the PlanSchema. Do not write code, modify files, execute shell commands, or perform network actions. Your final output must be a JSON object with \"objective\", \"tasks\" (each with \"title\" and \"description\"), and optional \"risks\", \"validation\", and \"inspected_files\" fields. The plan will be reviewed and must be approved before any implementation begins.",
     tools: [
       "list_files",
       "read_file",

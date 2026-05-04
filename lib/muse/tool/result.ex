@@ -9,7 +9,7 @@ defmodule Muse.Tool.Result do
 
     * `:success`     — `true` if the tool executed without error
     * `:output`      — the tool output (map, string, or nil)
-    * `:error`       — error message string or nil
+    * `:error`       — redacted error message string or nil
     * `:tool_name`   — the tool name that produced this result
     * `:metadata`    — additional metadata (elapsed_ms, backend used, etc.)
 
@@ -24,6 +24,8 @@ defmodule Muse.Tool.Result do
   This is the ergonomic choice: callers can pattern-match on `success` without
   unpacking tuples.
   """
+
+  alias Muse.Prompt.Redactor
 
   @enforce_keys [:success, :tool_name]
 
@@ -61,7 +63,7 @@ defmodule Muse.Tool.Result do
       success: true,
       output: output,
       error: nil,
-      tool_name: tool_name,
+      tool_name: safe_tool_name(tool_name),
       metadata: metadata
     }
   end
@@ -83,8 +85,8 @@ defmodule Muse.Tool.Result do
     %__MODULE__{
       success: false,
       output: nil,
-      error: error_message,
-      tool_name: tool_name,
+      error: safe_error_message(error_message),
+      tool_name: safe_tool_name(tool_name),
       metadata: metadata
     }
   end
@@ -115,10 +117,10 @@ defmodule Muse.Tool.Result do
   @spec safe_summary(t(), pos_integer()) :: map()
   def safe_summary(%__MODULE__{} = result, max_len \\ 200) do
     %{
-      tool_name: result.tool_name,
+      tool_name: safe_tool_name(result.tool_name),
       success: result.success,
-      error: result.error,
-      output_summary: summarize_output(result.output, max_len)
+      error: safe_error_message(result.error),
+      output_summary: result.output |> summarize_output(max_len) |> redact_summary()
     }
   end
 
@@ -135,4 +137,28 @@ defmodule Muse.Tool.Result do
   defp summarize_output(output, max_len) do
     inspect(output, limit: 5, printable_limit: max_len)
   end
+
+  defp safe_tool_name(name) when is_binary(name), do: Redactor.redact_text(name)
+
+  defp safe_tool_name(name) when is_atom(name),
+    do: name |> Atom.to_string() |> Redactor.redact_text()
+
+  defp safe_tool_name(name) do
+    name
+    |> inspect(limit: 10, printable_limit: 200)
+    |> Redactor.redact_text()
+  end
+
+  defp safe_error_message(nil), do: nil
+  defp safe_error_message(message) when is_binary(message), do: Redactor.redact_text(message)
+
+  defp safe_error_message(message) do
+    message
+    |> inspect(limit: 10, printable_limit: 500)
+    |> Redactor.redact_text()
+  end
+
+  defp redact_summary(nil), do: nil
+  defp redact_summary(summary) when is_binary(summary), do: Redactor.redact_text(summary)
+  defp redact_summary(summary), do: Redactor.redact_term(summary)
 end

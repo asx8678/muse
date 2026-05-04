@@ -28,8 +28,12 @@ defmodule Muse.Tool.Registry do
   These tool names are explicitly recognized as dangerous. The runner blocks
   them instead of accidentally treating them as executable:
 
-    * `write_file`, `replace_in_file`, `delete_file`, `patch_apply`
+    * `write_file`, `replace_in_file`, `delete_file`, `patch_apply`, `patch_propose`
     * `shell_command`, `network_call`, `remote_execution`
+
+  Destructive-looking unknown tool names (for example `apply_patch` or
+  `run_shell`) are also treated as blocked so a provider cannot bypass the
+  read-only surface by inventing a new write/shell/network-shaped name.
 
   No dynamic atom creation from model input — all tool names are
   compile-time strings.
@@ -44,10 +48,31 @@ defmodule Muse.Tool.Registry do
     "replace_in_file",
     "delete_file",
     "patch_apply",
+    "patch_propose",
     "shell_command",
     "network_call",
     "remote_execution"
   ]
+
+  @blocked_tool_tokens MapSet.new([
+                         "write",
+                         "replace",
+                         "delete",
+                         "remove",
+                         "rm",
+                         "patch",
+                         "shell",
+                         "command",
+                         "exec",
+                         "execute",
+                         "network",
+                         "remote",
+                         "http",
+                         "https",
+                         "curl",
+                         "wget",
+                         "request"
+                       ])
 
   # -- Read-only tool specs (compile-time) --------------------------------------
 
@@ -454,7 +479,14 @@ defmodule Muse.Tool.Registry do
   """
   @spec blocked_tool?(String.t()) :: boolean()
   def blocked_tool?(name) when is_binary(name) do
-    name in @blocked_tool_names
+    name in @blocked_tool_names or destructive_tool_shape?(name)
+  end
+
+  defp destructive_tool_shape?(name) do
+    name
+    |> String.downcase()
+    |> String.split(~r/[^a-z0-9]+/, trim: true)
+    |> Enum.any?(&MapSet.member?(@blocked_tool_tokens, &1))
   end
 
   @doc """

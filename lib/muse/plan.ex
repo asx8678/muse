@@ -38,12 +38,15 @@ defmodule Muse.Plan do
       1
   """
 
-  @enforce_keys [:id, :session_id, :objective, :status, :version]
+  @default_schema_version "planning.v1"
+
+  @enforce_keys [:id, :session_id, :objective, :status, :version, :schema_version]
 
   defstruct [
     :id,
     :session_id,
     :version,
+    :schema_version,
     :status,
     :title,
     :objective,
@@ -55,6 +58,10 @@ defmodule Muse.Plan do
     :rejected_at,
     :completed_at,
     tasks: [],
+    assumptions: [],
+    required_permissions: [],
+    agent_assignments: [],
+    phases: [],
     steps: [],
     inspected_files: [],
     likely_changed_files: [],
@@ -83,6 +90,7 @@ defmodule Muse.Plan do
           id: String.t() | nil,
           session_id: String.t() | nil,
           version: non_neg_integer(),
+          schema_version: String.t(),
           status: status(),
           title: String.t() | nil,
           objective: String.t(),
@@ -94,6 +102,10 @@ defmodule Muse.Plan do
           rejected_at: DateTime.t() | nil,
           completed_at: DateTime.t() | nil,
           tasks: [Muse.Task.t()],
+          assumptions: [String.t()],
+          required_permissions: [String.t()],
+          agent_assignments: [map()],
+          phases: [map()],
           steps: [map()],
           inspected_files: [String.t()],
           likely_changed_files: [String.t()],
@@ -132,6 +144,12 @@ defmodule Muse.Plan do
   def statuses, do: @statuses
 
   @doc """
+  Return the canonical structured plan schema version for new plans.
+  """
+  @spec default_schema_version() :: String.t()
+  def default_schema_version, do: @default_schema_version
+
+  @doc """
   Check whether the given status is valid.
   """
   @spec valid_status?(term()) :: boolean()
@@ -145,33 +163,39 @@ defmodule Muse.Plan do
   Accepts both atom and string keys.
 
   Defaults:
-    - `:id`          → `nil` (assigned by session/persistence layer)
-    - `:session_id`  → `nil`
-    - `:version`     → `1`
-    - `:status`      → `:draft`
-    - `:tasks`       → `[]`
-    - `:risks`       → `[]`
-    - `:metadata`    → `%{}`
+    - `:id`             → `nil` (assigned by session/persistence layer)
+    - `:session_id`     → `nil`
+    - `:version`        → `1`
+    - `:schema_version` → `"planning.v1"`
+    - `:status`         → `:draft`
+    - `:tasks`          → `[]`
+    - `:risks`          → `[]`
+    - `:metadata`       → `%{}`
     - All other list fields → `[]`
 
   ## Options
 
-    * `:id`                 — plan identifier
-    * `:session_id`         — owning session ID
-    * `:version`            — plan version number
-    * `:status`             — initial status (default `:draft`)
-    * `:title`              — short plan title
-    * `:objective`          — **required** one-sentence goal
-    * `:summary`            — longer summary
-    * `:created_by`         — Muse or user that created the plan
-    * `:created_at`         — override timestamp (for deterministic tests)
-    * `:updated_at`         — override timestamp (for deterministic tests)
-    * `:tasks`              — list of `%Muse.Task{}` or raw maps (converted via `Muse.Task.from_map/1`)
-    * `:risks`              — list of risk strings
-    * `:alternatives`       — list of alternative approach maps
-    * `:validation`         — list of validation step strings
-    * `:approvals`          — list of approval records
-    * `:metadata`           — arbitrary metadata map
+    * `:id`                   — plan identifier
+    * `:session_id`           — owning session ID
+    * `:version`              — plan revision number
+    * `:schema_version`       — structured JSON schema version (default `"planning.v1"`)
+    * `:status`               — initial status (default `:draft`)
+    * `:title`                — short plan title
+    * `:objective`            — **required** one-sentence goal
+    * `:summary`              — longer summary
+    * `:created_by`           — Muse or user that created the plan
+    * `:created_at`           — override timestamp (for deterministic tests)
+    * `:updated_at`           — override timestamp (for deterministic tests)
+    * `:tasks`                — list of `%Muse.Task{}` or raw maps (converted via `Muse.Task.from_map/1`)
+    * `:assumptions`          — assumptions the plan depends on
+    * `:required_permissions` — coarse permissions/capabilities required to execute the plan
+    * `:agent_assignments`    — structured assignment metadata for agents/tasks
+    * `:phases`               — optional phase-like plan grouping metadata
+    * `:risks`                — list of risk strings
+    * `:alternatives`         — list of alternative approach maps
+    * `:validation`           — list of validation step strings
+    * `:approvals`            — list of approval records
+    * `:metadata`             — bounded, sanitized metadata map
 
   """
   @spec new(keyword() | map()) :: t()
@@ -184,12 +208,14 @@ defmodule Muse.Plan do
     raw_status = Map.get(normalized, :status, :draft)
     status = normalize_status(raw_status)
     version = Map.get(normalized, :version, 1)
+    schema_version = normalize_schema_version(Map.get(normalized, :schema_version))
     tasks = normalize_tasks(Map.get(normalized, :tasks, []))
 
     %__MODULE__{
       id: Map.get(normalized, :id),
       session_id: Map.get(normalized, :session_id),
       version: version,
+      schema_version: schema_version,
       status: if(valid_status?(status), do: status, else: :draft),
       title: Map.get(normalized, :title),
       objective: Map.get(normalized, :objective, ""),
@@ -201,6 +227,10 @@ defmodule Muse.Plan do
       rejected_at: Map.get(normalized, :rejected_at),
       completed_at: Map.get(normalized, :completed_at),
       tasks: tasks,
+      assumptions: normalize_string_list(Map.get(normalized, :assumptions, [])),
+      required_permissions: normalize_string_list(Map.get(normalized, :required_permissions, [])),
+      agent_assignments: normalize_map_list(Map.get(normalized, :agent_assignments, [])),
+      phases: normalize_map_list(Map.get(normalized, :phases, [])),
       steps: Map.get(normalized, :steps, []),
       inspected_files: Map.get(normalized, :inspected_files, []),
       likely_changed_files: Map.get(normalized, :likely_changed_files, []),
@@ -210,7 +240,7 @@ defmodule Muse.Plan do
       alternatives: Map.get(normalized, :alternatives, []),
       validation: Map.get(normalized, :validation, []),
       approvals: Map.get(normalized, :approvals, []),
-      metadata: Map.get(normalized, :metadata, %{})
+      metadata: normalize_metadata(Map.get(normalized, :metadata, %{}))
     }
   end
 
@@ -289,6 +319,7 @@ defmodule Muse.Plan do
     plan
     |> Map.from_struct()
     |> Map.update!(:tasks, fn tasks -> Enum.map(tasks, &Muse.Task.to_map/1) end)
+    |> Map.update!(:metadata, &normalize_metadata/1)
     |> drop_nil_values()
   end
 
@@ -299,13 +330,7 @@ defmodule Muse.Plan do
   via `Muse.Task.from_map/1`.
   """
   @spec from_map(map()) :: t()
-  def from_map(map) when is_map(map) do
-    map
-    |> Map.update(:tasks, [], fn tasks ->
-      Enum.map(tasks, &Muse.Task.from_map/1)
-    end)
-    |> new()
-  end
+  def from_map(map) when is_map(map), do: new(map)
 
   # -- Rendering ----------------------------------------------------------------
 
@@ -320,7 +345,9 @@ defmodule Muse.Plan do
     parts = [
       render_header(plan),
       render_objective(plan),
+      render_assumptions(plan),
       render_tasks(plan),
+      render_required_permissions(plan),
       render_risks(plan),
       render_footer(plan)
     ]
@@ -342,6 +369,13 @@ defmodule Muse.Plan do
     "Objective:\n#{plan.objective}"
   end
 
+  defp render_assumptions(%__MODULE__{assumptions: []}), do: nil
+
+  defp render_assumptions(%__MODULE__{assumptions: assumptions}) do
+    assumption_lines = Enum.map(assumptions, &("- " <> &1))
+    "Assumptions:\n" <> Enum.join(assumption_lines, "\n")
+  end
+
   defp render_tasks(%__MODULE__{tasks: []}), do: nil
 
   defp render_tasks(%__MODULE__{tasks: tasks}) do
@@ -351,6 +385,13 @@ defmodule Muse.Plan do
       |> Enum.map(fn {task, i} -> "#{i}. #{task.title}" end)
 
     "Tasks:\n" <> Enum.join(task_lines, "\n")
+  end
+
+  defp render_required_permissions(%__MODULE__{required_permissions: []}), do: nil
+
+  defp render_required_permissions(%__MODULE__{required_permissions: permissions}) do
+    permission_lines = Enum.map(permissions, &("- " <> &1))
+    "Required permissions:\n" <> Enum.join(permission_lines, "\n")
   end
 
   defp render_risks(%__MODULE__{risks: []}), do: nil
@@ -422,6 +463,16 @@ defmodule Muse.Plan do
   end
 
   defp normalize_status(status) when is_atom(status), do: status
+  defp normalize_status(_status), do: :draft
+
+  defp normalize_schema_version(version) when is_binary(version) do
+    case String.trim(version) do
+      "" -> @default_schema_version
+      value -> value
+    end
+  end
+
+  defp normalize_schema_version(_version), do: @default_schema_version
 
   defp normalize_keys(map) do
     Map.new(map, fn
@@ -437,6 +488,7 @@ defmodule Muse.Plan do
                 :id,
                 :session_id,
                 :version,
+                :schema_version,
                 :status,
                 :title,
                 :objective,
@@ -448,6 +500,10 @@ defmodule Muse.Plan do
                 :rejected_at,
                 :completed_at,
                 :tasks,
+                :assumptions,
+                :required_permissions,
+                :agent_assignments,
+                :phases,
                 :steps,
                 :inspected_files,
                 :likely_changed_files,
@@ -480,6 +536,59 @@ defmodule Muse.Plan do
       attrs when is_map(attrs) -> Muse.Task.from_map(attrs)
     end)
   end
+
+  defp normalize_tasks(_tasks), do: []
+
+  defp normalize_string_list(values) when is_list(values) do
+    values
+    |> Enum.flat_map(fn
+      value when is_binary(value) -> [value]
+      value when is_atom(value) and value not in [nil, true, false] -> [Atom.to_string(value)]
+      _value -> []
+    end)
+  end
+
+  defp normalize_string_list(_values), do: []
+
+  defp normalize_map_list(values) when is_list(values) do
+    values
+    |> Enum.flat_map(fn
+      value when is_map(value) -> [normalize_metadata(value)]
+      _value -> []
+    end)
+  end
+
+  defp normalize_map_list(_values), do: []
+
+  defp normalize_metadata(metadata) when is_map(metadata) do
+    metadata
+    |> Muse.MetadataSanitizer.sanitize(max_depth: 4, max_map_keys: 50, max_list_length: 50)
+    |> normalize_metadata_map()
+  end
+
+  defp normalize_metadata(_metadata), do: %{}
+
+  defp normalize_metadata_map(map) when is_map(map) do
+    Map.new(map, fn {key, value} ->
+      {normalize_metadata_key(key), normalize_metadata_value(value)}
+    end)
+  end
+
+  defp normalize_metadata_key(key) when is_binary(key) or is_atom(key), do: key
+  defp normalize_metadata_key(key), do: inspect(key, printable_limit: 100)
+
+  defp normalize_metadata_value(value) when is_map(value), do: normalize_metadata_map(value)
+
+  defp normalize_metadata_value(value) when is_list(value) do
+    Enum.map(value, &normalize_metadata_value/1)
+  end
+
+  defp normalize_metadata_value(nil), do: nil
+  defp normalize_metadata_value(value) when is_boolean(value), do: value
+  defp normalize_metadata_value(value) when is_binary(value), do: value
+  defp normalize_metadata_value(value) when is_number(value), do: value
+  defp normalize_metadata_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_metadata_value(value), do: inspect(value, printable_limit: 100)
 
   defp drop_nil_values(map) do
     Map.reject(map, fn {_k, v} -> is_nil(v) end)

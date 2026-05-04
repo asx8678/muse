@@ -69,6 +69,30 @@ defmodule Muse.Tool.RunnerTest do
       assert result.error =~ "blocked"
     end
 
+    test "blocks patch_propose", %{context: context} do
+      result = Runner.run("patch_propose", %{"patch" => "xxx"}, context)
+      refute result.success
+      assert result.error =~ "blocked"
+    end
+
+    test "blocks destructive-looking unknown tool shapes", %{context: context} do
+      for tool_name <- ["apply_patch", "run_shell", "http_request", "remote_exec"] do
+        State.clear()
+        result = Runner.run(tool_name, %{"payload" => "API_KEY=sk-test-runner-secret"}, context)
+
+        refute result.success
+        assert result.error =~ "blocked"
+
+        events = State.events()
+        types = Enum.map(events, & &1.type)
+        assert :tool_call_blocked in types
+
+        for event <- events do
+          refute inspect(event.data) =~ "sk-test-runner-secret"
+        end
+      end
+    end
+
     test "blocks remote_execution", %{context: context} do
       result = Runner.run("remote_execution", %{"cmd" => "ls"}, context)
       refute result.success
@@ -83,6 +107,27 @@ defmodule Muse.Tool.RunnerTest do
       result = Runner.run("totally_unknown_tool", %{}, context)
       refute result.success
       assert result.error =~ "unknown tool"
+    end
+
+    test "redacts secret-like provider input in failed results and events", %{context: context} do
+      secret_tool_name = "unknown_api_key=sk-test-runner-secret"
+
+      State.clear()
+      result = Runner.run(secret_tool_name, %{}, context)
+
+      refute result.success
+      assert result.error =~ "unknown tool"
+      refute result.error =~ "sk-test-runner-secret"
+      refute result.tool_name =~ "sk-test-runner-secret"
+      assert result.error =~ "[REDACTED]"
+      assert result.tool_name =~ "[REDACTED]"
+
+      events = State.events()
+      assert Enum.any?(events, &(&1.type == :tool_call_failed))
+
+      for event <- events do
+        refute inspect(event.data) =~ "sk-test-runner-secret"
+      end
     end
   end
 
@@ -361,19 +406,23 @@ defmodule Muse.Tool.RunnerTest do
     test "args summary truncates long values and redacts", %{root: _root, context: context} do
       State.clear()
 
+      secret = "sk-test-args-secret"
+
       _result =
         Runner.run(
           "read_file",
-          %{"path" => "hello.ex", "extra" => String.duplicate("x", 200)},
+          %{"path" => "hello.ex", "extra" => String.duplicate("x", 200), "token" => secret},
           context
         )
 
       events = State.events()
       started = Enum.find(events, &(&1.type == :tool_call_started))
 
-      # The args_summary should truncate long values
+      # The args_summary should truncate long values and redact secrets
       assert is_binary(started.data.args_summary)
       assert String.length(started.data.args_summary) < 500
+      refute started.data.args_summary =~ secret
+      assert started.data.args_summary =~ "[REDACTED]"
     end
 
     test "list_files with many entries: output is reliably capped to spec limit",

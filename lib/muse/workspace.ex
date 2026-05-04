@@ -137,6 +137,7 @@ defmodule Muse.Workspace do
   @spec safe_resolve!(String.t(), String.t(), keyword()) :: String.t()
   def safe_resolve!(path, workspace, opts)
       when is_binary(path) and is_binary(workspace) and is_list(opts) do
+    workspace = Path.expand(workspace)
     allow_absolute = Keyword.get(opts, :allow_absolute, false)
     allow_hidden = Keyword.get(opts, :allow_hidden, false)
     allow_git_contents = Keyword.get(opts, :allow_git_contents, false)
@@ -157,20 +158,25 @@ defmodule Muse.Workspace do
             "path #{inspect(path)} escapes workspace #{inspect(workspace)}"
     end
 
-    # 4. Hidden file check
-    if not allow_hidden and contains_hidden_segment?(resolved, workspace) do
+    safety_paths = safety_check_paths(resolved, workspace)
+
+    # 4. Hidden file check. Check both the lexical path and any existing
+    # canonical symlink targets so `safe_link -> .hidden/file` cannot bypass it.
+    if not allow_hidden and hidden_path?(safety_paths) do
       raise ArgumentError,
             "path #{inspect(path)} contains hidden file/directory (use allow_hidden: true to access)"
     end
 
-    # 5. Secret path check
-    if secret_path?(resolved, workspace) do
+    # 5. Secret path check. Canonical target checks prevent `safe_link -> .env`
+    # and similar symlink aliases from exposing sensitive files.
+    if secret_safety_path?(safety_paths) do
       raise ArgumentError,
             "path #{inspect(path)} is a secret/sensitive file"
     end
 
-    # 6. Ignored path check
-    if ignored_path?(resolved, workspace, allow_git_contents: allow_git_contents) do
+    # 6. Ignored path check. Canonical target checks prevent links into deps,
+    # _build, node_modules, or .git from bypassing read-tool exclusions.
+    if ignored_safety_path?(safety_paths, allow_git_contents: allow_git_contents) do
       raise ArgumentError,
             "path #{inspect(path)} is in an ignored directory"
     end
@@ -250,6 +256,38 @@ defmodule Muse.Workspace do
 
   # -- Private -----------------------------------------------------------------
 
+  defp safety_check_paths(resolved, workspace) do
+    lexical = [{resolved, workspace}]
+
+    canonical =
+      with {:ok, root_real} <- realpath_existing(workspace),
+           {:ok, real_prefixes} <- real_existing_prefixes(resolved, workspace) do
+        Enum.map(real_prefixes, &{&1, root_real})
+      else
+        _ -> []
+      end
+
+    lexical ++ canonical
+  end
+
+  defp hidden_path?(safety_paths) do
+    Enum.any?(safety_paths, fn {resolved, workspace} ->
+      contains_hidden_segment?(resolved, workspace)
+    end)
+  end
+
+  defp secret_safety_path?(safety_paths) do
+    Enum.any?(safety_paths, fn {resolved, workspace} ->
+      secret_path?(resolved, workspace)
+    end)
+  end
+
+  defp ignored_safety_path?(safety_paths, opts) do
+    Enum.any?(safety_paths, fn {resolved, workspace} ->
+      ignored_path?(resolved, workspace, opts)
+    end)
+  end
+
   # A path is inside the workspace if it is exactly the root *or* the root
   # is a proper directory prefix.  This avoids the sibling-prefix trap where
   # "/tmp/foo" would falsely match "/tmp/foobar/file".
@@ -264,6 +302,8 @@ defmodule Muse.Workspace do
   # -- Secret path checks -------------------------------------------------------
 
   defp secret_filename?(filename) do
+    filename = String.downcase(filename)
+
     MapSet.member?(@secret_filenames, filename) or
       Enum.any?(@secret_filename_prefixes, &String.starts_with?(filename, &1)) or
       Enum.any?(@secret_filename_suffixes, &String.ends_with?(filename, &1)) or
@@ -271,12 +311,14 @@ defmodule Muse.Workspace do
   end
 
   defp secret_dirname?(dirname) do
-    MapSet.member?(@secret_dirnames, dirname)
+    MapSet.member?(@secret_dirnames, String.downcase(dirname))
   end
 
   # -- Ignored path checks ------------------------------------------------------
 
   defp ignored_dirname?(dirname, allow_git_contents) do
+    dirname = String.downcase(dirname)
+
     if dirname == ".git" do
       not allow_git_contents
     else

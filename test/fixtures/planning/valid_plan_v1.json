@@ -1,0 +1,34 @@
+{
+  "objective": "Add a /version command to the Muse CLI and web console.",
+  "summary": "Implement command parsing, dispatch, display, and tests.",
+  "tasks": [
+    {
+      "title": "Add command definition",
+      "description": "Add /version to Muse.Commands slash command list and parser coverage.",
+      "target_files": ["lib/muse/commands.ex", "test/muse/commands_test.exs"],
+      "requires_write": true,
+      "requires_shell": false,
+      "verification": "Parser test confirms /version maps to :version."
+    },
+    {
+      "title": "Add dispatch handler",
+      "description": "Add :version handling to Muse.CommandDispatcher.",
+      "target_files": ["lib/muse/command_dispatcher.ex", "test/muse/command_dispatcher_test.exs"],
+      "requires_write": true,
+      "requires_shell": false,
+      "verification": "Dispatcher test returns version text."
+    },
+    {
+      "title": "Verify shared interface behavior",
+      "description": "Ensure CLI/TUI/LiveView command path remains shared.",
+      "target_files": ["test/muse/cli/repl_test.exs", "test/muse_web/live/home_live_test.exs"],
+      "requires_write": false,
+      "requires_shell": true,
+      "verification": "Run relevant mix tests after patch approval."
+    }
+  ],
+  "risks": [
+    "Version source should work both in Mix/dev and release/escript contexts.",
+    "Command behavior should remain consistent across CLI, TUI, and LiveView."
+  ]
+}

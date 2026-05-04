@@ -11,11 +11,12 @@
 1. [No-Network Default](#1-no-network-default)
 2. [Shared Provider Test Suite](#2-shared-provider-test-suite)
 3. [Fixture Types](#3-fixture-types)
-4. [Unit Tests](#4-unit-tests)
-5. [Integration Tests](#5-integration-tests)
-6. [Safety Tests](#6-safety-tests)
-7. [Product-Language Tests](#7-product-language-tests)
-8. [First Demo Fake Provider Script](#8-first-demo-fake-provider-script)
+4. [PR08 Planning Contract Coverage](#4-pr08-planning-contract-coverage)
+5. [Unit Tests](#5-unit-tests)
+6. [Integration Tests](#6-integration-tests)
+7. [Safety Tests](#7-safety-tests)
+8. [Product-Language Tests](#8-product-language-tests)
+9. [First Demo Fake Provider Script](#9-first-demo-fake-provider-script)
 
 ---
 
@@ -84,21 +85,20 @@ The shared macro injects all six scenario tests automatically. The provider modu
 
 ## 3. Fixture Types
 
-All fixtures live under `test/fixtures/` and are version-controlled.
+Fixtures are version-controlled under `test/fixtures/` and `test/support/fixtures/`.
 
 | Fixture | Path | Description |
 |---------|------|-------------|
-| **OpenAI Responses SSE — text delta stream** | `fixtures/openai_responses/sse_text_delta.txt` | ND-JSON lines of `response.output_text.delta` events followed by `response.completed`. |
-| **OpenAI Responses SSE — function-call stream** | `fixtures/openai_responses/sse_function_call.txt` | Stream that includes `response.function_call_arguments.delta` events building up a JSON tool call. |
-| **OpenAI Responses WebSocket — response events** | `fixtures/openai_responses/ws_response_events.json` | Array of WebSocket frame payloads representing a full Responses API conversation. |
-| **Chat Completions — text delta stream** | `fixtures/chat_completions/sse_text_delta.txt` | Classic `data: {"choices":[{"delta":{"content":"..."}}]}` SSE chunks. |
-| **Chat Completions — tool-call stream** | `fixtures/chat_completions/sse_tool_call.txt` | SSE chunks with `function.name` and `function.arguments` deltas. |
-| **Codex auth.json (redacted)** | `fixtures/codex/auth.json` | Simulated Codex `auth.json` with **fake** token values for testing credential loading. |
-| **Malformed provider events** | `fixtures/malformed/provider_events.jsonl` | ND-JSON with missing fields, invalid UTF-8, truncated JSON, and unknown event types. |
-| **Malformed tool calls** | `fixtures/malformed/tool_calls.json` | Tool calls with missing `name`, non-JSON `arguments`, and empty `call_id`. |
-| **Fake provider scripts — planning flow** | `fixtures/fake_provider/planning_flow.jsonl` | Scripted responses for a complete Planning Muse turn (search → read → plan). |
-| **Fake provider scripts — coding flow** | `fixtures/fake_provider/coding_flow.jsonl` | Scripted responses for a Coding Muse turn (propose patch). |
-| **Fake provider scripts — testing flow** | `fixtures/fake_provider/testing_flow.jsonl` | Scripted responses for a Testing Muse turn (run validation). |
+| **Chat Completions — text delta stream** | `test/fixtures/chat_completions/sse_text_delta.txt` | SSE chunks with assistant text deltas. |
+| **Chat Completions — tool-call stream** | `test/fixtures/chat_completions/sse_tool_call.txt` | SSE chunks with tool-call deltas. |
+| **Chat Completions — error stream** | `test/fixtures/chat_completions/sse_error.txt` | Error-oriented stream fixture. |
+| **Responses WS — text events** | `test/fixtures/openai_responses/ws_text_events.json` | Responses WebSocket text frame sequence. |
+| **Responses WS — tool-call events** | `test/fixtures/openai_responses/ws_tool_call_events.json` | Responses WebSocket function-call frame sequence. |
+| **Responses WS — error events** | `test/fixtures/openai_responses/ws_error_events.json` | Responses WebSocket error frame sequence. |
+| **Fake provider planning flow** | `test/fixtures/fake_provider/planning_flow.jsonl` | Scripted Planning Muse flow with read-only tool calls then structured plan JSON. |
+| **Fake provider planning flow (batched)** | `test/fixtures/fake_provider/planning_flow_batches.json` | Multi-batch Planning Muse fixture: two tool-call batches then structured plan JSON. |
+| **Fake provider tool-call flow** | `test/fixtures/fake_provider/tool_calls_then_text.jsonl` | Multiple tool calls followed by assistant text with usage. |
+| **Planning parser fixtures** | `test/fixtures/planning/*.json` and `test/fixtures/planning/*.md` | Valid, minimal, fenced, prose-wrapped, invalid, and extra-key structured plan examples. |
 
 ### Fixture Principles
 
@@ -108,7 +108,32 @@ All fixtures live under `test/fixtures/` and are version-controlled.
 
 ---
 
-## 4. Unit Tests
+## 4. PR08 Planning Contract Coverage
+
+Current implemented contract coverage lives primarily in:
+
+- `test/muse/conductor_planning_test.exs`
+  - structured JSON plan parse path
+  - rendered plan output (`Muse.Plan.render/1`)
+  - `:plan_created` event assertions
+  - session transition to `:awaiting_plan_approval`
+  - invalid-plan repair/fallback safety behavior
+- `test/muse/plan_schema_test.exs`
+  - required fields and type validation
+  - boolean/list normalization rules
+- `test/muse/session_server_plan_lifecycle_test.exs`
+  - `/approve plan` / `/reject plan` lifecycle behavior via SessionServer APIs
+  - active plan id handling and status transitions
+- `test/muse/tool/runner_test.exs` and `test/muse/tool/registry_test.exs`
+  - read-only tool allowlists
+  - blocked tool-name enforcement
+
+All default tests are offline (`mix test`) and do not require real API keys or network.
+Integration with live providers remains opt-in via env-gated tags.
+
+---
+
+## 5. Unit Tests
 
 Complete checklist. Every item must have at least one passing test before merge.
 
@@ -137,12 +162,13 @@ Complete checklist. Every item must have at least one passing test before merge.
 - [ ] Model preparer injects the correct tool definitions for the active Muse
 - [ ] Model preparer omits tools that the active Muse does not have access to
 
-### Approval Gate
+### Plan Lifecycle + Tool Safety (PR08)
 
-- [ ] `ApprovalGate` blocks write operations before plan approval
-- [ ] `ApprovalGate` binds approval to a specific plan version (content hash)
-- [ ] `ApprovalGate` rejects stale plan approval (plan changed since user saw it)
-- [ ] `ApprovalGate` rejects patch approval for a different patch hash
+- [ ] `/approve plan` transitions active plan from `:awaiting_approval` to `:approved`
+- [ ] `/reject plan` transitions active plan from `:awaiting_approval` to `:rejected`
+- [ ] Session status returns from `:awaiting_plan_approval` to `:idle` after lifecycle command
+- [ ] `Tool.Runner` blocks known dangerous tool names (`write_file`, `patch_apply`, `shell_command`, etc.)
+- [ ] `Tool.Runner` rejects unknown tool names safely
 
 ### Workspace Path Safety
 
@@ -153,7 +179,7 @@ Complete checklist. Every item must have at least one passing test before merge.
 
 ### Tool Execution
 
-- [ ] `ToolRunner` emits `:tool_start`, `:tool_output`, and `:tool_end` events
+- [ ] `ToolRunner` emits `:tool_call_started`, `:tool_call_completed`, `:tool_call_failed`, and `:tool_call_blocked` events
 - [ ] Fake provider returns scripted tool calls from fixture data
 - [ ] Tool runner respects the active Muse's allowed tool set — disallowed tools are rejected
 
@@ -169,26 +195,20 @@ Complete checklist. Every item must have at least one passing test before merge.
 
 ---
 
-## 5. Integration Tests
+## 6. Integration Tests
 
-The full happy-path integration flow, tested end-to-end with the fake provider:
+Current PR08 integration happy path (fake provider only):
 
 | Step | Action | Expected State |
 |------|--------|----------------|
-| 1 | User asks for a code change (e.g., `"add a /version command"`) | Session starts, Planning Muse activated |
-| 2 | Planning Muse inspects files via `repo_search` | Tool calls issued and results returned |
-| 3 | Planning Muse creates a structured plan | Plan stored in session state |
-| 4 | Session enters `awaiting_plan_approval` | No write operations allowed |
-| 5 | User approves plan with `/approve plan` | ApprovalGate records plan hash |
-| 6 | Coding Muse is activated | Coding Muse receives plan + file contents |
-| 7 | Coding Muse proposes a patch | Patch stored but **not** applied yet |
-| 8 | Patch is not applied before approval | Verify file unchanged on disk |
-| 9 | User approves patch with `/approve patch` | ApprovalGate records patch hash |
-| 10 | Checkpoint is created | Snapshot of current file state saved |
-| 11 | Patch is applied | File on disk matches patch content |
-| 12 | Testing Muse runs or requests validation | Test tools invoked or validation prompt shown |
-| 13 | Reviewing Muse can review the diff | Diff shown, review notes emitted |
-| 14 | Session completes or waits for next approval | Terminal or `awaiting_approval` state |
+| 1 | User asks for a code change (e.g., `"add a /version command"`) | Session starts, Planning Muse turn runs |
+| 2 | Planning Muse inspects files via read-only tools | Tool calls issued and results returned |
+| 3 | Planning Muse emits structured JSON plan | `PlanParser` + `PlanSchema` accept output |
+| 4 | Runtime renders plan and emits `:plan_created` | User sees `/approve plan` + `/reject plan` guidance |
+| 5 | Session enters `:awaiting_plan_approval` | Active plan id and plan state are set |
+| 6 | User runs `/approve plan` or `/reject plan` | Plan status updates; session returns to `:idle` |
+
+> Out of scope for current PR08 integration: coding write execution, patch proposal/apply, checkpoint orchestration, test-runner approval gates.
 
 ### Integration Test Principles
 
@@ -199,7 +219,7 @@ The full happy-path integration flow, tested end-to-end with the fake provider:
 
 ---
 
-## 6. Safety Tests
+## 7. Safety Tests
 
 Every safety boundary must have a dedicated test. No exceptions.
 
@@ -213,14 +233,13 @@ Every safety boundary must have a dedicated test. No exceptions.
 - [ ] Blocked: secret read — paths matching `**/.env`, `**/credentials.json`, `**/auth.json`, `**/.netrc`
 - [ ] Blocked: hidden file read — dotfiles unless explicitly in allowlist
 
-### Approval Boundaries
+### Approval / Blocking Boundaries (PR08)
 
-- [ ] Blocked: shell command execution before shell approval
-- [ ] Blocked: file delete before explicit delete approval (separate from write approval)
-- [ ] Blocked: stale plan approval — plan content hash has changed since presented
-- [ ] Blocked: patch approval for different patch hash — hash mismatch rejected
-- [ ] Blocked: patch apply without a prior checkpoint — checkpoint must exist first
-- [ ] Blocked: tool not available to active Muse — a tool outside the Muse's toolset is rejected
+- [ ] Blocked: dangerous tool names (`write_file`, `patch_apply`, `shell_command`, etc.)
+- [ ] Blocked: tool not available to active Muse role
+- [ ] Blocked: unknown tool name returns safe error result
+- [ ] Blocked: `requires_approval: true` tool specs cannot execute yet
+- [ ] Blocked: `/approve plan` or `/reject plan` when no active plan awaiting approval
 
 ### Data Boundaries
 
@@ -229,13 +248,13 @@ Every safety boundary must have a dedicated test. No exceptions.
 
 ---
 
-## 7. Product-Language Tests
+## 8. Product-Language Tests
 
 Muse-first naming is a product commitment. These tests verify that user-facing surfaces do not use "Agent," "Bot," mascot names, or Code Puppy branding. Technical LLM protocol roles and internal event names such as `role: :assistant`, `:assistant_delta`, and `:assistant_message` are allowed where they are implementation details rather than product labels.
 
 ### Surfaces to Check
 
-- [ ] `/muses` lists **Planning Muse**, **Coding Muse**, **Reviewing Muse**, **Testing Muse** — no generic names
+- [ ] `/muses` lists **Planning Muse** and **Coding Muse** with Muse-first naming
 - [ ] `/status` says **Active Muse** (not "Active Agent" or "Current Assistant")
 - [ ] Plan output says **Recommended Muse** (not "Recommended Agent")
 - [ ] Approval messages say **Muse Plan** and **Patch Proposal** (not "Agent Plan" or "Bot Patch")
@@ -249,17 +268,17 @@ Muse-first naming is a product commitment. These tests verify that user-facing s
 
 ---
 
-## 8. First Demo Fake Provider Script
+## 9. First Demo Fake Provider Script
 
 This section defines the complete scripted demo for the **first milestone**: adding a `/version` command to Muse using the Planning Muse flow.
 
-### 8.1 Test Request
+### 9.1 Test Request
 
 ```
 add a /version command
 ```
 
-### 8.2 Fake Model Step 1 — Search
+### 9.2 Fake Model Step 1 — Search
 
 The model's first response asks to search the codebase:
 
@@ -282,7 +301,7 @@ The model's first response asks to search the codebase:
 
 The fake provider returns search results containing references to `commands.ex` and `command_dispatcher.ex`.
 
-### 8.3 Fake Model Step 2 — Read Files
+### 9.3 Fake Model Step 2 — Read Files
 
 After receiving search results, the model asks to read the relevant files:
 
@@ -305,7 +324,7 @@ After receiving search results, the model asks to read the relevant files:
 
 The fake provider returns the contents of both files (from fixtures).
 
-### 8.4 Fake Model Final — Structured Plan
+### 9.4 Fake Model Final — Structured Plan
 
 After reading the files, the model produces the structured plan:
 
@@ -346,7 +365,7 @@ After reading the files, the model produces the structured plan:
 }
 ```
 
-### 8.5 Expected Output
+### 9.5 Expected Output
 
 The CLI renders the plan for user approval:
 

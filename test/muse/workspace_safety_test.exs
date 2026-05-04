@@ -3,6 +3,29 @@ defmodule Muse.WorkspaceSafetyTest do
 
   alias Muse.Workspace
 
+  @symlinks_supported? (fn ->
+                          base =
+                            Path.join(
+                              System.tmp_dir!(),
+                              "muse_ws_safety_symlink_probe_#{System.unique_integer([:positive])}"
+                            )
+
+                          target = Path.join(base, "target")
+                          link = Path.join(base, "link")
+
+                          try do
+                            File.mkdir_p!(base)
+                            File.write!(target, "ok")
+                            File.ln_s(target, link) == :ok
+                          rescue
+                            _ -> false
+                          catch
+                            _, _ -> false
+                          after
+                            File.rm_rf(base)
+                          end
+                        end).()
+
   setup do
     stop_workspace()
     root = Path.join(System.tmp_dir!(), "muse_ws_safety_#{System.unique_integer([:positive])}")
@@ -91,6 +114,16 @@ defmodule Muse.WorkspaceSafetyTest do
     test "rejects .pem files", %{root: root} do
       assert_raise ArgumentError, ~r/secret/, fn ->
         Workspace.safe_resolve!("server.pem", root)
+      end
+    end
+
+    test "rejects secret filenames case-insensitively", %{root: root} do
+      assert_raise ArgumentError, ~r/secret/, fn ->
+        Workspace.safe_resolve!("SERVER.PEM", root)
+      end
+
+      assert_raise ArgumentError, ~r/secret/, fn ->
+        Workspace.safe_resolve!(".ENV.PRODUCTION", root, allow_hidden: true)
       end
     end
 
@@ -257,6 +290,69 @@ defmodule Muse.WorkspaceSafetyTest do
 
     test "allows normal paths", %{root: root} do
       refute Workspace.ignored_path?(Path.join(root, "lib/muse.ex"), root, [])
+    end
+
+    test "detects ignored directories case-insensitively", %{root: root} do
+      assert Workspace.ignored_path?(Path.join(root, "DEPS/phoenix/mix.exs"), root, [])
+    end
+  end
+
+  # -- safe_resolve!/2 — symlinked sensitive targets -----------------------------
+
+  describe "safe_resolve!/2 — symlinked sensitive targets" do
+    if @symlinks_supported? do
+      test "rejects non-hidden symlink to secret file", %{root: root} do
+        secret = Path.join(root, ".env")
+        link = Path.join(root, "env_alias")
+
+        File.write!(secret, "API_KEY=sk-test-workspace-secret")
+        assert :ok = File.ln_s(secret, link)
+
+        assert_raise ArgumentError, ~r/secret/, fn ->
+          Workspace.safe_resolve!("env_alias", root, allow_hidden: true)
+        end
+      end
+
+      test "rejects non-hidden symlink to hidden directory", %{root: root} do
+        hidden_dir = Path.join(root, ".hidden")
+        link = Path.join(root, "hidden_alias")
+
+        File.mkdir_p!(hidden_dir)
+        File.write!(Path.join(hidden_dir, "notes.txt"), "secret notes")
+        assert :ok = File.ln_s(hidden_dir, link)
+
+        assert_raise ArgumentError, ~r/hidden file/, fn ->
+          Workspace.safe_resolve!("hidden_alias/notes.txt", root)
+        end
+      end
+
+      test "rejects non-hidden symlink into ignored directory", %{root: root} do
+        deps_dir = Path.join(root, "deps")
+        link = Path.join(root, "deps_alias")
+
+        File.mkdir_p!(deps_dir)
+        File.write!(Path.join(deps_dir, "dep.ex"), "defmodule Dep do end")
+        assert :ok = File.ln_s(deps_dir, link)
+
+        assert_raise ArgumentError, ~r/ignored/, fn ->
+          Workspace.safe_resolve!("deps_alias/dep.ex", root)
+        end
+      end
+    else
+      @tag skip: "symlink creation unavailable on this platform"
+      test "rejects non-hidden symlink to secret file" do
+        :ok
+      end
+
+      @tag skip: "symlink creation unavailable on this platform"
+      test "rejects non-hidden symlink to hidden directory" do
+        :ok
+      end
+
+      @tag skip: "symlink creation unavailable on this platform"
+      test "rejects non-hidden symlink into ignored directory" do
+        :ok
+      end
     end
   end
 

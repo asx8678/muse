@@ -171,7 +171,7 @@ defmodule Muse.Prompt.AssemblerTest do
       assert core_layer.content =~ "Runtime safety"
       assert core_layer.content =~ "enforced by Elixir code"
       assert core_layer.content =~ "Workspace"
-      assert core_layer.content =~ "ApprovalGate"
+      assert core_layer.content =~ "Tool Registry/Runner"
     end
   end
 
@@ -501,6 +501,152 @@ defmodule Muse.Prompt.AssemblerTest do
       refute all_content =~ ~r/\bAgent\b/i
       refute all_content =~ ~r/\bBot\b/i
       refute all_content =~ ~r/Code Puppy/i
+    end
+  end
+
+  describe "build/4 Planning Muse layer augmentation" do
+    setup do
+      session =
+        Session.new(
+          workspace: "/tmp/test_project",
+          id: "sess_planning_assembler",
+          status: :idle,
+          created_at: ~U[2025-01-01 00:00:00Z],
+          updated_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      planning_profile = Muse.MuseRegistry.get(:planning)
+
+      %{session: session, profile: planning_profile}
+    end
+
+    test "Planning Muse profile layer includes read-only constraint", %{
+      session: session,
+      profile: profile
+    } do
+      bundle =
+        Assembler.build(session, profile, "inspect the project",
+          id: "pb_plan_layer",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      profile_layer = Enum.find(bundle.layers, &(&1.id == :muse_profile))
+      assert profile_layer != nil
+      assert profile_layer.content =~ ~r/read.only/i
+      assert profile_layer.content =~ ~r/inspect/i
+    end
+
+    test "Planning Muse profile layer includes structured plan JSON requirement", %{
+      session: session,
+      profile: profile
+    } do
+      bundle =
+        Assembler.build(session, profile, "inspect the project",
+          id: "pb_plan_json",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      profile_layer = Enum.find(bundle.layers, &(&1.id == :muse_profile))
+      assert profile_layer.content =~ ~r/structured plan/i
+      assert profile_layer.content =~ ~r/JSON/i
+      assert profile_layer.content =~ ~r/objective/
+      assert profile_layer.content =~ ~r/tasks/
+    end
+
+    test "Planning Muse profile layer includes PlanSchema field references", %{
+      session: session,
+      profile: profile
+    } do
+      bundle =
+        Assembler.build(session, profile, "inspect the project",
+          id: "pb_plan_schema_fields",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      profile_layer = Enum.find(bundle.layers, &(&1.id == :muse_profile))
+      # Should mention required PlanSchema fields
+      assert profile_layer.content =~ ~r/\"objective\"/
+      assert profile_layer.content =~ ~r/\"tasks\"/
+      assert profile_layer.content =~ ~r/\"title\"/
+      assert profile_layer.content =~ ~r/\"description\"/
+    end
+
+    test "Planning Muse profile layer states plan requires approval", %{
+      session: session,
+      profile: profile
+    } do
+      bundle =
+        Assembler.build(session, profile, "inspect the project",
+          id: "pb_plan_approval",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      profile_layer = Enum.find(bundle.layers, &(&1.id == :muse_profile))
+      assert profile_layer.content =~ ~r/approval/i or profile_layer.content =~ ~r/approved/i
+    end
+
+    test "Planning Muse profile layer forbids write/execute/network actions", %{
+      session: session,
+      profile: profile
+    } do
+      bundle =
+        Assembler.build(session, profile, "inspect the project",
+          id: "pb_plan_no_write",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      profile_layer = Enum.find(bundle.layers, &(&1.id == :muse_profile))
+      # Should explicitly prohibit writes, commands, network
+      assert profile_layer.content =~ ~r/never.*write/i or
+               profile_layer.content =~ ~r/do not write/i or
+               profile_layer.content =~ ~r/not.*write.*file/i
+    end
+
+    test "non-Planning Muse profile layer does not include plan augmentation", %{
+      session: session
+    } do
+      coding_profile = Muse.MuseRegistry.get(:coding)
+
+      bundle =
+        Assembler.build(session, coding_profile, "implement the feature",
+          id: "pb_coding_no_augment",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      profile_layer = Enum.find(bundle.layers, &(&1.id == :muse_profile))
+      # Coding Muse should NOT have the Planning Muse augmented content
+      refute profile_layer.content =~ ~r/Planning Muse constraints/
+      refute profile_layer.content =~ ~r/read.only inspection tools/i
+    end
+
+    test "Planning Muse bundle tools are read-only from the profile", %{
+      session: session,
+      profile: profile
+    } do
+      bundle =
+        Assembler.build(session, profile, "inspect the project",
+          id: "pb_plan_tools",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      tool_names = Enum.map(bundle.tools, & &1[:name])
+      blocked = Muse.Tool.Registry.blocked_tool_names()
+
+      for blocked_name <- blocked do
+        refute blocked_name in tool_names,
+               "Blocked tool #{blocked_name} leaked into Planning Muse bundle"
+      end
+
+      # Should have the planning profile's read-only tools
+      assert "list_files" in tool_names
+      assert "read_file" in tool_names
     end
   end
 end

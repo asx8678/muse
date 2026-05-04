@@ -37,9 +37,11 @@ defmodule Muse.Task do
     :description,
     :status,
     :recommended_muse,
+    :phase,
     :files,
     :target_files,
     :tools,
+    :required_permissions,
     :dependencies,
     :validation,
     :verification,
@@ -63,9 +65,11 @@ defmodule Muse.Task do
           description: String.t() | nil,
           status: status(),
           recommended_muse: String.t() | atom() | nil,
+          phase: String.t() | nil,
           files: [String.t()],
           target_files: [String.t()],
           tools: [String.t()],
+          required_permissions: [String.t()],
           dependencies: [String.t()],
           validation: [String.t()],
           verification: String.t() | nil,
@@ -109,6 +113,7 @@ defmodule Muse.Task do
     - `:files`           → `[]`
     - `:target_files`    → `[]`
     - `:tools`           → `[]`
+    - `:required_permissions` → `[]`
     - `:dependencies`    → `[]`
     - `:validation`      → `[]`
 
@@ -119,9 +124,11 @@ defmodule Muse.Task do
     * `:description`      — longer description (required by schema, may be nil in struct)
     * `:status`           — `:pending` by default
     * `:recommended_muse` — which Muse should execute this task
+    * `:phase`            — optional phase/grouping identifier
     * `:files`            — files to inspect
     * `:target_files`     — files this task intends to change
     * `:tools`            — tools this task needs
+    * `:required_permissions` — permissions/capabilities this task needs
     * `:dependencies`     — IDs of tasks this depends on
     * `:validation`       — validation steps
     * `:verification`     — verification description
@@ -161,9 +168,11 @@ defmodule Muse.Task do
       description: Map.get(normalized, :description),
       status: if(valid_status?(status), do: status, else: :pending),
       recommended_muse: Map.get(normalized, :recommended_muse),
+      phase: Map.get(normalized, :phase),
       files: Map.get(normalized, :files, []),
       target_files: Map.get(normalized, :target_files, []),
       tools: Map.get(normalized, :tools, []),
+      required_permissions: normalize_string_list(Map.get(normalized, :required_permissions, [])),
       dependencies: Map.get(normalized, :dependencies, []),
       validation: Map.get(normalized, :validation, []),
       verification: Map.get(normalized, :verification),
@@ -211,9 +220,11 @@ defmodule Muse.Task do
                 :description,
                 :status,
                 :recommended_muse,
+                :phase,
                 :files,
                 :target_files,
                 :tools,
+                :required_permissions,
                 :dependencies,
                 :validation,
                 :verification,
@@ -261,6 +272,18 @@ defmodule Muse.Task do
   end
 
   defp normalize_status(status) when is_atom(status), do: status
+  defp normalize_status(_status), do: :pending
+
+  defp normalize_string_list(values) when is_list(values) do
+    values
+    |> Enum.flat_map(fn
+      value when is_binary(value) -> [value]
+      value when is_atom(value) and value not in [nil, true, false] -> [Atom.to_string(value)]
+      _value -> []
+    end)
+  end
+
+  defp normalize_string_list(_values), do: []
 
   # We intentionally only use String.to_atom on keys we control —
   # the task-specific field names are all known compile-time atoms.

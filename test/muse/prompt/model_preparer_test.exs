@@ -292,4 +292,168 @@ defmodule Muse.Prompt.ModelPreparerTest do
       assert request.response_format == %{type: "json_object"}
     end
   end
+
+  describe "to_request/3 Planning Muse request shaping" do
+    setup do
+      session =
+        Session.new(
+          workspace: "/tmp/test_project",
+          id: "sess_plan_mp",
+          status: :idle,
+          created_at: ~U[2025-01-01 00:00:00Z],
+          updated_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      # Full Planning Muse profile from registry (response_mode: :plan, output_schema: Muse.Plan)
+      planning_profile = Muse.MuseRegistry.get(:planning)
+
+      bundle =
+        Assembler.build(session, planning_profile, "inspect the project",
+          id: "pb_plan",
+          turn_id: "turn_plan",
+          model: "fake-planning-model",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      %{bundle: bundle, session: session, planning_profile: planning_profile}
+    end
+
+    test "Planning Muse request tools are read-only only", %{bundle: bundle} do
+      request = ModelPreparer.to_request(bundle, [])
+
+      blocked = Muse.Tool.Registry.blocked_tool_names()
+      tool_names = Enum.map(request.tools, & &1[:name])
+
+      # No blocked tools should appear in the request
+      for blocked_name <- blocked do
+        refute blocked_name in tool_names,
+               "Blocked tool #{blocked_name} leaked into Planning Muse request"
+      end
+
+      # All tools should be known, registered read-only tools
+      for name <- tool_names do
+        assert Muse.Tool.Registry.known_tool?(name),
+               "Unknown tool #{name} in Planning Muse request"
+
+        refute Muse.Tool.Registry.blocked_tool?(name),
+               "Blocked tool #{name} in Planning Muse request"
+      end
+    end
+
+    test "Planning Muse request has no write/shell/network tools", %{bundle: bundle} do
+      request = ModelPreparer.to_request(bundle, [])
+      tool_names = Enum.map(request.tools, & &1[:name])
+
+      refute "write_file" in tool_names
+      refute "replace_in_file" in tool_names
+      refute "delete_file" in tool_names
+      refute "patch_apply" in tool_names
+      refute "shell_command" in tool_names
+      refute "network_call" in tool_names
+      refute "remote_execution" in tool_names
+    end
+
+    test "Planning Muse request includes PlanSchema as response_format", %{bundle: bundle} do
+      request = ModelPreparer.to_request(bundle, [])
+
+      # When no explicit response_format is set, ModelPreparer should use PlanSchema.schema()
+      # PlanSchema.schema/0 returns atom-keyed maps
+      assert request.response_format != nil
+      assert request.response_format[:type] == "object"
+      assert "objective" in (request.response_format[:required] || [])
+      assert "tasks" in (request.response_format[:required] || [])
+    end
+
+    test "Planning Muse request response_format includes plan schema properties", %{
+      bundle: bundle
+    } do
+      request = ModelPreparer.to_request(bundle, [])
+
+      # PlanSchema should have objective, tasks properties (atom-keyed)
+      properties = request.response_format[:properties]
+      assert Map.has_key?(properties, :objective)
+      assert Map.has_key?(properties, :tasks)
+      assert properties[:tasks][:type] == "array"
+    end
+
+    test "Planning Muse request metadata includes response_mode", %{bundle: bundle} do
+      request = ModelPreparer.to_request(bundle, [])
+      assert request.metadata.response_mode == :plan
+    end
+
+    test "Planning Muse explicit response_format overrides PlanSchema default", %{
+      bundle: bundle
+    } do
+      explicit_format = %{type: "json_object"}
+      bundle = %{bundle | response_format: explicit_format}
+      request = ModelPreparer.to_request(bundle, [])
+
+      # The bundle's explicit format should take precedence over PlanSchema default
+      assert request.response_format == %{type: "json_object"}
+    end
+
+    test "Planning Muse opts response_format overrides PlanSchema default", %{
+      bundle: bundle
+    } do
+      explicit_format = %{type: "json_object"}
+      request = ModelPreparer.to_request(bundle, [], response_format: explicit_format)
+
+      # The opts format should take precedence over PlanSchema default
+      assert request.response_format == %{type: "json_object"}
+    end
+
+    test "Planning Muse tools match read-only subset from registry", %{bundle: bundle} do
+      request = ModelPreparer.to_request(bundle, [])
+      tool_names = Enum.map(request.tools, & &1[:name])
+
+      # Should include read-only tools that are in the planning profile
+      assert "list_files" in tool_names
+      assert "read_file" in tool_names
+      assert "repo_search" in tool_names
+      assert "git_status" in tool_names
+      assert "git_diff_readonly" in tool_names
+    end
+  end
+
+  describe "to_request/3 Coding Muse does not get Planning overrides" do
+    setup do
+      session =
+        Session.new(
+          workspace: "/tmp/test_project",
+          id: "sess_coding_mp",
+          status: :idle,
+          created_at: ~U[2025-01-01 00:00:00Z],
+          updated_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      coding_profile = Muse.MuseRegistry.get(:coding)
+
+      bundle =
+        Assembler.build(session, coding_profile, "implement the feature",
+          id: "pb_coding",
+          turn_id: "turn_coding",
+          model: "fake-coding-model",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      %{bundle: bundle, session: session, coding_profile: coding_profile}
+    end
+
+    test "Coding Muse request does not get PlanSchema response_format", %{bundle: bundle} do
+      request = ModelPreparer.to_request(bundle, [])
+
+      # Coding Muse should NOT have PlanSchema as response_format by default
+      # It should be nil (no explicit format set, and no planning overrides)
+      refute request.response_format != nil and
+               Map.has_key?(request.response_format, "required") and
+               "objective" in (request.response_format["required"] || [])
+    end
+
+    test "Coding Muse request metadata response_mode is :patch", %{bundle: bundle} do
+      request = ModelPreparer.to_request(bundle, [])
+      assert request.metadata.response_mode == :patch
+    end
+  end
 end
