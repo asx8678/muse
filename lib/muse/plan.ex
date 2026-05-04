@@ -332,6 +332,44 @@ defmodule Muse.Plan do
   @spec from_map(map()) :: t()
   def from_map(map) when is_map(map), do: new(map)
 
+  # -- Content binding (delegates to Muse.PlanBinding) --------------------------
+
+  @doc """
+  Compute a deterministic SHA-256 hash over the stable content of the plan.
+
+  Delegates to `Muse.PlanBinding.content_hash/1`. See that module for
+  details on which fields are included and excluded.
+
+  ## Examples
+
+      iex> plan = Muse.Plan.new(id: "p1", session_id: "s1", objective: "Add feature")
+      iex> hash = Muse.Plan.content_hash(plan)
+      iex> is_binary(hash) and byte_size(hash) == 64
+      true
+  """
+  @spec content_hash(t()) :: String.t()
+  def content_hash(%__MODULE__{} = plan), do: Muse.PlanBinding.content_hash(plan)
+
+  @doc """
+  Return a binding map for plan approvals.
+
+  Delegates to `Muse.PlanBinding.approval_binding/2`.
+
+  ## Options
+
+    * `:workspace` — the workspace path (defaults to `nil`)
+
+  ## Examples
+
+      iex> plan = Muse.Plan.new(id: "p1", session_id: "s1", objective: "Test")
+      iex> binding = Muse.Plan.approval_binding(plan, workspace: "/tmp/project")
+      iex> binding.kind
+      "plan_approval"
+  """
+  @spec approval_binding(t(), keyword()) :: map()
+  def approval_binding(%__MODULE__{} = plan, opts \\ []),
+    do: Muse.PlanBinding.approval_binding(plan, opts)
+
   # -- Rendering ----------------------------------------------------------------
 
   @doc """
