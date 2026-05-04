@@ -248,6 +248,41 @@ defmodule Muse.Prompt.AssemblerTest do
       refute "git_status" in tool_names
     end
 
+    test "tools use provider-ready JSON schemas from Tool.Registry", %{
+      session: session,
+      profile: profile
+    } do
+      bundle =
+        Assembler.build(session, profile, "hello",
+          id: "pb_test",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      # Each tool spec should be a provider-ready schema with OpenAI-compatible structure
+      for tool <- bundle.tools do
+        assert tool["type"] == "function"
+        assert is_map(tool["function"])
+        assert is_binary(tool["function"]["name"])
+        assert is_binary(tool["function"]["description"])
+        assert is_map(tool["function"]["parameters"])
+      end
+    end
+
+    test "tools exclude blocked tool names from Registry", %{session: session, profile: profile} do
+      bundle =
+        Assembler.build(session, profile, "hello",
+          id: "pb_test",
+          blocked_tools: ["shell_command", "write_file"],
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      tool_names = Enum.map(bundle.tools, & &1[:name])
+      refute "shell_command" in tool_names
+      refute "write_file" in tool_names
+    end
+
     test "populates token_estimate", %{session: session, profile: profile} do
       bundle =
         Assembler.build(session, profile, "hello",

@@ -117,6 +117,7 @@ defmodule Muse.WorkspaceTest do
 
         try do
           link = Path.join(root, "outside_link")
+          File.rm(link)
           assert :ok = File.ln_s(outside, link)
           {:ok, _} = Workspace.start_link(root: root)
 
@@ -136,6 +137,7 @@ defmodule Muse.WorkspaceTest do
 
         try do
           link = Path.join(root, "linked_secret")
+          File.rm(link)
           assert :ok = File.ln_s(outside_file, link)
           {:ok, _} = Workspace.start_link(root: root)
 
@@ -152,6 +154,7 @@ defmodule Muse.WorkspaceTest do
         File.mkdir_p!(safe_dir)
 
         link = Path.join(root, "safe_link")
+        File.rm(link)
         assert :ok = File.ln_s(safe_dir, link)
         {:ok, _} = Workspace.start_link(root: root)
 

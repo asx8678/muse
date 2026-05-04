@@ -9,11 +9,67 @@ defmodule Muse.Workspace do
   using separator-aware prefix checking (no `/tmp/foo` vs `/tmp/foobar` bugs)
   and validating existing path components through symlink resolution so symlinks
   inside the workspace cannot redirect operations outside the workspace.
+
+  `safe_resolve!/2` extends `resolve!/1` with additional tool-facing safety:
+  secret path denylist, hidden file blocking, and ignored directory enforcement.
+  It does not break existing `root/0` and `resolve!/1` tests.
+
+  ## Secret path denylist
+
+  The following paths are blocked by `safe_resolve!/2` and `secret_path?/2`:
+
+    * `.env`, `.env.*`
+    * `*.pem`, `*.key`, `*.p12`, `*.pfx`
+    * `id_rsa`, `id_ed25519`
+    * `.ssh/`, `.aws/`, `.gcp/`, `.gcloud/`, `.azure/`
+    * `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`
+    * `credentials.json`, `secrets.*`, `auth.json`
+    * `.git/` contents (except when `allow_git_contents: true`)
+
+  ## Ignored directories
+
+  The following directories are blocked by `ignored_path?/2`:
+
+    * `.git` (except when `allow_git_contents: true`)
+    * `_build`, `deps`, `node_modules`
+    * Common caches
   """
 
   use Agent
 
   @max_symlink_expansions 40
+
+  # -- Secret path patterns (compile-time) -------------------------------------
+
+  @secret_filenames MapSet.new([
+                      ".env",
+                      "id_rsa",
+                      "id_ed25519",
+                      ".npmrc",
+                      ".pypirc",
+                      ".netrc",
+                      ".git-credentials",
+                      "credentials.json",
+                      "auth.json"
+                    ])
+
+  @secret_filename_prefixes [".env."]
+  @secret_filename_suffixes [".pem", ".key", ".p12", ".pfx"]
+  @secret_filename_patterns [~r/^secrets\./]
+
+  @secret_dirnames MapSet.new([
+                     ".ssh",
+                     ".aws",
+                     ".gcp",
+                     ".gcloud",
+                     ".azure"
+                   ])
+
+  @ignored_dirnames MapSet.new([
+                      "_build",
+                      "deps",
+                      "node_modules"
+                    ])
 
   # -- Public API ---------------------------------------------------------------
 
@@ -43,6 +99,155 @@ defmodule Muse.Workspace do
     end
   end
 
+  @doc """
+  Hardened tool-facing path resolver with full safety checks.
+
+  Like `resolve!/1` but also enforces:
+
+    * Secret path denylist (`.env`, `*.pem`, `.ssh/`, etc.)
+    * Hidden file blocking (dot-prefixed files/dirs) unless `allow_hidden: true`
+    * Ignored directory blocking (`.git/`, `_build/`, `deps/`, etc.)
+    * Absolute path rejection unless `allow_absolute: true`
+
+  Does **not** break existing `resolve!/1` tests.
+
+  ## Options
+
+    * `:allow_hidden` — allow hidden files/dirs (default: `false`)
+    * `:allow_git_contents` — allow `.git/` directory contents for git tools (default: `false`)
+    * `:allow_absolute` — allow absolute paths (default: `false`; requires high trust)
+
+  ## Raises
+
+  Raises `ArgumentError` if any safety check fails.
+  """
+  # 2-arg overload: opts only — uses Workspace.root() for the workspace
+  @spec safe_resolve!(String.t(), keyword()) :: String.t()
+  def safe_resolve!(path, opts) when is_binary(path) and is_list(opts) do
+    safe_resolve!(path, root(), opts)
+  end
+
+  # 2-arg overload: workspace only — opts defaults to []
+  @spec safe_resolve!(String.t(), String.t()) :: String.t()
+  def safe_resolve!(path, workspace) when is_binary(path) and is_binary(workspace) do
+    safe_resolve!(path, workspace, [])
+  end
+
+  # 3-arg: full version
+  @spec safe_resolve!(String.t(), String.t(), keyword()) :: String.t()
+  def safe_resolve!(path, workspace, opts)
+      when is_binary(path) and is_binary(workspace) and is_list(opts) do
+    allow_absolute = Keyword.get(opts, :allow_absolute, false)
+    allow_hidden = Keyword.get(opts, :allow_hidden, false)
+    allow_git_contents = Keyword.get(opts, :allow_git_contents, false)
+
+    # 1. Reject absolute paths unless explicitly allowed
+    if Path.type(path) == :absolute and not allow_absolute do
+      raise ArgumentError,
+            "absolute path #{inspect(path)} not allowed without allow_absolute: true"
+    end
+
+    # 2. Resolve against workspace
+    resolved = Path.expand(path, workspace)
+
+    # 3. Workspace boundary + symlink safety
+    unless inside_workspace?(resolved, workspace) and
+             symlink_safe_inside?(resolved, workspace) do
+      raise ArgumentError,
+            "path #{inspect(path)} escapes workspace #{inspect(workspace)}"
+    end
+
+    # 4. Hidden file check
+    if not allow_hidden and contains_hidden_segment?(resolved, workspace) do
+      raise ArgumentError,
+            "path #{inspect(path)} contains hidden file/directory (use allow_hidden: true to access)"
+    end
+
+    # 5. Secret path check
+    if secret_path?(resolved, workspace) do
+      raise ArgumentError,
+            "path #{inspect(path)} is a secret/sensitive file"
+    end
+
+    # 6. Ignored path check
+    if ignored_path?(resolved, workspace, allow_git_contents: allow_git_contents) do
+      raise ArgumentError,
+            "path #{inspect(path)} is in an ignored directory"
+    end
+
+    resolved
+  end
+
+  @doc """
+  Check if a path matches the secret file denylist.
+
+  Returns `true` if the path (absolute, within workspace) matches any
+  secret filename or directory pattern.
+
+  ## Examples
+
+      iex> Muse.Workspace.secret_path?("/tmp/project/.env", "/tmp/project")
+      true
+
+      iex> Muse.Workspace.secret_path?("/tmp/project/lib/muse.ex", "/tmp/project")
+      false
+  """
+  @spec secret_path?(String.t(), String.t()) :: boolean()
+  def secret_path?(resolved, workspace) when is_binary(resolved) do
+    # Evaluate path relative to workspace to avoid false positives
+    # from parent directory names (e.g. workspace at /tmp/.env/project/)
+    rel_parts = relative_parts(resolved, workspace)
+
+    Enum.any?(rel_parts, fn part ->
+      secret_filename?(part) or secret_dirname?(part)
+    end)
+  end
+
+  defp relative_parts(resolved, workspace) do
+    if resolved == workspace do
+      # The path IS the workspace root — no relative parts to check
+      []
+    else
+      rel = Path.relative_to(resolved, workspace)
+
+      if rel == resolved do
+        # Path is not inside workspace — fall back to checking all parts
+        Path.split(resolved)
+      else
+        Path.split(rel)
+      end
+    end
+  end
+
+  @doc """
+  Check if a path is in an ignored directory.
+
+  Ignored directories include `.git`, `_build`, `deps`, `node_modules`,
+  and common caches. `.git` is allowed when `allow_git_contents: true`.
+
+  ## Examples
+
+      iex> Muse.Workspace.ignored_path?("/tmp/project/_build/lib/muse.ex", "/tmp/project", [])
+      true
+
+      iex> Muse.Workspace.ignored_path?("/tmp/project/lib/muse.ex", "/tmp/project", [])
+      false
+  """
+  @spec ignored_path?(String.t(), String.t(), keyword()) :: boolean()
+  def ignored_path?(resolved, workspace, opts \\ []) do
+    allow_git_contents = Keyword.get(opts, :allow_git_contents, false)
+
+    # Get relative path components
+    rel_parts =
+      resolved
+      |> Path.relative_to(workspace)
+      |> Path.split()
+
+    Enum.any?(rel_parts, fn part ->
+      ignored_dirname?(part, allow_git_contents)
+    end)
+  end
+
   # -- Private -----------------------------------------------------------------
 
   # A path is inside the workspace if it is exactly the root *or* the root
@@ -55,6 +260,41 @@ defmodule Muse.Workspace do
   defp root_prefix(root) do
     if String.ends_with?(root, "/"), do: root, else: root <> "/"
   end
+
+  # -- Secret path checks -------------------------------------------------------
+
+  defp secret_filename?(filename) do
+    MapSet.member?(@secret_filenames, filename) or
+      Enum.any?(@secret_filename_prefixes, &String.starts_with?(filename, &1)) or
+      Enum.any?(@secret_filename_suffixes, &String.ends_with?(filename, &1)) or
+      Enum.any?(@secret_filename_patterns, &Regex.match?(&1, filename))
+  end
+
+  defp secret_dirname?(dirname) do
+    MapSet.member?(@secret_dirnames, dirname)
+  end
+
+  # -- Ignored path checks ------------------------------------------------------
+
+  defp ignored_dirname?(dirname, allow_git_contents) do
+    if dirname == ".git" do
+      not allow_git_contents
+    else
+      MapSet.member?(@ignored_dirnames, dirname)
+    end
+  end
+
+  # -- Hidden file checks -------------------------------------------------------
+
+  defp contains_hidden_segment?(resolved, workspace) do
+    resolved
+    |> Path.relative_to(workspace)
+    |> Path.split()
+    |> Enum.any?(&hidden_segment?/1)
+  end
+
+  defp hidden_segment?(<<".", rest::binary>>) when rest != "", do: true
+  defp hidden_segment?(_), do: false
 
   # `Path.expand/2` is purely lexical; it does not resolve symlinks.  Check every
   # existing component under `resolved` through symlink resolution so a workspace-local

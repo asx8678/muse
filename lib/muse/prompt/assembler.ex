@@ -492,14 +492,18 @@ defmodule Muse.Prompt.Assembler do
 
   # -- Tool spec builder --------------------------------------------------------
 
-  # Build simple tool spec maps from tool name strings.
-  # Full tool schemas will come from Tool.Registry when implemented.
+  # Build provider-ready JSON-schema tool specs from Tool.Registry.
+  # Falls back to minimal stub for names not yet in the registry.
+  # Blocked tools are excluded; blocked-tool names from the registry
+  # are also rejected to prevent accidental inclusion.
   defp build_tool_specs(available, blocked) do
+    blocked_set = MapSet.new(blocked)
+
     available
-    |> Enum.reject(&(&1 in blocked))
-    |> Enum.map(fn name ->
-      %{name: name, type: "function"}
+    |> Enum.reject(fn name ->
+      MapSet.member?(blocked_set, name) or Muse.Tool.Registry.blocked_tool?(name)
     end)
+    |> Muse.Tool.Registry.provider_schemas_for_names()
   end
 
   # -- ID generation ------------------------------------------------------------
