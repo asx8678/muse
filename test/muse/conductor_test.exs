@@ -517,6 +517,79 @@ defmodule Muse.ConductorTest do
       assert result.assistant_text =~ "Placeholder response"
     end
 
+    test "router-selected OpenAI-compatible provider keeps :sse transport and calls stream path" do
+      parent = self()
+      assistant_text = "hello over the OpenAI-compatible stream route"
+
+      provider_config = %ProviderConfig{
+        id: "openai_compatible",
+        name: "OpenAI Compatible",
+        base_url: "https://api.example.test/v1",
+        wire_api: :chat_completions,
+        transport: :sse,
+        model: "gpt-4.1-mini",
+        auth: :none,
+        supports_streaming: true,
+        supports_websockets: false,
+        supports_tools: true,
+        timeout_ms: 12_000,
+        max_retries: 0
+      }
+
+      post_fn = fn url, post_options ->
+        send(parent, {:openai_compatible_post, url, post_options})
+
+        {:ok,
+         Req.Response.new(
+           status: 200,
+           body: %{
+             "id" => "chatcmpl_sse_route",
+             "choices" => [
+               %{
+                 "message" => %{"role" => "assistant", "content" => assistant_text},
+                 "finish_reason" => "stop"
+               }
+             ],
+             "usage" => %{
+               "prompt_tokens" => 3,
+               "completion_tokens" => 5,
+               "total_tokens" => 8
+             }
+           }
+         )}
+      end
+
+      {:ok, result} =
+        Conductor.run(
+          build_session(id: "openai-sse-session"),
+          build_turn(
+            session_id: "openai-sse-session",
+            id: "turn_openai_sse",
+            user_text: "say hello"
+          ),
+          provider_config: provider_config,
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{post_fn: post_fn}]
+        )
+
+      assert result.request.provider == :openai_compatible
+      assert result.request.transport == :sse
+      assert result.request.options.supports_streaming == true
+      assert is_function(result.request.options.post_fn, 2)
+      assert result.response.id == "chatcmpl_sse_route"
+      assert result.assistant_text == assistant_text
+
+      assert_receive {:openai_compatible_post, url, post_options}
+      assert url == "https://api.example.test/v1/chat/completions"
+      assert post_options[:json]["model"] == "gpt-4.1-mini"
+      assert [%{"role" => "user"} | _] = Enum.reverse(post_options[:json]["messages"])
+
+      {_source, :assistant_delta, data, _opts} =
+        find_event_spec(result.event_specs, :assistant_delta)
+
+      assert data.text == assistant_text
+    end
+
     test "accepts prompt_opts for assembler customization" do
       {:ok, result} =
         Conductor.run(build_session(), build_turn(),
