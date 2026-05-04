@@ -59,6 +59,50 @@ defmodule Muse.EventPayloadRedactorTest do
       refute result.text =~ "abc123def"
     end
 
+    test "redacts authorization and API-key header-like values" do
+      data = %{
+        reason: "approved with Authorization: Basic approval-secret",
+        metadata: %{
+          headers: [
+            "Authorization: Bearer bearer-secret",
+            "X-Api-Key: sk-test-header-secret",
+            "api-key: assignment-secret"
+          ]
+        }
+      }
+
+      result = EventPayloadRedactor.redact(data)
+      rendered = inspect(result)
+
+      assert rendered =~ "[REDACTED]"
+      refute rendered =~ "approval-secret"
+      refute rendered =~ "bearer-secret"
+      refute rendered =~ "sk-test-header-secret"
+      refute rendered =~ "assignment-secret"
+    end
+
+    test "redacts approval reasons and metadata recursively" do
+      data = %{
+        approvals: [
+          %{
+            reason: "approved after checking token: lane12-token-secret",
+            metadata: %{
+              note: "api_key=sk-test-approval-secret",
+              nested: [%{comment: "Bearer nested-secret"}]
+            }
+          }
+        ]
+      }
+
+      result = EventPayloadRedactor.redact(data)
+      rendered = inspect(result)
+
+      assert rendered =~ "[REDACTED]"
+      refute rendered =~ "lane12-token-secret"
+      refute rendered =~ "sk-test-approval-secret"
+      refute rendered =~ "nested-secret"
+    end
+
     test "preserves non-secret text" do
       data = %{text: "Hello, this is a normal message"}
       result = EventPayloadRedactor.redact(data)

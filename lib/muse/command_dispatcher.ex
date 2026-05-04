@@ -1016,8 +1016,28 @@ defmodule Muse.CommandDispatcher do
   end
 
   defp format_plan_lifecycle_result({:error, reason}, _action) do
-    {:error, "Error: unable to update Muse Plan (#{inspect(reason)}).", []}
+    {:error, "Error: unable to update Muse Plan (#{safe_plan_lifecycle_reason(reason)}).", []}
   end
+
+  defp safe_plan_lifecycle_reason(%Muse.Plan{} = plan) do
+    "plan #{Muse.PlanHistory.display_plan_id(plan)} status #{plan.status}"
+  end
+
+  defp safe_plan_lifecycle_reason({tag, %Muse.Plan{} = plan}) when is_atom(tag) do
+    "#{tag}: plan #{Muse.PlanHistory.display_plan_id(plan)} status #{plan.status}"
+  end
+
+  defp safe_plan_lifecycle_reason({tag, status}) when is_atom(tag) and is_atom(status) do
+    "#{tag}: #{status}"
+  end
+
+  defp safe_plan_lifecycle_reason(atom) when is_atom(atom), do: Atom.to_string(atom)
+
+  defp safe_plan_lifecycle_reason(binary) when is_binary(binary) do
+    Muse.Prompt.Redactor.preview_text(binary, max_length: 120)
+  end
+
+  defp safe_plan_lifecycle_reason(_reason), do: "unexpected approval error"
 
   defp present_args?(nil), do: false
   defp present_args?(args) when is_binary(args), do: String.trim(args) != ""

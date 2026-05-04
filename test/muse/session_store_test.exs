@@ -510,6 +510,98 @@ defmodule Muse.SessionStoreTest do
       assert loaded["data"]["messages"] == [%{"role" => "user"}]
     end
 
+    test "redacts sensitive keys nested inside lists",
+         %{base_dir: base_dir, session_id: session_id} do
+      event_data = %{
+        approvals: [
+          %{
+            reason: "safe reason",
+            metadata: %{
+              authorization: "Bearer nested-auth-secret",
+              token: "nested-token-secret",
+              safe: "visible"
+            }
+          }
+        ]
+      }
+
+      assert :ok =
+               SessionStore.append_event(base_dir, session_id, %{
+                 "type" => "approval_test",
+                 "data" => event_data
+               })
+
+      assert {:ok, [loaded], %{skipped: 0}} = SessionStore.load_events(base_dir, session_id)
+
+      approval = loaded["data"]["approvals"] |> List.first()
+      assert approval["metadata"]["authorization"] == "**REDACTED**"
+      assert approval["metadata"]["token"] == "**REDACTED**"
+      assert approval["metadata"]["safe"] == "visible"
+
+      {:ok, raw} =
+        File.read(Path.join(SessionStore.session_dir(base_dir, session_id), "events.jsonl"))
+
+      refute raw =~ "nested-auth-secret"
+      refute raw =~ "nested-token-secret"
+    end
+
+    test "redacts secret-like strings from persisted approval maps",
+         %{base_dir: base_dir, session_id: session_id} do
+      data = %{
+        "plan" => %{
+          "id" => "plan-approval-redaction",
+          "approvals" => [
+            %{
+              "reason" => "approved with Bearer approval-reason-secret",
+              "metadata" => %{
+                "note" => "api_key=sk-test-approval-secret",
+                "headers" => ["Authorization: Basic approval-header-secret"]
+              }
+            }
+          ]
+        }
+      }
+
+      assert :ok = SessionStore.save_session(base_dir, session_id, data)
+      assert {:ok, loaded} = SessionStore.load_session(base_dir, session_id)
+
+      approval = loaded["plan"]["approvals"] |> List.first()
+      rendered = inspect(approval)
+
+      assert rendered =~ "[REDACTED]"
+      refute rendered =~ "approval-reason-secret"
+      refute rendered =~ "sk-test-approval-secret"
+      refute rendered =~ "approval-header-secret"
+
+      {:ok, raw} =
+        File.read(Path.join(SessionStore.session_dir(base_dir, session_id), "session.json"))
+
+      refute raw =~ "approval-reason-secret"
+      refute raw =~ "sk-test-approval-secret"
+      refute raw =~ "approval-header-secret"
+    end
+
+    test "redacts secret-like strings from raw event files",
+         %{base_dir: base_dir, session_id: session_id} do
+      event_data = %{
+        reason: "approved because token=event-token-secret",
+        metadata: %{note: "Authorization: Bearer event-auth-secret"}
+      }
+
+      assert :ok =
+               SessionStore.append_event(base_dir, session_id, %{
+                 "type" => "approval_test",
+                 "data" => event_data
+               })
+
+      {:ok, raw} =
+        File.read(Path.join(SessionStore.session_dir(base_dir, session_id), "events.jsonl"))
+
+      assert raw =~ "[REDACTED]"
+      refute raw =~ "event-token-secret"
+      refute raw =~ "event-auth-secret"
+    end
+
     test "redacts sensitive atom keys",
          %{base_dir: base_dir, session_id: session_id} do
       data = %{api_key: "sk-test-value", safe_field: "keep-me"}

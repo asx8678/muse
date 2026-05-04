@@ -1002,13 +1002,12 @@ defmodule Muse.SessionServerTest do
       assert plan_event.turn_id == nil
       assert plan_event.seq == 1
 
-      assert plan_event.data == %{
-               plan_id: plan.id,
-               version: plan.version,
-               status: :approved,
-               objective: "Approve persisted plan",
-               task_count: 2
-             }
+      assert plan_event.data.plan_id == plan.id
+      assert plan_event.data.version == plan.version
+      assert plan_event.data.status == :approved
+      assert plan_event.data.task_count == 2
+      assert plan_event.data.content_hash =~ ~r/^[a-f0-9]{64}$/
+      refute Map.has_key?(plan_event.data, :objective)
 
       assert status_event.source == :conductor
       assert status_event.visibility == :internal
@@ -1054,13 +1053,12 @@ defmodule Muse.SessionServerTest do
       assert plan_event.turn_id == nil
       assert plan_event.seq == 1
 
-      assert plan_event.data == %{
-               plan_id: plan.id,
-               version: plan.version,
-               status: :rejected,
-               objective: "Reject persisted plan",
-               task_count: 2
-             }
+      assert plan_event.data.plan_id == plan.id
+      assert plan_event.data.version == plan.version
+      assert plan_event.data.status == :rejected
+      assert plan_event.data.task_count == 2
+      assert plan_event.data.content_hash =~ ~r/^[a-f0-9]{64}$/
+      refute Map.has_key?(plan_event.data, :objective)
 
       assert status_event.visibility == :internal
       assert status_event.data == %{from: :awaiting_plan_approval, to: :idle}

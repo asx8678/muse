@@ -42,7 +42,7 @@ defmodule Muse.SessionServer do
 
   use GenServer, restart: :temporary
 
-  alias Muse.{Event, Prompt.Redactor, Session, State, Turn, Plan, SessionStore}
+  alias Muse.{Approval, Event, Prompt.Redactor, Session, State, Turn, Plan, SessionStore}
   alias Muse.Conductor.TurnRunner
 
   # -- Public API ---------------------------------------------------------------
@@ -659,6 +659,7 @@ defmodule Muse.SessionServer do
     if plan.status != :awaiting_approval do
       {{:error, {:plan_not_awaiting_approval, plan.status}}, state}
     else
+      content_hash = Approval.content_hash(Plan.to_map(plan))
       {:ok, plan} = Plan.transition(plan, target_status)
 
       previous_status = state.status
@@ -673,7 +674,7 @@ defmodule Muse.SessionServer do
           state,
           source,
           plan_lifecycle_event_type(target_status),
-          plan_lifecycle_event_data(plan),
+          plan_lifecycle_event_data(plan, content_hash),
           visibility: :user
         )
 
@@ -733,12 +734,12 @@ defmodule Muse.SessionServer do
   defp plan_lifecycle_event_type(:approved), do: :plan_approved
   defp plan_lifecycle_event_type(:rejected), do: :plan_rejected
 
-  defp plan_lifecycle_event_data(plan) do
+  defp plan_lifecycle_event_data(plan, content_hash) do
     %{
       plan_id: plan.id,
       version: plan.version,
       status: plan.status,
-      objective: plan.objective,
+      content_hash: content_hash,
       task_count: length(plan.tasks)
     }
   end
