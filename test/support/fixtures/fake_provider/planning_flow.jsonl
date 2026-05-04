@@ -1,0 +1,9 @@
+{"event": "assistant_delta", "text": "I'll inspect the workspace structure first."}
+{"event": "tool_call", "name": "list_files", "arguments": {"path": "."}, "id": "call_fixture_1"}
+{"event": "assistant_delta", "text": "Based on the file listing, here is my plan:"}
+{"event": "assistant_delta", "text": "1. Locate CLI command routing."}
+{"event": "assistant_delta", "text": "2. Add /version handling."}
+{"event": "assistant_delta", "text": "3. Source version from mix.exs."}
+{"event": "assistant_delta", "text": "4. Add tests."}
+{"event": "assistant_completed", "text": "Based on the file listing, here is my plan:\n1. Locate CLI command routing.\n2. Add /version handling.\n3. Source version from mix.exs.\n4. Add tests."}
+{"event": "response_completed"}
