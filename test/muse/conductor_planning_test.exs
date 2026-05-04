@@ -25,6 +25,12 @@ defmodule Muse.ConductorPlanningTest do
     Enum.filter(specs, fn {_source, t, _data, _opts} -> t == type end)
   end
 
+  defp assistant_output_specs(specs) do
+    Enum.filter(specs, fn {_source, type, _data, _opts} ->
+      type in [:assistant_delta, :assistant_message]
+    end)
+  end
+
   defp valid_plan_json do
     ~s({
       "objective": "Add a /version command to the CLI.",
@@ -85,8 +91,10 @@ defmodule Muse.ConductorPlanningTest do
       assert result.plan.objective =~ "/version"
       assert length(result.plan.tasks) == 3
 
-      # Session should be :awaiting_plan_approval
+      # Session should be :awaiting_plan_approval with the active plan stored
       assert result.session.status == :awaiting_plan_approval
+      assert result.session.active_plan_id == result.plan.id
+      assert result.session.plans[result.plan.id] == result.plan
 
       # Assistant text should be user-friendly Plan.render output, not raw JSON
       refute result.assistant_text =~ "\"objective\""
@@ -134,16 +142,50 @@ defmodule Muse.ConductorPlanningTest do
 
       assert awaiting != nil
 
-      # No assistant_message event should contain raw JSON
-      assistant_msgs = filter_event_specs(result.event_specs, :assistant_message)
+      # No user-facing assistant output event should contain raw JSON.
+      # The raw streamed JSON deltas are removed and replaced by one rendered plan.
+      assistant_outputs = assistant_output_specs(result.event_specs)
+      assert length(assistant_outputs) == 1
 
-      for {_, _, data, _} <- assistant_msgs do
+      for {_, _, data, _} <- assistant_outputs do
         refute data.text =~ "\"objective\"",
-               "assistant_message should not contain raw JSON: #{String.slice(data.text, 0, 60)}"
+               "assistant output should not contain raw JSON: #{String.slice(data.text, 0, 60)}"
 
         assert data.text =~ "Objective:",
-               "assistant_message should contain rendered plan: #{String.slice(data.text, 0, 60)}"
+               "assistant output should contain rendered plan: #{String.slice(data.text, 0, 60)}"
       end
+    end
+
+    test "prose that ends with structured plan JSON is parsed and rendered" do
+      session = build_session(id: "prose-plan-session")
+      turn = build_turn(session_id: "prose-plan-session", id: "turn_prose_plan")
+      final_text = "Based on the inspection, here is the structured plan:\n\n#{valid_plan_json()}"
+
+      fake_events = [
+        {:assistant_delta, final_text},
+        {:assistant_completed, final_text},
+        {:response_completed, nil}
+      ]
+
+      {:ok, result} =
+        Conductor.run(session, turn,
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{fake_events: fake_events}]
+        )
+
+      assert %Plan{} = result.plan
+      assert result.session.status == :awaiting_plan_approval
+      assert result.session.active_plan_id == result.plan.id
+      assert result.session.plans[result.plan.id] == result.plan
+      assert result.assistant_text =~ "Planning Muse prepared a plan."
+      assert result.assistant_text =~ "Objective:"
+      refute result.assistant_text =~ "\"objective\""
+
+      assert [{:muse, :assistant_message, %{text: rendered_text}, _opts}] =
+               assistant_output_specs(result.event_specs)
+
+      assert rendered_text =~ "Objective:"
+      refute rendered_text =~ "\"tasks\""
     end
 
     test "rendered plan is shown as assistant_text, not raw JSON" do
@@ -189,8 +231,9 @@ defmodule Muse.ConductorPlanningTest do
         )
 
       plan_text = valid_plan_json()
+      final_text = "Based on my inspection, here is the structured plan:\n\n#{plan_text}"
 
-      # Batch 0: tool calls, Batch 1: structured plan JSON
+      # Batch 0: tool calls, Batch 1: final prose plus structured plan JSON
       fake_event_batches = [
         [
           {:assistant_delta, "Let me inspect the codebase first."},
@@ -199,9 +242,8 @@ defmodule Muse.ConductorPlanningTest do
           {:response_completed, nil}
         ],
         [
-          {:assistant_delta, "Based on my inspection, here is the structured plan:\n\n"},
-          {:assistant_delta, plan_text},
-          {:assistant_completed, plan_text},
+          {:assistant_delta, final_text},
+          {:assistant_completed, final_text},
           {:response_completed, nil}
         ]
       ]
@@ -217,8 +259,10 @@ defmodule Muse.ConductorPlanningTest do
       assert %Plan{} = result.plan
       assert length(result.plan.tasks) == 3
 
-      # Session should be :awaiting_plan_approval
+      # Session should be :awaiting_plan_approval with the active plan stored
       assert result.session.status == :awaiting_plan_approval
+      assert result.session.active_plan_id == result.plan.id
+      assert result.session.plans[result.plan.id] == result.plan
 
       # Event specs should include :plan_created
       plan_created_specs = filter_event_specs(result.event_specs, :plan_created)
@@ -228,9 +272,20 @@ defmodule Muse.ConductorPlanningTest do
       started = filter_event_specs(result.event_specs, :tool_call_started)
       assert length(started) >= 1
 
-      # Assistant text should be rendered plan, not raw JSON or tool output
+      # Initial provider call + one tool-loop final provider call; the initial
+      # provider event specs must not be duplicated when ToolLoop is used.
+      assert length(filter_event_specs(result.event_specs, :provider_response_completed)) == 2
+
+      # Assistant text and user-facing output specs should be rendered plan, not raw JSON or tool output
       assert result.assistant_text =~ "Objective:"
       assert result.assistant_text =~ "Tasks:"
+      refute result.assistant_text =~ "\"objective\""
+
+      assert [{:muse, :assistant_message, %{text: rendered_text}, _opts}] =
+               assistant_output_specs(result.event_specs)
+
+      assert rendered_text =~ "Objective:"
+      refute rendered_text =~ "\"tasks\""
     end
 
     test "tool-loop with plain text final response (not a plan) stays idle" do
@@ -295,8 +350,19 @@ defmodule Muse.ConductorPlanningTest do
 
       # Invalid plan stays invalid after repair — should stay idle with safe message
       assert result.session.status == :idle
+      assert result.session.active_plan_id == nil
+      assert result.session.plans == %{}
       refute Map.has_key?(result, :plan)
       assert result.assistant_text =~ "unable to generate a valid structured plan"
+
+      assistant_outputs = assistant_output_specs(result.event_specs)
+      assert length(assistant_outputs) == 1
+
+      for {_, _, data, _} <- assistant_outputs do
+        assert data.text =~ "unable to generate a valid structured plan"
+        refute data.text =~ "\"objective\""
+        refute data.text =~ "\"tasks\""
+      end
     end
 
     test "plain text response (not plan-like) passes through without repair attempt" do
@@ -317,6 +383,8 @@ defmodule Muse.ConductorPlanningTest do
 
       # Plain text passes through unchanged
       assert result.session.status == :idle
+      assert result.session.active_plan_id == nil
+      assert result.session.plans == %{}
       refute Map.has_key?(result, :plan)
       assert result.assistant_text =~ "I'm the Planning Muse"
     end
@@ -342,9 +410,10 @@ defmodule Muse.ConductorPlanningTest do
           request_options: [options: %{fake_events: fake_events}]
         )
 
-      # Not a plan — passes through (looks_like_plan_json? returns false since no "objective"/"tasks")
+      # Not a plan — passes through because it has no plan markers.
       refute Map.has_key?(result, :plan)
       assert result.session.status == :idle
+      assert result.assistant_text == not_a_plan
     end
   end
 
@@ -359,6 +428,14 @@ defmodule Muse.ConductorPlanningTest do
 
     test "PlanParser.parse/2 rejects non-JSON text" do
       assert {:error, _errors} = PlanParser.parse("This is just a plain text response.")
+    end
+
+    test "PlanParser.parse/2 can extract a final plan JSON object from prose when requested" do
+      text = "After inspection, create this plan:\n\n#{valid_plan_json()}"
+
+      assert {:ok, %Plan{} = plan} = PlanParser.parse(text, extract: :auto)
+      assert plan.objective =~ "/version"
+      assert length(plan.tasks) == 3
     end
 
     test "PlanParser.repair_prompt/2 generates repair prompt with errors" do
@@ -395,6 +472,31 @@ defmodule Muse.ConductorPlanningTest do
 
       assert Map.has_key?(status, :active_plan_id)
       assert status.active_plan_id == nil
+    end
+
+    test "SessionServer stores created plan, active_plan_id, and awaiting approval status" do
+      pid = start_server("plan-store-created-session")
+
+      fake_events = [
+        {:assistant_delta, valid_plan_json()},
+        {:assistant_completed, valid_plan_json()},
+        {:response_completed, nil}
+      ]
+
+      {:ok, assistant_text} =
+        Muse.SessionServer.submit(pid, :cli, "plan the version command",
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{fake_events: fake_events}]
+        )
+
+      status = Muse.SessionServer.status(pid)
+
+      assert assistant_text =~ "Planning Muse prepared a plan."
+      assert status.status == :awaiting_plan_approval
+      assert status.active_plan_id != nil
+      assert %Plan{} = status.plan
+      assert status.plan.id == status.active_plan_id
+      assert status.plans[status.active_plan_id] == status.plan
     end
 
     test "SessionServer respects Conductor result session status" do

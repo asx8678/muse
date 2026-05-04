@@ -2,9 +2,9 @@ defmodule Muse.PlanParser do
   @moduledoc """
   Parse raw LLM output text into a validated `%Muse.Plan{}` struct.
 
-  The parser accepts strict JSON text. As a fallback, it can extract
-  JSON from a fenced code block (e.g. ```` ```json ... ``` ````) when
-  the `fenced: true` option is passed.
+  The parser accepts strict JSON text by default. For practical model
+  outputs, callers can ask it to extract JSON from fenced code blocks or
+  from a single balanced JSON object embedded in surrounding prose.
 
   ## Pipeline
 
@@ -43,6 +43,11 @@ defmodule Muse.PlanParser do
 
     * `:fenced` — when `true`, attempt to extract JSON from a fenced
       code block before parsing (default `false`)
+    * `:extract` — extraction strategy. Supported values:
+      * `:strict` (default) — parse the whole trimmed text as JSON
+      * `:fenced` — same as `fenced: true`
+      * `:auto` — fenced extraction first, then a single balanced JSON
+        object embedded in prose, then strict fallback
 
   ## Returns
 
@@ -104,13 +109,89 @@ defmodule Muse.PlanParser do
   # -- JSON extraction ----------------------------------------------------------
 
   defp extract_json(text, opts) do
-    if Keyword.get(opts, :fenced, false) do
-      case Regex.run(@fenced_json_regex, text) do
-        [_, captured] -> {:ok, captured}
-        _ -> {:ok, text}
-      end
-    else
-      {:ok, String.trim(text)}
+    case Keyword.get(opts, :extract) do
+      :auto ->
+        extract_auto_json(text)
+
+      :fenced ->
+        extract_fenced_json(text)
+
+      :strict ->
+        {:ok, String.trim(text)}
+
+      _ ->
+        if(Keyword.get(opts, :fenced, false),
+          do: extract_fenced_json(text),
+          else: {:ok, String.trim(text)}
+        )
+    end
+  end
+
+  defp extract_fenced_json(text) do
+    case Regex.run(@fenced_json_regex, text) do
+      [_, captured] -> {:ok, String.trim(captured)}
+      _ -> {:ok, String.trim(text)}
+    end
+  end
+
+  defp extract_auto_json(text) do
+    case Regex.run(@fenced_json_regex, text) do
+      [_, captured] ->
+        {:ok, String.trim(captured)}
+
+      _ ->
+        case extract_balanced_json_object(text) do
+          {:ok, json_text} -> {:ok, String.trim(json_text)}
+          :no_match -> {:ok, String.trim(text)}
+        end
+    end
+  end
+
+  defp extract_balanced_json_object(text) do
+    text
+    |> String.to_charlist()
+    |> find_balanced_json_object()
+  end
+
+  defp find_balanced_json_object([]), do: :no_match
+
+  defp find_balanced_json_object([?{ | _] = chars),
+    do: collect_json_object(chars, [], 0, false, false)
+
+  defp find_balanced_json_object([_char | rest]), do: find_balanced_json_object(rest)
+
+  defp collect_json_object([], _acc, _depth, _in_string?, _escaped?), do: :no_match
+
+  defp collect_json_object([char | rest], acc, depth, in_string?, escaped?) do
+    acc = [char | acc]
+
+    cond do
+      in_string? and escaped? ->
+        collect_json_object(rest, acc, depth, true, false)
+
+      in_string? and char == ?\\ ->
+        collect_json_object(rest, acc, depth, true, true)
+
+      in_string? and char == ?\" ->
+        collect_json_object(rest, acc, depth, false, false)
+
+      in_string? ->
+        collect_json_object(rest, acc, depth, true, false)
+
+      char == ?\" ->
+        collect_json_object(rest, acc, depth, true, false)
+
+      char == ?{ ->
+        collect_json_object(rest, acc, depth + 1, false, false)
+
+      char == ?} and depth == 1 ->
+        {:ok, acc |> Enum.reverse() |> to_string()}
+
+      char == ?} ->
+        collect_json_object(rest, acc, depth - 1, false, false)
+
+      true ->
+        collect_json_object(rest, acc, depth, false, false)
     end
   end
 
