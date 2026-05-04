@@ -11,24 +11,23 @@ defmodule Muse.Auth.ApiKeyTest do
   # ---------------------------------------------------------------------------
 
   defp openai_config(overrides \\ []) do
-    struct!(
-      ProviderConfig,
-      [
-        id: "openai_compatible",
-        name: "OpenAI Compatible",
-        base_url: "https://api.openai.com/v1",
-        wire_api: :responses,
-        transport: :sse,
-        auth: :api_key,
-        env_key: "MUSE_OPENAI_API_KEY",
-        model: "gpt-4o",
-        supports_streaming: true,
-        supports_websockets: true,
-        supports_tools: true,
-        timeout_ms: 120_000,
-        max_retries: 2
-      ] ++ overrides
-    )
+    base = %ProviderConfig{
+      id: "openai_compatible",
+      name: "OpenAI Compatible",
+      base_url: "https://api.openai.com/v1",
+      wire_api: :responses,
+      transport: :sse,
+      auth: :api_key,
+      env_key: "MUSE_OPENAI_API_KEY",
+      model: "gpt-4o",
+      supports_streaming: true,
+      supports_websockets: true,
+      supports_tools: true,
+      timeout_ms: 120_000,
+      max_retries: 2
+    }
+
+    struct!(base, overrides)
   end
 
   # ---------------------------------------------------------------------------

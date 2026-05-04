@@ -15,8 +15,6 @@ defmodule Muse.Auth.BearerCommand do
     * The caller controls whether `System.cmd/3` is allowed (via
       `allow_exec?: true`, default `false`) — preventing accidental shell-outs
       in test or inspection-only contexts.
-    * A large stdout cap (1 MB) prevents resource exhaustion from runaway
-      command output.
 
   ## Returns
 
@@ -26,8 +24,6 @@ defmodule Muse.Auth.BearerCommand do
   """
 
   alias Muse.Auth.Credential
-
-  @max_bytes 1_048_576
 
   @type error_reason ::
           {:not_allowed, String.t()}
@@ -117,10 +113,20 @@ defmodule Muse.Auth.BearerCommand do
   # Execution (size-capped, no token leakage in errors)
   # ---------------------------------------------------------------------------
 
+  # Split the command string into executable and args so that
+  # e.g. "echo tok" runs System.cmd("echo", ["tok"], ...).
   defp exec_command(command) do
-    case System.cmd(command, [], into: [], stderr_to_stdout: false, parallelism: false) do
+    tokens = String.split(command)
+
+    {cmd, args} =
+      case tokens do
+        [] -> {command, []}
+        [h | t] -> {h, t}
+      end
+
+    case System.cmd(cmd, args, stderr_to_stdout: false) do
       {output, 0} ->
-        token = output |> List.to_string() |> String.trim_trailing()
+        token = String.trim_trailing(output)
 
         if token == "" do
           {:error, :empty_output}

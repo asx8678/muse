@@ -1,6 +1,4 @@
 defmodule Muse.Auth.CodexCache do
-  import Bitwise
-
   @moduledoc """
   Reads and resolves bearer tokens from the Codex CLI auth cache file.
 
