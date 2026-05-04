@@ -1,35 +1,71 @@
 defmodule Muse.LLM.OpenAICompatibleProvider do
   @moduledoc """
-  OpenAI-compatible non-streaming provider adapter.
+  OpenAI-compatible provider adapter with SSE streaming support.
 
-  This provider performs a single Chat Completions-compatible HTTP POST, decodes
-  the complete response into Muse's normalized response struct, and can replay
-  the result as canonical Muse LLM events for callers using `stream/2`.
+  This provider performs a single Chat Completions-compatible HTTP POST and
+  decodes the complete response into Muse's normalized response struct.
+  When the caller selects SSE transport (`request.transport == :sse` or
+  `request.options[:transport] == :sse`), `stream/2` opens an HTTP stream
+  and emits canonical events incrementally as chunks arrive.
 
-  This adapter keeps auth resolution centralized in `Muse.Auth.Resolver`:
+  ## Transport selection
 
-    * no SSE parser
-    * no WebSocket client
-    * fake provider remains the offline/default provider
-    * configured auth modes resolve before any HTTP call
+    * `transport == :sse` (on request struct or `request.options[:transport]`):
+      streaming Chat Completions with `"stream" => true`, real SSE parsing,
+      incremental event emission.
+    * Otherwise (default): non-streaming POST with full-response replay.
 
-  Callers may pass explicit headers through `request.options[:headers]`; those
-  headers are sent to the provider but are never included in returned/emitted
-  error data. If an explicit `Authorization` header is present, it wins and the
-  auth layer does not overwrite or duplicate it.
+  ## Auth
+
+  Auth resolution is centralized in `Muse.Auth.Resolver`. Callers may pass
+  explicit headers through `request.options[:headers]`; those headers are sent
+  to the provider but are never included in returned/emitted error data. If an
+  explicit `Authorization` header is present, it wins and the auth layer does
+  not overwrite or duplicate it. Raw tokens appear only in the outbound
+  Authorization header.
+
+  ## SSE function injection
+
+  For SSE streaming, callers can inject an `sse_post_fn` via
+  `request.options[:sse_post_fn]` to avoid network calls in tests. The shape
+  is:
+
+      sse_post_fn = fn url, req_options, on_chunk ->
+        on_chunk.(raw_sse_chunk)
+        {:ok, %{status: 200}}
+      end
+
+  `on_chunk` is a one-arity function receiving raw SSE text (possibly partial).
+  The injected function must call `on_chunk` zero or more times and return
+  `{:ok, %{status: integer}}` or `{:error, reason}`.
+
+  The default `sse_post_fn` uses `Muse.LLM.Transport.SSE.ReqStream.request/2`.
+
+  ## Error handling
+
+  On malformed JSON, midstream failure, transport error, or non-2xx HTTP
+  status, the provider emits exactly one `:provider_error` event and returns
+  an error. No `:assistant_completed` or `:response_completed` events are
+  emitted after a failure. All error data is redacted — raw tokens, request
+  bodies, and full response payloads never leak through.
   """
 
   @behaviour Muse.LLM.Provider
 
   alias Muse.Auth.Resolver
   alias Muse.{EventPayloadRedactor, MetadataSanitizer}
-  alias Muse.LLM.OpenAI.RequestBuilder
+  alias Muse.LLM.OpenAI.{ChatCompletionsStreamDecoder, RequestBuilder}
+  alias Muse.LLM.Transport.SSE.Parser, as: SSEParser
+  alias Muse.LLM.Transport.SSE.ReqStream
   alias Muse.LLM.{Event, Request, Response, ToolCall}
 
   @chat_completions_decoder Module.concat(Muse.LLM.OpenAI, ChatCompletionsDecoder)
   @max_summary_string_length 500
 
   @type post_fn :: (String.t(), keyword() -> {:ok, term()} | {:error, term()})
+  @type sse_post_fn ::
+          (String.t(), keyword(), (String.t() -> :ok) ->
+             {:ok, %{status: integer()}} | {:error, term()})
 
   @doc """
   Complete a request through an OpenAI-compatible Chat Completions endpoint.
@@ -54,15 +90,203 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   def complete(%Request{}, _opts), do: {:error, {:invalid_options, "opts must be a keyword list"}}
 
   @doc """
-  Emit canonical Muse events by performing the same non-streaming HTTP call.
+  Stream a request, emitting canonical Muse events incrementally.
 
-  Because the provider behaviour only passes `(request, emit_fn)` for streaming,
-  offline tests may inject a post function via `request.options[:post_fn]` or
-  `request.options[:http_post]`.
+  ## Transport dispatch
+
+    * When `request.transport == :sse` or `request.options[:transport] == :sse`,
+      opens an SSE streaming connection and emits events incrementally.
+    * Otherwise, performs a non-streaming POST and replays the full response
+      as events.
+
+  ## Injection
+
+  Non-SSE path: inject `post_fn` or `http_post` in `request.options`.
+  SSE path: inject `sse_post_fn` in `request.options`.
   """
   @impl true
   @spec stream(Request.t(), (Event.t() -> :ok)) :: {:ok, Response.t()} | {:error, term()}
   def stream(%Request{} = request, emit_fn) when is_function(emit_fn, 1) do
+    if sse_transport?(request) do
+      stream_sse(request, emit_fn)
+    else
+      stream_non_streaming(request, emit_fn)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # SSE streaming path
+  # ---------------------------------------------------------------------------
+
+  defp sse_transport?(%Request{transport: :sse}), do: true
+  defp sse_transport?(%Request{options: %{transport: :sse}}), do: true
+  defp sse_transport?(%Request{options: %{"transport" => :sse}}), do: true
+  defp sse_transport?(_request), do: false
+
+  defp stream_sse(request, emit_fn) do
+    with {:ok, spec} <- RequestBuilder.build_chat_completions_stream(request),
+         {:ok, spec} <- attach_auth(spec, request, []),
+         {:ok, sse_post_fn} <- resolve_sse_post_fn(request.options) do
+      {:ok, agent} =
+        Agent.start_link(fn ->
+          {SSEParser.new(), ChatCompletionsStreamDecoder.new(), false}
+        end)
+
+      on_chunk = fn raw_chunk when is_binary(raw_chunk) ->
+        pending_events =
+          Agent.get_and_update(agent, fn {parser_state, decoder_state, failed?} ->
+            if failed? do
+              {[], {parser_state, decoder_state, true}}
+            else
+              {sse_events, new_parser} = SSEParser.parse_chunk(raw_chunk, parser_state)
+
+              {events, new_decoder, now_failed?} =
+                process_sse_events(sse_events, decoder_state, failed?)
+
+              {events, {new_parser, new_decoder, now_failed?}}
+            end
+          end)
+
+        Enum.each(pending_events, &emit_fn.(&1))
+        :ok
+      end
+
+      try do
+        emit_fn.(Event.response_started())
+
+        case safe_sse_post(sse_post_fn, spec.url, sse_request_options(spec), on_chunk) do
+          {:ok, %{status: status}} when is_integer(status) and status >= 200 and status <= 299 ->
+            {parser_state, decoder_state, failed?} = Agent.get(agent, & &1)
+
+            if failed? do
+              {:error, {:provider_sse_error, "stream failed mid-flight"}}
+            else
+              # Flush any remaining buffered SSE events
+              {remaining_events, _final_parser} = SSEParser.flush(parser_state)
+
+              {flush_events, final_decoder, flush_failed?} =
+                process_sse_events(remaining_events, decoder_state, false)
+
+              Enum.each(flush_events, &emit_fn.(&1))
+
+              if flush_failed? do
+                {:error, {:provider_sse_error, "malformed data in final flush"}}
+              else
+                {response, final_events} = ChatCompletionsStreamDecoder.finalize(final_decoder)
+                Enum.each(final_events, &emit_fn.(&1))
+                {:ok, response}
+              end
+            end
+
+          {:ok, %{status: status}} when is_integer(status) ->
+            redacted = redact_error({:provider_http_error, %{status: status}})
+            emit_fn.(Event.provider_error(redacted))
+            {:error, redacted}
+
+          {:ok, other} ->
+            redacted = redact_error({:unexpected_sse_response, other})
+            emit_fn.(Event.provider_error(redacted))
+            {:error, redacted}
+
+          {:error, reason} ->
+            redacted = redact_error({:sse_transport_error, reason})
+            emit_fn.(Event.provider_error(redacted))
+            {:error, redacted}
+        end
+      after
+        Agent.stop(agent, :normal, 5000)
+      end
+    else
+      {:error, reason} ->
+        redacted = redact_error(reason)
+        emit_fn.(Event.provider_error(redacted))
+        {:error, redacted}
+    end
+  end
+
+  defp process_sse_events(sse_events, decoder_state, failed?) do
+    Enum.reduce(sse_events, {[], decoder_state, failed?}, fn sse_event, {acc_events, ds, f?} ->
+      if f? do
+        {acc_events, ds, true}
+      else
+        process_one_sse_event(sse_event, ds, acc_events)
+      end
+    end)
+  end
+
+  defp process_one_sse_event(%{done?: true}, decoder_state, acc_events) do
+    {acc_events, decoder_state, false}
+  end
+
+  defp process_one_sse_event(%{data: data}, decoder_state, acc_events) do
+    case Jason.decode(data) do
+      {:ok, chunk_map} when is_map(chunk_map) ->
+        {new_decoder, events} = ChatCompletionsStreamDecoder.feed(decoder_state, chunk_map)
+        {acc_events ++ events, new_decoder, false}
+
+      {:ok, _other} ->
+        # Decoded but not a map — ignore
+        {acc_events, decoder_state, false}
+
+      {:error, _reason} ->
+        # Malformed JSON in a chunk — emit provider_error, mark failed
+        error_event = Event.provider_error(redact_error({:sse_decode_error, "malformed JSON"}))
+        {acc_events ++ [error_event], decoder_state, true}
+    end
+  end
+
+  defp process_one_sse_event(_sse_event, decoder_state, acc_events) do
+    # Unknown/empty SSE events — ignore
+    {acc_events, decoder_state, false}
+  end
+
+  defp resolve_sse_post_fn(opts) when is_map(opts) do
+    case Map.get(opts, :sse_post_fn) do
+      nil ->
+        {:ok, &default_sse_post/3}
+
+      sse_post_fn when is_function(sse_post_fn, 3) ->
+        {:ok, sse_post_fn}
+
+      _other ->
+        {:error, {:invalid_sse_post_fn, "sse_post_fn must be a three-arity function"}}
+    end
+  end
+
+  defp resolve_sse_post_fn(_opts), do: {:ok, &default_sse_post/3}
+
+  @doc false
+  defp default_sse_post(url, req_options, on_chunk) do
+    body = Keyword.get(req_options, :json, %{})
+    headers = Keyword.get(req_options, :headers, [])
+    stream_opts = [url: url, body: body, headers: headers]
+
+    case ReqStream.request(stream_opts, on_chunk) do
+      {:ok, %{status: _status} = result} ->
+        {:ok, result}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp safe_sse_post(sse_post_fn, url, req_options, on_chunk) do
+    sse_post_fn.(url, req_options, on_chunk)
+  rescue
+    exception -> {:error, exception}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp sse_request_options(spec) do
+    [json: spec.payload, headers: spec.headers] ++ spec.req_options
+  end
+
+  # ---------------------------------------------------------------------------
+  # Non-streaming replay path
+  # ---------------------------------------------------------------------------
+
+  defp stream_non_streaming(request, emit_fn) do
     opts = request_options(request)
 
     result =

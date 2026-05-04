@@ -30,6 +30,37 @@ defmodule Muse.ConductorTest do
     Enum.filter(specs, fn {_source, t, _data, _opts} -> t == type end)
   end
 
+  defp build_sse_chunks_for_conductor(text, id, model) do
+    role_body = %{
+      "id" => id,
+      "model" => model,
+      "choices" => [%{"index" => 0, "delta" => %{"role" => "assistant"}}]
+    }
+
+    role_chunk = "data: #{Jason.encode!(role_body)}\n\n"
+
+    content_body = %{
+      "id" => id,
+      "model" => model,
+      "choices" => [%{"index" => 0, "delta" => %{"content" => text}}]
+    }
+
+    content_chunk = "data: #{Jason.encode!(content_body)}\n\n"
+
+    finish_body = %{
+      "id" => id,
+      "model" => model,
+      "choices" => [%{"index" => 0, "delta" => %{}, "finish_reason" => "stop"}],
+      "usage" => %{"prompt_tokens" => 3, "completion_tokens" => 5, "total_tokens" => 8}
+    }
+
+    finish_chunk = "data: #{Jason.encode!(finish_body)}\n\n"
+
+    done_chunk = "data: [DONE]\n\n"
+
+    [role_chunk, content_chunk, finish_chunk, done_chunk]
+  end
+
   defp with_telemetry_handler(event_name, handler_id, test_pid, tag) do
     :telemetry.attach(
       handler_id,
@@ -536,27 +567,16 @@ defmodule Muse.ConductorTest do
         max_retries: 0
       }
 
-      post_fn = fn url, post_options ->
-        send(parent, {:openai_compatible_post, url, post_options})
+      sse_post_fn = fn url, req_options, on_chunk ->
+        send(parent, {:openai_compatible_sse_post, url, req_options})
 
-        {:ok,
-         Req.Response.new(
-           status: 200,
-           body: %{
-             "id" => "chatcmpl_sse_route",
-             "choices" => [
-               %{
-                 "message" => %{"role" => "assistant", "content" => assistant_text},
-                 "finish_reason" => "stop"
-               }
-             ],
-             "usage" => %{
-               "prompt_tokens" => 3,
-               "completion_tokens" => 5,
-               "total_tokens" => 8
-             }
-           }
-         )}
+        # Build SSE chunks from the response data
+        chunks =
+          build_sse_chunks_for_conductor(assistant_text, "chatcmpl_sse_route", "gpt-4.1-mini")
+
+        Enum.each(chunks, &on_chunk.(&1))
+
+        {:ok, %{status: 200}}
       end
 
       {:ok, result} =
@@ -569,20 +589,19 @@ defmodule Muse.ConductorTest do
           ),
           provider_config: provider_config,
           prompt_opts: [project_rules?: false],
-          request_options: [options: %{post_fn: post_fn}]
+          request_options: [options: %{sse_post_fn: sse_post_fn}]
         )
 
       assert result.request.provider == :openai_compatible
       assert result.request.transport == :sse
-      assert result.request.options.supports_streaming == true
-      assert is_function(result.request.options.post_fn, 2)
       assert result.response.id == "chatcmpl_sse_route"
       assert result.assistant_text == assistant_text
 
-      assert_receive {:openai_compatible_post, url, post_options}
+      assert_receive {:openai_compatible_sse_post, url, req_options}
       assert url == "https://api.example.test/v1/chat/completions"
-      assert post_options[:json]["model"] == "gpt-4.1-mini"
-      assert [%{"role" => "user"} | _] = Enum.reverse(post_options[:json]["messages"])
+      assert req_options[:json]["model"] == "gpt-4.1-mini"
+      assert req_options[:json]["stream"] == true
+      assert [%{"role" => "user"} | _] = Enum.reverse(req_options[:json]["messages"])
 
       {_source, :assistant_delta, data, _opts} =
         find_event_spec(result.event_specs, :assistant_delta)

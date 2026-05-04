@@ -1146,9 +1146,13 @@ lib/muse/llm/providers/openai.ex    OpenAI provider.
 lib/muse/llm/providers/anthropic.ex Anthropic provider (future).
 lib/muse/llm/providers/openrouter.ex OpenRouter provider (future).
 lib/muse/llm/providers/ollama.ex    Ollama provider (future).
-lib/muse/llm/transports/http_sse.ex HTTP SSE transport.
-lib/muse/llm/transports/responses_websocket.ex    Responses WebSocket transport.
-lib/muse/llm/transports/responses_ws_connection.ex WebSocket connection handler.
+lib/muse/llm/transport/sse/parser.ex HTTP SSE incremental parser (PR14).
+lib/muse/llm/transport/sse/req_stream.ex Req into:fun streaming adapter (PR14).
+lib/muse/llm/openai/chat_completions_stream_decoder.ex Streaming Chat Completions decoder (PR14).
+lib/muse/llm/openai/request_builder.ex Non-streaming + streaming request builder (PR14).
+lib/muse/llm/transports/http_sse.ex HTTP SSE transport (legacy, replaced by parser+req_stream).
+lib/muse/llm/transports/responses_websocket.ex    Responses WebSocket transport (future — PR15).
+lib/muse/llm/transports/responses_ws_connection.ex WebSocket connection handler (future — PR15).
 lib/muse/llm/openai/responses_mapper.ex       Responses API request mapper.
 lib/muse/llm/openai/chat_completions_mapper.ex Chat Completions request mapper.
 lib/muse/llm/openai/event_normalizer.ex       Provider event normalizer.

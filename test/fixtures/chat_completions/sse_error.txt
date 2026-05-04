@@ -1,0 +1,7 @@
+data: {"id":"chatcmpl-sse-malformed","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Partial"},"finish_reason":null}]}
+
+data: {"error":{"message":"Rate limit exceeded","type":"rate_limit_error","param":null,"code":"429"}}
+
+data: {this is not valid json
+
+data: [DONE]

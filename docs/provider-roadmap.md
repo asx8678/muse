@@ -510,21 +510,46 @@ The Chat Completions mapper includes the full message history (system prompt + a
 
 ## 8. HTTP SSE Transport
 
-**Future transport phase, not PR11.** The details below are the roadmap for real streaming provider support after offline config/mappers are in place.
+**Implemented in PR14.** The SSE transport is now live with the following modules:
 
-### Responsibilities
+- `Muse.LLM.Transport.SSE.Parser` — pure incremental SSE parser (`new/0`, `parse_chunk/2`, `flush/1`)
+- `Muse.LLM.OpenAI.ChatCompletionsStreamDecoder` — pure streaming accumulator (`new/0`, `feed/2`, `finalize/1`)
+- `Muse.LLM.OpenAI.RequestBuilder.build_chat_completions_stream/1` — streaming spec builder with `"stream" => true`
+- `Muse.LLM.Transport.SSE.ReqStream` — Req `into: fun` streaming adapter (`request/2`)
+- `OpenAICompatibleProvider.stream/2` — dispatches to SSE path when `request.transport == :sse`
+
+### Architecture
 
 ```text
-- POST request to configured endpoint (Responses or Chat Completions path).
-- Add Authorization header from Auth layer (Bearer token or API key).
-- Add stream=true query parameter or body field for supported wire APIs.
-- Parse SSE data frames incrementally (data: {...}\n\n).
-- Decode JSON events from each SSE frame.
-- Normalize provider-specific events into Muse.LLM.Event structs.
-- Redact errors before emitting to Muse.Event or log output.
+OpenAICompatibleProvider.stream/2
+  ├── transport == :sse? → SSE streaming path
+  │     ├── RequestBuilder.build_chat_completions_stream/1
+  │     ├── attach_auth (PR13, explicit Authorization wins)
+  │     ├── resolve_sse_post_fn (injectable for tests)
+  │     ├── on_chunk callback → SSEParser.parse_chunk → ChatCompletionsStreamDecoder.feed
+  │     └── finalize → emit assistant_completed, tool_call_completed, response_completed
+  └── otherwise → non-streaming replay path (PR12/PR13 preserved)
 ```
 
-### Normalizing Rules
+### SSE Function Injection (Tests)
+
+```elixir
+# Inject sse_post_fn in request.options to avoid real network:
+sse_post_fn = fn url, req_options, on_chunk ->
+  on_chunk.("data: {...}\n\n")
+  on_chunk.("data: [DONE]\n\n")
+  {:ok, %{status: 200}}
+end
+```
+
+### Error Handling
+
+- Malformed JSON, mid-stream failure, transport error, non-2xx: emit exactly one `:provider_error`, return error
+- No `:assistant_completed` / `:response_completed` emitted after failure
+- All errors are redacted — no raw tokens, request bodies, or full response payloads leak
+- Raw token only appears in outbound Authorization header
+
+### Implemented Normalizing Rules
 
 Provider-specific SSE event types must be normalized into the Muse event model. Unknown events must never crash the runtime.
 
@@ -618,6 +643,8 @@ end)
 ---
 
 ## 9. OpenAI Responses WebSocket Transport
+
+**Future — PR15.** Not yet implemented. The SSE transport (PR14) is the first real streaming path. WebSocket support for the OpenAI Responses API will be added in a future PR.
 
 **Add dependency only in this phase:**
 
