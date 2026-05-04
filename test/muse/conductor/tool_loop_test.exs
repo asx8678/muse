@@ -5,6 +5,234 @@ defmodule Muse.Conductor.ToolLoopTest do
   alias Muse.Conductor.ToolLoop
   alias Muse.LLM.{FakeProvider, Request, Response, ToolCall}
 
+  defmodule ResponsesContinuationProvider do
+    @moduledoc false
+
+    import ExUnit.Assertions
+
+    alias Muse.LLM.{Event, Response, ToolCall}
+
+    def stream(request, emit) do
+      case next_call() do
+        1 ->
+          tool_call = ToolCall.new("list_files", %{"path" => "."}, id: "call_resp_1")
+          emit_tool_call(emit, tool_call)
+
+          {:ok,
+           Response.new(
+             content: "I need to inspect files.",
+             tool_calls: [tool_call],
+             provider_state: %{previous_response_id: "resp_tool_1"},
+             finish_reason: "tool_calls"
+           )}
+
+        2 ->
+          assert request.previous_response_id == "resp_tool_1"
+
+          assert Enum.any?(
+                   request.messages,
+                   &(&1.role == :tool and &1.tool_call_id == "call_resp_1")
+                 )
+
+          emit_final_text(emit, "Finished with Responses continuation.")
+          {:ok, Response.new(content: "Finished with Responses continuation.")}
+      end
+    end
+
+    defp next_call do
+      key = {__MODULE__, :calls}
+      count = Process.get(key, 0) + 1
+      Process.put(key, count)
+      count
+    end
+
+    defp emit_tool_call(emit, tool_call) do
+      emit.(Event.tool_call_started(tool_call))
+      emit.(Event.tool_call_completed(tool_call))
+      emit.(Event.response_completed())
+    end
+
+    defp emit_final_text(emit, text) do
+      emit.(Event.assistant_delta(text))
+      emit.(Event.assistant_completed(text))
+      emit.(Event.response_completed())
+    end
+  end
+
+  defmodule AdvancingResponsesContinuationProvider do
+    @moduledoc false
+
+    import ExUnit.Assertions
+
+    alias Muse.LLM.{Event, Response, ToolCall}
+
+    def stream(request, emit) do
+      case next_call() do
+        1 ->
+          tool_call = ToolCall.new("list_files", %{"path" => "."}, id: "call_adv_1")
+          emit_tool_call(emit, tool_call)
+
+          {:ok,
+           Response.new(
+             content: "First tool needed.",
+             tool_calls: [tool_call],
+             provider_state: %{"previous_response_id" => "resp_tool_1"},
+             finish_reason: "tool_calls"
+           )}
+
+        2 ->
+          assert request.previous_response_id == "resp_tool_1"
+
+          tool_call = ToolCall.new("read_file", %{"path" => "mix.exs"}, id: "call_adv_2")
+          emit_tool_call(emit, tool_call)
+
+          {:ok,
+           Response.new(
+             content: "Second tool needed.",
+             tool_calls: [tool_call],
+             provider_state: %{previous_response_id: "resp_tool_2"},
+             finish_reason: "tool_calls"
+           )}
+
+        3 ->
+          assert request.previous_response_id == "resp_tool_2"
+          assert Enum.count(request.messages, &(&1.role == :tool)) == 2
+
+          emit_final_text(emit, "Finished after advanced provider state.")
+          {:ok, Response.new(content: "Finished after advanced provider state.")}
+      end
+    end
+
+    defp next_call do
+      key = {__MODULE__, :calls}
+      count = Process.get(key, 0) + 1
+      Process.put(key, count)
+      count
+    end
+
+    defp emit_tool_call(emit, tool_call) do
+      emit.(Event.tool_call_started(tool_call))
+      emit.(Event.tool_call_completed(tool_call))
+      emit.(Event.response_completed())
+    end
+
+    defp emit_final_text(emit, text) do
+      emit.(Event.assistant_delta(text))
+      emit.(Event.assistant_completed(text))
+      emit.(Event.response_completed())
+    end
+  end
+
+  defmodule ChatCompletionsProviderStateProvider do
+    @moduledoc false
+
+    import ExUnit.Assertions
+
+    alias Muse.LLM.{Event, Response, ToolCall}
+
+    def stream(request, emit) do
+      case next_call() do
+        1 ->
+          tool_call = ToolCall.new("list_files", %{"path" => "."}, id: "call_chat_1")
+          emit.(Event.tool_call_started(tool_call))
+          emit.(Event.tool_call_completed(tool_call))
+          emit.(Event.response_completed())
+
+          {:ok,
+           Response.new(
+             content: "Tool needed.",
+             tool_calls: [tool_call],
+             provider_state: %{previous_response_id: "resp_chat_should_not_apply"},
+             finish_reason: "tool_calls"
+           )}
+
+        2 ->
+          assert request.wire_api == :chat_completions
+          assert request.previous_response_id == nil
+
+          emit.(Event.assistant_completed("Chat completions final."))
+          emit.(Event.response_completed())
+          {:ok, Response.new(content: "Chat completions final.")}
+      end
+    end
+
+    defp next_call do
+      key = {__MODULE__, :calls}
+      count = Process.get(key, 0) + 1
+      Process.put(key, count)
+      count
+    end
+  end
+
+  defmodule OverridePreviousResponseIdProvider do
+    @moduledoc false
+
+    import ExUnit.Assertions
+
+    alias Muse.LLM.{Event, Response, ToolCall}
+
+    def stream(request, emit) do
+      case next_call() do
+        1 ->
+          tool_call = ToolCall.new("list_files", %{"path" => "."}, id: "call_override_1")
+          emit.(Event.tool_call_started(tool_call))
+          emit.(Event.tool_call_completed(tool_call))
+          emit.(Event.response_completed())
+
+          {:ok,
+           Response.new(
+             content: "Tool needed.",
+             tool_calls: [tool_call],
+             provider_state: %{previous_response_id: "resp_tool_1"},
+             finish_reason: "tool_calls"
+           )}
+
+        2 ->
+          assert request.previous_response_id == "resp_safe_override"
+
+          emit.(Event.assistant_completed("Override respected."))
+          emit.(Event.response_completed())
+          {:ok, Response.new(content: "Override respected.")}
+      end
+    end
+
+    defp next_call do
+      key = {__MODULE__, :calls}
+      count = Process.get(key, 0) + 1
+      Process.put(key, count)
+      count
+    end
+  end
+
+  defmodule FailingAfterToolProvider do
+    @moduledoc false
+
+    import ExUnit.Assertions
+
+    alias Muse.LLM.Event
+
+    def stream(request, emit) do
+      assert Enum.any?(
+               request.messages,
+               &(&1.role == :tool and &1.tool_call_id == "call_write_1")
+             )
+
+      emit.(Event.provider_error(:websocket_closed_mid_turn))
+      {:error, :websocket_closed_mid_turn}
+    end
+  end
+
+  defmodule CountingWriteToolRunner do
+    @moduledoc false
+
+    alias Muse.Tool.Result
+
+    def run(tool_name, args, _context) do
+      send(self(), {:counting_write_tool_runner, tool_name, args})
+      Result.ok(tool_name, %{side_effect_recorded?: true})
+    end
+  end
+
   # -- Helpers ------------------------------------------------------------------
 
   defp build_session(opts \\ []) do
@@ -37,6 +265,23 @@ defmodule Muse.Conductor.ToolLoopTest do
       tools: [],
       options: options
     }
+  end
+
+  defp build_responses_request(opts \\ []) do
+    %Request{
+      provider: :fake,
+      wire_api: Keyword.get(opts, :wire_api, :responses),
+      model: "fake-planning-model",
+      messages: [Muse.LLM.Message.user("check the files")],
+      tools: [],
+      previous_response_id: Keyword.get(opts, :previous_response_id),
+      options: %{}
+    }
+  end
+
+  defp first_provider_response(provider_module, request) do
+    assert {:ok, response} = provider_module.stream(request, fn _event -> :ok end)
+    response
   end
 
   defp build_bundle do
@@ -182,6 +427,133 @@ defmodule Muse.Conductor.ToolLoopTest do
         )
 
       assert result.total_tool_calls == 1
+    end
+  end
+
+  # -- Responses API continuation ---------------------------------------------
+
+  describe "run/8 — Responses API previous_response_id continuation" do
+    test "sets previous_response_id from provider_state on the next tool-loop request" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+      request = build_responses_request()
+
+      initial_response = first_provider_response(ResponsesContinuationProvider, request)
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: ResponsesContinuationProvider
+        )
+
+      assert result.assistant_text == "Finished with Responses continuation."
+      assert result.iterations == 1
+      assert result.total_tool_calls == 1
+      assert result.provider_state == %{previous_response_id: "resp_tool_1"}
+
+      event_spec_text = inspect(result.event_specs)
+      refute event_spec_text =~ "provider_state"
+      refute event_spec_text =~ "previous_response_id"
+      refute event_spec_text =~ "resp_tool_1"
+    end
+
+    test "advances provider_state when a later tool-call response returns a new previous_response_id" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+      request = build_responses_request()
+
+      initial_response = first_provider_response(AdvancingResponsesContinuationProvider, request)
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: AdvancingResponsesContinuationProvider
+        )
+
+      assert result.assistant_text == "Finished after advanced provider state."
+      assert result.iterations == 2
+      assert result.total_tool_calls == 2
+      assert result.provider_state == %{previous_response_id: "resp_tool_2"}
+
+      event_spec_text = inspect(result.event_specs)
+      refute event_spec_text =~ "provider_state"
+      refute event_spec_text =~ "previous_response_id"
+      refute event_spec_text =~ "resp_tool_1"
+      refute event_spec_text =~ "resp_tool_2"
+    end
+
+    test "does not hydrate Chat Completions requests from Responses provider_state" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+      request = build_responses_request(wire_api: :chat_completions)
+
+      initial_response = first_provider_response(ChatCompletionsProviderStateProvider, request)
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: ChatCompletionsProviderStateProvider
+        )
+
+      assert result.assistant_text == "Chat completions final."
+      assert result.iterations == 1
+    end
+
+    test "respects explicit safe request_options previous_response_id override" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+      request = build_responses_request()
+
+      initial_response = first_provider_response(OverridePreviousResponseIdProvider, request)
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: OverridePreviousResponseIdProvider,
+          request_options: [previous_response_id: "resp_safe_override"]
+        )
+
+      assert result.assistant_text == "Override respected."
+      assert result.iterations == 1
+      assert result.provider_state == %{previous_response_id: "resp_tool_1"}
+    end
+
+    test "provider failure after a write-like tool side effect returns a safe error without rerunning the tool" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+      request = build_responses_request()
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [
+          ToolCall.new("write_file", %{"path" => "side-effect.txt", "content" => "hello"},
+            id: "call_write_1"
+          )
+        ],
+        provider_state: %{previous_response_id: "resp_write_1"},
+        finish_reason: "tool_calls"
+      }
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: FailingAfterToolProvider,
+          tool_runner: CountingWriteToolRunner
+        )
+
+      assert result.assistant_text == "Error during provider call in tool loop."
+      assert result.total_tool_calls == 1
+      assert result.provider_state == %{previous_response_id: "resp_write_1"}
+
+      assert_received {:counting_write_tool_runner, "write_file",
+                       %{"path" => "side-effect.txt", "content" => "hello"}}
+
+      refute_received {:counting_write_tool_runner, "write_file", _args}
     end
   end
 

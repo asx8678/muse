@@ -167,7 +167,8 @@ defmodule Muse.Conductor do
             [
               provider_module: provider_module,
               tool_runner: Keyword.get(opts, :tool_runner, Muse.Tool.Runner),
-              limits: Keyword.get(opts, :limits, nil)
+              limits: Keyword.get(opts, :limits, nil),
+              request_options: request_opts
             ]
             |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
