@@ -68,13 +68,13 @@ defmodule Muse.SessionServer do
   The caller blocks until the turn completes (or fails/is cancelled),
   but the GenServer itself remains responsive for `status` queries.
   """
-  @spec submit(pid(), atom(), String.t()) :: {:ok, String.t()}
-  def submit(pid, source, text) do
-    GenServer.call(pid, {:submit, source, text}, :infinity)
+  @spec submit(pid(), atom(), String.t(), keyword()) :: {:ok, String.t()}
+  def submit(pid, source, text, opts \\ []) do
+    GenServer.call(pid, {:submit, source, text, opts}, :infinity)
   end
 
   @doc """
-  Returns the current session status map.
+  Returns the current status of the session server.
   """
   @spec status(pid()) :: map()
   def status(pid) do
@@ -154,7 +154,62 @@ defmodule Muse.SessionServer do
   end
 
   @impl true
+  def handle_call({:submit, source, text, opts}, from, state) do
+    do_submit(source, text, opts, from, state)
+  end
+
+  # Backward-compatible 3-tuple form for callers using submit/3
   def handle_call({:submit, source, text}, from, state) do
+    do_submit(source, text, [], from, state)
+  end
+
+  @impl true
+  def handle_call(:status, _from, state) do
+    reply = %{
+      session_id: state.session_id,
+      status: state.status,
+      active_muse: state.active_muse,
+      active_plan_id: state.active_plan_id,
+      plan: state.plan,
+      plans: state.plans,
+      seq: state.seq,
+      event_count: length(state.events),
+      active_turn_id: state.active_turn_id,
+      runner_pid: state.runner_pid,
+      cancellation_requested: state.cancellation_requested
+    }
+
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call(:cancel, _from, state) do
+    cond do
+      state.status != :running or state.runner_pid == nil ->
+        {:reply, {:error, :no_active_turn}, state}
+
+      state.cancellation_requested ->
+        {:reply, :ok, state}
+
+      true ->
+        TurnRunner.cancel(state.runner_pid, state.active_turn_id)
+        {:reply, :ok, %{state | cancellation_requested: true}}
+    end
+  end
+
+  @impl true
+  def handle_call({:approve_plan, source}, _from, state) do
+    {reply, state} = handle_plan_lifecycle_command(state, source, :approved)
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:reject_plan, source}, _from, state) do
+    {reply, state} = handle_plan_lifecycle_command(state, source, :rejected)
+    {:reply, reply, state}
+  end
+
+  defp do_submit(source, text, opts, from, state) do
     turn_start_time = System.monotonic_time(:millisecond)
     turn_id = generate_turn_id()
 
@@ -218,10 +273,17 @@ defmodule Muse.SessionServer do
 
     # 3. Spawn TurnRunner task for async Conductor execution
     # Pass the pre-transition status (:idle) so the Conductor can emit
-    # the correct session_status_changed event (idle → running)
-    session = Session.new(id: state.session_id, workspace: get_workspace(), status: state.status)
+    # the correct session_status_changed event (idle → running). Tests may
+    # provide a deterministic workspace/provider script through opts; default
+    # callers keep the production-safe workspace and fake provider behavior.
+    session =
+      Session.new(
+        id: state.session_id,
+        workspace: Keyword.get(opts, :workspace, get_workspace()),
+        status: state.status
+      )
 
-    task = TurnRunner.async(session, turn)
+    task = TurnRunner.async(session, turn, Keyword.delete(opts, :workspace))
 
     # Store the task ref and runner pid for result handling
     runner_pid = task.pid
@@ -245,52 +307,6 @@ defmodule Muse.SessionServer do
     }
 
     {:noreply, state}
-  end
-
-  @impl true
-  def handle_call(:status, _from, state) do
-    reply = %{
-      session_id: state.session_id,
-      status: state.status,
-      active_muse: state.active_muse,
-      active_plan_id: state.active_plan_id,
-      plan: state.plan,
-      plans: state.plans,
-      seq: state.seq,
-      event_count: length(state.events),
-      active_turn_id: state.active_turn_id,
-      runner_pid: state.runner_pid,
-      cancellation_requested: state.cancellation_requested
-    }
-
-    {:reply, reply, state}
-  end
-
-  @impl true
-  def handle_call(:cancel, _from, state) do
-    cond do
-      state.status != :running or state.runner_pid == nil ->
-        {:reply, {:error, :no_active_turn}, state}
-
-      state.cancellation_requested ->
-        {:reply, :ok, state}
-
-      true ->
-        TurnRunner.cancel(state.runner_pid, state.active_turn_id)
-        {:reply, :ok, %{state | cancellation_requested: true}}
-    end
-  end
-
-  @impl true
-  def handle_call({:approve_plan, source}, _from, state) do
-    {reply, state} = handle_plan_lifecycle_command(state, source, :approved)
-    {:reply, reply, state}
-  end
-
-  @impl true
-  def handle_call({:reject_plan, source}, _from, state) do
-    {reply, state} = handle_plan_lifecycle_command(state, source, :rejected)
-    {:reply, reply, state}
   end
 
   # -- Task result handling ----------------------------------------------------
