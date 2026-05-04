@@ -56,6 +56,28 @@ defmodule Muse.SessionRouterTest do
     end
   end
 
+  defp persist_awaiting_plan(session_id) do
+    plan =
+      Muse.Plan.new(
+        id: "#{session_id}-plan",
+        session_id: session_id,
+        objective: "Router approval plan",
+        tasks: [Muse.Task.new(title: "Review", description: "Review plan")]
+      )
+
+    {:ok, plan} = Muse.Plan.transition(plan, :awaiting_approval)
+
+    :ok =
+      Muse.SessionStore.save_session(session_id, %{
+        "status" => "awaiting_plan_approval",
+        "active_plan_id" => plan.id,
+        "plan" => Muse.Plan.to_map(plan),
+        "plans" => %{plan.id => Muse.Plan.to_map(plan)}
+      })
+
+    plan
+  end
+
   # -- Setup --------------------------------------------------------------------
 
   setup do
@@ -162,6 +184,44 @@ defmodule Muse.SessionRouterTest do
                  {{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2"}}]}
                ])
              ) == 1
+    end
+  end
+
+  describe "approve_plan/2 and reject_plan/2" do
+    test "returns {:error, :not_found} without starting missing sessions" do
+      session_id = "router-missing-#{:erlang.unique_integer([:positive])}"
+
+      assert {:error, :not_found} = Muse.SessionRouter.approve_plan(session_id)
+      assert {:error, :not_found} = Muse.SessionRouter.reject_plan(session_id)
+      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
+    end
+
+    test "routes approval to an existing session" do
+      session_id = "router-approve-#{:erlang.unique_integer([:positive])}"
+      plan = persist_awaiting_plan(session_id)
+      {:ok, pid} = Muse.SessionRouter.find_or_start_session(session_id)
+
+      assert {:ok, approved_plan} = Muse.SessionRouter.approve_plan(session_id, :cli)
+      assert approved_plan.status == :approved
+
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+      assert status.plan.status == :approved
+      assert status.active_plan_id == plan.id
+    end
+
+    test "routes rejection to an existing session" do
+      session_id = "router-reject-#{:erlang.unique_integer([:positive])}"
+      plan = persist_awaiting_plan(session_id)
+      {:ok, pid} = Muse.SessionRouter.find_or_start_session(session_id)
+
+      assert {:ok, rejected_plan} = Muse.SessionRouter.reject_plan(session_id, :web)
+      assert rejected_plan.status == :rejected
+
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+      assert status.plan.status == :rejected
+      assert status.active_plan_id == plan.id
     end
   end
 

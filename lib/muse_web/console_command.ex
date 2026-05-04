@@ -33,6 +33,8 @@ defmodule MuseWeb.ConsoleCommand do
       log_filter: socket.assigns.log_filter,
       log_search: socket.assigns.log_search,
       command_history: socket.assigns.command_history,
+      session_id: "default",
+      source: :web,
       state: socket.assigns.state
     }
   end

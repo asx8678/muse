@@ -64,6 +64,44 @@ defmodule Muse.SessionRouter do
   end
 
   @doc """
+  Approves the active plan for an existing session.
+
+  This does not start a missing session and does not execute the plan.
+  """
+  @spec approve_plan(String.t(), atom()) ::
+          {:ok, Muse.Plan.t()}
+          | {:error,
+             :not_found
+             | :turn_running
+             | :no_active_plan
+             | {:plan_not_awaiting_approval, Muse.Plan.status()}}
+  def approve_plan(session_id \\ @default_session_id, source \\ :system) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.approve_plan(pid, source)
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Rejects the active plan for an existing session.
+
+  This does not start a missing session and does not execute anything.
+  """
+  @spec reject_plan(String.t(), atom()) ::
+          {:ok, Muse.Plan.t()}
+          | {:error,
+             :not_found
+             | :turn_running
+             | :no_active_plan
+             | {:plan_not_awaiting_approval, Muse.Plan.status()}}
+  def reject_plan(session_id \\ @default_session_id, source \\ :system) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.reject_plan(pid, source)
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
   Returns a list of all active session ids and their pids.
   """
   @spec active_sessions() :: [{String.t(), pid()}]

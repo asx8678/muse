@@ -462,7 +462,8 @@ defmodule Muse.Conductor do
          provider_event_specs,
          start_time,
          extra_opts
-       ) when is_list(extra_opts) do
+       )
+       when is_list(extra_opts) do
     assistant_text = response.content || ""
 
     # Build conductor overhead event specs
@@ -558,6 +559,7 @@ defmodule Muse.Conductor do
   # Check if text looks like it's trying to be a structured plan JSON
   defp looks_like_plan_json?(text) when is_binary(text) do
     trimmed = String.trim(text)
+
     String.starts_with?(trimmed, "{") or
       String.starts_with?(trimmed, "```") or
       String.contains?(text, "\"objective\"") or
@@ -641,6 +643,7 @@ defmodule Muse.Conductor do
         |> Map.put(:fake_iteration, (request.options[:fake_iteration] || 0) + 1)
 
       repair_message = Message.user(repair_prompt_text)
+
       repair_request = %{
         request
         | messages: [repair_message],

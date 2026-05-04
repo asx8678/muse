@@ -70,6 +70,38 @@ defmodule Muse.SessionServerTest do
     pid
   end
 
+  defp awaiting_plan(session_id, opts \\ []) do
+    plan =
+      Muse.Plan.new(
+        id: Keyword.get(opts, :id, "#{session_id}-plan"),
+        session_id: session_id,
+        objective: Keyword.get(opts, :objective, "Approve or reject this plan"),
+        status: Keyword.get(opts, :status, :draft),
+        tasks:
+          Keyword.get(opts, :tasks, [
+            Muse.Task.new(title: "Task A", description: "Do A"),
+            Muse.Task.new(title: "Task B", description: "Do B")
+          ])
+      )
+
+    case plan.status do
+      :awaiting_approval -> plan
+      _ -> elem(Muse.Plan.transition(plan, :awaiting_approval), 1)
+    end
+  end
+
+  defp persist_plan_snapshot(session_id, plan, session_status \\ "awaiting_plan_approval") do
+    :ok =
+      Muse.SessionStore.save_session(session_id, %{
+        "status" => session_status,
+        "active_plan_id" => plan.id,
+        "plan" => Muse.Plan.to_map(plan),
+        "plans" => %{plan.id => Muse.Plan.to_map(plan)}
+      })
+
+    :ok
+  end
+
   # Number of events per normal submit (no self-healing) after Conductor integration
   @normal_submit_events 12
 
@@ -937,6 +969,173 @@ defmodule Muse.SessionServerTest do
     end
   end
 
+  describe "approve_plan/2 and reject_plan/2" do
+    test "approving an awaiting plan transitions, persists, and emits lifecycle events" do
+      session_id = "approve-plan-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, objective: "Approve persisted plan")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+
+      assert {:ok, approved_plan} = Muse.SessionServer.approve_plan(pid, :cli)
+      assert approved_plan.status == :approved
+      assert %DateTime{} = approved_plan.approved_at
+      assert approved_plan.rejected_at == nil
+
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+      assert status.plan.status == :approved
+      assert status.plan.approved_at == approved_plan.approved_at
+      assert status.plans[plan.id].status == :approved
+      assert status.active_plan_id == plan.id
+      assert status.active_turn_id == nil
+      assert status.runner_pid == nil
+      assert status.event_count == 2
+
+      events = State.events()
+      assert Enum.map(events, & &1.type) == [:plan_approved, :session_status_changed]
+
+      [plan_event, status_event] = events
+      assert plan_event.source == :cli
+      assert plan_event.visibility == :user
+      assert plan_event.session_id == session_id
+      assert plan_event.turn_id == nil
+      assert plan_event.seq == 1
+
+      assert plan_event.data == %{
+               plan_id: plan.id,
+               status: :approved,
+               objective: "Approve persisted plan",
+               task_count: 2
+             }
+
+      assert status_event.source == :conductor
+      assert status_event.visibility == :internal
+      assert status_event.session_id == session_id
+      assert status_event.turn_id == nil
+      assert status_event.seq == 2
+      assert status_event.data == %{from: :awaiting_plan_approval, to: :idle}
+
+      assert {:ok, stored} = Muse.SessionStore.load_session(session_id)
+      assert stored["status"] == "idle"
+      assert stored["active_plan_id"] == plan.id
+      assert stored["plan"]["status"] == "approved"
+      assert stored["plan"]["approved_at"] != nil
+      assert stored["plans"][plan.id]["status"] == "approved"
+    end
+
+    test "rejecting an awaiting plan transitions, persists, and emits lifecycle events" do
+      session_id = "reject-plan-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, objective: "Reject persisted plan")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+
+      assert {:ok, rejected_plan} = Muse.SessionServer.reject_plan(pid, :web)
+      assert rejected_plan.status == :rejected
+      assert %DateTime{} = rejected_plan.rejected_at
+      assert rejected_plan.approved_at == nil
+
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+      assert status.plan.status == :rejected
+      assert status.plan.rejected_at == rejected_plan.rejected_at
+      assert status.plans[plan.id].status == :rejected
+      assert status.event_count == 2
+
+      events = State.events()
+      assert Enum.map(events, & &1.type) == [:plan_rejected, :session_status_changed]
+
+      [plan_event, status_event] = events
+      assert plan_event.source == :web
+      assert plan_event.visibility == :user
+      assert plan_event.session_id == session_id
+      assert plan_event.turn_id == nil
+      assert plan_event.seq == 1
+
+      assert plan_event.data == %{
+               plan_id: plan.id,
+               status: :rejected,
+               objective: "Reject persisted plan",
+               task_count: 2
+             }
+
+      assert status_event.visibility == :internal
+      assert status_event.data == %{from: :awaiting_plan_approval, to: :idle}
+
+      assert {:ok, stored} = Muse.SessionStore.load_session(session_id)
+      assert stored["status"] == "idle"
+      assert stored["plan"]["status"] == "rejected"
+      assert stored["plan"]["rejected_at"] != nil
+      assert stored["plans"][plan.id]["status"] == "rejected"
+    end
+
+    test "approve and reject return no_active_plan when no plan is active" do
+      pid = start_server("no-active-plan")
+
+      assert {:error, :no_active_plan} = Muse.SessionServer.approve_plan(pid)
+      assert {:error, :no_active_plan} = Muse.SessionServer.reject_plan(pid)
+
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+      assert status.plan == nil
+      assert status.active_plan_id == nil
+      assert status.event_count == 0
+      assert State.events() == []
+    end
+
+    test "approve and reject refuse while a turn is running" do
+      session_id = "approve-running-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id)
+      :ok = persist_plan_snapshot(session_id, plan)
+      pid = start_server(session_id)
+
+      :sys.replace_state(pid, fn state -> %{state | status: :running, runner_pid: self()} end)
+
+      assert {:error, :turn_running} = Muse.SessionServer.approve_plan(pid)
+      assert {:error, :turn_running} = Muse.SessionServer.reject_plan(pid)
+
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :running
+      assert status.plan.status == :awaiting_approval
+      assert status.event_count == 0
+      assert State.events() == []
+    end
+
+    test "approve and reject refuse non-awaiting plans without corrupting state" do
+      approved_session_id = "already-approved-#{:erlang.unique_integer([:positive])}"
+      approved_plan = awaiting_plan(approved_session_id)
+      {:ok, approved_plan} = Muse.Plan.transition(approved_plan, :approved)
+      :ok = persist_plan_snapshot(approved_session_id, approved_plan, "idle")
+      approved_pid = start_server(approved_session_id)
+      approved_before = Muse.SessionServer.status(approved_pid)
+
+      assert {:error, {:plan_not_awaiting_approval, :approved}} =
+               Muse.SessionServer.approve_plan(approved_pid)
+
+      approved_status = Muse.SessionServer.status(approved_pid)
+      assert approved_status.status == :idle
+      assert approved_status.plan == approved_before.plan
+      assert approved_status.event_count == 0
+
+      rejected_session_id = "already-rejected-#{:erlang.unique_integer([:positive])}"
+      rejected_plan = awaiting_plan(rejected_session_id)
+      {:ok, rejected_plan} = Muse.Plan.transition(rejected_plan, :rejected)
+      :ok = persist_plan_snapshot(rejected_session_id, rejected_plan, "idle")
+      rejected_pid = start_server(rejected_session_id)
+      rejected_before = Muse.SessionServer.status(rejected_pid)
+
+      assert {:error, {:plan_not_awaiting_approval, :rejected}} =
+               Muse.SessionServer.reject_plan(rejected_pid)
+
+      rejected_status = Muse.SessionServer.status(rejected_pid)
+      assert rejected_status.status == :idle
+      assert rejected_status.plan == rejected_before.plan
+      assert rejected_status.event_count == 0
+      assert State.events() == []
+    end
+  end
+
   describe "plan lifecycle — status and persistence" do
     test "status includes plan/plans/active_plan_id fields (nil when no plan)" do
       pid = start_server("plan-lifecycle-status-test")
@@ -954,12 +1153,13 @@ defmodule Muse.SessionServerTest do
       session_id = "plan-persist-restore-#{:erlang.unique_integer([:positive])}"
 
       # Create and persist a plan manually via SessionStore
-      plan = Muse.Plan.new(
-        id: "plan_persist_1",
-        session_id: session_id,
-        objective: "Persisted plan test",
-        tasks: [Muse.Task.new(title: "Task A", description: "Do A")]
-      )
+      plan =
+        Muse.Plan.new(
+          id: "plan_persist_1",
+          session_id: session_id,
+          objective: "Persisted plan test",
+          tasks: [Muse.Task.new(title: "Task A", description: "Do A")]
+        )
 
       {:ok, plan} = Muse.Plan.transition(plan, :awaiting_approval)
 
@@ -988,6 +1188,7 @@ defmodule Muse.SessionServerTest do
 
       # Verify rendered header reflects awaiting_approval
       rendered = Muse.Plan.render(status.plan)
+
       assert rendered =~ "Planning Muse prepared a plan.",
              "Rendered plan header should be 'Planning Muse prepared a plan.'"
     end

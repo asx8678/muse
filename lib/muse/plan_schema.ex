@@ -135,7 +135,9 @@ defmodule Muse.PlanSchema do
   # Uses Map.fetch for the primary key to preserve false/nil distinction.
   defp fetch_any_key(data, key) when is_binary(key) do
     case Map.fetch(data, key) do
-      {:ok, value} -> value
+      {:ok, value} ->
+        value
+
       :error ->
         atom_key = String.to_existing_atom(key)
         Map.get(data, atom_key)
@@ -255,11 +257,12 @@ defmodule Muse.PlanSchema do
         :error -> Map.get(data, :tasks, [])
       end
 
-    normalized_tasks = Enum.map(tasks || [], fn task ->
-      task
-      |> Map.put_new("requires_write", false)
-      |> Map.put_new("requires_shell", false)
-    end)
+    normalized_tasks =
+      Enum.map(tasks || [], fn task ->
+        task
+        |> Map.put_new("requires_write", false)
+        |> Map.put_new("requires_shell", false)
+      end)
 
     Map.put(data, "tasks", normalized_tasks)
   end

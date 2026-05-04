@@ -3,7 +3,6 @@ defmodule Muse.ConductorPlanningTest do
 
   alias Muse.{Conductor, Plan, PlanParser, Session, Turn}
 
-
   # -- Helpers ------------------------------------------------------------------
 
   defp build_session(opts \\ []) do
@@ -132,10 +131,12 @@ defmodule Muse.ConductorPlanningTest do
       # Should have running -> awaiting_plan_approval
       awaiting =
         Enum.find(status_changed, fn {_s, _t, d, _o} -> d.to == :awaiting_plan_approval end)
+
       assert awaiting != nil
 
       # No assistant_message event should contain raw JSON
       assistant_msgs = filter_event_specs(result.event_specs, :assistant_message)
+
       for {_, _, data, _} <- assistant_msgs do
         refute data.text =~ "\"objective\"",
                "assistant_message should not contain raw JSON: #{String.slice(data.text, 0, 60)}"
@@ -179,7 +180,13 @@ defmodule Muse.ConductorPlanningTest do
   describe "run/3 — tool-loop plan finalization" do
     test "tool-loop script uses read-only tools then final structured plan; plan is parsed and :plan_created emitted" do
       session = build_session(id: "tl-plan-session")
-      turn = build_turn(session_id: "tl-plan-session", id: "turn_tl_plan", user_text: "plan the version command")
+
+      turn =
+        build_turn(
+          session_id: "tl-plan-session",
+          id: "turn_tl_plan",
+          user_text: "plan the version command"
+        )
 
       plan_text = valid_plan_json()
 
@@ -262,7 +269,13 @@ defmodule Muse.ConductorPlanningTest do
   describe "run/3 — invalid plan JSON" do
     test "invalid JSON that looks like a plan triggers repair; if repair fails stays :idle with safe message" do
       session = build_session(id: "repair-fail-session")
-      turn = build_turn(session_id: "repair-fail-session", id: "turn_repair_fail", user_text: "plan it")
+
+      turn =
+        build_turn(
+          session_id: "repair-fail-session",
+          id: "turn_repair_fail",
+          user_text: "plan it"
+        )
 
       # Plan-like JSON (starts with {, has "objective" key) but is invalid (empty objective, empty tasks)
       invalid_plan = ~s({"objective": "", "tasks": []})
@@ -310,7 +323,9 @@ defmodule Muse.ConductorPlanningTest do
 
     test "JSON-like text without 'objective'/'tasks' passes through without repair" do
       session = build_session(id: "json-not-plan-session")
-      turn = build_turn(session_id: "json-not-plan-session", id: "turn_json_np", user_text: "status")
+
+      turn =
+        build_turn(session_id: "json-not-plan-session", id: "turn_json_np", user_text: "status")
 
       # Valid JSON but not a plan — missing objective/tasks
       not_a_plan = ~s({"status": "ok", "message": "All systems operational."})
@@ -404,7 +419,9 @@ defmodule Muse.ConductorPlanningTest do
 
   defp clean_sessions do
     case Process.whereis(Muse.SessionSupervisor) do
-      nil -> :ok
+      nil ->
+        :ok
+
       pid ->
         pid
         |> DynamicSupervisor.which_children()
@@ -415,19 +432,24 @@ defmodule Muse.ConductorPlanningTest do
             catch
               :exit, _ -> :ok
             end
-          _ -> :ok
+
+          _ ->
+            :ok
         end)
+
         Process.sleep(10)
     end
   end
 
   defp start_server(session_id) do
     ensure_infrastructure()
+
     {:ok, pid} =
       DynamicSupervisor.start_child(
         Muse.SessionSupervisor,
         {Muse.SessionServer, session_id: session_id}
       )
+
     pid
   end
 end

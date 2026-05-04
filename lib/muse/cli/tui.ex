@@ -371,7 +371,9 @@ defmodule Muse.CLI.Tui do
       event_filter: state.event_filter,
       event_search: state.event_search,
       log_filter: state.log_filter,
-      log_search: state.log_search
+      log_search: state.log_search,
+      session_id: "default",
+      source: :tui
     }
   end
 

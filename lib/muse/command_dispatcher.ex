@@ -68,6 +68,14 @@ defmodule Muse.CommandDispatcher do
     end
   end
 
+  def dispatch(:approve_plan, args, context) do
+    dispatch_plan_lifecycle_command(:approve_plan, args, context)
+  end
+
+  def dispatch(:reject_plan, args, context) do
+    dispatch_plan_lifecycle_command(:reject_plan, args, context)
+  end
+
   # -- Events ------------------------------------------------------------------
 
   def dispatch(:events, _args, context) do
@@ -907,6 +915,84 @@ defmodule Muse.CommandDispatcher do
     e -> {:error, Exception.message(e)}
   catch
     :exit, _ -> {:error, :process_exit}
+  end
+
+  # -- Plan lifecycle ----------------------------------------------------------
+
+  defp dispatch_plan_lifecycle_command(action, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: #{plan_lifecycle_usage(action)}", []}
+    else
+      session_id = context_session_id(context)
+      source = context_source(context)
+
+      action
+      |> call_plan_lifecycle_router(session_id, source)
+      |> format_plan_lifecycle_result(action)
+    end
+  end
+
+  defp call_plan_lifecycle_router(:approve_plan, session_id, source) do
+    Muse.SessionRouter.approve_plan(session_id, source)
+  end
+
+  defp call_plan_lifecycle_router(:reject_plan, session_id, source) do
+    Muse.SessionRouter.reject_plan(session_id, source)
+  end
+
+  defp format_plan_lifecycle_result({:ok, %Muse.Plan{}}, :approve_plan) do
+    {:ok, "Plan approved.\n\nThe approved plan is ready for implementation.",
+     [{:refresh, :events}]}
+  end
+
+  defp format_plan_lifecycle_result({:ok, %Muse.Plan{}}, :reject_plan) do
+    {:ok, "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.",
+     [{:refresh, :events}]}
+  end
+
+  defp format_plan_lifecycle_result({:error, :turn_running}, action) do
+    verb = plan_lifecycle_verb(action)
+
+    {:error, "Error: cannot #{verb} a plan while a turn is running.", []}
+  end
+
+  defp format_plan_lifecycle_result({:error, reason}, _action)
+       when reason in [:not_found, :no_active_plan] do
+    {:error, "Error: no Muse Plan is awaiting approval.", []}
+  end
+
+  defp format_plan_lifecycle_result(
+         {:error, {:plan_not_awaiting_approval, status}},
+         _action
+       ) do
+    {:error, "Error: active Muse Plan is #{status}, not awaiting approval.", []}
+  end
+
+  defp format_plan_lifecycle_result({:error, reason}, _action) do
+    {:error, "Error: unable to update Muse Plan (#{inspect(reason)}).", []}
+  end
+
+  defp present_args?(nil), do: false
+  defp present_args?(args) when is_binary(args), do: String.trim(args) != ""
+  defp present_args?(_args), do: true
+
+  defp plan_lifecycle_usage(:approve_plan), do: "/approve plan"
+  defp plan_lifecycle_usage(:reject_plan), do: "/reject plan"
+
+  defp plan_lifecycle_verb(:approve_plan), do: "approve"
+  defp plan_lifecycle_verb(:reject_plan), do: "reject"
+
+  defp context_session_id(context) do
+    context
+    |> Map.get(:session_id, "default")
+    |> to_string()
+  end
+
+  defp context_source(context) do
+    case Map.get(context, :source, :system) do
+      source when is_atom(source) -> source
+      _ -> :system
+    end
   end
 
   # -- Plan resolution --------------------------------------------------------

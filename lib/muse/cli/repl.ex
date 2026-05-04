@@ -134,7 +134,9 @@ defmodule Muse.CLI.Repl do
       event_filter: "all",
       event_search: "",
       log_filter: "all",
-      log_search: ""
+      log_search: "",
+      session_id: "default",
+      source: :cli
     }
   end
 

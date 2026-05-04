@@ -206,11 +206,24 @@ defmodule Muse.Task do
   # -- Private ------------------------------------------------------------------
 
   @known_keys MapSet.new([
-    :id, :title, :description, :status, :recommended_muse,
-    :files, :target_files, :tools, :dependencies, :validation,
-    :verification, :risk_level, :approval_required,
-    :requires_write, :requires_write?, :requires_shell, :requires_shell?
-  ])
+                :id,
+                :title,
+                :description,
+                :status,
+                :recommended_muse,
+                :files,
+                :target_files,
+                :tools,
+                :dependencies,
+                :validation,
+                :verification,
+                :risk_level,
+                :approval_required,
+                :requires_write,
+                :requires_write?,
+                :requires_shell,
+                :requires_shell?
+              ])
 
   defp normalize_keys(map) do
     Map.new(map, fn

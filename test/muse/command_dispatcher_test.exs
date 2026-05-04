@@ -3,6 +3,42 @@ defmodule Muse.CommandDispatcherTest do
 
   alias Muse.CommandDispatcher
 
+  defp start_session_with_awaiting_plan(session_id, objective \\ "Approve dispatcher plan") do
+    plan =
+      Muse.Plan.new(
+        id: "#{session_id}-plan",
+        session_id: session_id,
+        objective: objective,
+        tasks: [Muse.Task.new(title: "Review", description: "Review the plan")]
+      )
+
+    {:ok, plan} = Muse.Plan.transition(plan, :awaiting_approval)
+
+    :ok =
+      Muse.SessionStore.save_session(session_id, %{
+        "status" => "awaiting_plan_approval",
+        "active_plan_id" => plan.id,
+        "plan" => Muse.Plan.to_map(plan),
+        "plans" => %{plan.id => Muse.Plan.to_map(plan)}
+      })
+
+    {:ok, pid} =
+      DynamicSupervisor.start_child(
+        Muse.SessionSupervisor,
+        {Muse.SessionServer, session_id: session_id}
+      )
+
+    {pid, plan}
+  end
+
+  defp stop_session(pid) when is_pid(pid) do
+    DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid)
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
+  end
+
   # Most dispatch tests are pure — no process dependencies needed
   # because context provides data and Backend is only called for
   # side-effect commands (clear_logs, connect_runtime, etc.)
@@ -23,11 +59,12 @@ defmodule Muse.CommandDispatcherTest do
     end
 
     test "renders a Plan struct from context" do
-      plan = Muse.Plan.new(
-        objective: "Add a /version command.",
-        status: :awaiting_approval,
-        tasks: [Muse.Task.new(title: "Add command", description: "Define command")]
-      )
+      plan =
+        Muse.Plan.new(
+          objective: "Add a /version command.",
+          status: :awaiting_approval,
+          tasks: [Muse.Task.new(title: "Add command", description: "Define command")]
+        )
 
       {:ok, output, effects} = CommandDispatcher.dispatch(:plan, nil, %{plan: plan})
       assert output =~ "Objective:"
@@ -88,12 +125,13 @@ defmodule Muse.CommandDispatcherTest do
       end
 
       # Create and persist a plan to the session store
-      plan = Muse.Plan.new(
-        id: "plan_fallback_1",
-        session_id: session_id,
-        objective: "SessionRouter fallback plan",
-        tasks: [Muse.Task.new(title: "Fallback task", description: "Desc")]
-      )
+      plan =
+        Muse.Plan.new(
+          id: "plan_fallback_1",
+          session_id: session_id,
+          objective: "SessionRouter fallback plan",
+          tasks: [Muse.Task.new(title: "Fallback task", description: "Desc")]
+        )
 
       {:ok, plan} = Muse.Plan.transition(plan, :awaiting_approval)
 
@@ -125,6 +163,90 @@ defmodule Muse.CommandDispatcherTest do
 
       # Cleanup
       DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid)
+    end
+  end
+
+  describe "dispatch/3 — plan approval lifecycle" do
+    test "approve returns safe error when session does not exist" do
+      session_id = "missing-approve-#{:erlang.unique_integer([:positive])}"
+
+      {:error, output, effects} =
+        CommandDispatcher.dispatch(:approve_plan, nil, %{session_id: session_id})
+
+      assert output == "Error: no Muse Plan is awaiting approval."
+      assert effects == []
+      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
+    end
+
+    test "reject returns safe error when active session has no plan" do
+      session_id = "missing-plan-reject-#{:erlang.unique_integer([:positive])}"
+      {:ok, pid} = Muse.SessionRouter.find_or_start_session(session_id)
+
+      try do
+        {:error, output, effects} =
+          CommandDispatcher.dispatch(:reject_plan, nil, %{session_id: session_id})
+
+        assert output == "Error: no Muse Plan is awaiting approval."
+        assert effects == []
+      after
+        stop_session(pid)
+      end
+    end
+
+    test "approve with extra args returns usage error" do
+      {:error, output, effects} = CommandDispatcher.dispatch(:approve_plan, "now", %{})
+
+      assert output == "Error: usage: /approve plan"
+      assert effects == []
+    end
+
+    test "reject with extra args returns usage error" do
+      {:error, output, effects} = CommandDispatcher.dispatch(:reject_plan, "because", %{})
+
+      assert output == "Error: usage: /reject plan"
+      assert effects == []
+    end
+
+    test "approve transitions an awaiting restored plan without execution" do
+      session_id = "dispatcher-approve-#{:erlang.unique_integer([:positive])}"
+      {pid, _plan} = start_session_with_awaiting_plan(session_id)
+
+      try do
+        {:ok, output, effects} =
+          CommandDispatcher.dispatch(:approve_plan, nil, %{session_id: session_id, source: :cli})
+
+        assert output == "Plan approved.\n\nThe approved plan is ready for implementation."
+        assert effects == [{:refresh, :events}]
+
+        status = Muse.SessionServer.status(pid)
+        assert status.status == :idle
+        assert status.plan.status == :approved
+        assert status.active_turn_id == nil
+        assert status.runner_pid == nil
+      after
+        stop_session(pid)
+      end
+    end
+
+    test "reject transitions an awaiting restored plan without execution" do
+      session_id = "dispatcher-reject-#{:erlang.unique_integer([:positive])}"
+      {pid, _plan} = start_session_with_awaiting_plan(session_id, "Reject dispatcher plan")
+
+      try do
+        {:ok, output, effects} =
+          CommandDispatcher.dispatch(:reject_plan, nil, %{session_id: session_id, source: :web})
+
+        assert output == "Plan rejected.\n\nYou can ask Planning Muse for a revised plan."
+        assert effects == [{:refresh, :events}]
+
+        status = Muse.SessionServer.status(pid)
+        assert status.status == :idle
+        assert status.plan.status == :rejected
+        assert status.active_turn_id == nil
+        assert status.runner_pid == nil
+      after
+        stop_session(pid)
+      end
     end
   end
 

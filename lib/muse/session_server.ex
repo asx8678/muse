@@ -92,6 +92,35 @@ defmodule Muse.SessionServer do
     GenServer.call(pid, :cancel)
   end
 
+  @doc """
+  Approves the active plan for later implementation.
+
+  Approval is a lifecycle transition only: it records that the active plan is
+  accepted and ready for a future implementation phase. It does not start turn
+  execution, shell commands, file writes, or patch application.
+  """
+  @spec approve_plan(pid(), atom()) ::
+          {:ok, Plan.t()}
+          | {:error,
+             :turn_running | :no_active_plan | {:plan_not_awaiting_approval, Plan.status()}}
+  def approve_plan(pid, source \\ :system) do
+    GenServer.call(pid, {:approve_plan, source})
+  end
+
+  @doc """
+  Rejects the active plan.
+
+  Rejection is safe and non-executing: it records that the current active plan
+  was rejected so a revised plan can be requested.
+  """
+  @spec reject_plan(pid(), atom()) ::
+          {:ok, Plan.t()}
+          | {:error,
+             :turn_running | :no_active_plan | {:plan_not_awaiting_approval, Plan.status()}}
+  def reject_plan(pid, source \\ :system) do
+    GenServer.call(pid, {:reject_plan, source})
+  end
+
   # -- GenServer callbacks -----------------------------------------------------
 
   @impl true
@@ -252,6 +281,18 @@ defmodule Muse.SessionServer do
     end
   end
 
+  @impl true
+  def handle_call({:approve_plan, source}, _from, state) do
+    {reply, state} = handle_plan_lifecycle_command(state, source, :approved)
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:reject_plan, source}, _from, state) do
+    {reply, state} = handle_plan_lifecycle_command(state, source, :rejected)
+    {:reply, reply, state}
+  end
+
   # -- Task result handling ----------------------------------------------------
 
   @impl true
@@ -320,13 +361,19 @@ defmodule Muse.SessionServer do
 
     # Use the session status from the Conductor result (may be :awaiting_plan_approval)
     session_status = result.session.status
-    state = %{state | status: session_status, active_muse: Atom.to_string(result.selected_muse.id)}
+
+    state = %{
+      state
+      | status: session_status,
+        active_muse: Atom.to_string(result.selected_muse.id)
+    }
 
     # Store plan if present in the result
     state =
       if Map.has_key?(result, :plan) and not is_nil(result.plan) do
         plan = result.plan
         plans = Map.put(state.plans, plan.id, plan)
+
         maybe_persist_snapshot(%{
           state
           | active_plan_id: plan.id,
@@ -545,6 +592,115 @@ defmodule Muse.SessionServer do
         session_events_before_turn: [],
         cancellation_requested: false
     }
+  end
+
+  # -- Plan lifecycle commands -------------------------------------------------
+
+  defp handle_plan_lifecycle_command(state, source, target_status) do
+    cond do
+      turn_running?(state) ->
+        {{:error, :turn_running}, state}
+
+      true ->
+        case resolve_active_plan_state(state) do
+          nil ->
+            {{:error, :no_active_plan}, state}
+
+          {plan, active_plan_id} ->
+            transition_active_plan(state, source, plan, active_plan_id, target_status)
+        end
+    end
+  end
+
+  defp transition_active_plan(state, source, plan, active_plan_id, target_status) do
+    if plan.status != :awaiting_approval do
+      {{:error, {:plan_not_awaiting_approval, plan.status}}, state}
+    else
+      {:ok, plan} = Plan.transition(plan, target_status)
+
+      previous_status = state.status
+
+      state =
+        state
+        |> put_active_plan(plan, active_plan_id)
+        |> Map.put(:status, :idle)
+
+      {plan_event, state} =
+        emit_session_event(
+          state,
+          source,
+          plan_lifecycle_event_type(target_status),
+          plan_lifecycle_event_data(plan),
+          visibility: :user
+        )
+
+      {status_event, state} = maybe_emit_plan_lifecycle_status_event(state, previous_status)
+
+      events = [plan_event, status_event] |> Enum.reject(&is_nil/1)
+
+      state =
+        state
+        |> append_session_events(events)
+        |> maybe_persist_snapshot()
+
+      {{:ok, plan}, state}
+    end
+  end
+
+  defp turn_running?(state), do: state.status == :running or not is_nil(state.runner_pid)
+
+  defp resolve_active_plan_state(state) do
+    cond do
+      state.active_plan_id && match?(%Plan{}, Map.get(state.plans, state.active_plan_id)) ->
+        {Map.fetch!(state.plans, state.active_plan_id), state.active_plan_id}
+
+      match?(%Plan{}, state.plan) ->
+        {state.plan, state.plan.id || state.active_plan_id}
+
+      true ->
+        nil
+    end
+  end
+
+  defp put_active_plan(state, plan, resolved_active_plan_id) do
+    active_plan_id = plan.id || resolved_active_plan_id || state.active_plan_id
+
+    plans =
+      if active_plan_id do
+        Map.put(state.plans, active_plan_id, plan)
+      else
+        state.plans
+      end
+
+    %{state | plan: plan, plans: plans, active_plan_id: active_plan_id}
+  end
+
+  defp maybe_emit_plan_lifecycle_status_event(state, :awaiting_plan_approval) do
+    emit_session_event(
+      state,
+      :conductor,
+      :session_status_changed,
+      %{from: :awaiting_plan_approval, to: :idle},
+      visibility: :internal
+    )
+  end
+
+  defp maybe_emit_plan_lifecycle_status_event(state, _previous_status), do: {nil, state}
+
+  defp plan_lifecycle_event_type(:approved), do: :plan_approved
+  defp plan_lifecycle_event_type(:rejected), do: :plan_rejected
+
+  defp plan_lifecycle_event_data(plan) do
+    %{
+      plan_id: plan.id,
+      status: plan.status,
+      objective: plan.objective,
+      task_count: length(plan.tasks)
+    }
+  end
+
+  defp append_session_events(state, events) do
+    %{state | events: state.events ++ events}
   end
 
   # -- Plan persistence --------------------------------------------------------

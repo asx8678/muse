@@ -9,6 +9,8 @@ defmodule Muse.Commands do
   @slash_commands [
     {"/help", :help, "Show available commands"},
     {"/plan", :plan, "Show the active Muse Plan"},
+    {"/approve plan", :approve_plan, "Approve the active Muse Plan"},
+    {"/reject plan", :reject_plan, "Reject the active Muse Plan"},
     {"/events", :events, "Show event summary"},
     {"/muses", :muses, "Show available Muses"},
     {"/simulate event", :simulate_event, "Simulate a test event"},
