@@ -30,9 +30,12 @@ defmodule Muse.LLM.ProviderConfig do
 
   ## Constructors
 
-    * `default/0` — returns the fake provider config (safe, no network)
-    * `fake/0`    — alias for `default/0`
-    * `from_env/0`— builds config from `MUSE_*` environment variables
+    * `default/0`  — returns the fake provider config (safe, no network)
+    * `fake/0`     — alias for `default/0`
+    * `load/0`     — strictly loads and validates current `MUSE_*` env
+    * `load/1`     — strictly loads and validates a provided env map
+    * `from_env/1` — pure env-map alias for `load/1`
+    * `from_env/0` — legacy best-effort struct load from current env
 
   ## Validation
 
@@ -44,18 +47,20 @@ defmodule Muse.LLM.ProviderConfig do
     * Model is present when provider is not `:fake`
     * Base URL is valid HTTP(S) when provider is not `:fake`
 
-  Auth/key validation is **deferred** to the auth layer (post-PR03) — the
-  config records `auth` and `env_key` for later use but does not verify
-  whether an API key is actually present or that the fields are valid.
+  Auth/key validation is **deferred** to the auth layer — the config records
+  `auth` and `env_key` for later use but does not verify whether an API key is
+  actually present. The env loaders intentionally do **not** read
+  `MUSE_OPENAI_API_KEY`; auth remains PR13 scope.
 
   Validation **never raises** — it always returns `{:error, reason}` for
   invalid config, allowing the caller to fall back to the fake provider.
 
   ## Redacted Inspect
 
-  `redacted_inspect/1` returns a safe string representation with secrets
-  replaced by `[REDACTED]`.  Use this for logging, debugging, and any
-  output that may be visible to users or stored in events.
+  `redacted_inspect/1` and the `Inspect` implementation return safe string
+  representations with secrets replaced by redaction placeholders. Use them for
+  logging, debugging, and any output that may be visible to users or stored in
+  events.
   """
 
   @type auth_mode :: :none | :api_key | :bearer_command | :codex_cache | :openai_oauth
@@ -82,6 +87,12 @@ defmodule Muse.LLM.ProviderConfig do
           max_retries: non_neg_integer()
         }
 
+  @type error_reason ::
+          {:invalid_env, String.t(), term(), String.t()}
+          | {:validation_error, String.t()}
+
+  @type load_result :: {:ok, t()} | {:error, error_reason()}
+
   defstruct [
     :id,
     :name,
@@ -105,6 +116,13 @@ defmodule Muse.LLM.ProviderConfig do
   @known_providers [:fake, :openai_compatible]
   @known_wire_apis [:responses, :chat_completions]
   @known_transports [:none, :sse, :websocket]
+
+  # Safe lookup from known provider strings to atoms — never creates new atoms
+  # from user-controlled input, preventing atom-table exhaustion attacks.
+  @known_provider_strings %{
+    "fake" => :fake,
+    "openai_compatible" => :openai_compatible
+  }
 
   # ---------------------------------------------------------------------------
   # Constructors
@@ -139,33 +157,56 @@ defmodule Muse.LLM.ProviderConfig do
   end
 
   @doc """
-  Build a provider config from environment variables.
+  Strictly load and validate a provider config from environment variables.
+
+  With no argument, reads the current process environment via `System.get_env/0`.
+  Passing an env map keeps the function pure and deterministic for tests and
+  callers that already have configuration data.
 
   Reads:
-    * `MUSE_PROVIDER`     — provider atom (default: `"fake"`)
-    * `MUSE_MODEL`         — model identifier (default: `"fake-planning-model"` for fake)
-    * `MUSE_OPENAI_BASE_URL` — base URL for OpenAI-compatible providers
+    * `MUSE_PROVIDER` — provider identifier (default: `"fake"`)
+    * `MUSE_MODEL` — model identifier (default: `"fake-planning-model"` for fake)
+    * `MUSE_OPENAI_BASE_URL` — required base URL for OpenAI-compatible providers
     * `MUSE_LLM_TIMEOUT_MS` — per-request timeout in ms (default: `120_000`)
-    * `MUSE_LLM_MAX_RETRIES` — max retries (default: `2`)
+    * `MUSE_LLM_MAX_RETRIES` — max retries (default: `2`, `0` for fake)
 
-  Does **not** read `MUSE_OPENAI_API_KEY` — that is handled by the auth
-  layer, not the config struct. The config only stores the `env_key` field
-  indicating which env var to check.
+  Invalid env values return structured `{:error, reason}` tuples instead of
+  raising or being silently swallowed. Auth/key presence is intentionally not
+  checked here; this function does **not** read `MUSE_OPENAI_API_KEY` and only
+  stores the `env_key` metadata needed by the future auth layer.
+  """
+  @spec load() :: load_result()
+  @spec load(map()) :: load_result()
+  def load(env_map \\ System.get_env()) when is_map(env_map) do
+    with {:ok, config} <- build_from_env(env_map, strict?: true) do
+      case validate(config) do
+        :ok -> {:ok, config}
+        {:error, reason} -> {:error, {:validation_error, reason}}
+      end
+    end
+  end
+
+  @doc """
+  Pure env-map API for loading and validating provider config.
+
+  This is an alias for `load/1`. It never reads global process environment.
+  """
+  @spec from_env(map()) :: load_result()
+  def from_env(env_map) when is_map(env_map), do: load(env_map)
+
+  @doc """
+  Legacy best-effort provider config loader from current environment.
+
+  Prefer `load/0` or `load/1` for new code. This function preserves the earlier
+  PR behavior of returning a struct directly. It does not validate the result
+  and ignores malformed timeout/retry overrides instead of raising.
   """
   @spec from_env() :: t()
   def from_env do
-    provider_str = System.get_env("MUSE_PROVIDER") || "fake"
-    provider = parse_provider(provider_str)
-
-    base_config =
-      case provider do
-        :fake -> fake()
-        :openai_compatible -> openai_compatible_defaults()
-        _ -> %__MODULE__{id: provider_str, name: provider_str}
-      end
-
-    %{base_config | model: resolve_model(provider)}
-    |> maybe_set_env_overrides(provider)
+    case build_from_env(System.get_env(), strict?: false) do
+      {:ok, config} -> config
+      {:error, _reason} -> fake()
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -175,15 +216,14 @@ defmodule Muse.LLM.ProviderConfig do
   @doc """
   Validate a provider config, returning `:ok` or `{:error, reason}`.
 
-  Validation is safe — it never raises.  Unknown providers, wire APIs,
+  Validation is safe — it never raises. Unknown providers, wire APIs,
   transports, or missing required fields produce clear error reasons.
 
-  The fake provider always validates successfully regardless of other
-  fields — it requires no network, auth, or model configuration.
+  The fake provider always validates successfully regardless of other fields —
+  it requires no network, auth, or model configuration.
   """
   @spec validate(t()) :: :ok | {:error, String.t()}
   def validate(%__MODULE__{} = config) do
-    # Fake provider is always valid
     if provider_atom(config) == :fake do
       :ok
     else
@@ -205,7 +245,8 @@ defmodule Muse.LLM.ProviderConfig do
     if provider in @known_providers do
       :ok
     else
-      {:error, "unknown provider: #{inspect(provider)}. Known: #{inspect(@known_providers)}"}
+      {:error,
+       "unknown provider: #{inspect(config.id)} (parsed as #{inspect(provider)}). Known: #{inspect(@known_providers)}"}
     end
   end
 
@@ -229,27 +270,40 @@ defmodule Muse.LLM.ProviderConfig do
     end
   end
 
-  defp validate_model(%__MODULE__{model: nil}) do
+  defp validate_model(%__MODULE__{model: model}) when model in [nil, ""] do
     {:error, "model is required for non-fake providers"}
   end
 
-  defp validate_model(%__MODULE__{model: ""}) do
-    {:error, "model is required for non-fake providers"}
+  defp validate_model(%__MODULE__{model: model}) when is_binary(model) do
+    if String.trim(model) == "" do
+      {:error, "model is required for non-fake providers"}
+    else
+      :ok
+    end
   end
 
-  defp validate_model(%__MODULE__{model: _model}), do: :ok
+  defp validate_model(%__MODULE__{model: other}) do
+    {:error, "model must be a string for non-fake providers, got: #{inspect(other)}"}
+  end
 
   defp validate_base_url(%__MODULE__{base_url: nil, transport: :none}), do: :ok
 
-  defp validate_base_url(%__MODULE__{base_url: nil}) do
+  defp validate_base_url(%__MODULE__{base_url: base_url}) when base_url in [nil, ""] do
     {:error, "base_url is required for network providers"}
   end
 
   defp validate_base_url(%__MODULE__{base_url: url}) when is_binary(url) do
     case URI.parse(url) do
-      %URI{scheme: scheme} when scheme in ["http", "https"] -> :ok
-      _ -> {:error, "base_url must be a valid HTTP(S) URL, got: #{url}"}
+      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
+        :ok
+
+      _ ->
+        {:error, "base_url must be a valid HTTP(S) URL, got: #{url}"}
     end
+  end
+
+  defp validate_base_url(%__MODULE__{base_url: other}) do
+    {:error, "base_url must be a valid HTTP(S) URL, got: #{inspect(other)}"}
   end
 
   defp validate_timeout(%__MODULE__{timeout_ms: n}) when is_integer(n) and n > 0, do: :ok
@@ -269,18 +323,31 @@ defmodule Muse.LLM.ProviderConfig do
   # ---------------------------------------------------------------------------
 
   @doc """
+  Return a redacted map representation of the config for safe logging/debugging.
+
+  Secret-like fields and values (API keys, bearer tokens, authorization headers,
+  embedded URL credentials, etc.) are replaced with `[REDACTED]`. The returned
+  map preserves non-secret values and does not include the struct marker.
+  """
+  @spec redacted(t()) :: map()
+  def redacted(%__MODULE__{} = config) do
+    config
+    |> Map.from_struct()
+    |> Muse.Prompt.Redactor.redact_term()
+  end
+
+  @doc """
   Return a redacted string representation of the config for logging/debugging.
 
-  Secrets (API keys, bearer tokens) are replaced with `[REDACTED]`.
-  Uses `Muse.EventPayloadRedactor` and `Muse.MetadataSanitizer` for
-  consistent redaction across the system.
+  Secrets (API keys, bearer tokens) are replaced with redaction placeholders.
+  Uses `Muse.Prompt.Redactor` and `Muse.MetadataSanitizer` for consistent,
+  bounded redaction across the system.
   """
   @spec redacted_inspect(t()) :: String.t()
   def redacted_inspect(%__MODULE__{} = config) do
     config
-    |> Map.from_struct()
-    |> Muse.EventPayloadRedactor.redact()
-    |> Muse.MetadataSanitizer.sanitize()
+    |> redacted()
+    |> Muse.MetadataSanitizer.sanitize(max_depth: 6, max_map_keys: 50, max_list_length: 50)
     |> inspect(limit: :infinity, printable_limit: 200)
   end
 
@@ -306,19 +373,11 @@ defmodule Muse.LLM.ProviderConfig do
   @spec known_transports() :: [atom()]
   def known_transports, do: @known_transports
 
-  # Safe lookup from known provider strings to atoms — never creates new atoms
-  # from user-controlled input, preventing atom-table exhaustion attacks.
-  @known_provider_strings %{
-    "fake" => :fake,
-    "openai_compatible" => :openai_compatible
-  }
-
   @doc """
   Convert the config's `id` field to a provider atom.
 
-  Returns `:unknown` for nil or unrecognized IDs.  Never calls
-  `String.to_atom/1`, so unknown provider strings cannot exhaust
-  the atom table.
+  Returns `:unknown` for nil or unrecognized IDs. Never calls
+  `String.to_atom/1`, so unknown provider strings cannot exhaust the atom table.
   """
   @spec provider_atom(t()) :: atom()
   def provider_atom(%__MODULE__{id: nil}), do: :unknown
@@ -328,25 +387,57 @@ defmodule Muse.LLM.ProviderConfig do
     Map.get(@known_provider_strings, id, :unknown)
   end
 
+  def provider_atom(%__MODULE__{}), do: :unknown
+
   # ---------------------------------------------------------------------------
-  # Private helpers for from_env/0
+  # Private helpers for env loading
   # ---------------------------------------------------------------------------
 
-  defp parse_provider("fake"), do: :fake
-  defp parse_provider("openai_compatible"), do: :openai_compatible
-  # Unknown provider strings must NOT create atoms — return :unknown and
-  # let validate/1 produce the error.  This avoids atom-table exhaustion
-  # from user-controlled env vars.
+  defp build_from_env(env_map, opts) do
+    strict? = Keyword.fetch!(opts, :strict?)
+    provider_str = env_value(env_map, "MUSE_PROVIDER") || "fake"
+    provider = parse_provider(provider_str)
+
+    config =
+      provider
+      |> base_config(provider_str, env_map, strict?)
+      |> Map.put(:model, resolve_model(provider, env_map))
+
+    maybe_set_env_overrides(config, env_map, strict?)
+  end
+
+  defp base_config(:fake, _provider_str, _env_map, _strict?), do: fake()
+
+  defp base_config(:openai_compatible, _provider_str, env_map, strict?) do
+    openai_compatible_defaults(env_map, strict?)
+  end
+
+  defp base_config(:unknown, provider_str, _env_map, _strict?) do
+    %__MODULE__{id: provider_str, name: provider_str}
+  end
+
+  # Unknown provider strings must NOT create atoms — return :unknown and let
+  # validate/1 produce the error. This avoids atom-table exhaustion from
+  # user-controlled env vars.
+  defp parse_provider(provider) when is_binary(provider) do
+    Map.get(@known_provider_strings, String.trim(provider), :unknown)
+  end
+
   defp parse_provider(_other), do: :unknown
 
-  defp resolve_model(:fake), do: System.get_env("MUSE_MODEL") || "fake-planning-model"
-  defp resolve_model(_provider), do: System.get_env("MUSE_MODEL") || nil
+  defp resolve_model(:fake, env_map),
+    do: env_value(env_map, "MUSE_MODEL") || "fake-planning-model"
 
-  defp openai_compatible_defaults do
+  defp resolve_model(_provider, env_map), do: env_value(env_map, "MUSE_MODEL")
+
+  defp openai_compatible_defaults(env_map, strict?) do
+    base_url = env_value(env_map, "MUSE_OPENAI_BASE_URL")
+    base_url = if strict?, do: base_url, else: base_url || "https://api.openai.com/v1"
+
     %__MODULE__{
       id: "openai_compatible",
       name: "OpenAI Compatible",
-      base_url: System.get_env("MUSE_OPENAI_BASE_URL") || "https://api.openai.com/v1",
+      base_url: base_url,
       wire_api: :responses,
       transport: :sse,
       auth: :api_key,
@@ -359,27 +450,87 @@ defmodule Muse.LLM.ProviderConfig do
     }
   end
 
-  defp maybe_set_env_overrides(config, _provider) do
-    timeout =
-      case System.get_env("MUSE_LLM_TIMEOUT_MS") do
-        nil -> config.timeout_ms
-        val -> String.to_integer(val)
-      end
+  defp maybe_set_env_overrides(config, env_map, strict?) do
+    with {:ok, timeout_ms} <-
+           integer_env(env_map, "MUSE_LLM_TIMEOUT_MS", config.timeout_ms, :positive, strict?),
+         {:ok, max_retries} <-
+           integer_env(
+             env_map,
+             "MUSE_LLM_MAX_RETRIES",
+             config.max_retries,
+             :non_negative,
+             strict?
+           ) do
+      {:ok, %{config | timeout_ms: timeout_ms, max_retries: max_retries}}
+    end
+  end
 
-    retries =
-      case System.get_env("MUSE_LLM_MAX_RETRIES") do
-        nil -> config.max_retries
-        val -> String.to_integer(val)
-      end
+  defp integer_env(env_map, key, default, rule, strict?) do
+    case env_value(env_map, key) do
+      nil ->
+        {:ok, default}
 
-    %{config | timeout_ms: timeout, max_retries: retries}
-  rescue
-    ArgumentError -> config
+      value ->
+        value
+        |> parse_integer_env()
+        |> validate_integer_env(key, value, rule, default, strict?)
+    end
+  end
+
+  defp parse_integer_env(value) when is_integer(value), do: {:ok, value}
+
+  defp parse_integer_env(value) when is_binary(value) do
+    value = String.trim(value)
+
+    case Integer.parse(value) do
+      {integer, ""} -> {:ok, integer}
+      _ -> {:error, "must be an integer"}
+    end
+  end
+
+  defp parse_integer_env(_value), do: {:error, "must be an integer"}
+
+  defp validate_integer_env({:ok, integer}, _key, _value, :positive, _default, _strict?)
+       when integer > 0 do
+    {:ok, integer}
+  end
+
+  defp validate_integer_env({:ok, integer}, _key, _value, :non_negative, _default, _strict?)
+       when integer >= 0 do
+    {:ok, integer}
+  end
+
+  defp validate_integer_env({:ok, _integer}, key, value, :positive, default, strict?) do
+    invalid_env(key, value, "must be a positive integer", default, strict?)
+  end
+
+  defp validate_integer_env({:ok, _integer}, key, value, :non_negative, default, strict?) do
+    invalid_env(key, value, "must be a non-negative integer", default, strict?)
+  end
+
+  defp validate_integer_env({:error, message}, key, value, _rule, default, strict?) do
+    invalid_env(key, value, message, default, strict?)
+  end
+
+  defp invalid_env(key, value, message, _default, true) do
+    {:error, {:invalid_env, key, value, message}}
+  end
+
+  defp invalid_env(_key, _value, _message, default, false), do: {:ok, default}
+
+  defp env_value(env_map, key) do
+    Map.get(env_map, key)
   end
 end
 
 defimpl Inspect, for: Muse.LLM.ProviderConfig do
-  def inspect(config, _opts) do
-    Muse.LLM.ProviderConfig.redacted_inspect(config)
+  import Inspect.Algebra
+
+  def inspect(config, opts) do
+    concat([
+      "#Muse.LLM.ProviderConfig<",
+      to_doc(Muse.LLM.ProviderConfig.redacted(config), opts),
+      ">"
+    ])
   end
 end

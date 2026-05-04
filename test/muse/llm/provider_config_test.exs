@@ -38,6 +38,107 @@ defmodule Muse.LLM.ProviderConfigTest do
   end
 
   # ---------------------------------------------------------------------------
+  # Pure env-map loading
+  # ---------------------------------------------------------------------------
+
+  describe "load/1 and from_env/1" do
+    test "default fake config succeeds from an empty env map" do
+      assert {:ok, config} = ProviderConfig.load(%{})
+      assert config == ProviderConfig.fake()
+    end
+
+    test "from_env/1 is a pure env-map alias for load/1" do
+      env = %{"MUSE_PROVIDER" => "fake", "MUSE_MODEL" => "fake-custom-model"}
+
+      assert ProviderConfig.from_env(env) == ProviderConfig.load(env)
+      assert {:ok, config} = ProviderConfig.from_env(env)
+      assert config.id == "fake"
+      assert config.model == "fake-custom-model"
+    end
+
+    test "openai_compatible config succeeds with base URL and model" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+        "MUSE_MODEL" => "gpt-4.1-mini",
+        "MUSE_LLM_TIMEOUT_MS" => "60000",
+        "MUSE_LLM_MAX_RETRIES" => "3",
+        "MUSE_OPENAI_API_KEY" => "sk-env-secret-should-not-be-stored"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.id == "openai_compatible"
+      assert config.name == "OpenAI Compatible"
+      assert config.base_url == "https://api.example.test/v1"
+      assert config.model == "gpt-4.1-mini"
+      assert config.wire_api == :responses
+      assert config.transport == :sse
+      assert config.auth == :api_key
+      assert config.env_key == "MUSE_OPENAI_API_KEY"
+      assert config.timeout_ms == 60_000
+      assert config.max_retries == 3
+
+      refute inspect(Map.from_struct(config)) =~ "sk-env-secret-should-not-be-stored"
+    end
+
+    test "unknown provider errors without creating atoms" do
+      provider = "definitely_not_a_real_provider_xyz_456"
+
+      assert {:error, {:validation_error, reason}} =
+               ProviderConfig.load(%{"MUSE_PROVIDER" => provider})
+
+      assert reason =~ "unknown provider"
+      assert reason =~ provider
+      assert reason =~ ":fake"
+      assert reason =~ ":openai_compatible"
+      assert ProviderConfig.provider_atom(%ProviderConfig{id: provider}) == :unknown
+
+      assert_raise ArgumentError, fn ->
+        String.to_existing_atom(provider)
+      end
+    end
+
+    test "invalid timeout env returns a structured clear error" do
+      assert {:error, {:invalid_env, "MUSE_LLM_TIMEOUT_MS", "abc", message}} =
+               ProviderConfig.load(%{"MUSE_LLM_TIMEOUT_MS" => "abc"})
+
+      assert message =~ "integer"
+
+      assert {:error, {:invalid_env, "MUSE_LLM_TIMEOUT_MS", "0", message}} =
+               ProviderConfig.load(%{"MUSE_LLM_TIMEOUT_MS" => "0"})
+
+      assert message =~ "positive integer"
+    end
+
+    test "invalid retries env returns a structured clear error" do
+      assert {:error, {:invalid_env, "MUSE_LLM_MAX_RETRIES", "-1", message}} =
+               ProviderConfig.load(%{"MUSE_LLM_MAX_RETRIES" => "-1"})
+
+      assert message =~ "non-negative integer"
+    end
+
+    test "missing model for network provider errors" do
+      assert {:error, {:validation_error, reason}} =
+               ProviderConfig.load(%{
+                 "MUSE_PROVIDER" => "openai_compatible",
+                 "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1"
+               })
+
+      assert reason =~ "model is required"
+    end
+
+    test "missing base URL for network provider errors" do
+      assert {:error, {:validation_error, reason}} =
+               ProviderConfig.load(%{
+                 "MUSE_PROVIDER" => "openai_compatible",
+                 "MUSE_MODEL" => "gpt-4.1-mini"
+               })
+
+      assert reason =~ "base_url is required"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Validation — fake always valid
   # ---------------------------------------------------------------------------
 
@@ -228,6 +329,46 @@ defmodule Muse.LLM.ProviderConfigTest do
 
       refute safe =~ "sk-proj-abc123def",
              "redacted_inspect should not contain api_key value"
+    end
+
+    test "redacted/1 returns a secret-safe map" do
+      config = %ProviderConfig{
+        id: "test",
+        base_url: "https://user:pass@example.test/v1",
+        headers: %{
+          "x-api-key" => "sk-header-secret-456",
+          "x-request-id" => "visible-request-id",
+          authorization: "Bearer sk-map-secret-123"
+        }
+      }
+
+      safe = ProviderConfig.redacted(config)
+      safe_text = inspect(safe, limit: :infinity)
+
+      refute safe_text =~ "sk-map-secret-123"
+      refute safe_text =~ "sk-header-secret-456"
+      refute safe_text =~ "user:pass"
+      assert safe_text =~ "visible-request-id"
+      assert safe_text =~ "REDACTED"
+    end
+
+    test "raw inspect uses the secret-safe Inspect implementation" do
+      config = %ProviderConfig{
+        id: "test",
+        bearer_command: "printf 'Bearer raw-bearer-secret-xyz'",
+        headers: %{
+          authorization: "Bearer sk-raw-inspect-secret-123",
+          api_key: "sk-raw-api-key-secret-456"
+        }
+      }
+
+      safe = inspect(config, limit: :infinity)
+
+      refute safe =~ "raw-bearer-secret-xyz"
+      refute safe =~ "sk-raw-inspect-secret-123"
+      refute safe =~ "sk-raw-api-key-secret-456"
+      assert safe =~ "#Muse.LLM.ProviderConfig<"
+      assert safe =~ "REDACTED"
     end
   end
 
