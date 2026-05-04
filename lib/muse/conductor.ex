@@ -25,7 +25,17 @@ defmodule Muse.Conductor do
     * `[:muse, :provider, :start]` / `[:muse, :provider, :stop]` / `[:muse, :provider, :error]`
   """
 
-  alias Muse.{MetadataSanitizer, MuseRegistry, Plan, PlanParser, Session, Telemetry, Turn}
+  alias Muse.{
+    MetadataSanitizer,
+    MuseRegistry,
+    Plan,
+    PlanApprovalRequest,
+    PlanParser,
+    Session,
+    Telemetry,
+    Turn
+  }
+
   alias Muse.Conductor.ToolLoop
   alias Muse.LLM.{FakeProvider, ProviderConfig, ProviderRouter, Message}
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
@@ -599,7 +609,8 @@ defmodule Muse.Conductor do
     plan = prepare_plan_identity(plan, result.session, turn, muse)
 
     {:ok, plan} = Plan.transition(plan, :awaiting_approval)
-    plan_text = Plan.render(plan)
+    {plan, approval_request} = PlanApprovalRequest.attach(plan)
+    plan_text = render_plan_with_approval_binding(plan, approval_request)
 
     # Remove the old session_status_changed(:running, :idle) plus every
     # user-visible assistant delta/message that could contain raw structured
@@ -621,8 +632,10 @@ defmodule Muse.Conductor do
          plan_id: plan.id,
          version: plan.version,
          objective: safe_objective_summary(plan.objective),
-         task_count: length(plan.tasks)
+         task_count: length(plan.tasks),
+         approval_request: approval_request
        }, [visibility: :user]},
+      approval_requested_spec(approval_request),
       session_status_changed_spec(:running, :awaiting_plan_approval)
     ]
 
@@ -638,6 +651,16 @@ defmodule Muse.Conductor do
 
     {:ok, plan_result}
   end
+
+  defp render_plan_with_approval_binding(%Plan{} = plan, approval_request) do
+    [Plan.render(plan), PlanApprovalRequest.render_binding(plan, approval_request)]
+    |> Enum.reject(&blank_text?/1)
+    |> Enum.join("\n\n")
+  end
+
+  defp blank_text?(nil), do: true
+  defp blank_text?(text) when is_binary(text), do: String.trim(text) == ""
+  defp blank_text?(_text), do: false
 
   defp prepare_plan_identity(%Plan{} = plan, %Session{} = session, %Turn{} = turn, muse) do
     plan
@@ -848,6 +871,10 @@ defmodule Muse.Conductor do
        message_count: length(request.messages),
        tool_count: length(request.tools || [])
      }, [visibility: :debug]}
+  end
+
+  defp approval_requested_spec(approval_request) do
+    {:conductor, :approval_requested, approval_request, [visibility: :user]}
   end
 
   # -- Request option merging --------------------------------------------------

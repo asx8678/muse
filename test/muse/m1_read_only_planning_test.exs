@@ -1,7 +1,15 @@
 defmodule Muse.M1ReadOnlyPlanningTest do
   use ExUnit.Case, async: false
 
-  alias Muse.{CommandDispatcher, Commands, Plan, SessionServer, SessionStore, State}
+  alias Muse.{
+    CommandDispatcher,
+    Commands,
+    Plan,
+    PlanApprovalRequest,
+    SessionServer,
+    SessionStore,
+    State
+  }
 
   @plan_json ~s({
     "id": "m1-version-plan",
@@ -128,6 +136,27 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       assert stored["plan"]["objective"] =~ "/version command"
       assert stored["plans"][status.active_plan_id]["status"] == "awaiting_approval"
 
+      approval_request = PlanApprovalRequest.get(status.plan)
+      assert approval_request.plan_id == status.active_plan_id
+      assert approval_request.version == status.plan.version
+      assert approval_request.kind == "plan"
+      assert approval_request.status == "pending"
+      assert approval_request.content_hash_algorithm == "sha256"
+      assert byte_size(approval_request.content_hash) == 64
+
+      stored_approval_request = get_in(stored, ["plan", "metadata", "approval_request"])
+      assert stored_approval_request["plan_id"] == status.active_plan_id
+      assert stored_approval_request["version"] == status.plan.version
+      assert stored_approval_request["content_hash"] == approval_request.content_hash
+
+      assert get_in(stored, [
+               "plans",
+               status.active_plan_id,
+               "metadata",
+               "approval_request",
+               "content_hash"
+             ]) == approval_request.content_hash
+
       # -- Assertion 4: Flow includes read-only inspection/tool activity ------
       events = State.events()
       event_types = Enum.map(events, & &1.type)
@@ -158,6 +187,12 @@ defmodule Muse.M1ReadOnlyPlanningTest do
 
       assert "git_diff_readonly" in completed_tools,
              "Expected git_diff_readonly tool call, got: #{inspect(completed_tools)}"
+
+      assert [approval_event] = events_of_type(events, :approval_requested)
+      assert approval_event.data == approval_request
+      assert approval_event.visibility == :user
+      assert approval_event.data.plan_id == status.active_plan_id
+      assert approval_event.data.content_hash_short == approval_request.content_hash_short
 
       # -- Assertion 5: Workspace contents are unchanged -----------------------
       {after_paths, after_hashes} = workspace_snapshot(workspace)
@@ -212,11 +247,20 @@ defmodule Muse.M1ReadOnlyPlanningTest do
                "Expected Muse to be :planning, got: #{inspect(event.data.muse_id)}"
       end
 
+      assert_no_forbidden_execution_or_handoff(events)
+
       # -- Assertion 8: Assistant text is rendered plan, not raw JSON ----------
       refute assistant_text =~ ~r/^\s*\{/, "Assistant text should not start with raw JSON"
       refute assistant_text =~ ~r/"objective"/, "Assistant text should not contain raw JSON keys"
       assert assistant_text =~ "Objective:", "Assistant text should contain rendered objective"
       assert assistant_text =~ "Tasks:", "Assistant text should contain rendered tasks"
+
+      assert assistant_text =~ "Approval binding:",
+             "Assistant text should contain approval binding"
+
+      assert assistant_text =~ "Plan id: #{status.active_plan_id}"
+      assert assistant_text =~ "Version: #{status.plan.version}"
+      assert assistant_text =~ "Content hash: sha256:#{approval_request.content_hash_short}"
 
       assert assistant_text =~ "/approve plan",
              "Assistant text should contain approval instructions"
@@ -354,6 +398,7 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       assert status.status == :idle
       assert status.plan == nil
       assert status.active_plan_id == nil
+      assert State.events() |> events_of_type(:approval_requested) == []
 
       events_text = inspect(State.events(), limit: :infinity, printable_limit: :infinity)
       refute events_text =~ invalid_plan

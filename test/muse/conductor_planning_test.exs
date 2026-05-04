@@ -1,7 +1,7 @@
 defmodule Muse.ConductorPlanningTest do
   use ExUnit.Case, async: false
 
-  alias Muse.{Conductor, Plan, PlanParser, Session, Turn}
+  alias Muse.{Conductor, Plan, PlanApprovalRequest, PlanParser, Session, Turn}
 
   # -- Helpers ------------------------------------------------------------------
 
@@ -29,6 +29,15 @@ defmodule Muse.ConductorPlanningTest do
     Enum.filter(specs, fn {_source, type, _data, _opts} ->
       type in [:assistant_delta, :assistant_message]
     end)
+  end
+
+  defp refute_implementation_handoff(event_specs) do
+    forbidden_types = [:coding_handoff, :implementation_started, :muse_handoff_requested]
+
+    refute Enum.any?(event_specs, fn
+             {:conductor, :muse_selected, %{muse_id: :coding}, _opts} -> true
+             {_source, type, _data, _opts} -> type in forbidden_types
+           end)
   end
 
   defp valid_plan_json do
@@ -130,6 +139,32 @@ defmodule Muse.ConductorPlanningTest do
       assert data.objective =~ "/version"
       assert data.task_count == 3
       assert Keyword.get(opts, :visibility) == :user
+
+      approval_request = PlanApprovalRequest.get(result.plan)
+      assert approval_request.plan_id == result.plan.id
+      assert approval_request.version == result.plan.version
+      assert approval_request.kind == "plan"
+      assert approval_request.status == "pending"
+      assert approval_request.content_hash_algorithm == "sha256"
+      assert byte_size(approval_request.content_hash) == 64
+
+      assert approval_request.content_hash_short ==
+               String.slice(approval_request.content_hash, 0, 12)
+
+      assert data.approval_request == approval_request
+
+      assert [{:conductor, :approval_requested, ^approval_request, approval_opts}] =
+               filter_event_specs(result.event_specs, :approval_requested)
+
+      assert Keyword.get(approval_opts, :visibility) == :user
+      assert result.assistant_text =~ "Approval binding:"
+      assert result.assistant_text =~ "Plan id: #{result.plan.id}"
+      assert result.assistant_text =~ "Version: #{result.plan.version}"
+
+      assert result.assistant_text =~
+               "Content hash: sha256:#{approval_request.content_hash_short}"
+
+      refute_implementation_handoff(result.event_specs)
 
       # Should NOT have a running->idle session status change
       status_changed = filter_event_specs(result.event_specs, :session_status_changed)
@@ -290,9 +325,17 @@ defmodule Muse.ConductorPlanningTest do
       assert result.session.active_plan_id == result.plan.id
       assert result.session.plans[result.plan.id] == result.plan
 
-      # Event specs should include :plan_created
+      # Event specs should include :plan_created and the same approval-request path.
       plan_created_specs = filter_event_specs(result.event_specs, :plan_created)
       assert length(plan_created_specs) == 1
+
+      assert [{:conductor, :approval_requested, approval_request, _opts}] =
+               filter_event_specs(result.event_specs, :approval_requested)
+
+      assert approval_request == PlanApprovalRequest.get(result.plan)
+
+      assert result.assistant_text =~
+               "Content hash: sha256:#{approval_request.content_hash_short}"
 
       # Should have tool lifecycle events from the loop
       started = filter_event_specs(result.event_specs, :tool_call_started)
@@ -380,6 +423,7 @@ defmodule Muse.ConductorPlanningTest do
       assert result.session.plans == %{}
       refute Map.has_key?(result, :plan)
       assert result.assistant_text =~ "unable to generate a valid structured plan"
+      assert filter_event_specs(result.event_specs, :approval_requested) == []
 
       assert filter_event_specs(result.event_specs, :assistant_delta) == []
 
@@ -418,6 +462,50 @@ defmodule Muse.ConductorPlanningTest do
       assert result.session.plans == %{}
       refute Map.has_key?(result, :plan)
       assert result.assistant_text =~ "I'm the Planning Muse"
+      assert filter_event_specs(result.event_specs, :approval_requested) == []
+    end
+
+    test "repair success emits the same approval-request metadata path" do
+      session = build_session(id: "repair-success-session")
+      turn = build_turn(session_id: "repair-success-session", id: "turn_repair_success")
+      invalid_plan = ~s({"objective": "", "tasks": []})
+
+      fake_event_batches = [
+        [
+          {:assistant_delta, invalid_plan},
+          {:assistant_completed, invalid_plan},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_delta, valid_plan_json()},
+          {:assistant_completed, valid_plan_json()},
+          {:response_completed, nil}
+        ]
+      ]
+
+      {:ok, result} =
+        Conductor.run(session, turn,
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{fake_event_batches: fake_event_batches}]
+        )
+
+      assert %Plan{} = result.plan
+      assert result.session.status == :awaiting_plan_approval
+
+      assert [{:conductor, :approval_requested, approval_request, opts}] =
+               filter_event_specs(result.event_specs, :approval_requested)
+
+      assert approval_request == PlanApprovalRequest.get(result.plan)
+      assert approval_request.status == "pending"
+      assert approval_request.kind == "plan"
+      assert Keyword.get(opts, :visibility) == :user
+      assert result.assistant_text =~ "Approval binding:"
+
+      assert result.assistant_text =~
+               "Content hash: sha256:#{approval_request.content_hash_short}"
+
+      refute result.assistant_text =~ "\"objective\""
+      refute_implementation_handoff(result.event_specs)
     end
 
     test "JSON-like text without 'objective'/'tasks' passes through without repair" do
@@ -445,6 +533,7 @@ defmodule Muse.ConductorPlanningTest do
       refute Map.has_key?(result, :plan)
       assert result.session.status == :idle
       assert result.assistant_text == not_a_plan
+      assert filter_event_specs(result.event_specs, :approval_requested) == []
     end
   end
 
