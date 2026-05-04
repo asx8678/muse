@@ -500,10 +500,66 @@ defmodule Muse.CommandDispatcher do
     end
   end
 
+  # -- Prompt preview ----------------------------------------------------------
+
+  def dispatch(:prompt_preview, args, context) do
+    bundle =
+      case Map.get(context, :prompt_bundle) do
+        %Muse.Prompt.Bundle{} = b -> b
+        nil -> build_preview_bundle(args, context)
+      end
+
+    output = Muse.Prompt.DebugPreview.render(bundle)
+
+    {:ok, output, []}
+  rescue
+    e -> {:error, "Prompt preview error: #{Exception.message(e)}", []}
+  end
+
   # -- Catch-all ---------------------------------------------------------------
 
   def dispatch(action, _args, _context) do
     {:error, "Unknown command action: #{inspect(action)}. Type /help for available commands.", []}
+  end
+
+  # -- Prompt preview bundle builder -------------------------------------------
+
+  @static_blocked_tools ["shell_command", "network_call", "patch_apply", "delete_file"]
+
+  defp build_preview_bundle(args, context) do
+    workspace = Map.get(context, :workspace) || Backend.safe_workspace_root()
+
+    # Resolve the active Muse profile — default to Planning Muse
+    muse_id = Map.get(context, :active_muse, :planning)
+
+    muse_profile =
+      case Muse.MuseRegistry.get(muse_id) do
+        %Muse.MuseProfile{} = p -> p
+        nil -> Muse.MuseRegistry.get(:planning)
+      end
+
+    # Minimal session for the assembler — sparse context is safe
+    session =
+      Muse.Session.new(
+        workspace: workspace,
+        id: Map.get(context, :session_id, "preview"),
+        status: :idle
+      )
+
+    # User text: prefer args, fall back to current_text from context
+    user_message = args || Map.get(context, :current_text, "")
+
+    # Assembler opts — sparse-safe, each key is optional
+    assembler_opts =
+      [
+        model: Map.get(context, :model),
+        blocked_tools: @static_blocked_tools,
+        project_rules?: Map.get(context, :project_rules?, true),
+        project_rules_home: Map.get(context, :project_rules_home)
+      ]
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+    Muse.Prompt.Assembler.build(session, muse_profile, user_message, assembler_opts)
   end
 
   # -- Muse profile resolution -------------------------------------------------

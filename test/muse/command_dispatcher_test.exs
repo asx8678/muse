@@ -370,6 +370,202 @@ defmodule Muse.CommandDispatcherTest do
     end
   end
 
+  describe "dispatch/3 — :prompt_preview" do
+    test "returns prompt bundle preview with expected sections" do
+      {:ok, output, effects} = CommandDispatcher.dispatch(:prompt_preview, nil, %{})
+
+      assert output =~ "Prompt bundle"
+      assert output =~ "Active Muse: Planning Muse"
+      assert output =~ "Layers:"
+      assert output =~ "Tools:"
+      assert output =~ "Blocked tools:"
+      assert effects == []
+    end
+
+    test "defaults to Planning Muse when no active muse in context" do
+      {:ok, output, _effects} = CommandDispatcher.dispatch(:prompt_preview, nil, %{})
+      assert output =~ "Planning Muse"
+    end
+
+    test "uses prompt_bundle from context when available" do
+      session =
+        Muse.Session.new(
+          workspace: "/tmp/test",
+          id: "sess_dispatch_test",
+          status: :idle
+        )
+
+      profile =
+        Muse.MuseProfile.new!(
+          id: :coding,
+          display_name: "Coding Muse",
+          role: :coding,
+          prompt: "You are the Coding Muse.",
+          tools: ["read_file", "patch_propose"]
+        )
+
+      bundle =
+        Muse.Prompt.Assembler.build(session, profile, "test message",
+          id: "pb_dispatch_ctx",
+          blocked_tools: ["shell_command", "network_call"],
+          project_rules?: false
+        )
+
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:prompt_preview, nil, %{prompt_bundle: bundle})
+
+      assert output =~ "Coding Muse"
+    end
+
+    test "uses workspace from context in bundle" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:prompt_preview, nil, %{workspace: "/custom/workspace"})
+
+      # Workspace appears in internal layers (not shown in preview content)
+      # but the bundle should be built successfully without crashing
+      assert output =~ "Prompt bundle"
+      assert output =~ "Planning Muse"
+    end
+
+    test "uses active_muse from context" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:prompt_preview, nil, %{active_muse: :coding})
+
+      assert output =~ "Coding Muse"
+    end
+
+    test "includes blocked tools in preview" do
+      {:ok, output, _effects} = CommandDispatcher.dispatch(:prompt_preview, nil, %{})
+
+      assert output =~ "shell_command"
+      assert output =~ "network_call"
+    end
+
+    test "does not crash with sparse context" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:prompt_preview, nil, %{workspace: "/tmp"})
+
+      assert is_binary(output)
+      assert output =~ "Prompt bundle"
+    end
+
+    test "passes args as user message" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:prompt_preview, "check my project", %{})
+
+      # The user message layer should appear in the layers section
+      assert output =~ "current_user_message"
+    end
+
+    test "no user-facing Agent/Bot/Code Puppy labels in preview output" do
+      {:ok, output, _effects} = CommandDispatcher.dispatch(:prompt_preview, nil, %{})
+
+      refute output =~ ~r/\bAgent\b/
+      refute output =~ ~r/\bBot\b/
+      refute output =~ ~r/Code Puppy/
+    end
+
+    test "does not leak raw secrets from project rules" do
+      # Temp workspace with MUSE.md containing a secret
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "muse_preview_secret_test_#{:erlang.unique_integer([:positive])}"
+        )
+
+      :ok = File.mkdir_p!(tmp_dir)
+
+      :ok =
+        File.write!(Path.join(tmp_dir, "MUSE.md"), "DATABASE_URL=postgres://user:pass@host/db")
+
+      try do
+        # No project_rules_home needed — project rules enabled by default
+        {:ok, output, _effects} =
+          CommandDispatcher.dispatch(:prompt_preview, "sk-test-12345", %{
+            workspace: tmp_dir
+          })
+
+        # Raw secrets must not appear
+        refute output =~ "postgres://user:pass@host/db"
+        refute output =~ "sk-test-12345"
+        # Redaction marker must be present
+        assert output =~ "[REDACTED]"
+      after
+        File.rm_rf!(tmp_dir)
+      end
+    end
+
+    test "project rules appear in preview when workspace has MUSE.md (no project_rules_home)" do
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "muse_preview_project_rules_#{:erlang.unique_integer([:positive])}"
+        )
+
+      :ok = File.mkdir_p!(tmp_dir)
+      :ok = File.write!(Path.join(tmp_dir, "MUSE.md"), "Always write tests first.")
+
+      try do
+        {:ok, output, _effects} =
+          CommandDispatcher.dispatch(:prompt_preview, nil, %{workspace: tmp_dir})
+
+        # project_rules layer must appear — no project_rules_home override needed
+        assert output =~ "project_rules"
+      after
+        File.rm_rf!(tmp_dir)
+      end
+    end
+
+    test "project_rules?: false in context disables project rules layer" do
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "muse_preview_no_rules_#{:erlang.unique_integer([:positive])}"
+        )
+
+      :ok = File.mkdir_p!(tmp_dir)
+      :ok = File.write!(Path.join(tmp_dir, "MUSE.md"), "Should not appear.")
+
+      try do
+        {:ok, output, _effects} =
+          CommandDispatcher.dispatch(:prompt_preview, nil, %{
+            workspace: tmp_dir,
+            project_rules?: false
+          })
+
+        refute output =~ "project_rules"
+        refute output =~ "Should not appear."
+      after
+        File.rm_rf!(tmp_dir)
+      end
+    end
+
+    test "user-provided Agent content in project rules does not cause dispatch error" do
+      tmp_dir =
+        Path.join(
+          System.tmp_dir!(),
+          "muse_preview_agents_md_#{:erlang.unique_integer([:positive])}"
+        )
+
+      :ok = File.mkdir_p!(tmp_dir)
+
+      :ok =
+        File.write!(Path.join(tmp_dir, "AGENTS.md"), "This is a legacy AGENTS.md file.")
+
+      try do
+        # Legacy AGENTS.md contains "Agent" — must not cause dispatch to return :error
+        {:ok, output, _effects} =
+          CommandDispatcher.dispatch(:prompt_preview, nil, %{workspace: tmp_dir})
+
+        # Output may contain "Agent" from user content, but dispatch succeeds
+        assert is_binary(output)
+        assert output =~ "project_rules"
+      after
+        File.rm_rf!(tmp_dir)
+      end
+    end
+  end
+
   describe "dispatch/3 — catch-all" do
     test "unknown action returns error" do
       {:error, output, effects} = CommandDispatcher.dispatch(:nonexistent, nil, %{})

@@ -150,6 +150,24 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/reload") == {:command, :reload}
     end
 
+    test "parses /prompt preview" do
+      assert Commands.parse("/prompt preview") == {:command, :prompt_preview}
+    end
+
+    test "parses /prompt preview with args" do
+      assert Commands.parse("/prompt preview some text") ==
+               {:command, :prompt_preview, "some text"}
+    end
+
+    test "parses /prompt-preview alias" do
+      assert Commands.parse("/prompt-preview") == {:command, :prompt_preview}
+    end
+
+    test "parses /prompt-preview alias with args" do
+      assert Commands.parse("/prompt-preview some text") ==
+               {:command, :prompt_preview, "some text"}
+    end
+
     test "parses /rollback" do
       assert Commands.parse("/rollback") == {:command, :rollback}
     end
@@ -231,6 +249,8 @@ defmodule Muse.CommandsTest do
       assert text =~ "/runtime"
       assert text =~ "/connect runtime"
       assert text =~ "/disconnect runtime"
+      assert text =~ "/prompt preview"
+      assert text =~ "/prompt-preview"
     end
 
     test "includes /muses but not /agents legacy alias" do
@@ -251,7 +271,7 @@ defmodule Muse.CommandsTest do
     test "returns list of {command, description} tuples" do
       cmds = Commands.slash_commands()
       assert is_list(cmds)
-      assert length(cmds) == 31
+      assert length(cmds) == 33
 
       for {cmd, desc} <- cmds do
         assert is_binary(cmd)
@@ -265,6 +285,8 @@ defmodule Muse.CommandsTest do
       cmd_names = Enum.map(cmds, fn {cmd, _desc} -> cmd end)
       assert "/muses" in cmd_names
       refute "/agents" in cmd_names
+      assert "/prompt preview" in cmd_names
+      assert "/prompt-preview" in cmd_names
     end
   end
 
@@ -272,7 +294,7 @@ defmodule Muse.CommandsTest do
     test "returns list of maps with command and description keys" do
       cmds = Commands.slash_commands_json()
       assert is_list(cmds)
-      assert length(cmds) == 31
+      assert length(cmds) == 33
 
       for cmd <- cmds do
         assert Map.has_key?(cmd, :command)
@@ -286,6 +308,8 @@ defmodule Muse.CommandsTest do
       cmd_names = Enum.map(cmds, & &1.command)
       assert "/muses" in cmd_names
       refute "/agents" in cmd_names
+      assert "/prompt preview" in cmd_names
+      assert "/prompt-preview" in cmd_names
     end
   end
 end

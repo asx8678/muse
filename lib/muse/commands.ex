@@ -36,6 +36,8 @@ defmodule Muse.Commands do
     {"/runtime", :runtime, "Show Muse runtime status"},
     {"/connect runtime", :connect_runtime, "Attempt Muse runtime connection"},
     {"/disconnect runtime", :disconnect_runtime, "Disconnect Muse runtime"},
+    {"/prompt preview", :prompt_preview, "Preview assembled prompt bundle"},
+    {"/prompt-preview", :prompt_preview, "Preview assembled prompt bundle"},
     {"/reload", :reload, "Force dev reload"},
     {"/rollback", :rollback, "Roll back to last good generation"}
   ]
