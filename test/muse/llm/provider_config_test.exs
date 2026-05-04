@@ -373,6 +373,189 @@ defmodule Muse.LLM.ProviderConfigTest do
   end
 
   # ---------------------------------------------------------------------------
+  # SSE / transport / wire_api config via env
+  # ---------------------------------------------------------------------------
+
+  describe "load/1 — SSE transport and wire_api env overrides" do
+    test "openai_compatible defaults to wire_api :responses and transport :sse" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+        "MUSE_MODEL" => "gpt-4.1-mini"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.wire_api == :responses
+      assert config.transport == :sse
+      assert config.supports_streaming == true
+    end
+
+    test "MUSE_WIRE_API=chat_completions overrides wire_api for openai_compatible" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+        "MUSE_MODEL" => "gpt-4.1-mini",
+        "MUSE_WIRE_API" => "chat_completions"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.wire_api == :chat_completions
+      assert config.transport == :sse
+    end
+
+    test "MUSE_TRANSPORT=websocket overrides transport for openai_compatible" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+        "MUSE_MODEL" => "gpt-4.1-mini",
+        "MUSE_TRANSPORT" => "websocket"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.transport == :websocket
+      assert config.wire_api == :responses
+    end
+
+    test "MUSE_WIRE_API and MUSE_TRANSPORT both overridden together" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+        "MUSE_MODEL" => "gpt-4.1-mini",
+        "MUSE_WIRE_API" => "chat_completions",
+        "MUSE_TRANSPORT" => "sse"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.wire_api == :chat_completions
+      assert config.transport == :sse
+      assert config.supports_streaming == true
+    end
+
+    test "unknown MUSE_WIRE_API falls back to :responses default" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+        "MUSE_MODEL" => "gpt-4.1-mini",
+        "MUSE_WIRE_API" => "grpc"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      # Unknown wire_api strings fall back to the default (:responses)
+      assert config.wire_api == :responses
+    end
+
+    test "unknown MUSE_TRANSPORT falls back to :sse default" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+        "MUSE_MODEL" => "gpt-4.1-mini",
+        "MUSE_TRANSPORT" => "quic"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      # Unknown transport strings fall back to the default (:sse)
+      assert config.transport == :sse
+    end
+
+    test "atom value for MUSE_WIRE_API is handled by parse_wire_api" do
+      # ProviderConfig.load/1 reads strings from env, but parse_wire_api
+      # also accepts atoms. Verify that openai_compatible config with
+      # wire_api :chat_completions + transport :sse validates OK.
+      config = %ProviderConfig{
+        id: "openai_compatible",
+        name: "Test",
+        base_url: "https://api.openai.com/v1",
+        wire_api: :chat_completions,
+        transport: :sse,
+        model: "gpt-4",
+        auth: :api_key,
+        env_key: "TEST_KEY",
+        supports_streaming: true,
+        supports_websockets: false,
+        supports_tools: true
+      }
+
+      assert ProviderConfig.validate(config) == :ok
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # parse_transport/1 and parse_wire_api/1
+  # ---------------------------------------------------------------------------
+
+  describe "parse_transport/1" do
+    test "parses known string values" do
+      assert ProviderConfig.parse_transport("none") == :none
+      assert ProviderConfig.parse_transport("sse") == :sse
+      assert ProviderConfig.parse_transport("websocket") == :websocket
+    end
+
+    test "passes through known atom values" do
+      assert ProviderConfig.parse_transport(:none) == :none
+      assert ProviderConfig.parse_transport(:sse) == :sse
+      assert ProviderConfig.parse_transport(:websocket) == :websocket
+    end
+
+    test "returns nil for unknown strings" do
+      assert ProviderConfig.parse_transport("grpc") == nil
+      assert ProviderConfig.parse_transport("http2") == nil
+      assert ProviderConfig.parse_transport("") == nil
+    end
+
+    test "returns nil for unknown atoms" do
+      assert ProviderConfig.parse_transport(:grpc) == nil
+      assert ProviderConfig.parse_transport(:http2) == nil
+    end
+
+    test "returns nil for nil input" do
+      assert ProviderConfig.parse_transport(nil) == nil
+    end
+
+    test "never creates new atoms — unknown string stays a string" do
+      unknown = "totally_not_a_transport_xyz"
+      assert ProviderConfig.parse_transport(unknown) == nil
+
+      assert_raise ArgumentError, fn ->
+        String.to_existing_atom(unknown)
+      end
+    end
+  end
+
+  describe "parse_wire_api/1" do
+    test "parses known string values" do
+      assert ProviderConfig.parse_wire_api("responses") == :responses
+      assert ProviderConfig.parse_wire_api("chat_completions") == :chat_completions
+    end
+
+    test "passes through known atom values" do
+      assert ProviderConfig.parse_wire_api(:responses) == :responses
+      assert ProviderConfig.parse_wire_api(:chat_completions) == :chat_completions
+    end
+
+    test "returns nil for unknown strings" do
+      assert ProviderConfig.parse_wire_api("grpc") == nil
+      assert ProviderConfig.parse_wire_api("") == nil
+    end
+
+    test "returns nil for unknown atoms" do
+      assert ProviderConfig.parse_wire_api(:grpc) == nil
+    end
+
+    test "returns nil for nil input" do
+      assert ProviderConfig.parse_wire_api(nil) == nil
+    end
+
+    test "never creates new atoms — unknown string stays a string" do
+      unknown = "totally_not_a_wire_api_xyz"
+      assert ProviderConfig.parse_wire_api(unknown) == nil
+
+      assert_raise ArgumentError, fn ->
+        String.to_existing_atom(unknown)
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
 
