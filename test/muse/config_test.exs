@@ -164,9 +164,9 @@ defmodule Muse.ConfigTest do
         "MUSE_TRANSPORT" => "sse"
       }
 
-      # An empty string base URL is not valid HTTP(S)
+      # An empty string base URL is treated as missing (not malformed)
       assert {:error, reason} = Config.llm_provider_config(env)
-      assert reason =~ "base_url must be a valid HTTP(S) URL"
+      assert reason =~ "base_url is required"
     end
 
     test "openai_compatible with invalid base URL returns error" do
