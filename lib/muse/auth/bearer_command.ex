@@ -110,7 +110,7 @@ defmodule Muse.Auth.BearerCommand do
     do: {:error, {:not_allowed, source_label}}
 
   # ---------------------------------------------------------------------------
-  # Execution (size-capped, no token leakage in errors)
+  # Execution (no token leakage in errors)
   # ---------------------------------------------------------------------------
 
   # Split the command string into executable and args so that
@@ -124,7 +124,9 @@ defmodule Muse.Auth.BearerCommand do
         [h | t] -> {h, t}
       end
 
-    case System.cmd(cmd, args, stderr_to_stdout: false) do
+    result = System.cmd(cmd, args, stderr_to_stdout: false)
+
+    case result do
       {output, 0} ->
         token = String.trim_trailing(output)
 
@@ -139,10 +141,7 @@ defmodule Muse.Auth.BearerCommand do
         {:error, {:exec_failed, "command exited with non-zero status"}}
     end
   rescue
-    ArgumentError ->
-      {:error, {:exec_failed, "command not found or invalid"}}
-
-    e in ErlangError ->
-      {:error, {:exec_failed, "execution error: #{Exception.message(e)}"}}
+    error ->
+      {:error, {:exec_failed, "execution error: #{inspect(error)}"}}
   end
 end
