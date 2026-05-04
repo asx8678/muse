@@ -496,6 +496,27 @@ defmodule Muse.ConductorTest do
       assert result.assistant_text =~ "Placeholder response"
     end
 
+    test "provider_module option takes precedence over router-selected provider config" do
+      provider_config = %ProviderConfig{
+        id: "openai_compatible",
+        name: "OpenAI Compatible",
+        base_url: "https://llm.example.test/v1",
+        wire_api: :chat_completions,
+        transport: :none,
+        model: "offline-test-model"
+      }
+
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          provider_module: FakeProvider,
+          provider_config: provider_config,
+          prompt_opts: [project_rules?: false]
+        )
+
+      assert result.request.provider == :openai_compatible
+      assert result.assistant_text =~ "Placeholder response"
+    end
+
     test "accepts prompt_opts for assembler customization" do
       {:ok, result} =
         Conductor.run(build_session(), build_turn(),

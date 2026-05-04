@@ -27,7 +27,7 @@ defmodule Muse.Conductor do
 
   alias Muse.{MuseRegistry, Plan, PlanParser, Session, Telemetry, Turn}
   alias Muse.Conductor.ToolLoop
-  alias Muse.LLM.{FakeProvider, ProviderConfig, Message}
+  alias Muse.LLM.{FakeProvider, ProviderConfig, ProviderRouter, Message}
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
 
   @type event_spec :: {atom(), atom(), map(), keyword()}
@@ -43,7 +43,7 @@ defmodule Muse.Conductor do
 
   ## Options
 
-    * `:provider_module` — provider module (default: `Muse.LLM.FakeProvider`)
+    * `:provider_module` — explicit provider module (overrides router selection)
     * `:provider_config` — `ProviderConfig.t()` (default: `ProviderConfig.fake/0`)
     * `:prompt_opts`     — keyword opts passed to `Assembler.build/4`
     * `:request_options` — keyword opts passed to `ModelPreparer.to_request/3`
@@ -149,7 +149,7 @@ defmodule Muse.Conductor do
     request = merge_request_options(request, request_opts)
 
     # 4. Call provider
-    provider_module = Keyword.get(opts, :provider_module, FakeProvider)
+    provider_module = resolve_provider_module(opts, request)
 
     # Build conductor overhead event specs (always emitted)
     conductor_specs = [
@@ -265,6 +265,20 @@ defmodule Muse.Conductor do
         )
 
         {:error, %{reason: reason, event_specs: all_specs}}
+    end
+  end
+
+  defp resolve_provider_module(opts, request) do
+    if Keyword.has_key?(opts, :provider_module) do
+      Keyword.fetch!(opts, :provider_module)
+    else
+      case ProviderRouter.resolve(request.provider) do
+        {:ok, module} ->
+          if Code.ensure_loaded?(module), do: module, else: FakeProvider
+
+        {:error, _reason} ->
+          FakeProvider
+      end
     end
   end
 
