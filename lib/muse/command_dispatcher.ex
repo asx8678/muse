@@ -60,7 +60,7 @@ defmodule Muse.CommandDispatcher do
           {:ok, "No Muse Plan is available yet. Ask Planning Muse to create one!", []}
 
         %Muse.Plan{} = plan ->
-          {:ok, Muse.Plan.render(plan), []}
+          {:ok, render_plan_with_identity(plan), []}
       end
     end
   end
@@ -93,8 +93,7 @@ defmodule Muse.CommandDispatcher do
     with {:ok, id} <- parse_plan_show_args(args),
          %Muse.Plan{} = plan <-
            Muse.PlanHistory.find_plan_by_id(Muse.PlanHistory.query(context).plans, id) do
-      {:ok, "Muse Plan #{Muse.PlanHistory.display_plan_id(plan)}\n\n" <> Muse.Plan.render(plan),
-       []}
+      {:ok, plan_show_heading(plan) <> "\n\n" <> Muse.Plan.render(plan), []}
     else
       :usage ->
         {:error, "Error: usage: /plan show <id>", []}
@@ -986,13 +985,15 @@ defmodule Muse.CommandDispatcher do
     Muse.SessionRouter.reject_plan(session_id, source)
   end
 
-  defp format_plan_lifecycle_result({:ok, %Muse.Plan{}}, :approve_plan) do
-    {:ok, "Plan approved.\n\nThe approved plan is ready for implementation.",
+  defp format_plan_lifecycle_result({:ok, %Muse.Plan{} = plan}, :approve_plan) do
+    {:ok,
+     "Plan approved.\n\nThe approved plan is ready for implementation.\n#{plan_identity_line(plan)}",
      [{:refresh, :events}]}
   end
 
-  defp format_plan_lifecycle_result({:ok, %Muse.Plan{}}, :reject_plan) do
-    {:ok, "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.",
+  defp format_plan_lifecycle_result({:ok, %Muse.Plan{} = plan}, :reject_plan) do
+    {:ok,
+     "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\n#{plan_identity_line(plan)}",
      [{:refresh, :events}]}
   end
 
@@ -1040,6 +1041,18 @@ defmodule Muse.CommandDispatcher do
       source when is_atom(source) -> source
       _ -> :system
     end
+  end
+
+  defp render_plan_with_identity(%Muse.Plan{} = plan) do
+    plan_show_heading(plan) <> "\n\n" <> Muse.Plan.render(plan)
+  end
+
+  defp plan_show_heading(%Muse.Plan{} = plan) do
+    "Muse Plan #{Muse.PlanHistory.display_plan_id(plan)} (version #{plan.version})"
+  end
+
+  defp plan_identity_line(%Muse.Plan{} = plan) do
+    "Active plan: #{Muse.PlanHistory.display_plan_id(plan)} (version #{plan.version})."
   end
 
   # -- Read-only plan command helpers -----------------------------------------

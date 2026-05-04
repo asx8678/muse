@@ -104,6 +104,7 @@ defmodule Muse.CommandDispatcherTest do
         )
 
       {:ok, output, effects} = CommandDispatcher.dispatch(:plan, nil, %{plan: plan})
+      assert output =~ "Muse Plan (no id) (version 1)"
       assert output =~ "Objective:"
       assert output =~ "Add a /version command."
       assert output =~ "Tasks:"
@@ -118,6 +119,7 @@ defmodule Muse.CommandDispatcherTest do
       }
 
       {:ok, output, effects} = CommandDispatcher.dispatch(:plan, nil, %{plan: plan_map})
+      assert output =~ "Muse Plan (no id) (version 1)"
       assert output =~ "Objective:"
       assert output =~ "Fix the bug"
       assert output =~ "Tasks:"
@@ -144,6 +146,7 @@ defmodule Muse.CommandDispatcherTest do
           active_plan_id: "plan_b"
         })
 
+      assert output =~ "Muse Plan plan_b (version 1)"
       assert output =~ "Thing B"
       refute output =~ "Thing A"
     end
@@ -191,6 +194,8 @@ defmodule Muse.CommandDispatcherTest do
       # Now call /plan with empty context — should fall back to SessionRouter
       # Pass session_id in context so resolve_from_session_router knows which session
       {:ok, output, effects} = CommandDispatcher.dispatch(:plan, nil, %{session_id: session_id})
+
+      assert output =~ "Muse Plan plan_fallback_1 (version 1)"
 
       assert output =~ "SessionRouter fallback plan",
              "Expected plan output via SessionRouter fallback, got: #{inspect(output)}"
@@ -313,6 +318,7 @@ defmodule Muse.CommandDispatcherTest do
 
       assert output =~ "Active Muse Plan status:"
       assert output =~ "Active plan id: status-plan"
+      assert output =~ "Version: 1"
       assert output =~ "Plan status: approved"
       assert output =~ "Session status: idle"
       assert output =~ "Status command plan"
@@ -356,7 +362,7 @@ defmodule Muse.CommandDispatcherTest do
           active_plan_id: "show-active"
         })
 
-      assert output =~ "Muse Plan show-history"
+      assert output =~ "Muse Plan show-history (version 1)"
       assert output =~ "Render historical plan details"
       assert output =~ "1. Show old plan"
       refute output =~ "Active plan"
@@ -435,6 +441,7 @@ defmodule Muse.CommandDispatcherTest do
           CommandDispatcher.dispatch(:plan_status, nil, %{session_id: session_id})
 
         assert status_output =~ "Active plan id: router-active-plan"
+        assert status_output =~ "Version: 1"
         assert status_output =~ "Session status: awaiting_plan_approval"
 
         {:ok, show_output, []} =
@@ -502,7 +509,9 @@ defmodule Muse.CommandDispatcherTest do
         {:ok, output, effects} =
           CommandDispatcher.dispatch(:approve_plan, nil, %{session_id: session_id, source: :cli})
 
-        assert output == "Plan approved.\n\nThe approved plan is ready for implementation."
+        assert output ==
+                 "Plan approved.\n\nThe approved plan is ready for implementation.\nActive plan: #{session_id}-plan (version 1)."
+
         assert effects == [{:refresh, :events}]
 
         status = Muse.SessionServer.status(pid)
@@ -523,7 +532,9 @@ defmodule Muse.CommandDispatcherTest do
         {:ok, output, effects} =
           CommandDispatcher.dispatch(:reject_plan, nil, %{session_id: session_id, source: :web})
 
-        assert output == "Plan rejected.\n\nYou can ask Planning Muse for a revised plan."
+        assert output ==
+                 "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\nActive plan: #{session_id}-plan (version 1)."
+
         assert effects == [{:refresh, :events}]
 
         status = Muse.SessionServer.status(pid)

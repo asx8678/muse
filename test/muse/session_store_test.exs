@@ -194,6 +194,39 @@ defmodule Muse.SessionStoreTest do
                SessionStore.load_session(base_dir, "nonexistent-session")
     end
 
+    test "round-trips active plan lifecycle snapshot", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      plan =
+        Muse.Plan.new(
+          id: "plan-store-roundtrip",
+          session_id: session_id,
+          objective: "Persist active plan lifecycle state",
+          version: 3,
+          status: :awaiting_approval,
+          tasks: [Muse.Task.new(title: "Persist", description: "Persist active plan")]
+        )
+
+      data = %{
+        "status" => "awaiting_plan_approval",
+        "active_plan_id" => plan.id,
+        "plan" => Muse.Plan.to_map(plan),
+        "plans" => %{plan.id => Muse.Plan.to_map(plan)}
+      }
+
+      assert :ok = SessionStore.save_session(base_dir, session_id, data)
+      assert {:ok, loaded} = SessionStore.load_session(base_dir, session_id)
+
+      assert loaded["status"] == "awaiting_plan_approval"
+      assert loaded["active_plan_id"] == plan.id
+      assert loaded["plan"]["id"] == plan.id
+      assert loaded["plan"]["session_id"] == session_id
+      assert loaded["plan"]["version"] == 3
+      assert loaded["plan"]["status"] == "awaiting_approval"
+      assert get_in(loaded, ["plans", plan.id, "version"]) == 3
+    end
+
     test "atomic write cleans up .tmp files", %{base_dir: base_dir, session_id: session_id} do
       SessionStore.save_session(base_dir, session_id, %{"data" => "atomic"})
 

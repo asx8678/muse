@@ -256,6 +256,7 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       event_count_before_commands = State.events() |> length()
 
       {:ok, plan_output, []} = run_slash_command("/plan", context)
+      assert plan_output =~ "Muse Plan #{approve_plan_id} (version 1)"
       assert plan_output =~ "Planning Muse prepared a plan."
       assert plan_output =~ "Objective:"
       assert plan_output =~ "/version command"
@@ -268,11 +269,12 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       {:ok, status_output, []} = run_slash_command("/plan status", context)
       assert status_output =~ "Active Muse Plan status:"
       assert status_output =~ "Active plan id: #{approve_plan_id}"
+      assert status_output =~ "Version: 1"
       assert status_output =~ "Plan status: awaiting_approval"
       assert status_output =~ "Session status: awaiting_plan_approval"
 
       {:ok, show_output, []} = run_slash_command("/plan show #{approve_plan_id}", context)
-      assert show_output =~ "Muse Plan #{approve_plan_id}"
+      assert show_output =~ "Muse Plan #{approve_plan_id} (version 1)"
       assert show_output =~ "Objective:"
       assert show_output =~ "/version command"
 
@@ -294,7 +296,10 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       events_before_approve = State.events()
 
       {:ok, approve_output, approve_effects} = run_slash_command("/approve plan", context)
-      assert approve_output == "Plan approved.\n\nThe approved plan is ready for implementation."
+
+      assert approve_output ==
+               "Plan approved.\n\nThe approved plan is ready for implementation.\nActive plan: #{approve_plan_id} (version 1)."
+
       assert approve_effects == [{:refresh, :events}]
 
       approved_status = SessionServer.status(approve_pid)
@@ -334,7 +339,10 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       events_before_reject = State.events()
 
       {:ok, reject_output, reject_effects} = run_slash_command("/reject plan", reject_context)
-      assert reject_output == "Plan rejected.\n\nYou can ask Planning Muse for a revised plan."
+
+      assert reject_output ==
+               "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\nActive plan: #{reject_plan_id} (version 1)."
+
       assert reject_effects == [{:refresh, :events}]
 
       rejected_status = SessionServer.status(reject_pid)

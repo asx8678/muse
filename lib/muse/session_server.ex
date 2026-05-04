@@ -276,12 +276,7 @@ defmodule Muse.SessionServer do
     # the correct session_status_changed event (idle → running). Tests may
     # provide a deterministic workspace/provider script through opts; default
     # callers keep the production-safe workspace and fake provider behavior.
-    session =
-      Session.new(
-        id: state.session_id,
-        workspace: Keyword.get(opts, :workspace, get_workspace()),
-        status: state.status
-      )
+    session = build_turn_session(state, opts)
 
     task = TurnRunner.async(session, turn, Keyword.delete(opts, :workspace))
 
@@ -308,6 +303,31 @@ defmodule Muse.SessionServer do
 
     {:noreply, state}
   end
+
+  defp build_turn_session(state, opts) do
+    %{
+      Session.new(
+        id: state.session_id,
+        workspace: Keyword.get(opts, :workspace, get_workspace()),
+        status: state.status
+      )
+      | active_muse: state.active_muse,
+        active_plan_id: state.active_plan_id,
+        plans: turn_session_plans(state)
+    }
+  end
+
+  defp turn_session_plans(%{plan: %Plan{} = plan} = state) do
+    plan_id = plan.id || state.active_plan_id
+
+    if plan_id do
+      Map.put(state.plans || %{}, plan_id, plan)
+    else
+      state.plans || %{}
+    end
+  end
+
+  defp turn_session_plans(state), do: state.plans || %{}
 
   # -- Task result handling ----------------------------------------------------
 
@@ -388,11 +408,18 @@ defmodule Muse.SessionServer do
     state =
       if Map.has_key?(result, :plan) and not is_nil(result.plan) do
         plan = result.plan
-        plans = Map.put(state.plans, plan.id, plan)
+        active_plan_id = plan.id || state.active_plan_id
+
+        plans =
+          if active_plan_id do
+            Map.put(state.plans || %{}, active_plan_id, plan)
+          else
+            state.plans || %{}
+          end
 
         maybe_persist_snapshot(%{
           state
-          | active_plan_id: plan.id,
+          | active_plan_id: active_plan_id,
             plan: plan,
             plans: plans
         })
@@ -709,6 +736,7 @@ defmodule Muse.SessionServer do
   defp plan_lifecycle_event_data(plan) do
     %{
       plan_id: plan.id,
+      version: plan.version,
       status: plan.status,
       objective: plan.objective,
       task_count: length(plan.tasks)
@@ -729,13 +757,14 @@ defmodule Muse.SessionServer do
         active_plan_id = Map.get(data, "active_plan_id")
         status_str = Map.get(data, "status", "idle")
 
-        plan = restore_plan(plan_data)
         plans = restore_plans(plans_data)
+        plan = restore_plan(plan_data) || active_plan_from_plans(plans, active_plan_id)
 
         active_id =
           active_plan_id ||
             if plan, do: plan.id, else: nil
 
+        plans = put_restored_plan(plans, plan, active_id)
         status = safely_atom_status(status_str)
 
         %{
@@ -776,6 +805,22 @@ defmodule Muse.SessionServer do
   end
 
   defp restore_plans(_), do: %{}
+
+  defp active_plan_from_plans(plans, active_plan_id) when is_map(plans) do
+    cond do
+      is_binary(active_plan_id) and match?(%Plan{}, Map.get(plans, active_plan_id)) ->
+        Map.fetch!(plans, active_plan_id)
+
+      true ->
+        nil
+    end
+  end
+
+  defp put_restored_plan(plans, %Plan{} = plan, active_plan_id) when is_binary(active_plan_id) do
+    Map.put_new(plans, active_plan_id, plan)
+  end
+
+  defp put_restored_plan(plans, _plan, _active_plan_id), do: plans
 
   defp maybe_persist_snapshot(state) do
     # Persist plan-related state as a session snapshot.

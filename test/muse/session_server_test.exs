@@ -1004,6 +1004,7 @@ defmodule Muse.SessionServerTest do
 
       assert plan_event.data == %{
                plan_id: plan.id,
+               version: plan.version,
                status: :approved,
                objective: "Approve persisted plan",
                task_count: 2
@@ -1055,6 +1056,7 @@ defmodule Muse.SessionServerTest do
 
       assert plan_event.data == %{
                plan_id: plan.id,
+               version: plan.version,
                status: :rejected,
                objective: "Reject persisted plan",
                task_count: 2
@@ -1191,6 +1193,81 @@ defmodule Muse.SessionServerTest do
 
       assert rendered =~ "Planning Muse prepared a plan.",
              "Rendered plan header should be 'Planning Muse prepared a plan.'"
+    end
+
+    test "planning turn assigns and persists active plan identity when provider omits plan id" do
+      session_id = "plan-generated-id-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      plan_json = ~s({
+        "objective": "Create a durable active plan id.",
+        "tasks": [
+          {"title": "Inspect", "description": "Inspect files", "requires_write": false, "requires_shell": false}
+        ]
+      })
+
+      fake_events = [
+        {:assistant_delta, plan_json},
+        {:assistant_completed, plan_json},
+        {:response_completed, nil}
+      ]
+
+      assert {:ok, assistant_text} =
+               Muse.SessionServer.submit(pid, :cli, "plan with generated id",
+                 prompt_opts: [project_rules?: false],
+                 request_options: [options: %{fake_events: fake_events}]
+               )
+
+      assert assistant_text =~ "Planning Muse prepared a plan."
+
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :awaiting_plan_approval
+      assert status.active_plan_id == status.plan.id
+      assert String.starts_with?(status.active_plan_id, "plan_turn_")
+      assert status.plan.session_id == session_id
+      assert status.plan.version == 1
+      assert status.plans[status.active_plan_id].objective == "Create a durable active plan id."
+
+      assert {:ok, stored} = Muse.SessionStore.load_session(session_id)
+      assert stored["status"] == "awaiting_plan_approval"
+      assert stored["active_plan_id"] == status.active_plan_id
+      assert stored["plan"]["id"] == status.active_plan_id
+      assert stored["plan"]["session_id"] == session_id
+      assert stored["plan"]["version"] == 1
+      assert get_in(stored, ["plans", status.active_plan_id, "id"]) == status.active_plan_id
+
+      :ok = DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid)
+      Process.sleep(10)
+
+      restored_pid = start_server(session_id)
+      restored_status = Muse.SessionServer.status(restored_pid)
+
+      assert restored_status.status == :awaiting_plan_approval
+      assert restored_status.active_plan_id == status.active_plan_id
+      assert restored_status.plan.id == status.active_plan_id
+      assert restored_status.plan.session_id == session_id
+      assert restored_status.plans[status.active_plan_id].version == 1
+    end
+
+    test "restores active plan from plans map when top-level plan snapshot is absent" do
+      session_id = "plan-restore-from-history-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, id: "history-only-plan")
+
+      assert :ok =
+               Muse.SessionStore.save_session(session_id, %{
+                 "status" => "awaiting_plan_approval",
+                 "active_plan_id" => plan.id,
+                 "plans" => %{plan.id => Muse.Plan.to_map(plan)}
+               })
+
+      pid = start_server(session_id)
+      status = Muse.SessionServer.status(pid)
+
+      assert status.status == :awaiting_plan_approval
+      assert status.active_plan_id == plan.id
+      assert status.plan.id == plan.id
+      assert status.plan.status == :awaiting_approval
+      assert status.plans[plan.id].objective == plan.objective
     end
 
     test "handles missing session snapshot gracefully" do

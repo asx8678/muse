@@ -595,7 +595,9 @@ defmodule Muse.Conductor do
 
   defp looks_like_plan_json?(_), do: false
 
-  defp finalize_as_plan(result, _session, _turn, _muse, plan, _start_time) do
+  defp finalize_as_plan(result, session, turn, _muse, plan, _start_time) do
+    plan = prepare_plan_identity(plan, session, turn)
+
     # Transition plan to awaiting_approval
     {:ok, plan} = Plan.transition(plan, :awaiting_approval)
 
@@ -632,6 +634,8 @@ defmodule Muse.Conductor do
     # Transition from running (already in result.session) to awaiting_plan_approval
     {:ok, plan_session} = Session.transition(result.session, :awaiting_plan_approval)
 
+    plan_session = put_session_active_plan(plan_session, plan)
+
     # Build the result with plan data
     plan_result =
       result
@@ -641,6 +645,69 @@ defmodule Muse.Conductor do
       |> Map.put(:plan, plan)
 
     {:ok, plan_result}
+  end
+
+  defp prepare_plan_identity(%Plan{} = plan, %Session{} = session, %Turn{} = turn) do
+    plan
+    |> put_plan_session_id(session)
+    |> put_plan_version(session)
+    |> put_plan_id(turn)
+  end
+
+  defp put_plan_session_id(%Plan{session_id: session_id} = plan, _session)
+       when is_binary(session_id) and session_id != "" do
+    plan
+  end
+
+  defp put_plan_session_id(%Plan{} = plan, %Session{id: session_id}) do
+    %{plan | session_id: session_id}
+  end
+
+  defp put_plan_version(%Plan{} = plan, %Session{} = session) do
+    version = max(plan_version(plan), next_plan_version(session))
+    %{plan | version: version}
+  end
+
+  defp next_plan_version(%Session{plans: plans}) when is_map(plans) and map_size(plans) > 0 do
+    plans
+    |> Map.values()
+    |> Enum.map(&plan_version/1)
+    |> Enum.max(fn -> 0 end)
+    |> Kernel.+(1)
+  end
+
+  defp next_plan_version(_session), do: 1
+
+  defp plan_version(%Plan{version: version}) when is_integer(version), do: version
+  defp plan_version(_plan), do: 0
+
+  defp put_plan_id(%Plan{id: id} = plan, _turn) when is_binary(id) and id != "" do
+    plan
+  end
+
+  defp put_plan_id(%Plan{} = plan, %Turn{id: turn_id}) do
+    %{plan | id: generated_plan_id(turn_id)}
+  end
+
+  defp generated_plan_id(turn_id) when is_binary(turn_id) and turn_id != "" do
+    "plan_" <> sanitize_plan_id_part(turn_id)
+  end
+
+  defp generated_plan_id(_turn_id), do: "plan_generated"
+
+  defp sanitize_plan_id_part(value) do
+    value
+    |> String.trim()
+    |> String.replace(~r/[^A-Za-z0-9_.-]+/, "-")
+    |> case do
+      "" -> "generated"
+      sanitized -> sanitized
+    end
+  end
+
+  defp put_session_active_plan(%Session{} = session, %Plan{} = plan) do
+    plans = Map.put(session.plans || %{}, plan.id, plan)
+    %{session | active_plan_id: plan.id, plans: plans}
   end
 
   defp do_plan_repair(result, session, turn, muse, assistant_text, start_time, opts) do
