@@ -2,7 +2,68 @@ defmodule Muse.ConductorTest do
   use ExUnit.Case, async: true
 
   alias Muse.{Conductor, Session, Turn}
-  alias Muse.LLM.{ProviderConfig, FakeProvider}
+  alias Muse.LLM.{ProviderConfig, FakeProvider, Request, Response, Event}
+
+  # -- Test provider that asserts previous_response_id and returns provider_state --
+
+  defmodule AssertingProvider do
+    @moduledoc false
+    @behaviour Muse.LLM.Provider
+
+    @impl true
+    def stream(%Request{} = request, emit_fn) when is_function(emit_fn, 1) do
+      # Emit a minimal valid stream
+      emit_fn.(Event.response_started())
+      emit_fn.(Event.assistant_delta("asserted"))
+      emit_fn.(Event.assistant_completed("asserted"))
+      emit_fn.(Event.response_completed())
+
+      {:ok,
+       Response.new(
+         content: "asserted",
+         finish_reason: "stop",
+         provider_state: %{
+           previous_response_id: "resp_next_" <> (request.previous_response_id || "none")
+         }
+       )}
+    end
+
+    @impl true
+    def complete(%Request{} = _request, _opts \\ []) do
+      {:ok, Response.new(content: "asserted", finish_reason: "stop")}
+    end
+  end
+
+  # -- Test provider that returns provider_state with secrets (for redaction test) --
+
+  defmodule LeakyProvider do
+    @moduledoc false
+    @behaviour Muse.LLM.Provider
+
+    @impl true
+    def stream(%Request{} = _request, emit_fn) when is_function(emit_fn, 1) do
+      emit_fn.(Event.response_started())
+      emit_fn.(Event.assistant_delta("leaky"))
+      emit_fn.(Event.assistant_completed("leaky"))
+      emit_fn.(Event.response_completed())
+
+      {:ok,
+       Response.new(
+         content: "leaky",
+         finish_reason: "stop",
+         provider_state: %{
+           previous_response_id: "resp_leaky_123",
+           access_token: "sk-super-secret-key",
+           raw: %{"full" => "payload", "with" => "secrets"}
+         }
+       )}
+    end
+
+    @impl true
+    def complete(%Request{} = _request, _opts \\ []) do
+      {:ok, Response.new(content: "leaky", finish_reason: "stop")}
+    end
+  end
 
   # -- Helpers ------------------------------------------------------------------
 
@@ -698,6 +759,226 @@ defmodule Muse.ConductorTest do
       assert metadata.error_type == "provider_error"
 
       :telemetry.detach("cond-test-prov-error")
+    end
+  end
+
+  # -- provider_state and previous_response_id persistence ----------------------
+
+  describe "run/3 — provider_state persistence" do
+    test "merges response.provider_state into session.provider_state after turn" do
+      session = build_session(id: "ps-session")
+      turn = build_turn(session_id: "ps-session", id: "turn_ps1", user_text: "test")
+
+      {:ok, result} =
+        Conductor.run(session, turn,
+          provider_module: AssertingProvider,
+          prompt_opts: [project_rules?: false]
+        )
+
+      assert result.session.provider_state != nil
+      assert result.session.provider_state[:previous_response_id] =~ "resp_next_"
+    end
+
+    test "preserves existing unrelated keys in session.provider_state" do
+      session =
+        build_session(
+          id: "ps-existing-session",
+          provider_state: %{previous_response_id: "old_resp", custom_key: "preserved"}
+        )
+
+      turn = build_turn(session_id: "ps-existing-session", id: "turn_ps2", user_text: "test")
+
+      {:ok, result} =
+        Conductor.run(session, turn,
+          provider_module: AssertingProvider,
+          prompt_opts: [project_rules?: false]
+        )
+
+      # previous_response_id should be overwritten by the new response
+      assert result.session.provider_state[:previous_response_id] =~ "resp_next_"
+      # But custom_key should survive
+      assert result.session.provider_state[:custom_key] == "preserved"
+    end
+
+    test "only whitelisted safe keys are merged from response provider_state" do
+      session = build_session(id: "ps-leaky-session")
+      turn = build_turn(session_id: "ps-leaky-session", id: "turn_ps3", user_text: "test")
+
+      {:ok, result} =
+        Conductor.run(session, turn,
+          provider_module: LeakyProvider,
+          prompt_opts: [project_rules?: false]
+        )
+
+      # previous_response_id is whitelisted and should be present
+      assert result.session.provider_state[:previous_response_id] == "resp_leaky_123"
+      # access_token is NOT whitelisted — should be dropped, not stored
+      refute Map.has_key?(result.session.provider_state, :access_token)
+      # raw is NOT whitelisted — should be dropped
+      refute Map.has_key?(result.session.provider_state, :raw)
+    end
+  end
+
+  describe "run/3 — previous_response_id hydration" do
+    test "hydrates request.previous_response_id from session.provider_state" do
+      session =
+        build_session(
+          id: "hydrate-session",
+          provider_state: %{previous_response_id: "resp_from_prev_turn"}
+        )
+
+      turn = build_turn(session_id: "hydrate-session", id: "turn_hydrate1", user_text: "test")
+
+      {:ok, result} =
+        Conductor.run(session, turn,
+          provider_module: AssertingProvider,
+          prompt_opts: [project_rules?: false]
+        )
+
+      # The AssertingProvider encodes the previous_response_id it received
+      # into the new provider_state as "resp_next_<received_value>"
+      assert result.session.provider_state[:previous_response_id] ==
+               "resp_next_resp_from_prev_turn"
+    end
+
+    test "explicit previous_response_id in request_options takes precedence" do
+      session =
+        build_session(
+          id: "hydrate-explicit-session",
+          provider_state: %{previous_response_id: "resp_from_state"}
+        )
+
+      turn =
+        build_turn(
+          session_id: "hydrate-explicit-session",
+          id: "turn_hydrate2",
+          user_text: "test"
+        )
+
+      {:ok, result} =
+        Conductor.run(session, turn,
+          provider_module: AssertingProvider,
+          prompt_opts: [project_rules?: false],
+          request_options: [previous_response_id: "resp_explicit"]
+        )
+
+      assert result.session.provider_state[:previous_response_id] ==
+               "resp_next_resp_explicit"
+    end
+
+    test "no previous_response_id when session has none and no override" do
+      session = build_session(id: "hydrate-none-session")
+
+      turn =
+        build_turn(session_id: "hydrate-none-session", id: "turn_hydrate3", user_text: "test")
+
+      {:ok, result} =
+        Conductor.run(session, turn,
+          provider_module: AssertingProvider,
+          prompt_opts: [project_rules?: false]
+        )
+
+      # The AssertingProvider encodes "none" when previous_response_id is nil
+      assert result.session.provider_state[:previous_response_id] == "resp_next_none"
+    end
+  end
+
+  describe "run/3 — event spec safety (no previous_response_id or provider_state secrets)" do
+    test "provider_request_started event does not contain previous_response_id" do
+      session =
+        build_session(
+          id: "event-safe-session",
+          provider_state: %{previous_response_id: "secret_resp_id"}
+        )
+
+      turn = build_turn(session_id: "event-safe-session", id: "turn_es1", user_text: "test")
+
+      {:ok, result} =
+        Conductor.run(session, turn, prompt_opts: [project_rules?: false])
+
+      {_source, :provider_request_started, data, _opts} =
+        find_event_spec(result.event_specs, :provider_request_started)
+
+      refute Map.has_key?(data, :previous_response_id)
+      refute Map.has_key?(data, :provider_state)
+    end
+
+    test "no event spec leaks provider_state secrets" do
+      session = build_session(id: "event-leak-session")
+      turn = build_turn(session_id: "event-leak-session", id: "turn_el1", user_text: "test")
+
+      {:ok, result} =
+        Conductor.run(session, turn,
+          provider_module: LeakyProvider,
+          prompt_opts: [project_rules?: false]
+        )
+
+      for {_source, _type, data, _opts} <- result.event_specs do
+        refute data[:access_token]
+        refute data[:provider_state]
+      end
+    end
+  end
+
+  describe "merge_provider_state/2" do
+    test "merges safe keys from response into session" do
+      session = build_session(id: "merge-session")
+      response = %Response{provider_state: %{previous_response_id: "resp_abc"}}
+
+      updated = Conductor.merge_provider_state(session, response)
+
+      assert updated.provider_state[:previous_response_id] == "resp_abc"
+    end
+
+    test "drops non-whitelisted keys from response provider_state" do
+      session = build_session(id: "merge-drop-session")
+
+      response = %Response{
+        provider_state: %{
+          previous_response_id: "resp_safe",
+          raw: %{"big" => "payload"},
+          session_key: "should_drop"
+        }
+      }
+
+      updated = Conductor.merge_provider_state(session, response)
+
+      assert updated.provider_state[:previous_response_id] == "resp_safe"
+      refute Map.has_key?(updated.provider_state, :raw)
+      refute Map.has_key?(updated.provider_state, :session_key)
+    end
+
+    test "preserves existing unrelated keys" do
+      session =
+        build_session(
+          id: "merge-preserve-session",
+          provider_state: %{custom_key: "keep_me"}
+        )
+
+      response = %Response{provider_state: %{previous_response_id: "resp_new"}}
+
+      updated = Conductor.merge_provider_state(session, response)
+
+      assert updated.provider_state[:previous_response_id] == "resp_new"
+      assert updated.provider_state[:custom_key] == "keep_me"
+    end
+
+    test "handles nil response provider_state" do
+      session = build_session(id: "merge-nil-session", provider_state: %{existing: "val"})
+      response = %Response{provider_state: nil}
+
+      updated = Conductor.merge_provider_state(session, response)
+
+      assert updated.provider_state[:existing] == "val"
+    end
+
+    test "handles nil session provider_state" do
+      session = build_session(id: "merge-nil-sess-session")
+      response = %Response{provider_state: %{previous_response_id: "resp_1"}}
+
+      updated = Conductor.merge_provider_state(session, response)
+
+      assert updated.provider_state[:previous_response_id] == "resp_1"
     end
   end
 end

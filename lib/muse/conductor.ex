@@ -147,6 +147,7 @@ defmodule Muse.Conductor do
     request_opts = Keyword.get(opts, :request_options, [])
     request = ModelPreparer.to_request(bundle, provider_config, request_opts)
     request = merge_request_options(request, request_opts)
+    request = hydrate_previous_response_id(request, session, request_opts)
 
     # 4. Call provider
     provider_module = resolve_provider_module(opts, request)
@@ -205,7 +206,8 @@ defmodule Muse.Conductor do
                 start_time,
                 provider_module: provider_module,
                 request: request,
-                bundle: bundle
+                bundle: bundle,
+                tool_loop_provider_state: tool_loop_result.provider_state
               )
 
             {:cancelled, tool_loop_result} ->
@@ -232,7 +234,8 @@ defmodule Muse.Conductor do
                 start_time,
                 provider_module: provider_module,
                 request: request,
-                bundle: bundle
+                bundle: bundle,
+                tool_loop_provider_state: tool_loop_result.provider_state
               )
           end
         else
@@ -291,6 +294,12 @@ defmodule Muse.Conductor do
     turn = %{turn | selected_muse: Atom.to_string(muse.id)}
     turn = Turn.mark_streamed(turn)
     {:ok, turn} = Turn.transition(turn, :completed, completed_at: DateTime.utc_now())
+
+    # Preserve provider_state through the tool-loop path.
+    # The last provider response's provider_state is carried via the
+    # ToolLoop result — merge it back into the session.
+    session = merge_tool_loop_provider_state(session, opts)
+
     {:ok, session} = Session.transition(session, :idle)
 
     duration = System.monotonic_time(:millisecond) - start_time
@@ -502,6 +511,9 @@ defmodule Muse.Conductor do
     turn = Turn.mark_streamed(turn)
     {:ok, turn} = Turn.transition(turn, :completed, completed_at: DateTime.utc_now())
 
+    # Merge safe provider state from response into session before transitioning
+    session = merge_provider_state(session, response)
+
     # Transition session back to idle
     {:ok, session} = Session.transition(session, :idle)
 
@@ -618,7 +630,9 @@ defmodule Muse.Conductor do
 
     all_specs = clean_specs ++ plan_specs
 
-    # Transition from running (already in result.session) to awaiting_plan_approval
+    # Transition from running (already in result.session) to awaiting_plan_approval.
+    # provider_state was already merged in finalize_turn / finalize_with_specs
+    # before this function, so Session.transition preserves it.
     {:ok, plan_session} = Session.transition(result.session, :awaiting_plan_approval)
 
     # Build the result with plan data
@@ -752,6 +766,101 @@ defmodule Muse.Conductor do
 
       _ ->
         request
+    end
+  end
+
+  # -- Previous response ID hydration -------------------------------------------
+
+  # Hydrate `request.previous_response_id` from `session.provider_state`
+  # when the caller did not explicitly provide one via request_opts.
+  # This ensures conversation continuity (OpenAI Responses API) is
+  # preserved across turns without requiring the caller to thread it.
+  defp hydrate_previous_response_id(request, session, request_opts) do
+    # If the caller explicitly set previous_response_id (via request_opts
+    # or provider config), respect it — do not overwrite.
+    if request.previous_response_id != nil do
+      request
+    else
+      # Check request_opts :previous_response_id first (explicit override)
+      case Keyword.get(request_opts, :previous_response_id) do
+        nil ->
+          # Fall back to session.provider_state[:previous_response_id]
+          from_state = get_in(session.provider_state || %{}, [:previous_response_id])
+
+          if from_state, do: %{request | previous_response_id: from_state}, else: request
+
+        explicit ->
+          %{request | previous_response_id: explicit}
+      end
+    end
+  end
+
+  # -- Provider state merging ---------------------------------------------------
+
+  @doc """
+  Merge safe keys from `response.provider_state` into `session.provider_state`.
+
+  Only whitelisted safe keys are merged — raw provider payloads, secrets,
+  and opaque blobs are excluded.  Existing unrelated keys in the session's
+  provider_state are preserved.
+
+  ## Safe keys
+
+    * `:previous_response_id` — conversation continuity token
+
+  Any key matching `Muse.MetadataSanitizer.sensitive_key?/1` is dropped
+  before merge.  The `:raw` key (if present in provider_state) is also
+  excluded to prevent storing full wire payloads.
+  """
+  @spec merge_provider_state(Session.t(), Muse.LLM.Response.t()) :: Session.t()
+  def merge_provider_state(session, response) do
+    incoming = response.provider_state || %{}
+    safe_state = filter_safe_provider_state(incoming)
+
+    existing = session.provider_state || %{}
+    merged = Map.merge(existing, safe_state)
+
+    %{session | provider_state: merged}
+  end
+
+  # Only allow whitelisted safe keys through.  Drops anything sensitive
+  # or potentially large (e.g. :raw payloads, :access_token, etc.).
+  @safe_provider_state_keys [:previous_response_id]
+
+  defp filter_safe_provider_state(provider_state) when is_map(provider_state) do
+    provider_state
+    |> Map.take(@safe_provider_state_keys)
+    |> reject_sensitive_values()
+  end
+
+  defp filter_safe_provider_state(_), do: %{}
+
+  # Double-check: even whitelisted keys get their values rejected if
+  # the key happens to be sensitive (defence in depth — the whitelist
+  # should already exclude them, but belt-and-suspenders).
+  defp reject_sensitive_values(state) when is_map(state) do
+    Map.new(state, fn {k, v} ->
+      if Muse.MetadataSanitizer.sensitive_key?(k) do
+        {k, "**REDACTED**"}
+      else
+        {k, v}
+      end
+    end)
+  end
+
+  # In the tool-loop path, the Conductor does not have direct access to
+  # the final provider response. The ToolLoop carries provider_state
+  # via its result map. Extract and merge if available.
+  defp merge_tool_loop_provider_state(session, opts) do
+    case Keyword.get(opts, :tool_loop_provider_state) do
+      nil ->
+        session
+
+      state when is_map(state) ->
+        merge_provider_state(session, %Muse.LLM.Response{provider_state: state})
+
+      _ ->
+        session
     end
   end
 

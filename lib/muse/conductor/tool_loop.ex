@@ -39,6 +39,18 @@ defmodule Muse.Conductor.ToolLoop do
   via `emit_session_event/5`, ensuring proper session_id/turn_id/seq.
   The ToolLoop does NOT emit directly to State when `emit_events?: false`
   is set in the runner context.
+
+  ## Provider state carry-over
+
+  The ToolLoop tracks `provider_state` from the latest provider response
+  and includes it in the result map. The Conductor uses this to merge
+  safe keys (e.g. `:previous_response_id`) back into the session's
+  `provider_state` after the tool loop completes.
+
+  Between iterations, `response.provider_state.previous_response_id` is
+  automatically hydrated into the next provider request's
+  `previous_response_id` field for conversation continuity (OpenAI
+  Responses API).
   """
 
   alias Muse.Tool
@@ -79,7 +91,7 @@ defmodule Muse.Conductor.ToolLoop do
   ## Returns
 
     * `{:ok, result}` — map with `:assistant_text`, `:event_specs`, `:iterations`,
-      `:total_tool_calls`, `:limit_reached?`
+      `:total_tool_calls`, `:limit_reached?`, `:provider_state`
     * `{:cancelled, result}` — partial result with cancellation flag
   """
   @spec run(map(), map(), map(), map(), map(), map(), [event_spec()], keyword()) ::
@@ -103,7 +115,8 @@ defmodule Muse.Conductor.ToolLoop do
       total_tool_calls: 0,
       iterations: 0,
       limit_reached: false,
-      cancelled: false
+      cancelled: false,
+      provider_state: initial_response.provider_state || %{}
     }
 
     # Process the initial response (which has tool calls)
@@ -136,15 +149,19 @@ defmodule Muse.Conductor.ToolLoop do
       new_messages = state.messages ++ [assistant_msg] ++ tool_messages
 
       # Rebuild request with updated messages and increment fake_iteration
-      # so that FakeProvider with :fake_event_batches returns the next batch
+      # so that FakeProvider with :fake_event_batches returns the next batch.
+      # Also carry response.provider_state.previous_response_id into the
+      # next request for conversation continuity (OpenAI Responses API).
       new_request = %{state.request | messages: new_messages}
       new_request = increment_fake_iteration(new_request, state.iterations + 1)
+      new_request = hydrate_previous_response_id(new_request, response)
 
       state = %{
         state
         | messages: new_messages,
           request: new_request,
-          iterations: state.iterations + 1
+          iterations: state.iterations + 1,
+          provider_state: response.provider_state || state.provider_state
       }
 
       # Check cancellation after tool execution
@@ -203,6 +220,8 @@ defmodule Muse.Conductor.ToolLoop do
 
         {:tool_calls, _tc_specs, provider_specs, response} ->
           state = %{state | event_specs: state.event_specs ++ provider_specs}
+          # Update provider_state from this iteration's response
+          state = %{state | provider_state: response.provider_state || state.provider_state}
           process_tool_call_response(state, response)
 
         {:error, _reason, specs} ->
@@ -234,6 +253,9 @@ defmodule Muse.Conductor.ToolLoop do
 
     case result do
       {:ok, response} ->
+        # Update provider_state from this iteration's response
+        # (the state map is not returned from run_iteration, so we
+        # carry provider_state via the response struct itself)
         if response_has_tool_calls?(response) do
           {:tool_calls, [], event_specs, response}
         else
@@ -458,7 +480,8 @@ defmodule Muse.Conductor.ToolLoop do
       tool_results: [],
       iterations: state.iterations,
       total_tool_calls: state.total_tool_calls,
-      limit_reached?: state.limit_reached
+      limit_reached?: state.limit_reached,
+      provider_state: state.provider_state
     }
   end
 
@@ -579,6 +602,19 @@ defmodule Muse.Conductor.ToolLoop do
       %{request | options: options}
     else
       request
+    end
+  end
+
+  # Carry response.provider_state.previous_response_id into the next
+  # provider request for conversation continuity. Only sets if the
+  # request does not already have a previous_response_id set.
+  defp hydrate_previous_response_id(request, response) do
+    case {request.previous_response_id, response} do
+      {nil, %{provider_state: %{previous_response_id: id}}} when is_binary(id) ->
+        %{request | previous_response_id: id}
+
+      _ ->
+        request
     end
   end
 end
