@@ -82,6 +82,7 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsMapper do
 
   defp maybe_put_tools(payload, nil), do: payload
   defp maybe_put_tools(payload, []), do: payload
+
   defp maybe_put_tools(payload, tools) when is_list(tools) do
     Map.put(payload, "tools", Enum.map(tools, &map_tool/1))
   end
