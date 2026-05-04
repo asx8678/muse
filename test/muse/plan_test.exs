@@ -91,6 +91,26 @@ defmodule Muse.PlanTest do
       assert plan.risks == ["Risk 1"]
     end
 
+    test "unknown string keys from JSON are ignored without creating atoms" do
+      before_atoms = :erlang.system_info(:atom_count)
+
+      plan =
+        Plan.new(%{
+          "objective" => "Safe plan",
+          "unknown_plan_key_99999" => "should be ignored",
+          "another_bogus_key" => "also ignored"
+        })
+
+      after_atoms = :erlang.system_info(:atom_count)
+
+      assert %Plan{} = plan
+      assert plan.objective == "Safe plan"
+
+      # Unknown keys should not increase the atom count significantly
+      assert after_atoms - before_atoms < 3,
+             "Unknown JSON keys should not create atoms: #{after_atoms - before_atoms} new atoms"
+    end
+
     test "normalizes raw task maps to Muse.Task structs" do
       plan =
         Plan.new(

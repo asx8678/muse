@@ -8,6 +8,14 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/help") == {:command, :help}
     end
 
+    test "parses /plan" do
+      assert Commands.parse("/plan") == {:command, :plan}
+    end
+
+    test "parses /plan with args" do
+      assert Commands.parse("/plan extra") == {:command, :plan, "extra"}
+    end
+
     test "parses /events" do
       assert Commands.parse("/events") == {:command, :events}
     end
@@ -222,6 +230,7 @@ defmodule Muse.CommandsTest do
     test "lists all commands" do
       text = Commands.help_text()
       assert text =~ "/help"
+      assert text =~ "/plan"
       assert text =~ "/muses"
       assert text =~ "/events"
       assert text =~ "/muses"
@@ -264,6 +273,8 @@ defmodule Muse.CommandsTest do
       # /muses description should reference Muses, not Agents/Bots
       refute text =~ ~r/\bAgent\b.*command/i
       refute text =~ ~r/\bBot\b.*command/i
+      # /plan should appear with Muse Plan description
+      assert text =~ "/plan"
     end
   end
 
@@ -271,7 +282,7 @@ defmodule Muse.CommandsTest do
     test "returns list of {command, description} tuples" do
       cmds = Commands.slash_commands()
       assert is_list(cmds)
-      assert length(cmds) == 33
+      assert length(cmds) == 34
 
       for {cmd, desc} <- cmds do
         assert is_binary(cmd)
@@ -287,6 +298,7 @@ defmodule Muse.CommandsTest do
       refute "/agents" in cmd_names
       assert "/prompt preview" in cmd_names
       assert "/prompt-preview" in cmd_names
+      assert "/plan" in cmd_names
     end
   end
 
@@ -294,7 +306,7 @@ defmodule Muse.CommandsTest do
     test "returns list of maps with command and description keys" do
       cmds = Commands.slash_commands_json()
       assert is_list(cmds)
-      assert length(cmds) == 33
+      assert length(cmds) == 34
 
       for cmd <- cmds do
         assert Map.has_key?(cmd, :command)
@@ -310,6 +322,7 @@ defmodule Muse.CommandsTest do
       refute "/agents" in cmd_names
       assert "/prompt preview" in cmd_names
       assert "/prompt-preview" in cmd_names
+      assert "/plan" in cmd_names
     end
   end
 end

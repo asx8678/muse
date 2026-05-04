@@ -936,4 +936,86 @@ defmodule Muse.SessionServerTest do
       assert length(events_after) == @normal_submit_events
     end
   end
+
+  describe "plan lifecycle — status and persistence" do
+    test "status includes plan/plans/active_plan_id fields (nil when no plan)" do
+      pid = start_server("plan-lifecycle-status-test")
+      status = Muse.SessionServer.status(pid)
+
+      assert Map.has_key?(status, :plan)
+      assert Map.has_key?(status, :plans)
+      assert Map.has_key?(status, :active_plan_id)
+      assert status.plan == nil
+      assert status.plans == %{}
+      assert status.active_plan_id == nil
+    end
+
+    test "restores plan from persisted session snapshot on init" do
+      session_id = "plan-persist-restore-#{:erlang.unique_integer([:positive])}"
+
+      # Create and persist a plan manually via SessionStore
+      plan = Muse.Plan.new(
+        id: "plan_persist_1",
+        session_id: session_id,
+        objective: "Persisted plan test",
+        tasks: [Muse.Task.new(title: "Task A", description: "Do A")]
+      )
+
+      {:ok, _plan} = Muse.Plan.transition(plan, :awaiting_approval)
+
+      data = %{
+        "status" => "awaiting_plan_approval",
+        "active_plan_id" => "plan_persist_1",
+        "plan" => Muse.Plan.to_map(plan),
+        "plans" => %{"plan_persist_1" => Muse.Plan.to_map(plan)}
+      }
+
+      assert :ok = Muse.SessionStore.save_session(session_id, data)
+
+      # Start server with this session_id — should restore from snapshot
+      pid = start_server(session_id)
+      status = Muse.SessionServer.status(pid)
+
+      assert status.status == :awaiting_plan_approval
+      assert status.active_plan_id == "plan_persist_1"
+
+      assert status.plan != nil
+      assert status.plan.objective == "Persisted plan test"
+
+      assert status.plans != %{}
+      assert status.plans["plan_persist_1"].objective == "Persisted plan test"
+
+      # Verify plan rendered correctly via Plan.render
+      rendered = Muse.Plan.render(status.plan)
+      assert rendered =~ "Persisted plan test"
+      assert rendered =~ "Task A"
+    end
+
+    test "handles missing session snapshot gracefully" do
+      session_id = "plan-no-snapshot-#{:erlang.unique_integer([:positive])}"
+
+      pid = start_server(session_id)
+      status = Muse.SessionServer.status(pid)
+
+      assert status.status == :idle
+      assert status.plan == nil
+      assert status.active_plan_id == nil
+    end
+
+    test "handles corrupt session snapshot gracefully" do
+      session_id = "plan-corrupt-#{:erlang.unique_integer([:positive])}"
+
+      # Write invalid JSON to the session file
+      dir = Muse.SessionStore.session_dir(session_id)
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "session.json"), "not valid json at all")
+
+      # Should not crash, should start with default state
+      pid = start_server(session_id)
+      status = Muse.SessionServer.status(pid)
+
+      assert status.status == :idle
+      assert status.plan == nil
+    end
+  end
 end

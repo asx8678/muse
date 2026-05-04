@@ -15,6 +15,66 @@ defmodule Muse.CommandDispatcherTest do
     end
   end
 
+  describe "dispatch/3 — :plan" do
+    test "returns no-plan message when context has no plan" do
+      {:ok, output, effects} = CommandDispatcher.dispatch(:plan, nil, %{})
+      assert output =~ "No Muse Plan is available yet"
+      assert effects == []
+    end
+
+    test "renders a Plan struct from context" do
+      plan = Muse.Plan.new(
+        objective: "Add a /version command.",
+        status: :awaiting_approval,
+        tasks: [Muse.Task.new(title: "Add command", description: "Define command")]
+      )
+
+      {:ok, output, effects} = CommandDispatcher.dispatch(:plan, nil, %{plan: plan})
+      assert output =~ "Objective:"
+      assert output =~ "Add a /version command."
+      assert output =~ "Tasks:"
+      assert output =~ "1. Add command"
+      assert effects == []
+    end
+
+    test "renders a plan map from context" do
+      plan_map = %{
+        "objective" => "Fix the bug",
+        "tasks" => [%{"title" => "Reproduce", "description" => "Reproduce the bug"}]
+      }
+
+      {:ok, output, effects} = CommandDispatcher.dispatch(:plan, nil, %{plan: plan_map})
+      assert output =~ "Objective:"
+      assert output =~ "Fix the bug"
+      assert output =~ "Tasks:"
+      assert output =~ "1. Reproduce"
+      assert effects == []
+    end
+
+    test "resolves plan from session context" do
+      plan = Muse.Plan.new(objective: "Test session plan")
+
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:plan, nil, %{session: %{plan: plan}})
+
+      assert output =~ "Test session plan"
+    end
+
+    test "resolves plan from plans+active_plan_id" do
+      plan1 = Muse.Plan.new(id: "plan_a", objective: "Thing A")
+      plan2 = Muse.Plan.new(id: "plan_b", objective: "Thing B")
+
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:plan, nil, %{
+          plans: %{"plan_a" => plan1, "plan_b" => plan2},
+          active_plan_id: "plan_b"
+        })
+
+      assert output =~ "Thing B"
+      refute output =~ "Thing A"
+    end
+  end
+
   describe "dispatch/3 — :events" do
     test "counts events from context" do
       events = [
@@ -201,7 +261,11 @@ defmodule Muse.CommandDispatcherTest do
 
   describe "dispatch/3 — :clear_events" do
     test "returns cleared message with refresh effect" do
-      start_supervised!({Muse.State, []})
+      # Start Muse.State if not already running (safe for concurrent tests)
+      case Process.whereis(Muse.State) do
+        nil -> start_supervised!({Muse.State, []})
+        _ -> :ok
+      end
 
       {:ok, output, effects} = CommandDispatcher.dispatch(:clear_events, nil, %{})
       assert output =~ "Events cleared"

@@ -575,17 +575,21 @@ defmodule Muse.Conductor do
     # Build user-friendly text from plan render
     plan_text = Plan.render(plan)
 
-    # Replace the final session_status_changed(:running, :idle) with plan events
+    # Replace old specs with clean plan-oriented specs.
+    # We remove the old session_status_changed(:running, :idle)
+    # AND the old :assistant_message (which contained raw JSON text).
     existing_specs = result.event_specs
 
-    # Remove the session_status_changed running -> idle
-    specs_without_final_status =
+    clean_specs =
       Enum.reject(existing_specs, fn
         {:conductor, :session_status_changed, %{to: :idle}, _opts} -> true
+        {:muse, :assistant_message, _data, _opts} -> true
         _ -> false
       end)
 
     plan_specs = [
+      {:muse, :assistant_message, %{text: plan_text, streamed?: false},
+       [visibility: :user, muse_id: result.selected_muse.id]},
       {:conductor, :plan_created,
        %{
          plan_id: plan.id,
@@ -596,7 +600,7 @@ defmodule Muse.Conductor do
       session_status_changed_spec(:running, :awaiting_plan_approval)
     ]
 
-    all_specs = specs_without_final_status ++ plan_specs
+    all_specs = clean_specs ++ plan_specs
 
     # Transition from running (already in result.session) to awaiting_plan_approval
     {:ok, plan_session} = Session.transition(result.session, :awaiting_plan_approval)
@@ -631,8 +635,19 @@ defmodule Muse.Conductor do
       repair_prompt_text = PlanParser.repair_prompt(assistant_text, errors: errors)
 
       # Create a repair message and rebuild request with tools disabled
+      # Increment fake_iteration so FakeProvider uses the next batch for repair
+      repair_options =
+        request.options
+        |> Map.put(:fake_iteration, (request.options[:fake_iteration] || 0) + 1)
+
       repair_message = Message.user(repair_prompt_text)
-      repair_request = %{request | messages: [repair_message], tools: [], tool_choice: :none}
+      repair_request = %{
+        request
+        | messages: [repair_message],
+          tools: [],
+          tool_choice: :none,
+          options: repair_options
+      }
 
       # Call provider once for repair
       emit_fn = fn _llm_event -> :ok end

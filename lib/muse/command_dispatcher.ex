@@ -48,6 +48,26 @@ defmodule Muse.CommandDispatcher do
     {:ok, Muse.Commands.help_text(), []}
   end
 
+  # -- Plan --------------------------------------------------------------------
+
+  def dispatch(:plan, _args, context) do
+    plan = resolve_active_plan(context)
+
+    case plan do
+      nil ->
+        {:ok, "No Muse Plan is available yet. Ask the Planning Muse to create one!", []}
+
+      %Muse.Plan{} = plan ->
+        {:ok, Muse.Plan.render(plan), []}
+
+      plan_map when is_map(plan_map) ->
+        case Muse.Plan.from_map(plan_map) do
+          %Muse.Plan{} = p -> {:ok, Muse.Plan.render(p), []}
+          _ -> {:ok, "No Muse Plan is available yet.", []}
+        end
+    end
+  end
+
   # -- Events ------------------------------------------------------------------
 
   def dispatch(:events, _args, context) do
@@ -887,5 +907,32 @@ defmodule Muse.CommandDispatcher do
     e -> {:error, Exception.message(e)}
   catch
     :exit, _ -> {:error, :process_exit}
+  end
+
+  # -- Plan resolution --------------------------------------------------------
+
+  defp resolve_active_plan(context) do
+    # Check session-level plan first
+    session = Map.get(context, :session, %{})
+
+    plan =
+      Map.get(context, :plan) ||
+        Map.get(context, :active_plan) ||
+        Map.get(session, :plan) ||
+        Map.get(session, :active_plan)
+
+    if is_nil(plan) do
+      # Try plans + active_plan_id from context
+      plans = Map.get(context, :plans, Map.get(session, :plans, %{}))
+      active_id = Map.get(context, :active_plan_id, Map.get(session, :active_plan_id))
+
+      if active_id && plans[active_id] do
+        plans[active_id]
+      else
+        nil
+      end
+    else
+      plan
+    end
   end
 end

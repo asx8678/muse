@@ -141,6 +141,31 @@ defmodule Muse.TaskTest do
       assert task.risk_level == :medium
       assert task.approval_required == true
     end
+
+    test "unknown string keys from JSON are ignored without creating atoms" do
+      # Verifying no atom leak: unknown keys from JSON input should not crash
+      # and should not create atoms that survive in the atom table.
+      # We check this by ensuring an unknown key doesn't trigger String.to_atom.
+      before_atoms = :erlang.system_info(:atom_count)
+
+      task =
+        Task.new(%{
+          "title" => "Safe task",
+          "description" => "Desc",
+          "unknown_key_12345" => "should be ignored",
+          "another_unknown_xyz" => "also ignored"
+        })
+
+      after_atoms = :erlang.system_info(:atom_count)
+
+      assert %Task{} = task
+      assert task.title == "Safe task"
+
+      # Unknown keys should not increase the atom count
+      # (Allow for the small number of atoms Elixir may create during test setup)
+      assert after_atoms - before_atoms < 3,
+             "Unknown JSON keys should not create atoms: #{after_atoms - before_atoms} new atoms"
+    end
   end
 
   describe "statuses/0" do

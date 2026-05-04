@@ -372,48 +372,48 @@ defmodule Muse.Plan do
     end)
   end
 
-  # Only convert known string keys to atoms — prevents atom table leaks
-  # from arbitrary user JSON. Unknown string keys are kept as-is (and
-  # will be ignored by struct construction).
+  # Only convert known string keys to atoms — prevents atom table exhaustion
+  # from arbitrary user/LLM JSON. Uses String.to_existing_atom which is safe
+  # since all known keys are compile-time atoms.
   @known_keys MapSet.new([
-                :id,
-                :session_id,
-                :version,
-                :status,
-                :title,
-                :objective,
-                :summary,
-                :created_by,
-                :created_at,
-                :updated_at,
-                :approved_at,
-                :rejected_at,
-                :completed_at,
-                :tasks,
-                :steps,
-                :inspected_files,
-                :likely_changed_files,
-                :files_expected,
-                :commands_expected,
-                :risks,
-                :alternatives,
-                :validation,
-                :approvals,
-                :metadata,
-                # Task keys that may appear at plan level
-                :recommended_muse,
-                :workspace
-              ])
+    :id,
+    :session_id,
+    :version,
+    :status,
+    :title,
+    :objective,
+    :summary,
+    :created_by,
+    :created_at,
+    :updated_at,
+    :approved_at,
+    :rejected_at,
+    :completed_at,
+    :tasks,
+    :steps,
+    :inspected_files,
+    :likely_changed_files,
+    :files_expected,
+    :commands_expected,
+    :risks,
+    :alternatives,
+    :validation,
+    :approvals,
+    :metadata,
+    # Task keys that may appear at plan level
+    :recommended_muse,
+    :workspace
+  ])
 
   defp safe_atom(key) when is_binary(key) do
-    atom_key = String.to_atom(key)
-
-    if MapSet.member?(@known_keys, atom_key) do
-      atom_key
+    if MapSet.member?(@known_keys, String.to_existing_atom(key)) do
+      String.to_existing_atom(key)
     else
       # Return the binary — it won't match any struct field and will be ignored
       key
     end
+  rescue
+    ArgumentError -> key
   end
 
   defp normalize_tasks(tasks) when is_list(tasks) do

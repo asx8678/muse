@@ -204,11 +204,32 @@ defmodule Muse.Task do
 
   # -- Private ------------------------------------------------------------------
 
+  @known_keys MapSet.new([
+    :id, :title, :description, :status, :recommended_muse,
+    :files, :target_files, :tools, :dependencies, :validation,
+    :verification, :risk_level, :approval_required,
+    :requires_write, :requires_write?, :requires_shell, :requires_shell?
+  ])
+
   defp normalize_keys(map) do
     Map.new(map, fn
-      {k, v} when is_binary(k) -> {String.to_atom(k), v}
+      {k, v} when is_binary(k) -> {safe_atom(k), v}
       {k, v} when is_atom(k) -> {k, v}
     end)
+  end
+
+  # Only convert known string keys to atoms — prevents atom table exhaustion
+  # from arbitrary user/LLM JSON. Unknown string keys are kept as-is (and
+  # will be ignored by struct construction).
+  defp safe_atom(key) when is_binary(key) do
+    if MapSet.member?(@known_keys, String.to_existing_atom(key)) do
+      String.to_existing_atom(key)
+    else
+      # Not a known field — return binary so it won't match any struct field
+      key
+    end
+  rescue
+    ArgumentError -> key
   end
 
   # We intentionally only use String.to_atom on keys we control —

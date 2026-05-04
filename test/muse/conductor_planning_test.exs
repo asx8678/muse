@@ -133,6 +133,16 @@ defmodule Muse.ConductorPlanningTest do
       awaiting =
         Enum.find(status_changed, fn {_s, _t, d, _o} -> d.to == :awaiting_plan_approval end)
       assert awaiting != nil
+
+      # No assistant_message event should contain raw JSON
+      assistant_msgs = filter_event_specs(result.event_specs, :assistant_message)
+      for {_, _, data, _} <- assistant_msgs do
+        refute data.text =~ "\"objective\"",
+               "assistant_message should not contain raw JSON: #{String.slice(data.text, 0, 60)}"
+
+        assert data.text =~ "Objective:",
+               "assistant_message should contain rendered plan: #{String.slice(data.text, 0, 60)}"
+      end
     end
 
     test "rendered plan is shown as assistant_text, not raw JSON" do

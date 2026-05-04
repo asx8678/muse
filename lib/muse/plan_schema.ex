@@ -131,8 +131,21 @@ defmodule Muse.PlanSchema do
 
   # -- Field validators ---------------------------------------------------------
 
+  # Fetch a value by checking both string and atom key forms.
+  # Uses Map.fetch for the primary key to preserve false/nil distinction.
+  defp fetch_any_key(data, key) when is_binary(key) do
+    case Map.fetch(data, key) do
+      {:ok, value} -> value
+      :error ->
+        atom_key = String.to_existing_atom(key)
+        Map.get(data, atom_key)
+    end
+  rescue
+    ArgumentError -> nil
+  end
+
   defp validate_objective(data, errors) do
-    case Map.get(data, "objective") || Map.get(data, :objective) do
+    case fetch_any_key(data, "objective") do
       nil -> [~s(objective is required) | errors]
       obj when not is_binary(obj) -> [~s(objective must be a string) | errors]
       "" -> [~s(objective must be non-empty) | errors]
@@ -141,7 +154,7 @@ defmodule Muse.PlanSchema do
   end
 
   defp validate_tasks(data, errors) do
-    tasks = Map.get(data, "tasks") || Map.get(data, :tasks)
+    tasks = fetch_any_key(data, "tasks")
 
     cond do
       is_nil(tasks) ->
@@ -178,9 +191,9 @@ defmodule Muse.PlanSchema do
   defp validate_task(task, idx) do
     errors = []
 
-    # title
+    # title — use fetch_any_key to handle string/atom keys
     errors =
-      case Map.get(task, "title") || Map.get(task, :title) do
+      case fetch_any_key(task, "title") do
         nil -> ["task[#{idx}]: title is required" | errors]
         t when not is_binary(t) -> ["task[#{idx}]: title must be a string" | errors]
         "" -> ["task[#{idx}]: title must be non-empty" | errors]
@@ -189,16 +202,16 @@ defmodule Muse.PlanSchema do
 
     # description
     errors =
-      case Map.get(task, "description") || Map.get(task, :description) do
+      case fetch_any_key(task, "description") do
         nil -> ["task[#{idx}]: description is required" | errors]
         d when not is_binary(d) -> ["task[#{idx}]: description must be a string" | errors]
         "" -> ["task[#{idx}]: description must be non-empty" | errors]
         _ -> errors
       end
 
-    # requires_write
+    # requires_write — use fetch_bool that preserves false
     errors =
-      case Map.get(task, "requires_write") || Map.get(task, :requires_write) do
+      case fetch_any_key(task, "requires_write") do
         nil -> errors
         rw when not is_boolean(rw) -> ["task[#{idx}]: requires_write must be a boolean" | errors]
         _ -> errors
@@ -206,7 +219,7 @@ defmodule Muse.PlanSchema do
 
     # requires_shell
     errors =
-      case Map.get(task, "requires_shell") || Map.get(task, :requires_shell) do
+      case fetch_any_key(task, "requires_shell") do
         nil -> errors
         rs when not is_boolean(rs) -> ["task[#{idx}]: requires_shell must be a boolean" | errors]
         _ -> errors
@@ -216,7 +229,7 @@ defmodule Muse.PlanSchema do
   end
 
   defp validate_risks(data, errors) do
-    case Map.get(data, "risks") || Map.get(data, :risks) do
+    case fetch_any_key(data, "risks") do
       nil -> errors
       risks when not is_list(risks) -> [~s(risks must be a list) | errors]
       _ -> errors

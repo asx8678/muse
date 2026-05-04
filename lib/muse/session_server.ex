@@ -42,7 +42,7 @@ defmodule Muse.SessionServer do
 
   use GenServer, restart: :temporary
 
-  alias Muse.{Event, Prompt.Redactor, Session, State, Turn}
+  alias Muse.{Event, Prompt.Redactor, Session, State, Turn, Plan, SessionStore}
   alias Muse.Conductor.TurnRunner
 
   # -- Public API ---------------------------------------------------------------
@@ -100,24 +100,28 @@ defmodule Muse.SessionServer do
     # If we reach init, the name was successfully registered.
     # `seq` is a session-local monotonic counter starting at 0; each
     # emitted event increments it, so the first event gets seq=1.
-    {:ok,
-     %{
-       session_id: session_id,
-       status: :idle,
-       seq: 0,
-       events: [],
-       active_muse: nil,
-       active_plan_id: nil,
-       plan: nil,
-       # TurnRunner state
-       active_turn_id: nil,
-       runner_pid: nil,
-       runner_task: nil,
-       from: nil,
-       turn_start_time: nil,
-       session_events_before_turn: [],
-       cancellation_requested: false
-     }}
+    initial = %{
+      session_id: session_id,
+      status: :idle,
+      seq: 0,
+      events: [],
+      active_muse: nil,
+      active_plan_id: nil,
+      plan: nil,
+      plans: %{},
+      # TurnRunner state
+      active_turn_id: nil,
+      runner_pid: nil,
+      runner_task: nil,
+      from: nil,
+      turn_start_time: nil,
+      session_events_before_turn: [],
+      cancellation_requested: false
+    }
+
+    # Attempt to restore plan from persisted snapshot (non-fatal on failure)
+    state = restore_plan_from_snapshot(initial)
+    {:ok, state}
   end
 
   @impl true
@@ -221,6 +225,8 @@ defmodule Muse.SessionServer do
       status: state.status,
       active_muse: state.active_muse,
       active_plan_id: state.active_plan_id,
+      plan: state.plan,
+      plans: state.plans,
       seq: state.seq,
       event_count: length(state.events),
       active_turn_id: state.active_turn_id,
@@ -319,7 +325,14 @@ defmodule Muse.SessionServer do
     # Store plan if present in the result
     state =
       if Map.has_key?(result, :plan) and not is_nil(result.plan) do
-        %{state | active_plan_id: result.plan.id, plan: result.plan}
+        plan = result.plan
+        plans = Map.put(state.plans, plan.id, plan)
+        maybe_persist_snapshot(%{
+          state
+          | active_plan_id: plan.id,
+            plan: plan,
+            plans: plans
+        })
       else
         state
       end
@@ -533,6 +546,100 @@ defmodule Muse.SessionServer do
         cancellation_requested: false
     }
   end
+
+  # -- Plan persistence --------------------------------------------------------
+
+  defp restore_plan_from_snapshot(state) do
+    case SessionStore.load_session(state.session_id) do
+      {:ok, data} ->
+        plan_data = Map.get(data, "plan")
+        plans_data = Map.get(data, "plans", %{})
+        active_plan_id = Map.get(data, "active_plan_id")
+        status_str = Map.get(data, "status", "idle")
+
+        plan = restore_plan(plan_data)
+        plans = restore_plans(plans_data)
+
+        active_id =
+          active_plan_id ||
+            if plan, do: plan.id, else: nil
+
+        status = safely_atom_status(status_str)
+
+        %{
+          state
+          | status: status,
+            plan: plan,
+            plans: plans,
+            active_plan_id: active_id
+        }
+
+      _ ->
+        state
+    end
+  rescue
+    _ -> state
+  catch
+    :exit, _ -> state
+  end
+
+  defp restore_plan(nil), do: nil
+
+  defp restore_plan(data) when is_map(data) do
+    Plan.from_map(data)
+  rescue
+    _ -> nil
+  end
+
+  defp restore_plan(_), do: nil
+
+  defp restore_plans(plans_data) when is_map(plans_data) do
+    plans_data
+    |> Enum.reduce(%{}, fn {id, plan_data}, acc ->
+      case restore_plan(plan_data) do
+        nil -> acc
+        plan -> Map.put(acc, id, plan)
+      end
+    end)
+  end
+
+  defp restore_plans(_), do: %{}
+
+  defp maybe_persist_snapshot(state) do
+    # Persist plan-related state as a session snapshot.
+    # Only writes when a plan exists to avoid unnecessary I/O.
+    if state.plan do
+      data = %{
+        status: Atom.to_string(state.status),
+        active_muse: state.active_muse,
+        active_plan_id: state.active_plan_id,
+        plan: Plan.to_map(state.plan),
+        plans:
+          state.plans
+          |> Enum.map(fn {id, p} -> {id, Plan.to_map(p)} end)
+          |> Enum.into(%{})
+      }
+
+      case SessionStore.save_session(state.session_id, data) do
+        :ok -> :ok
+        {:error, _} -> :ok
+      end
+    end
+
+    state
+  end
+
+  defp safely_atom_status(str) when is_binary(str) do
+    case str do
+      "idle" -> :idle
+      "running" -> :running
+      "awaiting_plan_approval" -> :awaiting_plan_approval
+      "planning" -> :planning
+      _ -> :idle
+    end
+  end
+
+  defp safely_atom_status(_), do: :idle
 
   # -- Private helpers ----------------------------------------------------------
 
