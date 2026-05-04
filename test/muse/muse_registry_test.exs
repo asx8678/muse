@@ -200,6 +200,45 @@ defmodule Muse.MuseRegistryTest do
     test "has no :name field", %{planning: planning} do
       refute Map.has_key?(planning, :name)
     end
+
+    test "prompt explicitly requires read-only inspection", %{planning: planning} do
+      prompt = planning.prompt
+      assert prompt =~ ~r/read.only/i
+      assert prompt =~ ~r/inspect/i
+    end
+
+    test "prompt explicitly requires structured plan JSON matching PlanSchema", %{
+      planning: planning
+    } do
+      prompt = planning.prompt
+      assert prompt =~ ~r/structured plan/i
+      assert prompt =~ ~r/JSON/i
+      assert prompt =~ ~r/objective/
+      assert prompt =~ ~r/tasks/
+    end
+
+    test "prompt states that the plan must be approved before implementation", %{
+      planning: planning
+    } do
+      assert planning.prompt =~ ~r/approval/i or planning.prompt =~ ~r/approved/i
+    end
+
+    test "prompt forbids writing code, modifying files, or executing commands", %{
+      planning: planning
+    } do
+      prompt = planning.prompt
+      # Should explicitly prohibit write/execute actions
+      assert prompt =~ ~r/do not write/i or prompt =~ ~r/never.*write/i or
+               prompt =~ ~r/not.*write/i
+    end
+
+    test "no write/shell/network tool names leak into profile tools", %{planning: planning} do
+      blocked = Muse.Tool.Registry.blocked_tool_names()
+
+      for tool <- planning.tools do
+        refute tool in blocked
+      end
+    end
   end
 
   describe "Coding Muse profile" do

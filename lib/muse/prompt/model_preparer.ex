@@ -12,6 +12,10 @@ defmodule Muse.Prompt.ModelPreparer do
     * Map bundle fields to request fields (model, tools, response_format, etc.)
     * Apply provider-specific options (wire_api, transport, etc.)
     * Validate locally even when providers claim schema validation
+    * For Planning Muse (`response_mode: :plan`, `output_schema: Muse.Plan`):
+      - Filter tools to read-only only from the profile (no write/shell/network)
+      - Attach `Muse.PlanSchema.schema/0` as `response_format` when no explicit format set
+      - Include `response_mode` in request metadata
 
   ## API
 
@@ -20,6 +24,7 @@ defmodule Muse.Prompt.ModelPreparer do
 
   alias Muse.LLM.Request
   alias Muse.Prompt.Bundle
+  alias Muse.Tool.Registry, as: ToolRegistry
 
   @doc """
   Convert a prompt bundle to a `Muse.LLM.Request` struct.
@@ -76,6 +81,17 @@ defmodule Muse.Prompt.ModelPreparer do
     transport = opts[:transport] || provider_map[:transport]
     model = opts[:model] || bundle.model || provider_map[:model]
 
+    # Read response_mode and output_schema from bundle metadata (populated by
+    # the Assembler from the Muse profile). This avoids a registry lookup and
+    # correctly handles test profiles that may differ from the registry.
+    response_mode = bundle.metadata[:response_mode]
+    output_schema = bundle.metadata[:output_schema]
+
+    # For Planning Muse (response_mode: :plan, output_schema: Muse.Plan),
+    # enforce read-only tools and attach a structured response schema hint.
+    {tools, response_format} =
+      planning_muse_request_overrides(response_mode, output_schema, bundle, opts, provider_map)
+
     %Request{
       provider: provider,
       model: model,
@@ -85,22 +101,55 @@ defmodule Muse.Prompt.ModelPreparer do
       turn_id: bundle.turn_id,
       messages: bundle.messages,
       prompt_bundle: bundle,
-      tools: bundle.tools,
+      tools: tools,
       tool_choice: option_or_config(opts, provider_map, :tool_choice),
       previous_response_id: option_or_config(opts, provider_map, :previous_response_id),
       stream: Keyword.get(opts, :stream, true),
       store: option_or_config(opts, provider_map, :store),
       temperature: option_or_config(opts, provider_map, :temperature),
       max_tokens: option_or_config(opts, provider_map, :max_tokens),
-      response_format:
-        bundle.response_format || option_or_config(opts, provider_map, :response_format),
+      response_format: response_format,
       metadata: %{
         bundle_id: bundle.id,
         muse_id: bundle.muse_id,
-        created_at: bundle.created_at
+        created_at: bundle.created_at,
+        response_mode: response_mode
       },
       options: Map.drop(provider_map, [:provider, :wire_api, :transport])
     }
+  end
+
+  # When the active muse has response_mode: :plan and output_schema referencing
+  # Muse.Plan, filter tools to read-only only from the bundle and attach a
+  # structured JSON response format hint derived from Muse.PlanSchema.
+  defp planning_muse_request_overrides(:plan, Muse.Plan, bundle, opts, provider_map) do
+    # Filter tools from the bundle: only keep those that are known, non-blocked tools
+    # (read-only enforcement). The Assembler already excluded blocked tools from
+    # the profile's tool list, but we double-check here as a safety layer.
+    read_only_tools =
+      bundle.tools
+      |> Enum.filter(fn tool_spec ->
+        name = tool_spec[:name] || tool_spec["function"]["name"]
+
+        is_binary(name) and not ToolRegistry.blocked_tool?(name) and
+          ToolRegistry.known_tool?(name)
+      end)
+
+    # Use PlanSchema as the response_format hint unless the caller already set one
+    plan_response_format =
+      bundle.response_format ||
+        option_or_config(opts, provider_map, :response_format) ||
+        Muse.PlanSchema.schema()
+
+    {read_only_tools, plan_response_format}
+  end
+
+  # For all other muse profiles, use bundle tools and standard response_format
+  defp planning_muse_request_overrides(_response_mode, _output_schema, bundle, opts, provider_map) do
+    response_format =
+      bundle.response_format || option_or_config(opts, provider_map, :response_format)
+
+    {bundle.tools, response_format}
   end
 
   defp option_or_config(opts, provider_map, key, default \\ nil) do
