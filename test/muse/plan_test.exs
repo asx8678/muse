@@ -12,7 +12,12 @@ defmodule Muse.PlanTest do
       assert plan.objective == "Add a /version command."
       assert plan.status == :draft
       assert plan.version == 1
+      assert plan.schema_version == Plan.default_schema_version()
       assert plan.tasks == []
+      assert plan.assumptions == []
+      assert plan.required_permissions == []
+      assert plan.agent_assignments == []
+      assert plan.phases == []
       assert plan.risks == []
       assert plan.metadata == %{}
     end
@@ -133,6 +138,29 @@ defmodule Muse.PlanTest do
              "Unknown JSON keys should not create atoms: #{after_atoms - before_atoms} new atoms"
     end
 
+    test "accepts versioned structured plan fields and filters metadata" do
+      plan =
+        Plan.new(%{
+          "objective" => "Coordinate structured work",
+          "schema_version" => "planning.v1",
+          "assumptions" => ["Repository is clean"],
+          "required_permissions" => ["read", "write"],
+          "agent_assignments" => [
+            %{"agent" => "coding", "task_ids" => ["task_1"], "api_token" => "secret"}
+          ],
+          "phases" => [%{"id" => "phase_1", "title" => "Implementation"}],
+          "metadata" => %{"api_key" => "secret", :source => :planning}
+        })
+
+      assert plan.schema_version == "planning.v1"
+      assert plan.assumptions == ["Repository is clean"]
+      assert plan.required_permissions == ["read", "write"]
+      assert [%{"api_token" => "**REDACTED**"}] = plan.agent_assignments
+      assert [%{"id" => "phase_1", "title" => "Implementation"}] = plan.phases
+      assert plan.metadata["api_key"] == "**REDACTED**"
+      assert plan.metadata[:source] == "planning"
+    end
+
     test "normalizes raw task maps to Muse.Task structs" do
       plan =
         Plan.new(
@@ -161,6 +189,10 @@ defmodule Muse.PlanTest do
       plan = Plan.new(objective: "Test")
 
       assert plan.tasks == []
+      assert plan.assumptions == []
+      assert plan.required_permissions == []
+      assert plan.agent_assignments == []
+      assert plan.phases == []
       assert plan.steps == []
       assert plan.inspected_files == []
       assert plan.likely_changed_files == []
@@ -336,6 +368,7 @@ defmodule Muse.PlanTest do
 
       assert is_map(map)
       assert map[:objective] == "Add /version"
+      assert map[:schema_version] == Plan.default_schema_version()
     end
 
     test "serializes tasks via Task.to_map/1" do
@@ -374,6 +407,11 @@ defmodule Muse.PlanTest do
 
       assert %Plan{} = plan
       assert plan.objective == "Add /version"
+      assert plan.schema_version == Plan.default_schema_version()
+      assert plan.assumptions == []
+      assert plan.required_permissions == []
+      assert plan.agent_assignments == []
+      assert plan.phases == []
       assert length(plan.tasks) == 1
       assert %Task{} = hd(plan.tasks)
     end
@@ -397,6 +435,73 @@ defmodule Muse.PlanTest do
       assert length(restored.tasks) == 1
       assert hd(restored.tasks).title == "T1"
       assert hd(restored.tasks).requires_write? == true
+    end
+
+    test "round-trips through JSON with structured plan fields" do
+      original =
+        Plan.new(
+          id: "plan_structured_1",
+          objective: "Structured objective",
+          status: :awaiting_approval,
+          created_at: nil,
+          updated_at: nil,
+          assumptions: ["Tests describe the public API"],
+          required_permissions: ["read", "write"],
+          agent_assignments: [%{"agent" => "coding", "task_ids" => ["task_1"]}],
+          phases: [%{"id" => "phase_1", "title" => "Implementation"}],
+          metadata: %{"api_key" => "secret", "safe" => true},
+          tasks: [
+            Task.new(
+              id: "task_1",
+              title: "T1",
+              description: "D1",
+              phase: "phase_1",
+              required_permissions: ["write"]
+            )
+          ]
+        )
+
+      decoded =
+        original
+        |> Plan.to_map()
+        |> Jason.encode!()
+        |> Jason.decode!()
+
+      restored = Plan.from_map(decoded)
+
+      assert restored.id == "plan_structured_1"
+      assert restored.schema_version == "planning.v1"
+      assert restored.status == :awaiting_approval
+      assert restored.assumptions == ["Tests describe the public API"]
+      assert restored.required_permissions == ["read", "write"]
+      assert restored.agent_assignments == [%{"agent" => "coding", "task_ids" => ["task_1"]}]
+      assert restored.phases == [%{"id" => "phase_1", "title" => "Implementation"}]
+      assert restored.metadata["api_key"] == "**REDACTED**"
+      assert restored.metadata["safe"] == true
+      assert [task] = restored.tasks
+      assert task.phase == "phase_1"
+      assert task.required_permissions == ["write"]
+    end
+
+    test "does not create atoms from unknown JSON keys or statuses" do
+      before_atoms = :erlang.system_info(:atom_count)
+
+      plan =
+        Plan.from_map(%{
+          "objective" => "Safe legacy payload",
+          "status" => "unknown_status_value_12345",
+          "unknown_plan_key_12345" => "ignored",
+          "tasks" => [],
+          "metadata" => %{"unknown_metadata_key_12345" => "kept as a string key"}
+        })
+
+      after_atoms = :erlang.system_info(:atom_count)
+
+      assert plan.status == :draft
+      assert plan.metadata["unknown_metadata_key_12345"] == "kept as a string key"
+
+      assert after_atoms - before_atoms < 3,
+             "Unknown JSON keys/statuses should not create atoms: #{after_atoms - before_atoms} new atoms"
     end
   end
 
@@ -529,6 +634,23 @@ defmodule Muse.PlanTest do
       rendered = Plan.render(plan)
 
       refute rendered =~ "Risks:"
+    end
+
+    test "renders assumptions and required permissions as bullet lists" do
+      plan =
+        Plan.new(
+          objective: "Add structured fields",
+          assumptions: ["Plan review happens before writes"],
+          required_permissions: ["read", "write"]
+        )
+
+      rendered = Plan.render(plan)
+
+      assert rendered =~ "Assumptions:"
+      assert rendered =~ "- Plan review happens before writes"
+      assert rendered =~ "Required permissions:"
+      assert rendered =~ "- read"
+      assert rendered =~ "- write"
     end
 
     test "renders risks as bullet list" do

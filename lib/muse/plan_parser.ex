@@ -92,10 +92,13 @@ defmodule Muse.PlanParser do
     #{Enum.join(error_lines, "\n")}
 
     Ensure the plan is valid JSON matching the structured plan schema:
+    - "schema_version" is optional and defaults to "planning.v1"
     - "objective" (string, required)
     - "tasks" (array, required, non-empty) — each task must have "title" and "description" (strings)
     - "requires_write" and "requires_shell" must be booleans
-    - "risks" must be a list of strings
+    - "assumptions", "required_permissions", "risks", and "validation" must be lists of strings when present
+    - "agent_assignments" and "phases" must be lists of objects when present
+    - "metadata" must be an object when present; do not include secrets
     #{if max_retries <= 1, do: "This is your last retry attempt.", else: "You have #{max_retries} retries remaining."}
     """
     |> String.trim()

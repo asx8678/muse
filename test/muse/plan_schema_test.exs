@@ -38,6 +38,18 @@ defmodule Muse.PlanSchemaTest do
       assert schema.properties.risks.type == "array"
       assert schema.properties.risks.items.type == "string"
     end
+
+    test "includes versioned structured plan fields" do
+      schema = PlanSchema.schema()
+
+      assert schema.properties.schema_version.type == "string"
+      assert schema.properties.schema_version.default == "planning.v1"
+      assert schema.properties.assumptions.items.type == "string"
+      assert schema.properties.required_permissions.items.type == "string"
+      assert schema.properties.agent_assignments.items.type == "object"
+      assert schema.properties.phases.items.type == "object"
+      assert schema.properties.metadata.type == "object"
+    end
   end
 
   describe "validate/1" do
@@ -62,7 +74,13 @@ defmodule Muse.PlanSchemaTest do
       task = hd(normalized["tasks"])
       assert task["requires_write"] == false
       assert task["requires_shell"] == false
+      assert normalized["schema_version"] == "planning.v1"
       assert normalized["risks"] == []
+      assert normalized["assumptions"] == []
+      assert normalized["required_permissions"] == []
+      assert normalized["agent_assignments"] == []
+      assert normalized["phases"] == []
+      assert normalized["metadata"] == %{}
     end
 
     test "preserves explicit requires_write and requires_shell" do
@@ -84,6 +102,36 @@ defmodule Muse.PlanSchemaTest do
       assert task["requires_shell"] == true
     end
 
+    test "accepts and normalizes new structured plan fields" do
+      data = %{
+        "schema_version" => "planning.v1",
+        "objective" => "Plan work",
+        "tasks" => [
+          %{
+            "title" => "T1",
+            "description" => "D1",
+            "phase" => "phase_1",
+            "required_permissions" => ["write"]
+          }
+        ],
+        "assumptions" => ["Tests can run locally"],
+        "required_permissions" => ["read", "write"],
+        "agent_assignments" => [%{"agent" => "coding", "task_ids" => ["task_1"]}],
+        "phases" => [%{"id" => "phase_1", "title" => "Implementation"}],
+        "metadata" => %{"api_key" => "secret", "safe" => true}
+      }
+
+      assert {:ok, normalized} = PlanSchema.validate(data)
+      assert normalized["schema_version"] == "planning.v1"
+      assert normalized["assumptions"] == ["Tests can run locally"]
+      assert normalized["required_permissions"] == ["read", "write"]
+      assert normalized["agent_assignments"] == [%{"agent" => "coding", "task_ids" => ["task_1"]}]
+      assert normalized["phases"] == [%{"id" => "phase_1", "title" => "Implementation"}]
+      assert normalized["metadata"]["api_key"] == "**REDACTED**"
+      assert normalized["metadata"]["safe"] == true
+      assert normalized["tasks"] |> hd() |> Map.get("required_permissions") == ["write"]
+    end
+
     test "defaults optional list fields to empty lists" do
       data = %{
         "objective" => "Test",
@@ -97,6 +145,10 @@ defmodule Muse.PlanSchemaTest do
       assert normalized["likely_changed_files"] == []
       assert normalized["files_expected"] == []
       assert normalized["commands_expected"] == []
+      assert normalized["assumptions"] == []
+      assert normalized["required_permissions"] == []
+      assert normalized["agent_assignments"] == []
+      assert normalized["phases"] == []
     end
 
     test "rejects missing objective" do
@@ -168,6 +220,40 @@ defmodule Muse.PlanSchemaTest do
       assert Enum.any?(errors, &String.contains?(&1, "requires_shell must be a boolean"))
     end
 
+    test "rejects invalid new structured fields" do
+      data = %{
+        "schema_version" => "",
+        "objective" => "Do stuff",
+        "tasks" => [
+          %{
+            "title" => "T1",
+            "description" => "D1",
+            "phase" => 123,
+            "required_permissions" => ["write", 1]
+          }
+        ],
+        "assumptions" => ["ok", 1],
+        "required_permissions" => "write",
+        "agent_assignments" => ["coding"],
+        "phases" => ["phase_1"],
+        "metadata" => "not a map"
+      }
+
+      assert {:error, errors} = PlanSchema.validate(data)
+      assert Enum.any?(errors, &String.contains?(&1, "schema_version must be non-empty"))
+      assert Enum.any?(errors, &String.contains?(&1, "assumptions[1] must be a string"))
+      assert Enum.any?(errors, &String.contains?(&1, "required_permissions must be a list"))
+      assert Enum.any?(errors, &String.contains?(&1, "agent_assignments[0] must be a map"))
+      assert Enum.any?(errors, &String.contains?(&1, "phases[0] must be a map"))
+      assert Enum.any?(errors, &String.contains?(&1, "metadata must be a map"))
+      assert Enum.any?(errors, &String.contains?(&1, "task[0]: phase must be a string"))
+
+      assert Enum.any?(
+               errors,
+               &String.contains?(&1, "task[0]: required_permissions[1] must be a string")
+             )
+    end
+
     test "rejects non-list risks" do
       data = %{
         "objective" => "Do stuff",
@@ -215,6 +301,8 @@ defmodule Muse.PlanSchemaTest do
       task = hd(tasks)
       assert task["requires_write"] == false
       assert task["requires_shell"] == false
+      assert task["required_permissions"] == []
+      assert normalized["schema_version"] == "planning.v1"
     end
 
     test "validates the docs/testing.md structured plan example" do
