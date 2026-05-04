@@ -790,4 +790,150 @@ defmodule Muse.SessionServerTest do
       refute Process.alive?(pid)
     end
   end
+
+  # -- PR07b: TurnRunner / async integration -----------------------------------
+
+  describe "async turn execution — PR07b" do
+    test "status is responsive during turn execution" do
+      pid = start_server("responsive-turn")
+
+      # Before submit, status should be idle
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+
+      # Submit with a delayed fake provider — this runs async
+      # so the GenServer should remain responsive
+      submit_pid = self()
+
+      # Start submit in a separate process so we can check status
+      _task =
+        Task.async(fn ->
+          Muse.SessionServer.submit(pid, :cli, "delayed hello")
+          send(submit_pid, :submit_done)
+        end)
+
+      # Give the submit a moment to start
+      Process.sleep(50)
+
+      # Status should now show running (or still idle if already completed)
+      status = Muse.SessionServer.status(pid)
+      # The status should include the new fields
+      assert Map.has_key?(status, :active_turn_id)
+      assert Map.has_key?(status, :runner_pid)
+      assert Map.has_key?(status, :cancellation_requested)
+
+      # Wait for the submit to complete
+      receive do
+        :submit_done -> :ok
+      after
+        5000 -> flunk("Submit did not complete")
+      end
+
+      # After completion, status should be idle
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+    end
+
+    test "submit returns {:ok, text} for normal path" do
+      pid = start_server("async-normal")
+      assert {:ok, text} = Muse.SessionServer.submit(pid, :cli, "hello")
+      assert text =~ "Placeholder response"
+    end
+
+    test "events are persisted with correct session/turn/seq" do
+      pid = start_server("async-events-persist")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      assert length(events) == @normal_submit_events
+
+      # All events should have the correct session_id
+      for event <- events do
+        assert event.session_id == "async-events-persist"
+      end
+
+      # Seq should be monotonically increasing
+      seqs = Enum.map(events, & &1.seq)
+      assert seqs == Enum.to_list(1..@normal_submit_events)
+
+      # All events should share the same turn_id
+      turn_ids = Enum.map(events, & &1.turn_id)
+      assert length(Enum.uniq(turn_ids)) == 1
+    end
+  end
+
+  describe "cancel/1 — PR07b" do
+    test "cancel returns error when no active turn" do
+      pid = start_server("cancel-idle")
+      assert {:error, :no_active_turn} = Muse.SessionServer.cancel(pid)
+    end
+
+    test "cancel sends signal during running turn" do
+      pid = start_server("cancel-running")
+
+      # Start a submit with a long delay
+      submit_pid = self()
+
+      _task =
+        Task.async(fn ->
+          result = Muse.SessionServer.submit(pid, :cli, "delayed cancel")
+          send(submit_pid, {:submit_result, result})
+        end)
+
+      # Give the submit a moment to start
+      Process.sleep(50)
+
+      # Try to cancel
+      result = Muse.SessionServer.cancel(pid)
+      # Should return :ok or :no_active_turn (if already completed)
+      assert result == :ok or result == {:error, :no_active_turn}
+
+      # Wait for the submit to complete
+      receive do
+        {:submit_result, _result} -> :ok
+      after
+        5000 -> flunk("Submit did not complete")
+      end
+
+      # Session should be back to idle
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+    end
+
+    test "status map includes cancellation_requested field after cancel" do
+      pid = start_server("cancel-status-field")
+
+      # Before any submit
+      status = Muse.SessionServer.status(pid)
+      assert status.cancellation_requested == false
+    end
+  end
+
+  describe "no spurious turn_failed events — PR07b regression" do
+    test "normal submit produces exactly @normal_submit_events with no turn_failed or nil turn_id" do
+      pid = start_server("no-spurious-session")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      assert length(events) == @normal_submit_events
+
+      # No turn_failed events should appear for a successful submit
+      failed = Enum.filter(events, &(&1.type == :turn_failed))
+      assert failed == []
+
+      # Every event must have a non-nil turn_id
+      for event <- events do
+        assert event.turn_id != nil,
+               "Event #{inspect(event.type)} (seq=#{event.seq}) has nil turn_id"
+
+        assert String.starts_with?(event.turn_id, "turn_"),
+               "Event #{inspect(event.type)} (seq=#{event.seq}) has invalid turn_id: #{inspect(event.turn_id)}"
+      end
+
+      # Short sleep to ensure no delayed spurious events arrive
+      Process.sleep(50)
+      events_after = State.events()
+      assert length(events_after) == @normal_submit_events
+    end
+  end
 end

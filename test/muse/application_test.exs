@@ -240,14 +240,15 @@ defmodule Muse.ApplicationTest do
   # -- base_children/0 -----------------------------------------------------------
 
   describe "base_children/0" do
-    test "includes PubSub, SessionRegistry, and SessionSupervisor" do
+    test "includes PubSub, SessionRegistry, SessionSupervisor, and TaskSupervisor" do
       children = @app_mod.base_children()
       ids = child_ids(children)
 
+      assert {Task.Supervisor, name: Muse.TaskSupervisor} in children
       assert Phoenix.PubSub in ids
       assert Muse.SessionRegistry in ids
       assert Muse.SessionSupervisor in ids
-      assert length(ids) == 3
+      assert length(ids) == 4
     end
   end
 
@@ -647,8 +648,9 @@ defmodule Muse.ApplicationTest do
       assert Process.whereis(Muse.PubSub) != nil
       assert Process.whereis(Muse.SessionRegistry) != nil
       assert Process.whereis(Muse.SessionSupervisor) != nil
+      # TaskSupervisor is now part of base_children (needed by TurnRunner)
+      assert Process.whereis(Muse.TaskSupervisor) != nil
       # These should NOT be running under base mode
-      assert Process.whereis(Muse.TaskSupervisor) == nil
       assert Process.whereis(Muse.Diagnostics) == nil
       assert Process.whereis(Muse.Workspace) == nil
       assert Process.whereis(Muse.State) == nil

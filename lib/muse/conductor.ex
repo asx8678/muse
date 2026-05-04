@@ -26,6 +26,7 @@ defmodule Muse.Conductor do
   """
 
   alias Muse.{MuseRegistry, Session, Telemetry, Turn}
+  alias Muse.Conductor.ToolLoop
   alias Muse.LLM.{FakeProvider, ProviderConfig}
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
 
@@ -150,29 +151,101 @@ defmodule Muse.Conductor do
     # 4. Call provider
     provider_module = Keyword.get(opts, :provider_module, FakeProvider)
 
+    # Build conductor overhead event specs (always emitted)
+    conductor_specs = [
+      muse_selected_spec(muse),
+      session_status_changed_spec(session.status, :running),
+      prompt_prepared_spec(bundle),
+      provider_request_started_spec(request, bundle)
+    ]
+
     case stream_provider(provider_module, request, session, turn) do
       {:ok, response, provider_event_specs} ->
-        finalize_turn(
-          session,
-          turn,
-          muse,
-          bundle,
-          request,
-          response,
-          provider_event_specs,
-          start_time
-        )
+        if response_has_tool_calls?(response) do
+          # Delegate to ToolLoop for iterative tool execution
+          tool_loop_opts =
+            [
+              provider_module: provider_module,
+              tool_runner: Keyword.get(opts, :tool_runner, Muse.Tool.Runner),
+              limits: Keyword.get(opts, :limits, nil)
+            ]
+            |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+          case ToolLoop.run(
+                 session,
+                 turn,
+                 muse,
+                 bundle,
+                 request,
+                 response,
+                 provider_event_specs,
+                 tool_loop_opts
+               ) do
+            {:ok, tool_loop_result} ->
+              # NOTE: provider_event_specs are NOT prepended here because
+              # ToolLoop.run/8 seeds state.event_specs with initial_event_specs
+              # (== provider_event_specs) and includes them in its result.
+              # Prepending them again would duplicate provider events.
+              all_specs =
+                conductor_specs ++
+                  tool_loop_result.event_specs ++
+                  [
+                    {:muse, :assistant_message,
+                     %{text: tool_loop_result.assistant_text, streamed?: true},
+                     [visibility: :user, muse_id: muse.id]},
+                    session_status_changed_spec(:running, :idle)
+                  ]
+
+              finalize_with_specs(
+                session,
+                turn,
+                muse,
+                tool_loop_result.assistant_text,
+                all_specs,
+                start_time
+              )
+
+            {:cancelled, tool_loop_result} ->
+              # Same as above: provider_event_specs are already inside
+              # tool_loop_result.event_specs; do not prepend them again.
+              all_specs =
+                conductor_specs ++
+                  tool_loop_result.event_specs ++
+                  [
+                    {:conductor, :tool_loop_cancelled, %{iterations: tool_loop_result.iterations},
+                     [visibility: :debug]},
+                    {:muse, :assistant_message,
+                     %{text: tool_loop_result.assistant_text, streamed?: false},
+                     [visibility: :user, muse_id: muse.id]},
+                    session_status_changed_spec(:running, :idle)
+                  ]
+
+              finalize_with_specs(
+                session,
+                turn,
+                muse,
+                tool_loop_result.assistant_text,
+                all_specs,
+                start_time
+              )
+          end
+        else
+          # No tool calls — original finalize path
+          finalize_turn(
+            session,
+            turn,
+            muse,
+            bundle,
+            request,
+            response,
+            provider_event_specs,
+            start_time
+          )
+        end
 
       {:error, reason, provider_event_specs} ->
-        partial_specs = [
-          muse_selected_spec(muse),
-          session_status_changed_spec(session.status, :running),
-          prompt_prepared_spec(bundle),
-          provider_request_started_spec(request, bundle)
-        ]
-
         all_specs =
-          partial_specs ++
+          conductor_specs ++
             provider_event_specs ++
             [session_status_changed_spec(:running, :idle)]
 
@@ -186,6 +259,38 @@ defmodule Muse.Conductor do
 
         {:error, %{reason: reason, event_specs: all_specs}}
     end
+  end
+
+  defp response_has_tool_calls?(%{tool_calls: calls}) when is_list(calls) and calls != [],
+    do: true
+
+  defp response_has_tool_calls?(_), do: false
+
+  defp finalize_with_specs(session, turn, muse, assistant_text, all_event_specs, start_time) do
+    turn = %{turn | selected_muse: Atom.to_string(muse.id)}
+    turn = Turn.mark_streamed(turn)
+    {:ok, turn} = Turn.transition(turn, :completed, completed_at: DateTime.utc_now())
+    {:ok, session} = Session.transition(session, :idle)
+
+    duration = System.monotonic_time(:millisecond) - start_time
+
+    :telemetry.execute(
+      Telemetry.turn_stop(),
+      Telemetry.turn_stop_measurements(duration),
+      Telemetry.turn_stop_metadata(session_id: session.id, turn_id: turn.id, status: :completed)
+    )
+
+    {:ok,
+     %{
+       assistant_text: assistant_text,
+       selected_muse: muse,
+       prompt_bundle: nil,
+       request: nil,
+       response: nil,
+       session: session,
+       turn: turn,
+       event_specs: all_event_specs
+     }}
   end
 
   # -- Muse selection -----------------------------------------------------------

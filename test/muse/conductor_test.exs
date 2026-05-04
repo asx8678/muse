@@ -337,31 +337,49 @@ defmodule Muse.ConductorTest do
       assert data.total_tokens == 275
     end
 
-    test "tool_call events produce debug event specs (no tool execution)" do
+    test "tool_call events trigger ToolLoop execution and produce debug event specs" do
       session = build_session(id: "tc-session")
       turn = build_turn(session_id: "tc-session", id: "turn_tc1", user_text: "check files")
 
-      fake_events = [
-        {:assistant_delta, "Let me check the files."},
-        {:tool_call, "list_files", %{"path" => "."}, "call_fixture_1"},
-        {:assistant_delta, "Based on the listing..."},
-        {:assistant_completed, "Based on the listing..."},
-        {:response_completed, nil}
+      # Use fake_event_batches so the ToolLoop gets different scripts per iteration:
+      # Iteration 0 (initial Conductor call): tool call for list_files
+      # Iteration 1 (ToolLoop after tool result): final text
+      fake_event_batches = [
+        [
+          {:assistant_delta, "Let me check the files."},
+          {:tool_call, "list_files", %{"path" => "."}, "call_fixture_1"},
+          {:assistant_completed, nil},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_delta, "Based on the listing..."},
+          {:assistant_completed, "Based on the listing..."},
+          {:response_completed, nil}
+        ]
       ]
 
       {:ok, result} =
         Conductor.run(session, turn,
           prompt_opts: [project_rules?: false],
-          request_options: [options: %{fake_events: fake_events}]
+          request_options: [options: %{fake_event_batches: fake_event_batches}]
         )
 
-      # Should have tool_call_requested and tool_call_completed debug events
+      # Should have tool_call_requested debug events from the first provider call
       requested_specs = filter_event_specs(result.event_specs, :tool_call_requested)
-      assert length(requested_specs) == 1
+      assert length(requested_specs) >= 1
 
       {_s, _t, tc_data, tc_opts} = hd(requested_specs)
       assert tc_data.tool_name == "list_files"
       assert Keyword.get(tc_opts, :visibility) == :debug
+
+      # ToolLoop should have executed the tool call and produced lifecycle events
+      started_specs = filter_event_specs(result.event_specs, :tool_call_started)
+      completed_specs = filter_event_specs(result.event_specs, :tool_call_completed)
+      assert length(started_specs) >= 1
+      assert length(completed_specs) >= 1
+
+      # Final assistant text should come from the second iteration
+      assert result.assistant_text =~ "Based on the listing"
     end
 
     test "no full prompt or message content leaks through event specs" do

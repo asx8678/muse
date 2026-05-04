@@ -50,6 +50,20 @@ defmodule Muse.SessionRouter do
   end
 
   @doc """
+  Cancel the currently running turn for a session.
+
+  Returns `:ok` if cancellation was signalled, `{:error, :not_found}` if the
+  session doesn't exist, or `{:error, :no_active_turn}` if no turn is running.
+  """
+  @spec cancel(String.t()) :: :ok | {:error, :not_found} | {:error, :no_active_turn}
+  def cancel(session_id \\ @default_session_id) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.cancel(pid)
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
   Returns a list of all active session ids and their pids.
   """
   @spec active_sessions() :: [{String.t(), pid()}]

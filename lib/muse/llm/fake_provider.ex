@@ -126,6 +126,9 @@ defmodule Muse.LLM.FakeProvider do
       {:fake_events, events} ->
         handle_scripted_events(events, emit)
 
+      {:fake_event_batches, _batches} ->
+        handle_scripted_batches(request, emit)
+
       :default ->
         handle_default(request, emit)
     end
@@ -165,9 +168,17 @@ defmodule Muse.LLM.FakeProvider do
 
   defp classify_options(options) when is_map(options) do
     cond do
-      Map.has_key?(options, :fake_error) -> {:fake_error, options[:fake_error]}
-      Map.has_key?(options, :fake_events) -> {:fake_events, options[:fake_events]}
-      true -> :default
+      Map.has_key?(options, :fake_error) ->
+        {:fake_error, options[:fake_error]}
+
+      Map.has_key?(options, :fake_events) ->
+        {:fake_events, options[:fake_events]}
+
+      Map.has_key?(options, :fake_event_batches) ->
+        {:fake_event_batches, options[:fake_event_batches]}
+
+      true ->
+        :default
     end
   end
 
@@ -175,8 +186,54 @@ defmodule Muse.LLM.FakeProvider do
   # Default (unscripted) path
   # ---------------------------------------------------------------------------
 
+  # -- Batched iteration path (for tool-loop tests) ---------------------------
+
+  defp handle_scripted_batches(request, emit) do
+    iteration = request.options[:fake_iteration] || 0
+    batches = request.options[:fake_event_batches] || []
+
+    script =
+      if iteration < length(batches) do
+        Enum.at(batches, iteration)
+      else
+        nil
+      end
+
+    if script do
+      # Delegate to the existing scripted events handler
+      handle_scripted_events(script, emit)
+    else
+      # No more scripts — produce a default response
+      # If the request contains tool-role messages, generate a summary
+      text = default_text_for_request(request)
+
+      emit.(Event.response_started())
+      emit.(Event.assistant_delta(text))
+      emit.(Event.assistant_completed(text))
+      emit.(Event.response_completed())
+
+      {:ok, Response.new(content: text, finish_reason: "stop")}
+    end
+  end
+
+  defp default_text_for_request(request) do
+    tool_msg_count = count_tool_messages(request)
+
+    if tool_msg_count > 0 do
+      "Placeholder response after tool inspection: received #{tool_msg_count} tool result(s)"
+    else
+      default_text(request)
+    end
+  end
+
+  defp count_tool_messages(%Request{messages: messages}) when is_list(messages) do
+    Enum.count(messages, &(&1.role == :tool))
+  end
+
+  defp count_tool_messages(_), do: 0
+
   defp handle_default(request, emit) do
-    text = default_text(request)
+    text = default_text_for_request(request)
 
     emit.(Event.response_started())
     emit.(Event.assistant_delta(text))

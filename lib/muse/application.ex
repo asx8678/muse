@@ -44,6 +44,7 @@ defmodule Muse.Application do
   @spec base_children() :: [Supervisor.child_spec()]
   def base_children do
     [
+      {Task.Supervisor, name: Muse.TaskSupervisor},
       {Phoenix.PubSub, name: Muse.PubSub},
       Muse.SessionRegistry,
       Muse.SessionSupervisor

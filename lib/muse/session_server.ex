@@ -1,7 +1,7 @@
 defmodule Muse.SessionServer do
   @moduledoc """
   Per-session `GenServer` that owns session state and handles synchronous
-  operations (`submit`, `status`).
+  operations (`submit`, `status`, `cancel`).
 
   ## Lifecycle
 
@@ -10,26 +10,40 @@ defmodule Muse.SessionServer do
   `Muse.SessionRegistry` is atomic and concurrent starts for the same
   session id resolve to the same process.
 
-  ## Responsibility scope
+  ## Turn execution
 
-  This server currently runs `Conductor.run/3` **synchronously** inside
-  `handle_call({:submit, ...})`, which means the GenServer is blocked for
-  the duration of the provider call. `status` queries will **not** be
-  answered until the turn completes.
+  PR07b: Turn execution now runs via `Muse.Conductor.TurnRunner` as an
+  async Task under `Muse.TaskSupervisor`. This keeps the GenServer
+  responsive for `status` queries during long provider/tool-loop turns.
 
-  **TODO (PR07b):** Introduce a `Muse.Conductor.TurnRunner` Task that
-  moves `Conductor.run/3` *outside* the GenServer process. This will
-  restore responsiveness for `status` queries during a turn and provide
-  crash isolation — a provider error will terminate the Task, not the
-  SessionServer.
+  When a submit arrives:
+    1. User/self-heal/turn_started events are emitted synchronously
+    2. State transitions to `:running`
+    3. A TurnRunner Task is spawned
+    4. `handle_call` returns `{:noreply, state}` — no blocking
 
-  For now, the server appends user/assistant events to the global
-  `Muse.State` log and returns `{:ok, assistant_text}` synchronously.
+  When the task completes:
+    1. The task result is received as a message
+    2. Event specs are folded through `emit_event_specs/3`
+    3. `:turn_completed` is emitted
+    4. The original caller is replied with `{:ok, assistant_text}`
+
+  On error/crash:
+    1. Partial events are preserved
+    2. A safe `:assistant_message` is emitted
+    3. `:turn_failed` is emitted
+    4. The caller is replied with safe text or error
+
+  On cancellation:
+    1. A cancellation message is sent to the runner task
+    2. `:turn_cancelled` and safe assistant message are emitted
+    3. The caller is replied with `{:ok, "Turn cancelled."}`
   """
 
   use GenServer, restart: :temporary
 
-  alias Muse.{Conductor, Event, Prompt.Redactor, Session, State, Turn}
+  alias Muse.{Event, Prompt.Redactor, Session, State, Turn}
+  alias Muse.Conductor.TurnRunner
 
   # -- Public API ---------------------------------------------------------------
 
@@ -49,10 +63,14 @@ defmodule Muse.SessionServer do
   Submits a user message to the session identified by `pid`.
 
   Returns `{:ok, assistant_text}` — the same shape as `Muse.submit/2`.
+
+  The actual turn execution happens asynchronously via TurnRunner.
+  The caller blocks until the turn completes (or fails/is cancelled),
+  but the GenServer itself remains responsive for `status` queries.
   """
   @spec submit(pid(), atom(), String.t()) :: {:ok, String.t()}
   def submit(pid, source, text) do
-    GenServer.call(pid, {:submit, source, text})
+    GenServer.call(pid, {:submit, source, text}, :infinity)
   end
 
   @doc """
@@ -63,6 +81,17 @@ defmodule Muse.SessionServer do
     GenServer.call(pid, :status)
   end
 
+  @doc """
+  Cancels the currently running turn, if any.
+
+  Returns `:ok` if a cancellation signal was sent, or `{:error, :no_active_turn}`
+  if no turn is currently running.
+  """
+  @spec cancel(pid()) :: :ok | {:error, :no_active_turn}
+  def cancel(pid) do
+    GenServer.call(pid, :cancel)
+  end
+
   # -- GenServer callbacks -----------------------------------------------------
 
   @impl true
@@ -71,11 +100,26 @@ defmodule Muse.SessionServer do
     # If we reach init, the name was successfully registered.
     # `seq` is a session-local monotonic counter starting at 0; each
     # emitted event increments it, so the first event gets seq=1.
-    {:ok, %{session_id: session_id, status: :idle, seq: 0, events: [], active_muse: nil}}
+    {:ok,
+     %{
+       session_id: session_id,
+       status: :idle,
+       seq: 0,
+       events: [],
+       active_muse: nil,
+       # TurnRunner state
+       active_turn_id: nil,
+       runner_pid: nil,
+       runner_task: nil,
+       from: nil,
+       turn_start_time: nil,
+       session_events_before_turn: [],
+       cancellation_requested: false
+     }}
   end
 
   @impl true
-  def handle_call({:submit, source, text}, _from, state) do
+  def handle_call({:submit, source, text}, from, state) do
     turn_start_time = System.monotonic_time(:millisecond)
     turn_id = generate_turn_id()
 
@@ -137,65 +181,35 @@ defmodule Muse.SessionServer do
     # Transition turn to running
     {:ok, turn} = Turn.transition(turn, :running)
 
-    # 3. Delegate assistant generation to Conductor
+    # 3. Spawn TurnRunner task for async Conductor execution
+    # Pass the pre-transition status (:idle) so the Conductor can emit
+    # the correct session_status_changed event (idle → running)
     session = Session.new(id: state.session_id, workspace: get_workspace(), status: state.status)
 
-    {assistant_text, state, session_events} =
-      case Conductor.run(session, turn) do
-        {:ok, result} ->
-          # Fold Conductor event specs through emit_session_event
-          {conductor_events, state} = emit_event_specs(state, result.event_specs, turn_id)
-          session_events = session_events ++ conductor_events
+    task = TurnRunner.async(session, turn)
 
-          state = %{state | status: :idle, active_muse: Atom.to_string(result.selected_muse.id)}
+    # Store the task ref and runner pid for result handling
+    runner_pid = task.pid
+    task_ref = task.ref
 
-          {result.assistant_text, state, session_events}
+    # No extra Process.monitor needed — Task.Supervisor.async_nolink/2
+    # already creates a monitor (ref) that sends {:DOWN, ref, :process, pid, reason}
+    # on task exit. We handle both {ref, result} and {:DOWN, ref, ...} below.
 
-        {:error, %{event_specs: event_specs}} ->
-          # Fold partial event specs collected before the error
-          {conductor_events, state} = emit_event_specs(state, event_specs, turn_id)
-          session_events = session_events ++ conductor_events
-
-          # Emit a user-visible assistant_message so CLI/State consumers
-          # see the failure in the event stream (not just the return value).
-          error_text = "Error: provider error occurred"
-
-          {error_event, state} =
-            emit_session_event(
-              state,
-              :system,
-              :assistant_message,
-              %{text: error_text, streamed?: false},
-              turn_id: turn_id,
-              visibility: :user
-            )
-
-          session_events = session_events ++ [error_event]
-          state = %{state | status: :idle}
-
-          {error_text, state, session_events}
-      end
-
-    # 4. Emit turn_completed
-    delta_count = Enum.count(session_events, &(&1.type == :assistant_delta))
-    duration_ms = System.monotonic_time(:millisecond) - turn_start_time
-
-    turn_completed_data = %{
-      streamed?: true,
-      delta_count: delta_count,
-      duration_ms: duration_ms
+    # Transition state to running
+    state = %{
+      state
+      | status: :running,
+        active_turn_id: turn_id,
+        runner_pid: runner_pid,
+        runner_task: task_ref,
+        from: from,
+        turn_start_time: turn_start_time,
+        session_events_before_turn: session_events,
+        cancellation_requested: false
     }
 
-    {turn_completed_event, state} =
-      emit_session_event(state, source, :turn_completed, turn_completed_data,
-        turn_id: turn_id,
-        visibility: :internal
-      )
-
-    session_events = session_events ++ [turn_completed_event]
-
-    updated_events = state.events ++ session_events
-    {:reply, {:ok, assistant_text}, %{state | events: updated_events}}
+    {:noreply, state}
   end
 
   @impl true
@@ -205,10 +219,306 @@ defmodule Muse.SessionServer do
       status: state.status,
       active_muse: state.active_muse,
       seq: state.seq,
-      event_count: length(state.events)
+      event_count: length(state.events),
+      active_turn_id: state.active_turn_id,
+      runner_pid: state.runner_pid,
+      cancellation_requested: state.cancellation_requested
     }
 
     {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call(:cancel, _from, state) do
+    cond do
+      state.status != :running or state.runner_pid == nil ->
+        {:reply, {:error, :no_active_turn}, state}
+
+      state.cancellation_requested ->
+        {:reply, :ok, state}
+
+      true ->
+        TurnRunner.cancel(state.runner_pid, state.active_turn_id)
+        {:reply, :ok, %{state | cancellation_requested: true}}
+    end
+  end
+
+  # -- Task result handling ----------------------------------------------------
+
+  @impl true
+  def handle_info({ref, result}, state) when state.runner_task == ref do
+    # Task completed normally — demonitor and flush the pending DOWN
+    Process.demonitor(ref, [:flush])
+
+    {_assistant_text, state} = handle_task_result(result, state)
+
+    {:noreply, state}
+  end
+
+  # Task exited with :normal reason — the {ref, result} message was either
+  # already handled (and demonitor flushed this DOWN) or will arrive next.
+  # Safely ignore; the result handler will process it.
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, :normal}, state)
+      when state.runner_task == ref do
+    {:noreply, state}
+  end
+
+  # Task crashed — no result message will arrive; handle the failure.
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state)
+      when state.runner_task == ref do
+    {_assistant_text, state} = handle_task_crash(inspect(reason), state)
+    {:noreply, state}
+  end
+
+  # Ignore task results for stale refs (e.g. after crash recovery)
+  @impl true
+  def handle_info({ref, _result}, state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, state}
+  end
+
+  # Ignore stale DOWN messages (for non-current tasks)
+  @impl true
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
+    {:noreply, state}
+  end
+
+  # Defensive: ignore stale custom-tagged monitor messages from prior
+  # implementation that used Process.monitor(tag: {:runner_down, turn_id}).
+  # Those messages have shape {{:runner_down, turn_id}, ref, :process, pid, reason}.
+  @impl true
+  def handle_info({{:runner_down, _}, _ref, :process, _pid, _reason}, state) do
+    {:noreply, state}
+  end
+
+  # Ignore any other messages
+  @impl true
+  def handle_info(_msg, state) do
+    {:noreply, state}
+  end
+
+  # -- Task result handlers -----------------------------------------------------
+
+  defp handle_task_result({:ok, result}, state) do
+    turn_id = state.active_turn_id
+    session_events = state.session_events_before_turn
+
+    # Fold Conductor event specs through emit_session_event
+    {conductor_events, state} = emit_event_specs(state, result.event_specs, turn_id)
+    session_events = session_events ++ conductor_events
+
+    state = %{state | status: :idle, active_muse: Atom.to_string(result.selected_muse.id)}
+
+    # Emit turn_completed
+    delta_count = Enum.count(session_events, &(&1.type == :assistant_delta))
+    duration_ms = System.monotonic_time(:millisecond) - state.turn_start_time
+
+    turn_completed_data = %{
+      streamed?: true,
+      delta_count: delta_count,
+      duration_ms: duration_ms
+    }
+
+    {turn_completed_event, state} =
+      emit_session_event(state, :conductor, :turn_completed, turn_completed_data,
+        turn_id: turn_id,
+        visibility: :internal
+      )
+
+    session_events = session_events ++ [turn_completed_event]
+
+    updated_events = state.events ++ session_events
+    state = %{state | events: updated_events}
+
+    # Reply to the original caller
+    GenServer.reply(state.from, {:ok, result.assistant_text})
+
+    # Clear turn state
+    state = clear_turn_state(state)
+
+    {result.assistant_text, state}
+  end
+
+  defp handle_task_result({:cancelled, {:ok, result}}, state) do
+    turn_id = state.active_turn_id
+    session_events = state.session_events_before_turn
+
+    # Fold any partial event specs
+    {conductor_events, state} = emit_event_specs(state, result.event_specs, turn_id)
+    session_events = session_events ++ conductor_events
+
+    # Emit tool_loop_cancelled if not already in specs
+    {cancel_event, state} =
+      emit_session_event(
+        state,
+        :conductor,
+        :turn_cancelled,
+        %{iterations: result[:iterations] || 0},
+        turn_id: turn_id,
+        visibility: :internal
+      )
+
+    session_events = session_events ++ [cancel_event]
+
+    # Emit safe assistant message
+    cancel_text = result.assistant_text || "Turn cancelled."
+
+    {assistant_msg_event, state} =
+      emit_session_event(
+        state,
+        :system,
+        :assistant_message,
+        %{text: cancel_text, streamed?: false},
+        turn_id: turn_id,
+        visibility: :user
+      )
+
+    session_events = session_events ++ [assistant_msg_event]
+
+    state = %{state | status: :idle}
+
+    # Emit turn_completed
+    delta_count = Enum.count(session_events, &(&1.type == :assistant_delta))
+    duration_ms = System.monotonic_time(:millisecond) - state.turn_start_time
+
+    turn_completed_data = %{
+      streamed?: false,
+      delta_count: delta_count,
+      duration_ms: duration_ms,
+      cancelled: true
+    }
+
+    {turn_completed_event, state} =
+      emit_session_event(state, :conductor, :turn_completed, turn_completed_data,
+        turn_id: turn_id,
+        visibility: :internal
+      )
+
+    session_events = session_events ++ [turn_completed_event]
+
+    updated_events = state.events ++ session_events
+    state = %{state | events: updated_events}
+
+    GenServer.reply(state.from, {:ok, cancel_text})
+
+    state = clear_turn_state(state)
+
+    {cancel_text, state}
+  end
+
+  defp handle_task_result({:error, %{event_specs: event_specs}}, state) do
+    turn_id = state.active_turn_id
+    session_events = state.session_events_before_turn
+
+    # Fold partial event specs collected before the error
+    {conductor_events, state} = emit_event_specs(state, event_specs, turn_id)
+    session_events = session_events ++ conductor_events
+
+    # Emit a user-visible assistant_message so CLI/State consumers
+    # see the failure in the event stream (not just the return value).
+    error_text = "Error: provider error occurred"
+
+    {error_event, state} =
+      emit_session_event(
+        state,
+        :system,
+        :assistant_message,
+        %{text: error_text, streamed?: false},
+        turn_id: turn_id,
+        visibility: :user
+      )
+
+    session_events = session_events ++ [error_event]
+
+    # Emit turn_failed
+    duration_ms = System.monotonic_time(:millisecond) - state.turn_start_time
+
+    {turn_failed_event, state} =
+      emit_session_event(state, :conductor, :turn_failed, %{duration_ms: duration_ms},
+        turn_id: turn_id,
+        visibility: :internal
+      )
+
+    session_events = session_events ++ [turn_failed_event]
+
+    state = %{state | status: :idle}
+    updated_events = state.events ++ session_events
+    state = %{state | events: updated_events}
+
+    GenServer.reply(state.from, {:ok, error_text})
+
+    state = clear_turn_state(state)
+
+    {error_text, state}
+  end
+
+  # Catch-all for unexpected result shapes
+  defp handle_task_result(_other, state) do
+    handle_task_crash("unexpected task result", state)
+  end
+
+  defp handle_task_crash(reason, state) do
+    turn_id = state.active_turn_id
+    session_events = state.session_events_before_turn
+
+    error_text = "Error: turn failed (#{reason})"
+
+    {error_event, state} =
+      emit_session_event(
+        state,
+        :system,
+        :assistant_message,
+        %{text: error_text, streamed?: false},
+        turn_id: turn_id,
+        visibility: :user
+      )
+
+    session_events = session_events ++ [error_event]
+
+    # Emit turn_failed
+    duration_ms =
+      if state.turn_start_time,
+        do: System.monotonic_time(:millisecond) - state.turn_start_time,
+        else: 0
+
+    {turn_failed_event, state} =
+      emit_session_event(
+        state,
+        :conductor,
+        :turn_failed,
+        %{duration_ms: duration_ms, reason: reason},
+        turn_id: turn_id,
+        visibility: :internal
+      )
+
+    session_events = session_events ++ [turn_failed_event]
+
+    state = %{state | status: :idle}
+    updated_events = state.events ++ session_events
+    state = %{state | events: updated_events}
+
+    if state.from do
+      GenServer.reply(state.from, {:ok, error_text})
+    end
+
+    state = clear_turn_state(state)
+
+    {error_text, state}
+  end
+
+  defp clear_turn_state(state) do
+    %{
+      state
+      | active_turn_id: nil,
+        runner_pid: nil,
+        runner_task: nil,
+        from: nil,
+        turn_start_time: nil,
+        session_events_before_turn: [],
+        cancellation_requested: false
+    }
   end
 
   # -- Private helpers ----------------------------------------------------------

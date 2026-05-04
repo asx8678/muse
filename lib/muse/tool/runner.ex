@@ -386,6 +386,16 @@ defmodule Muse.Tool.Runner do
   # -- Event emission ------------------------------------------------------------
 
   defp emit_event(type, data, context) do
+    # When ToolLoop manages events centrally via SessionServer,
+    # skip direct State emission to avoid duplicate unsequenced events.
+    if context[:emit_events?] == false do
+      :ok
+    else
+      do_emit_event(type, data, context)
+    end
+  end
+
+  defp do_emit_event(type, data, context) do
     # Redact at event boundary — no secrets leak into stored events
     redacted_data = Muse.Prompt.Redactor.redact_term(data)
 
