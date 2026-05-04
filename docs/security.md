@@ -15,8 +15,7 @@
    - 3.1 [User Override Behavior](#31-user-override-behavior)
 4. [Redaction Rules](#4-redaction-rules)
 5. [Tool Permissions Matrix](#5-tool-permissions-matrix)
-6. [Approval Gate Rules](#6-approval-gate-rules)
-   - 6.1 [Approval Binding Rules](#61-approval-binding-rules)
+6. [Plan Approval Lifecycle Security (PR08)](#6-plan-approval-lifecycle-security-pr08)
 7. [Auth Security Rules](#7-auth-security-rules)
 8. [Prompt Security](#8-prompt-security)
 
@@ -197,101 +196,61 @@ Codex auth tokens     Tokens from ~/.codex/auth.json
 
 ## 5. Tool Permissions Matrix
 
-The following matrix defines which tools are available to each Muse role and under what approval conditions. This is enforced by `Muse.ApprovalGate` at runtime — not by prompt instructions.
+PR08 runtime enforcement is implemented by `Muse.Tool.Registry` + `Muse.Tool.Runner`.
+There is currently no standalone `Muse.ApprovalGate` module.
 
-| Tool | Planning Muse (before approval) | Coding Muse (after plan approval) | Patch approval required | Notes |
-|---|:---:|:---:|:---:|---|
-| `list_files` | ✅ allow | ✅ allow | no | Workspace only |
-| `read_file` | ✅ allow | ✅ allow | no | Secret policy enforced |
-| `repo_search` | ✅ allow | ✅ allow | no | Output limits required |
-| `git_status` | ✅ allow | ✅ allow | no | Read-only |
-| `git_diff_readonly` | ✅ allow | ✅ allow | no | Read-only |
-| `ask_user_question` | ✅ allow | ✅ allow | no | Non-blocking |
-| `list_muses` | ✅ allow | ✅ allow | no | Product discovery |
-| `list_skills` | ✅ allow | ✅ allow | no | Optional later |
-| `patch_propose` | 🚫 block | ✅ allow after approved plan | no | Generates/stores diff only |
-| `patch_apply` | 🚫 block | ✅ allow only after patch approval | yes | Checkpoint first |
-| `write_file` | 🚫 block | ⚠️ approval-gated | yes | Prefer patch workflow |
-| `replace_in_file` | 🚫 block | ⚠️ approval-gated | yes | Checkpoint first |
-| `delete_file` | 🚫 block | ⚠️ explicit delete approval | explicit delete approval | High risk |
-| `test_runner` | 🚫 block | ⚠️ conditional | command approval unless configured safe | No arbitrary shell |
-| `shell_command` | 🚫 block | ⚠️ conditional | yes | Command allowlist recommended |
-| `network_call` | 🚫 block | ⚠️ conditional | yes | Default block |
-| `remote_execution` | 🚫 block | 🚫 later only | yes | Implement late |
+### Registered runtime tools (available)
 
-**Approval categories:**
+| Tool | Planning Muse | Coding Muse | Notes |
+|---|:---:|:---:|---|
+| `list_files` | ✅ | ✅ | Workspace-scoped directory listing |
+| `read_file` | ✅ | ✅ | Workspace + secret/ignored checks |
+| `repo_search` | ✅ | ✅ | Workspace-scoped content search |
+| `git_status` | ✅ | ✅ | Read-only git command |
+| `git_diff_readonly` | ✅ | ✅ | Read-only git diff |
+| `ask_user_question` | ✅ | ✅ | Interactive prompt back to user |
+| `list_muses` | ✅ | ✅ | Profile summaries |
+| `list_skills` | ✅ | ✅ | Deterministic skills listing |
 
-| Category | Meaning |
+### Known blocked tool names (hard deny)
+
+| Tool | Enforcement |
 |---|---|
-| `:always_allowed` | Tool can run without user confirmation |
-| `:approval_required` | Tool must receive explicit user approval before running |
-| `:blocked` | Tool is not available in the current context |
+| `write_file` | blocked as dangerous |
+| `replace_in_file` | blocked as dangerous |
+| `delete_file` | blocked as dangerous |
+| `patch_apply` | blocked as dangerous |
+| `shell_command` | blocked as dangerous |
+| `network_call` | blocked as dangerous |
+| `remote_execution` | blocked as dangerous |
+
+Runner behavior:
+
+- blocked tool name → `:tool_call_blocked`
+- unknown tool → error result
+- `requires_approval: true` tool spec → blocked (current PR08 behavior)
 
 ---
 
-## 6. Approval Gate Rules
+## 6. Plan Approval Lifecycle Security (PR08)
 
-The `Muse.ApprovalGate` enforces all approval requirements at runtime. Every tool execution path must check `ApprovalGate.allowed?/2` before proceeding — prompt text is guidance, not a security boundary.
+Plan lifecycle commands are implemented in `Muse.SessionServer`:
 
-**Runtime enforcement rules:**
+- `/approve plan` → transition active plan from `:awaiting_approval` to `:approved`
+- `/reject plan` → transition active plan from `:awaiting_approval` to `:rejected`
+- if session was `:awaiting_plan_approval`, it returns to `:idle`
 
-| Rule | Enforcement |
-|---|---|
-| Read tools | Allowed for Planning Muse unless path/secret policy blocks them |
-| Plan creation | Allowed for Planning Muse |
-| Patch proposal | Requires an approved plan |
-| Patch apply | Requires an approved plan **and** an approved patch hash |
-| Shell command | Requires explicit shell approval (except future safe-command allowlist) |
-| Remote execution | **Always denied** until remote execution milestone |
+Security properties currently guaranteed:
 
-**Enforcement pattern:**
+- lifecycle commands do not execute filesystem/shell/network tools
+- lifecycle commands operate only on the active session plan
+- lifecycle events are emitted (`:plan_approved` / `:plan_rejected`) with safe metadata
 
-```elixir
-case Muse.ApprovalGate.allowed?(session, tool_call) do
-  {:ok, :allowed}    -> run_tool()
-  {:blocked, reason} -> block_tool(reason)
-end
-```
+Roadmap (not yet implemented in runtime):
 
-This pattern is invoked by `Muse.Tool.Runner` before **every** tool call. There is no code path that executes a tool without passing through the approval gate.
-
-### 6.1 Approval Binding Rules
-
-Approvals are cryptographically bound to the specific content they approve. If the content changes, the approval is invalidated — preventing stale-approval attacks.
-
-**Plan approval binds to:**
-
-```text
-session_id
-plan_id
-plan_version
-workspace
-approved_by
-approved_at
-approval_scope
-```
-
-**Patch approval binds to:**
-
-```text
-session_id
-plan_id
-plan_version
-patch_id
-patch_hash
-affected_files
-workspace
-```
-
-**Stale approval rules:**
-
-| Condition | Result |
-|---|---|
-| Plan version changes | Old approvals are **invalid** — must be re-approved |
-| Patch hash changes | Old patch approvals are **invalid** — must be re-approved |
-| Session workspace changes | All approvals are **invalid** — context mismatch |
-
-This ensures that a user who approved a plan or patch cannot have a modified version applied without re-approval.
+- content-hash-bound approval records
+- patch approval and apply gates
+- shell/network explicit approval gate subsystem
 
 ---
 
@@ -347,8 +306,8 @@ The `/prompt preview` command shows **layer metadata**, not raw content:
 Prompt bundle for session s_123
 Active Muse: Planning Muse
 Model: fake
-Tools: list_files, read_file, repo_search, git_status
-Blocked tools: patch_apply, shell_command, delete_file, network_call
+Tools: list_files, read_file, repo_search, git_status, git_diff_readonly, ask_user_question, list_muses, list_skills
+Blocked tools: write_file, replace_in_file, delete_file, patch_apply, shell_command, network_call, remote_execution
 
 Layers:
  1. muse_core_invariants      internal    720 tokens

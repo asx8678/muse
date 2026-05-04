@@ -67,9 +67,9 @@ The fake provider must cover every event shape the runtime will encounter from r
 | `:malformed_tool_call` | Emits a tool call with invalid JSON arguments. Tests the runtime's recovery path when `Jason.decode!/1` fails on tool arguments. |
 | `:mid_stream_error` | Emits several assistant deltas, then fails mid-stream. Tests error handling during active streaming — the runtime must emit a `:provider_error` event and not hang. |
 | `:cancellation` | Streams slowly (with deliberate delays), and checks for a cancellation signal on each step. Tests the TurnRunner's ability to cancel an in-flight provider call. |
-| Coding Muse proposes a patch | Emits a `patch_propose` tool call with structured patch arguments. Tests the full patch proposal flow. |
-| Coding Muse requests `patch_apply` | Emits a `patch_apply` tool call. Tests the approval gate for write operations. |
-| Testing Muse requests `test_runner` | Emits a `test_runner` tool call. Tests safe test execution gating. |
+| Coding Muse proposes a patch (roadmap) | Emits a `patch_propose` tool call with structured patch arguments. Planned for post-PR08 write workflow. |
+| Coding Muse requests `patch_apply` (roadmap) | Emits a `patch_apply` tool call. Planned for post-PR08 approval-gated write flow. |
+| Testing Muse requests `test_runner` (roadmap) | Emits a `test_runner` tool call. Planned for post-PR08 verification workflow. |
 | Provider streams partial response | Emits a sequence of `:assistant_delta` events without completing. Tests the runtime's handling of incomplete responses. |
 | Provider fails and runtime retries or fails safely | Emits a `:provider_error` event. Tests retry logic and safe failure propagation — the runtime must not silently swallow errors. |
 
@@ -595,7 +595,7 @@ streaming accumulator shape.
 
 ```text
 1. Unit test parser and stream-decoder normalization with fixture JSON/SSE data.
-   - Load saved provider response JSON/SSE frames from test/fixtures/sse/
+   - Load saved provider response JSON/SSE/WS frames from `test/fixtures/chat_completions/` and `test/fixtures/openai_responses/`
    - Assert ChatCompletionsStreamDecoder emits the expected Muse.LLM.Event values
 
 2. Unit test SSE parser with chunked strings.

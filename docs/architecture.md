@@ -8,6 +8,7 @@
 
 ## Table of Contents
 
+0. [PR08 Planning Muse MVP — Implemented Contract](#0-pr08-planning-muse-mvp--implemented-contract)
 1. [Runtime Path](#1-runtime-path)
 2. [Process Architecture](#2-process-architecture)
 3. [Data Models](#3-data-models)
@@ -59,6 +60,35 @@
 
 ---
 
+## 0. PR08 Planning Muse MVP — Implemented Contract
+
+This section is the **source of truth for current implementation** on branch `pr08/lane09-docs-contract`.
+
+### Implemented now
+
+- `Muse.Conductor.select_muse/2` currently selects **Planning Muse** for active turn execution.
+- Structured plan output is parsed by `Muse.PlanParser` + `Muse.PlanSchema`.
+- On successful parse, Conductor:
+  - stores `%Muse.Plan{}` in result/session flow,
+  - emits `:plan_created`,
+  - renders user-facing plan text via `Muse.Plan.render/1`,
+  - transitions session status to `:awaiting_plan_approval`.
+- CLI lifecycle commands are wired:
+  - `/plan`, `/plans`, `/plan history`, `/plan status`, `/plan show <id>`
+  - `/approve plan`, `/reject plan`
+- Plan approve/reject transitions are handled in `Muse.SessionServer` and return session status to `:idle`.
+- Planning flow tools are read-only in practice via `Muse.Tool.Registry` + `Muse.Tool.Runner`.
+
+### Not implemented yet (roadmap)
+
+- ApprovalGate module and patch approval binding enforcement
+- Coding Muse write execution workflow (`patch_propose`/`patch_apply` end-to-end)
+- Automated handoff from plan approval to coding execution
+
+Use the remaining sections in this document as architecture context; where they diverge, this PR08 section and code are authoritative.
+
+---
+
 ## 1. Runtime Path
 
 The full flow from user input to response:
@@ -73,8 +103,7 @@ User input
   → Muse.Prompt.Assembler
   → Muse.Prompt.ModelPreparer
   → Muse.LLM.Provider
-  → Muse.Tool.Runner
-  → Muse.ApprovalGate
+  → Muse.Tool.Runner (registry/role checks + blocked-tool enforcement)
   → Muse.SessionStore + Muse.State + Phoenix.PubSub
   → CLI / TUI / LiveView updates
 ```
@@ -269,7 +298,7 @@ Events use session-local monotonic `seq` values for replay.
 
 ```elixir
 defmodule Muse.Session do
-  @enforce_keys [:id, :workspace, :status, :created_at, :updated_at]
+  @enforce_keys [:workspace, :status, :created_at, :updated_at]
   defstruct [
     :id,
     :workspace,
@@ -303,9 +332,9 @@ end
 | `:executing` | An approved plan is being executed |
 | `:awaiting_patch_approval` | A patch has been proposed and is waiting for approval |
 | `:awaiting_shell_approval` | A shell/test command is waiting for approval |
-| `:verifying` | Testing Muse is running verification |
-| `:reviewing` | Reviewing Muse is reviewing changes |
-| `:repairing` | Restoration Muse is recovering from failure |
+| `:verifying` | Reserved status for future verification workflow (not active in PR08 turn loop) |
+| `:reviewing` | Reserved status for future review workflow (not active in PR08 turn loop) |
+| `:repairing` | Reserved status for future recovery workflow |
 | `:done` | Session has completed its objective |
 | `:failed` | Session has encountered an unrecoverable failure |
 | `:error` | Session is in an error state |
@@ -784,7 +813,25 @@ defmodule Muse.Task do
 end
 ```
 
-#### Suggested Structured Plan JSON Schema
+#### Structured Plan JSON Schema (PR08 current)
+
+`Muse.PlanSchema.schema/0` defines a schema-map contract used for prompt guidance and validation behavior.
+
+**Required fields (input JSON):**
+
+- `objective` — non-empty string
+- `tasks` — non-empty array
+- each task requires `title` and `description` (non-empty strings)
+
+**Optional fields (input JSON):**
+
+- `summary`, `risks`, `alternatives`, `validation`, `inspected_files`, `likely_changed_files`
+- task-level `target_files`, `requires_write`, `requires_shell`, `verification`, `recommended_muse`
+
+**Versioning behavior:**
+
+- The provider output schema does **not** currently require a `version` or `schema_version` field.
+- `%Muse.Plan{}` is created with `version: 1` by default in `Muse.Plan.new/1`.
 
 ```json
 {
@@ -809,17 +856,19 @@ end
 #### Local Validation Rules
 
 ```text
-- objective is present
-- tasks is non-empty
-- each task has title and description
-- requires_write is boolean
-- requires_shell is boolean
-- risks is a list
+- objective is required, string, and non-empty
+- tasks is required, list, and non-empty
+- each task has non-empty title and description
+- requires_write and requires_shell (when present) must be booleans
+- risks (when present) must be a list
+- normalization defaults task requires_* booleans to false
 ```
 
 ---
 
 ### 3.9 Approval Model
+
+> **Roadmap note:** this section describes the intended approval model. In PR08, there is no `Muse.ApprovalGate` module enforcing write/shell/network approvals yet; active runtime enforcement is currently read-only tool registry + blocked-tool checks.
 
 #### Muse.Approval Struct
 
@@ -897,44 +946,22 @@ workspace
 
 If a patch hash changes, old patch approvals are **invalid**.
 
-#### ApprovalGate API
+#### Current PR08 Runtime Enforcement
 
-```elixir
-defmodule Muse.ApprovalGate do
-  @doc "Check if a tool call is allowed under current session approval state."
-  def allowed?(session, tool_call) do
-    # returns {:ok, :allowed} or {:blocked, reason}
-  end
+There is no standalone `Muse.ApprovalGate` module yet.
 
-  @doc "Store an approval request and emit an event."
-  def request_approval(session, approval_request) do
-    # stores approval request and emits event
-  end
+Current enforcement lives in `Muse.Tool.Runner` + `Muse.Tool.Registry`:
 
-  @doc "Mark an approval as accepted and emit an event."
-  def approve(session, approval_id, approver) do
-    # marks approval accepted and emits event
-  end
+- known dangerous tool names are blocked immediately,
+- unknown tools are rejected,
+- Muse role allowlists are enforced,
+- tools with `requires_approval: true` are currently blocked.
 
-  @doc "Mark an approval as rejected and emit an event."
-  def reject(session, approval_id, approver) do
-    # marks approval rejected and emits event
-  end
-end
-```
+Plan lifecycle approval (`/approve plan`, `/reject plan`) is implemented in
+`Muse.SessionServer` and transitions the active `%Muse.Plan{}` status, but does
+not yet unlock write/shell/network execution paths.
 
-#### Runtime Enforcement Pattern
-
-Every tool execution path enforces the approval gate:
-
-```elixir
-case Muse.ApprovalGate.allowed?(session, tool_call) do
-  {:ok, :allowed} -> run_tool()
-  {:blocked, reason} -> block_tool(reason)
-end
-```
-
-Prompt text is guidance, not a security boundary. Runtime safety is always enforced in Elixir code.
+Prompt text is guidance, not a security boundary. Runtime safety is enforced in Elixir code.
 
 ---
 
@@ -1106,14 +1133,8 @@ lib/muse/conductor/tool_loop.ex      Iterative tool-call loop within a turn.
 
 ```text
 lib/muse/muse_profile.ex            MuseProfile struct definition.
-lib/muse/muses.ex                   Muse registry and discovery.
-lib/muse/muses/planning_muse.ex     Planning Muse profile.
-lib/muse/muses/coding_muse.ex       Coding Muse profile.
-lib/muse/muses/reviewing_muse.ex    Reviewing Muse profile.
-lib/muse/muses/testing_muse.ex      Testing Muse profile.
-lib/muse/muses/research_muse.ex     Research Muse profile.
-lib/muse/muses/memory_muse.ex       Memory Muse profile.
-lib/muse/muses/restoration_muse.ex  Restoration Muse profile.
+lib/muse/muse_registry.ex           Static registry of built-in profiles.
+                                    PR08 currently registers :planning and :coding.
 ```
 
 ### Prompt System
@@ -1138,39 +1159,32 @@ lib/muse/llm/response.ex            Provider-neutral response struct.
 lib/muse/llm/tool_call.ex           Provider-neutral tool call struct.
 lib/muse/llm/provider.ex            Provider behavior definition.
 lib/muse/llm/provider_config.ex     Provider configuration struct.
-lib/muse/llm/providers/fake.ex      Deterministic fake provider for tests.
-lib/muse/llm/providers/openai_compatible.ex   OpenAI-compatible provider.
-lib/muse/llm/providers/openai_compatible/encoder.ex   Request encoder.
-lib/muse/llm/providers/openai_compatible/decoder.ex   Response decoder.
-lib/muse/llm/providers/openai.ex    OpenAI provider.
-lib/muse/llm/providers/anthropic.ex Anthropic provider (future).
-lib/muse/llm/providers/openrouter.ex OpenRouter provider (future).
-lib/muse/llm/providers/ollama.ex    Ollama provider (future).
-lib/muse/llm/transport/sse/parser.ex HTTP SSE incremental parser (PR14).
-lib/muse/llm/transport/sse/req_stream.ex Req into:fun streaming adapter (PR14).
-lib/muse/llm/openai/chat_completions_stream_decoder.ex Streaming Chat Completions decoder (PR14).
-lib/muse/llm/openai/request_builder.ex Non-streaming + streaming request builder (PR14).
-lib/muse/llm/transports/http_sse.ex HTTP SSE transport (legacy, replaced by parser+req_stream).
-lib/muse/llm/openai/responses_stream_decoder.ex   Shared Responses decoder (WS frames + SSE data frames).
-lib/muse/llm/openai/responses_websocket/request_builder.ex  Pure WS request spec builder.
-lib/muse/llm/transport/websocket/stream.ex          Dependency-free WS transport abstraction.
-lib/muse/llm/transport/websocket/safe_error.ex      Redacting error summaries for WS transport.
-lib/muse/llm/openai/responses_mapper.ex       Responses API request mapper.
-lib/muse/llm/openai/chat_completions_mapper.ex Chat Completions request mapper.
-lib/muse/llm/openai/event_normalizer.ex       Provider event normalizer.
-lib/muse/llm/http_client.ex         Shared HTTP client (req-based).
+lib/muse/llm/provider_router.ex     Provider module resolver.
+lib/muse/llm/fake_provider.ex       Deterministic fake provider for tests.
+lib/muse/llm/openai_compatible_provider.ex  OpenAI-compatible provider.
+lib/muse/llm/openai/request_builder.ex                 OpenAI request builder.
+lib/muse/llm/openai/chat_completions_mapper.ex         Chat Completions mapper.
+lib/muse/llm/openai/chat_completions_decoder.ex        Chat Completions decoder.
+lib/muse/llm/openai/chat_completions_stream_decoder.ex Chat Completions SSE stream decoder.
+lib/muse/llm/openai/responses_mapper.ex                Responses API mapper.
+lib/muse/llm/openai/responses_stream_decoder.ex        Responses shared decoder.
+lib/muse/llm/openai/responses_websocket/request_builder.ex  Responses WS request builder.
+lib/muse/llm/transport/sse/parser.ex                   SSE parser.
+lib/muse/llm/transport/sse/req_stream.ex               Req streaming adapter.
+lib/muse/llm/transport/websocket/stream.ex             WS transport abstraction.
+lib/muse/llm/transport/websocket/safe_error.ex         WS transport redacted errors.
 ```
 
 ### Config and Auth
 
 ```text
-lib/muse/config.ex                   Configuration loading and validation.
+lib/muse/config.ex                  Configuration loading and validation.
 lib/muse/auth/credential.ex         Credential struct.
-lib/muse/auth/store.ex              Auth credential store.
+lib/muse/auth/resolver.ex           Credential resolution from configured modes.
+lib/muse/auth/status.ex             Auth status reporting for commands/UI.
 lib/muse/auth/api_key.ex            API key auth.
 lib/muse/auth/bearer_command.ex     Bearer token command auth.
 lib/muse/auth/codex_cache.ex        Codex auth cache bridge.
-lib/muse/auth/openai_oauth.ex       OpenAI OAuth (future).
 ```
 
 ### Tool System
@@ -1179,46 +1193,33 @@ lib/muse/auth/openai_oauth.ex       OpenAI OAuth (future).
 lib/muse/tool/spec.ex               Tool specification struct.
 lib/muse/tool/call.ex               Tool call struct.
 lib/muse/tool/result.ex             Tool result struct.
-lib/muse/tool/runner.ex             Tool execution with validation and approval gating.
+lib/muse/tool/registry.ex           Built-in read-only tool specs + blocked-tool list.
+lib/muse/tool/runner.ex             Tool execution with registry/role/approval checks.
 
 lib/muse/tools/list_files.ex
 lib/muse/tools/read_file.ex
 lib/muse/tools/repo_search.ex
 lib/muse/tools/git_status.ex
 lib/muse/tools/git_diff_readonly.ex
-lib/muse/tools/patch_propose.ex
-lib/muse/tools/patch_apply.ex
-lib/muse/tools/write_file.ex
-lib/muse/tools/replace_in_file.ex
-lib/muse/tools/delete_file.ex
-lib/muse/tools/test_runner.ex
-lib/muse/tools/shell_command.ex
-lib/muse/tools/rollback_checkpoint.ex
-lib/muse/tools/checkpoint_create.ex
-lib/muse/tools/checkpoint_restore.ex
+lib/muse/tools/ask_user_question.ex
+lib/muse/tools/list_muses.ex
+lib/muse/tools/list_skills.ex
 ```
 
-### Planning / Approval / Patch / Checkpoint / Memory
+### Planning / Plan Lifecycle
 
 ```text
-lib/muse/plan.ex                    Plan struct definition.
+lib/muse/plan.ex                    Plan struct + status lifecycle + render helpers.
 lib/muse/task.ex                    Task struct definition.
-lib/muse/plan_schema.ex             Plan JSON schema.
-lib/muse/plan_parser.ex            Plan parsing and validation.
-lib/muse/approval.ex                Approval struct definition.
-lib/muse/approval_gate.ex           Approval enforcement API.
-lib/muse/patch.ex                   Patch struct definition.
-lib/muse/patch/parser.ex            Patch/diff parsing.
-lib/muse/patch/formatter.ex         Patch display formatting.
-lib/muse/checkpoint.ex              Checkpoint struct definition.
-lib/muse/checkpoint_store.ex        Checkpoint persistence.
-lib/muse/memory/compactor.ex        Session memory compaction.
+lib/muse/plan_schema.ex             Structured plan schema + validation.
+lib/muse/plan_parser.ex             Parse/repair prompt helpers for plan JSON.
+lib/muse/plan_history.ex            Plan history query/render helpers for commands.
 ```
 
 ### Streaming
 
 ```text
-lib/muse/streaming.ex               Shared streaming event helpers.
+lib/muse/event_stream.ex            Session event subscription stream helpers.
 lib/muse/cli/stream_printer.ex      CLI streaming output printer.
 ```
 
@@ -1449,8 +1450,8 @@ end
 Prompt bundle for session s_123
 Active Muse: Planning Muse
 Model: fake
-Tools: list_files, read_file, repo_search, git_status
-Blocked tools: patch_apply, shell_command, delete_file, network_call
+Tools: list_files, read_file, repo_search, git_status, git_diff_readonly, ask_user_question, list_muses, list_skills
+Blocked tools: write_file, replace_in_file, delete_file, patch_apply, shell_command, network_call, remote_execution
 
 Layers:
 1. muse_core_invariants      internal    720 tokens
@@ -1510,6 +1511,8 @@ rollback_checkpoint
 
 ### 6.3 Tool Permissions Matrix
 
+> PR08 scope: only the first eight read-only tools are registered in `Muse.Tool.Registry`. The write/shell rows below are roadmap intent and are currently blocked or unavailable.
+
 | Tool | Planning Muse (before approval) | Coding Muse (after plan approval) | Patch approval required | Notes |
 |---|:---:|:---:|:---:|---|
 | `list_files` | ✅ allow | ✅ allow | no | Workspace only |
@@ -1540,7 +1543,7 @@ rollback_checkpoint
 {
   "path": ".",
   "max_entries": 200,
-  "include_hidden": false
+  "allow_hidden": false
 }
 ```
 
@@ -1596,9 +1599,8 @@ rollback_checkpoint
 
 ```json
 {
-  "query": "def submit",
-  "path": ".",
-  "max_matches": 50,
+  "pattern": "def submit",
+  "file_pattern": "*.ex",
   "max_results": 50
 }
 ```
@@ -1696,7 +1698,6 @@ Muse.Tool.Runner.run(tool_name, args, context)
   session_id: "default",
   turn_id: "turn_...",
   muse_id: :planning,
-  approval_state: session.approvals,
   workspace: Muse.Workspace.root()
 }
 ```
@@ -1704,16 +1705,15 @@ Muse.Tool.Runner.run(tool_name, args, context)
 #### Validation Sequence (10 Steps)
 
 ```text
-1. Tool exists.
-2. Active Muse is allowed to use it.
-3. ApprovalGate allows it.
-4. Input schema validates.
-5. Workspace paths are safe.
-6. Secret policy allows the requested path/content.
+1. Block known dangerous tool names (write/shell/network/delete/remote).
+2. Ensure tool is registered.
+3. Ensure active Muse is allowed to use it.
+4. Enforce requires_approval flag (currently blocks approval-gated tools).
+5. Validate required input keys.
+6. Ensure workspace is present in context.
 7. Handler runs.
 8. Output is capped and redacted.
-9. Tool call/result is persisted.
-10. Tool events are emitted.
+9. Tool events are emitted.
 ```
 
 #### Events Emitted
@@ -1776,20 +1776,14 @@ The Conductor is responsible for:
 
 ```text
 Select active Muse
-Handle approval/rejection commands before model calls
 Build prompt bundle
 Prepare provider request
-Call provider
-Handle streaming events
+Call provider and process streaming events
+Run the iterative tool loop when tool calls are emitted
 Accumulate assistant text
-Handle tool-call requests
-Ask ApprovalGate before every tool
-Persist tool results
-Feed tool outputs back to provider
-Update session state
-Create/store plans and patches
-Handoff between Muses when policy allows
-Return final response
+For Planning Muse: parse structured plan JSON and render plan output
+Emit turn-level event specs (:muse_selected, :prompt_prepared, :plan_created, etc.)
+Return final result payload to SessionServer
 ```
 
 ### 7.2 Turn Execution Model
@@ -1821,73 +1815,35 @@ end
 
 ### 7.3 Run-Turn Flow
 
+Current entrypoint is `Muse.Conductor.run/3`:
+
 ```elixir
 defmodule Muse.Conductor do
-  def run_turn(session, user_message, opts \\ []) do
-    with {:ok, selected_muse} <- select_muse(session, user_message),
-         {:ok, bundle} <- Muse.Prompt.Assembler.build(session, selected_muse, user_message, opts),
-         {:ok, request} <- Muse.Prompt.ModelPreparer.to_request(bundle),
-         {:ok, result} <- run_model_tool_loop(session, selected_muse, request, opts),
-         {:ok, updated_session} <- finalize_turn(session, result) do
-      {:ok, updated_session, result}
-    else
-      {:approval_required, request} ->
-        {:ok, session, request}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+  def run(session, turn, opts \\ []) do
+    # 1. select_muse/2
+    # 2. Prompt.Assembler.build/4
+    # 3. Prompt.ModelPreparer.to_request/3
+    # 4. provider stream + optional ToolLoop
+    # 5. plan post-processing for Planning Muse
+    # 6. return %{session, assistant_text, event_specs, ...}
   end
 end
 ```
 
 ### 7.4 Muse Selection and Routing
 
-Initial deterministic rules based on `session.status`:
+Current PR08 behavior is intentionally simple:
 
 ```text
-If session.status == :awaiting_plan_approval:
-  Handle approval commands or explain pending approval.
-  Do not run model for destructive behavior.
-
-If user input is /approve plan or equivalent and exactly one plan is pending:
-  Approve plan and hand off to Coding Muse.
-
-If user rejects plan:
-  Mark plan rejected, update session, stop.
-
-If session has approved plan but no patch proposed:
-  Coding Muse.
-
-If session has patch awaiting approval:
-  Handle patch approval/rejection.
-
-If user asks for code changes and no active plan:
-  Planning Muse.
-
-If user asks for explanation/search:
-  Planning Muse for MVP, Research Muse later.
-
-If user asks to review diff:
-  Reviewing Muse.
-
-If user asks to run tests:
-  Testing Muse.
-
-If user reports failed patch/broken state:
-  Restoration Muse.
-
-If user asks to resume session:
-  Muse Conductor, then appropriate Muse.
+Conductor.select_muse/2 returns Planning Muse for active turn execution.
 ```
 
-**Code-change heuristic terms** for v1:
-
-```text
-add, change, modify, fix, implement, create, update, refactor, write
-```
-
-Do not overbuild routing. A simple rule-based router plus optional model fallback is sufficient.
+- Session statuses `:idle`, `:running`, `:planning`, and `:awaiting_plan_approval`
+  are treated as Planning-Muse-applicable by `planning_muse_applicable?/1`.
+- Coding Muse profile exists in `Muse.MuseRegistry` but is not yet selected by
+  Conductor execution routing.
+- Plan approval/rejection is handled by command + `SessionServer` lifecycle APIs,
+  not by automatic Conductor handoff.
 
 ### 7.5 Tool Loop
 
@@ -1897,7 +1853,7 @@ Do not overbuild routing. A simple rule-based router plus optional model fallbac
 1. Build prompt bundle and provider request with visible tool schemas.
 2. Provider streams assistant deltas and/or tool-call events.
 3. Conductor accumulates tool-call arguments.
-4. Tool Runner checks ApprovalGate.
+4. Tool Runner enforces blocked-tool and role checks.
 5. Tool executes, is blocked, or asks for approval.
 6. Tool result is appended to the session.
 7. Conductor continues provider request with tool output.
@@ -1975,15 +1931,15 @@ The TurnRunner checks cancellation at these points:
 
 ### 8.1 Commands
 
-#### Full Canonical Command List with Aliases
+#### Canonical Command List (PR08 docs focus)
+
+`lib/muse/commands.ex` is the source of truth for all currently parsed slash commands.
+
+For PR08 planning lifecycle, the key commands are:
 
 ```text
 /help
-/status
 /muses
-/muse planning
-/muse coding
-/tools
 /plan
 /plans
 /plan history
@@ -1991,26 +1947,9 @@ The TurnRunner checks cancellation at these points:
 /plan show <id>
 /approve plan
 /reject plan
-/patch
-/approve patch
-/reject patch
-/approve command
-/reject command
-/approve shell
-/reject shell
 /prompt preview
 /prompt-preview
-/memory
-/checkpoints
-/restore <checkpoint_id>
-/rollback checkpoint <id>
-/resume <session_id>
-/cancel
 /auth status
-/auth login openai
-/auth login openai --device
-/auth logout openai
-/review
 ```
 
 **Potential natural-language aliases:**
@@ -2040,12 +1979,7 @@ The command dispatcher may return effects:
 ```text
 Available Muses:
 - Planning Muse: creates implementation plans after read-only inspection.
-- Coding Muse: implements approved plans through patches.
-- Reviewing Muse: reviews diffs and risks.
-- Testing Muse: runs and interprets verification.
-- Research Muse: searches the repository and gathers context.
-- Memory Muse: summarizes session context.
-- Restoration Muse: recovers from failed or unsafe states.
+- Coding Muse: reserved for approved-plan implementation workflow (roadmap).
 ```
 
 #### `/status` Output
@@ -2069,8 +2003,8 @@ Active Muse: Planning Muse
 Session status: idle
 Model: fake-planning-model
 Layers: 12
-Tools: list_files, read_file, repo_search, git_status
-Blocked tools: patch_apply, shell_command, delete_file, network_call
+Tools: list_files, read_file, repo_search, git_status, git_diff_readonly, ask_user_question, list_muses, list_skills
+Blocked tools: write_file, replace_in_file, delete_file, patch_apply, shell_command, network_call, remote_execution
 ```
 
 ### 8.3 Streaming Event API
