@@ -80,18 +80,45 @@ defmodule Muse.CommandDispatcher do
     {:ok, output, []}
   end
 
-  # -- Agents ------------------------------------------------------------------
+  # -- Muses -------------------------------------------------------------------
 
-  def dispatch(:agents, _args, context) do
-    case Map.get(context, :agent_snapshot, :unavailable) do
-      :unavailable ->
+  @doc """
+  Dispatches the `/muses` command, listing all registered Muse profiles.
+
+  Prefers `Muse.MuseRegistry.summaries/0` for profile discovery; falls back
+  to `agent_snapshot` from context, or a static fallback listing the two
+  canonical PR04 Muses (Planning, Coding) if neither source is available.
+  """
+  def dispatch(:muses, _args, context) do
+    profiles = resolve_muse_profiles(context)
+
+    case profiles do
+      [] ->
         {:ok, "Muse registry unavailable.", []}
 
-      %{agents: agents} ->
-        count = length(agents)
+      profiles when is_list(profiles) ->
+        count = length(profiles)
         label = if count == 1, do: "Muse", else: "Muses"
-        {:ok, "Muse registry: #{count} #{label}.", []}
+
+        lines =
+          Enum.map(profiles, fn p ->
+            id = Map.get(p, :id, "?")
+            display = Map.get(p, :display_name, to_string(id))
+            role = Map.get(p, :role, "")
+            desc = Map.get(p, :description, "")
+            role_part = if role != "", do: " (#{role})", else: ""
+            desc_part = if desc != "", do: " — #{desc}", else: ""
+            "- #{display}#{role_part}#{desc_part}"
+          end)
+
+        {:ok, "Muse registry: #{count} #{label} available.\n" <> Enum.join(lines, "\n"), []}
     end
+  end
+
+  # Keep `:agents` as a compatibility alias — both `/muses` and `/agents` parse
+  # to `:muses`, but external code may still dispatch `:agents` directly.
+  def dispatch(:agents, _args, context) do
+    dispatch(:muses, nil, context)
   end
 
   # -- Simulate ----------------------------------------------------------------
@@ -477,6 +504,47 @@ defmodule Muse.CommandDispatcher do
 
   def dispatch(action, _args, _context) do
     {:error, "Unknown command action: #{inspect(action)}. Type /help for available commands.", []}
+  end
+
+  # -- Muse profile resolution -------------------------------------------------
+
+  defp resolve_muse_profiles(context) do
+    # 1. Try MuseRegistry (PR04 core module)
+    with {:module, Muse.MuseRegistry} <- Code.ensure_loaded(Muse.MuseRegistry),
+         true <- function_exported?(Muse.MuseRegistry, :summaries, 0) do
+      Muse.MuseRegistry.summaries()
+    else
+      _ ->
+        # 2. Fall back to runtime agent_snapshot from context
+        case Map.get(context, :agent_snapshot, :unavailable) do
+          %{agents: agents} when is_list(agents) and agents != [] ->
+            Enum.map(agents, fn a ->
+              %{
+                id: a[:id] || a[:name],
+                display_name: a[:name] || to_string(a[:id] || "?"),
+                role: a[:kind],
+                description: Map.get(a, :task, "")
+              }
+            end)
+
+          _ ->
+            # 3. Static fallback — canonical PR04 Muses
+            [
+              %{
+                id: :planning,
+                display_name: "Planning Muse",
+                role: :planning,
+                description: "Inspects the workspace, creates approval-gated plans"
+              },
+              %{
+                id: :coding,
+                display_name: "Coding Muse",
+                role: :coding,
+                description: "Implements approved changes via patches"
+              }
+            ]
+        end
+    end
   end
 
   # -- Filter normalization (shared) -------------------------------------------

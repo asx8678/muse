@@ -54,21 +54,52 @@ defmodule Muse.CommandDispatcherTest do
     end
   end
 
-  describe "dispatch/3 — :agents" do
-    test "reports unavailable when agent_snapshot is :unavailable" do
-      {:ok, output, _effects} =
-        CommandDispatcher.dispatch(:agents, nil, %{agent_snapshot: :unavailable})
+  describe "dispatch/3 — :muses" do
+    test "lists Muses from Muse.MuseRegistry" do
+      {:ok, output, _effects} = CommandDispatcher.dispatch(:muses, nil, %{})
 
-      assert output =~ "unavailable"
+      assert output =~ "Muse registry"
+      assert output =~ "2 Muses available"
     end
 
-    test "reports agent count from snapshot" do
-      snapshot = %{agents: [%{name: :a}, %{name: :b}]}
+    test "includes Planning Muse with registry description" do
+      {:ok, output, _effects} = CommandDispatcher.dispatch(:muses, nil, %{})
 
+      assert output =~ "Planning Muse"
+      assert output =~ "approval-gated implementation plans"
+    end
+
+    test "includes Coding Muse with registry description" do
+      {:ok, output, _effects} = CommandDispatcher.dispatch(:muses, nil, %{})
+
+      assert output =~ "Coding Muse"
+      assert output =~ "proposing and applying patches"
+    end
+
+    test "uses Muse-first language — no Agent/Bot/Code Puppy labels" do
+      {:ok, output, _effects} = CommandDispatcher.dispatch(:muses, nil, %{})
+
+      refute output =~ ~r/\bAgent\b/
+      refute output =~ ~r/\bBot\b/
+      refute output =~ ~r/Code Puppy/
+    end
+
+    test "ignores agent_snapshot context when registry is available" do
+      # Even with an agent_snapshot, the registry is the source of truth
       {:ok, output, _effects} =
-        CommandDispatcher.dispatch(:agents, nil, %{agent_snapshot: snapshot})
+        CommandDispatcher.dispatch(:muses, nil, %{agent_snapshot: :unavailable})
 
-      assert output =~ "2 Muses"
+      assert output =~ "Planning Muse"
+      assert output =~ "Coding Muse"
+    end
+  end
+
+  describe "dispatch/3 — :agents (legacy alias)" do
+    test "delegates to :muses and shows registry output" do
+      {:ok, agents_output, _effects} = CommandDispatcher.dispatch(:agents, nil, %{})
+      {:ok, muses_output, _effects} = CommandDispatcher.dispatch(:muses, nil, %{})
+
+      assert agents_output == muses_output
     end
   end
 

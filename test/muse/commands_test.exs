@@ -13,11 +13,11 @@ defmodule Muse.CommandsTest do
     end
 
     test "parses /muses" do
-      assert Commands.parse("/muses") == {:command, :agents}
+      assert Commands.parse("/muses") == {:command, :muses}
     end
 
-    test "/agents legacy alias still parses" do
-      assert Commands.parse("/agents") == {:command, :agents}
+    test "/agents legacy alias parses to :muses" do
+      assert Commands.parse("/agents") == {:command, :muses}
     end
 
     test "parses /simulate event" do
@@ -87,6 +87,10 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/open stats") == {:command, :open_stats}
       assert Commands.parse("/open settings") == {:command, :open_settings}
       assert Commands.parse("/open logs") == {:command, :open_logs}
+    end
+
+    test "/open agents legacy alias parses to :open_agents" do
+      assert Commands.parse("/open agents") == {:command, :open_agents}
     end
 
     test "does not match /open with unknown tab" do
@@ -200,6 +204,7 @@ defmodule Muse.CommandsTest do
     test "lists all commands" do
       text = Commands.help_text()
       assert text =~ "/help"
+      assert text =~ "/muses"
       assert text =~ "/events"
       assert text =~ "/muses"
       assert text =~ "/simulate event"
@@ -227,6 +232,19 @@ defmodule Muse.CommandsTest do
       assert text =~ "/connect runtime"
       assert text =~ "/disconnect runtime"
     end
+
+    test "includes /muses but not /agents legacy alias" do
+      text = Commands.help_text()
+      assert text =~ "/muses"
+      refute text =~ "/agents"
+    end
+
+    test "uses Muse-first language" do
+      text = Commands.help_text()
+      # /muses description should reference Muses, not Agents/Bots
+      refute text =~ ~r/\bAgent\b.*command/i
+      refute text =~ ~r/\bBot\b.*command/i
+    end
   end
 
   describe "slash_commands/0" do
@@ -241,6 +259,13 @@ defmodule Muse.CommandsTest do
         assert String.starts_with?(cmd, "/")
       end
     end
+
+    test "includes /muses but not /agents legacy alias" do
+      cmds = Commands.slash_commands()
+      cmd_names = Enum.map(cmds, fn {cmd, _desc} -> cmd end)
+      assert "/muses" in cmd_names
+      refute "/agents" in cmd_names
+    end
   end
 
   describe "slash_commands_json/0" do
@@ -254,6 +279,13 @@ defmodule Muse.CommandsTest do
         assert Map.has_key?(cmd, :description)
         assert String.starts_with?(cmd.command, "/")
       end
+    end
+
+    test "includes /muses but not /agents legacy alias" do
+      cmds = Commands.slash_commands_json()
+      cmd_names = Enum.map(cmds, & &1.command)
+      assert "/muses" in cmd_names
+      refute "/agents" in cmd_names
     end
   end
 end

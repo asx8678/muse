@@ -9,7 +9,7 @@ defmodule Muse.Commands do
   @slash_commands [
     {"/help", :help, "Show available commands"},
     {"/events", :events, "Show event summary"},
-    {"/muses", :agents, "Show Muse status"},
+    {"/muses", :muses, "Show available Muses"},
     {"/simulate event", :simulate_event, "Simulate a test event"},
     {"/simulate backend-error", :simulate_backend_error, "Simulate a backend error"},
     {"/clear", :clear_history, "Clear command history"},
@@ -45,7 +45,7 @@ defmodule Muse.Commands do
 
   # Legacy aliases — parsed but not shown in help text or autocomplete
   @legacy_aliases [
-    {"/agents", :agents},
+    {"/agents", :muses},
     {"/open agents", :open_agents}
   ]
   @sorted_legacy_aliases Enum.sort_by(@legacy_aliases, fn {prefix, _} ->
