@@ -15,12 +15,17 @@ defmodule Muse.SessionStoreTest do
   end
 
   defp tmp_dir! do
+    suffix =
+      "#{System.system_time(:nanosecond)}-#{:erlang.unique_integer([:positive, :monotonic])}"
+
     path =
       Path.join(
         System.tmp_dir!(),
-        "muse-session-store-test-#{System.unique_integer([:positive])}"
+        "muse-session-store-test-#{suffix}"
       )
 
+    # Defensive: clean any stale dir from a previous crashed run
+    File.rm_rf!(path)
     File.mkdir_p!(path)
     path
   end
