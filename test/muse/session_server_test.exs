@@ -150,15 +150,23 @@ defmodule Muse.SessionServerTest do
       Muse.SessionServer.submit(pid, :cli, "fix it")
 
       status_after = Muse.SessionServer.status(pid)
-      # 3 events: user + self_healing + assistant
-      assert status_after.event_count == 3
+      # 6 events: user + queued_issues + turn_started + delta + assistant + turn_completed
+      assert status_after.event_count == 6
 
-      # Global State also has 3 events
+      # Global State also has 6 events
       events = State.events()
-      assert length(events) == 3
+      assert length(events) == 6
 
       event_types = Enum.map(events, & &1.type)
-      assert event_types == [:user_message, :queued_issues_attached, :assistant_message]
+
+      assert event_types == [
+               :user_message,
+               :queued_issues_attached,
+               :turn_started,
+               :assistant_delta,
+               :assistant_message,
+               :turn_completed
+             ]
     end
   end
 
@@ -169,21 +177,40 @@ defmodule Muse.SessionServerTest do
       assert text == "Placeholder response: received \"hello\""
     end
 
-    test "appends user and assistant events to State" do
+    test "appends structured streaming events to State" do
       pid = start_server("state-events")
       Muse.SessionServer.submit(pid, :web, "test message")
 
       events = State.events()
-      assert length(events) == 2
+      assert length(events) == 5
 
-      [user_event, assistant_event] = events
+      [user_event, turn_started, delta, assistant_event, turn_completed] = events
+
+      # User message
       assert user_event.source == :web
       assert user_event.type == :user_message
-      assert user_event.data == %{text: "test message"}
+      assert user_event.data.text == "test message"
+      assert user_event.visibility == :user
 
+      # Turn started
+      assert turn_started.type == :turn_started
+      assert turn_started.visibility == :internal
+
+      # Assistant delta
+      assert delta.source == :muse
+      assert delta.type == :assistant_delta
+      assert delta.data.index == 0
+
+      # Assistant final message
       assert assistant_event.source == :muse
       assert assistant_event.type == :assistant_message
-      assert assistant_event.data.text == "Placeholder response: received \"test message\""
+      assert assistant_event.data.streamed? == true
+      assert assistant_event.visibility == :user
+
+      # Turn completed
+      assert turn_completed.type == :turn_completed
+      assert turn_completed.visibility == :internal
+      assert turn_completed.data.streamed? == true
     end
 
     test "preserves event order across multiple submits" do
@@ -193,18 +220,21 @@ defmodule Muse.SessionServerTest do
       Muse.SessionServer.submit(pid, :cli, "second")
 
       events = State.events()
-      assert length(events) == 4
+      assert length(events) == 10
 
       types = Enum.map(events, & &1.type)
-      assert types == [:user_message, :assistant_message, :user_message, :assistant_message]
 
-      texts = Enum.map(events, & &1.data.text)
-
-      assert texts == [
-               "first",
-               "Placeholder response: received \"first\"",
-               "second",
-               "Placeholder response: received \"second\""
+      assert types == [
+               :user_message,
+               :turn_started,
+               :assistant_delta,
+               :assistant_message,
+               :turn_completed,
+               :user_message,
+               :turn_started,
+               :assistant_delta,
+               :assistant_message,
+               :turn_completed
              ]
     end
   end
@@ -227,7 +257,8 @@ defmodule Muse.SessionServerTest do
 
       Muse.SessionServer.submit(pid, :cli, "count me")
       status_after = Muse.SessionServer.status(pid)
-      assert status_after.event_count == 2
+      # 5 events per submit now
+      assert status_after.event_count == 5
     end
 
     test "works while server is alive (no blocking)" do
@@ -235,7 +266,8 @@ defmodule Muse.SessionServerTest do
       assert Muse.SessionServer.status(pid).status == :idle
 
       Muse.SessionServer.submit(pid, :cli, "ping")
-      assert Muse.SessionServer.status(pid).event_count == 2
+      # 5 events per submit
+      assert Muse.SessionServer.status(pid).event_count == 5
     end
   end
 
@@ -257,8 +289,8 @@ defmodule Muse.SessionServerTest do
 
       events = State.events()
       seqs = Enum.map(events, & &1.seq)
-      # seq starts at 1 for the first event in a session
-      assert seqs == [1, 2]
+      # 5 events with seq 1..5
+      assert seqs == [1, 2, 3, 4, 5]
     end
 
     test "seq continues incrementing across multiple submits" do
@@ -268,7 +300,7 @@ defmodule Muse.SessionServerTest do
 
       events = State.events()
       seqs = Enum.map(events, & &1.seq)
-      assert seqs == [1, 2, 3, 4]
+      assert seqs == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     end
 
     test "events within the same submit share the same turn_id" do
@@ -288,7 +320,8 @@ defmodule Muse.SessionServerTest do
 
       events = State.events()
       [first_turn | _] = Enum.map(events, & &1.turn_id)
-      [second_turn | _] = Enum.drop(events, 2) |> Enum.map(& &1.turn_id)
+      # Second submit's events start at index 5
+      [second_turn | _] = Enum.drop(events, 5) |> Enum.map(& &1.turn_id)
       assert first_turn != second_turn
     end
 
@@ -297,7 +330,8 @@ defmodule Muse.SessionServerTest do
       Muse.SessionServer.submit(pid, :cli, "hello")
 
       events = State.events()
-      [user_event, assistant_event] = events
+      user_event = Enum.find(events, &(&1.type == :user_message))
+      assistant_event = Enum.find(events, &(&1.type == :assistant_message))
       assert user_event.visibility == :user
       assert assistant_event.visibility == :user
     end
@@ -336,11 +370,98 @@ defmodule Muse.SessionServerTest do
       Muse.SessionServer.submit(pid, :cli, "fix it")
 
       events = State.events()
-      # 3 events: user (:user), self_healing (:debug), assistant (:user)
-      [user_event, sh_event, assistant_event] = events
+      # 6 events: user (:user), self_healing (:debug), turn_started (:internal),
+      # delta (:user), assistant (:user), turn_completed (:internal)
+      user_event = Enum.find(events, &(&1.type == :user_message))
+      sh_event = Enum.find(events, &(&1.type == :queued_issues_attached))
+      assistant_event = Enum.find(events, &(&1.type == :assistant_message))
       assert user_event.visibility == :user
       assert sh_event.visibility == :debug
       assert assistant_event.visibility == :user
+    end
+  end
+
+  describe "streaming event sequence" do
+    test "normal submit emits user_message, turn_started, assistant_delta, assistant_message, turn_completed" do
+      pid = start_server("stream-seq-session")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      types = Enum.map(events, & &1.type)
+
+      assert types == [
+               :user_message,
+               :turn_started,
+               :assistant_delta,
+               :assistant_message,
+               :turn_completed
+             ]
+    end
+
+    test "assistant_delta has index and text" do
+      pid = start_server("delta-content-session")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      delta = Enum.find(events, &(&1.type == :assistant_delta))
+      assert delta.data.index == 0
+      assert delta.data.text =~ "Placeholder response"
+    end
+
+    test "final assistant_message has streamed? true" do
+      pid = start_server("streamed-flag-session")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      final = Enum.find(events, &(&1.type == :assistant_message))
+      assert final.data.streamed? == true
+    end
+
+    test "turn_completed has streamed? true and delta_count" do
+      pid = start_server("turn-comp-session")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      tc = Enum.find(events, &(&1.type == :turn_completed))
+      assert tc.data.streamed? == true
+      assert tc.data.delta_count == 1
+    end
+
+    test "all events in a submit share the same turn_id" do
+      pid = start_server("turn-id-stream-session")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      turn_ids = Enum.map(events, & &1.turn_id)
+      assert length(Enum.uniq(turn_ids)) == 1
+    end
+
+    test "turn_started has internal visibility" do
+      pid = start_server("turn-started-vis")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      ts = Enum.find(events, &(&1.type == :turn_started))
+      assert ts.visibility == :internal
+    end
+
+    test "turn_completed has internal visibility" do
+      pid = start_server("turn-comp-vis")
+      Muse.SessionServer.submit(pid, :cli, "hello")
+
+      events = State.events()
+      tc = Enum.find(events, &(&1.type == :turn_completed))
+      assert tc.visibility == :internal
+    end
+
+    test "user text with sk- key is redacted in events" do
+      pid = start_server("redact-session")
+      Muse.SessionServer.submit(pid, :cli, "my key is sk-test-12345")
+
+      events = State.events()
+      user_event = Enum.find(events, &(&1.type == :user_message))
+      refute user_event.data.text =~ "sk-test-12345"
+      assert user_event.data.text =~ "[REDACTED]"
     end
   end
 
@@ -359,8 +480,8 @@ defmodule Muse.SessionServerTest do
       seqs_b = Enum.map(events_b, & &1.seq)
 
       # Both sessions start at seq=1
-      assert seqs_a == [1, 2]
-      assert seqs_b == [1, 2]
+      assert seqs_a == [1, 2, 3, 4, 5]
+      assert seqs_b == [1, 2, 3, 4, 5]
     end
 
     test "status reports seq counter" do
@@ -371,7 +492,8 @@ defmodule Muse.SessionServerTest do
 
       Muse.SessionServer.submit(pid, :cli, "hello")
       status = Muse.SessionServer.status(pid)
-      assert status.seq == 2
+      # 5 events emitted
+      assert status.seq == 5
     end
   end
 

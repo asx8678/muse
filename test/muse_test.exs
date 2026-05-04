@@ -90,30 +90,42 @@ defmodule MuseTest do
       assert text == "Placeholder response: received \"hello\""
     end
 
-    test "appends exactly a user event and assistant event, in order" do
+    test "appends streaming event sequence in order" do
       Muse.submit(:cli, "hello")
       events = State.events()
 
-      assert length(events) == 2
+      # 5 events: user_message, turn_started, assistant_delta, assistant_message, turn_completed
+      assert length(events) == 5
 
-      [user_event, assistant_event] = events
+      types = Enum.map(events, & &1.type)
+
+      assert types == [
+               :user_message,
+               :turn_started,
+               :assistant_delta,
+               :assistant_message,
+               :turn_completed
+             ]
+
+      user_event = Enum.find(events, &(&1.type == :user_message))
+      assistant_event = Enum.find(events, &(&1.type == :assistant_message))
 
       # User event
       assert user_event.source == :cli
       assert user_event.type == :user_message
-      assert user_event.data == %{text: "hello"}
 
-      # Assistant event
+      # Assistant final event
       assert assistant_event.source == :muse
       assert assistant_event.type == :assistant_message
-      assert assistant_event.data == %{text: "Placeholder response: received \"hello\""}
+      assert assistant_event.data.streamed? == true
     end
 
     test "assistant event text matches the returned text" do
       {:ok, returned_text} = Muse.submit(:cli, "test input")
-      [_user, assistant] = State.events()
+      events = State.events()
+      assistant_event = Enum.find(events, &(&1.type == :assistant_message))
 
-      assert assistant.data.text == returned_text
+      assert assistant_event.data.text == returned_text
     end
 
     test "with queued self-healing issues, attaches them as an event" do
@@ -123,16 +135,24 @@ defmodule MuseTest do
       {:ok, text} = Muse.submit(:cli, "fix it")
       events = State.events()
 
-      # user, self_healing, assistant — 3 events
-      assert length(events) == 3
+      # user, self_healing, turn_started, delta, assistant, turn_completed — 6 events
+      assert length(events) == 6
 
-      [user_event, healing_event, assistant_event] = events
+      types = Enum.map(events, & &1.type)
 
-      assert user_event.source == :cli
-      assert user_event.type == :user_message
+      assert types == [
+               :user_message,
+               :queued_issues_attached,
+               :turn_started,
+               :assistant_delta,
+               :assistant_message,
+               :turn_completed
+             ]
+
+      healing_event = Enum.find(events, &(&1.type == :queued_issues_attached))
+      assistant_event = Enum.find(events, &(&1.type == :assistant_message))
 
       assert healing_event.source == :self_healing
-      assert healing_event.type == :queued_issues_attached
       assert healing_event.data.issues != []
 
       assert text =~ "self-healing issue"
@@ -166,7 +186,8 @@ defmodule MuseTest do
       {:ok, text} = Muse.submit(:cli, "normal submit")
       events = State.events()
 
-      assert length(events) == 2
+      # 5 events per submit now
+      assert length(events) == 5
       assert text == "Placeholder response: received \"normal submit\""
     end
   end

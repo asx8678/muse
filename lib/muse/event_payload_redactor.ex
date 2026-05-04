@@ -1,0 +1,116 @@
+defmodule Muse.EventPayloadRedactor do
+  @moduledoc """
+  Redacts secret patterns from event payloads before they enter `%Muse.Event{}`.
+
+  Works recursively through maps, lists, and strings. Applies two layers of
+  redaction:
+
+    1. **Sensitive key redaction** — values under keys matching
+       `Muse.MetadataSanitizer.sensitive_key?/1` are replaced with
+       `"[REDACTED]"`.
+
+    2. **Secret string pattern redaction** — strings containing obvious
+       credential patterns (API keys, Bearer tokens, etc.) have the
+       secret portion replaced with `"[REDACTED]"`.
+
+  ## Supported secret patterns
+
+    * `sk-...` (OpenAI-style API key prefixes)
+    * `Bearer ...` / `Authorization: Bearer ...`
+    * `api_key=...` / `token=...` / `secret=...`
+
+  ## Usage
+
+      iex> Muse.EventPayloadRedactor.redact(%{text: "my key is sk-test-12345"})
+      %{text: "my key is [REDACTED]"}
+
+      iex> Muse.EventPayloadRedactor.redact(%{api_key: "shhh", note: "safe"})
+      %{api_key: "[REDACTED]", note: "safe"}
+  """
+
+  @redacted "[REDACTED]"
+
+  # Regex patterns for secret strings. Each captures a prefix and the
+  # secret value; the replacement keeps the prefix and swaps the value.
+  @secret_patterns [
+    # OpenAI-style keys: sk-test-12345, sk-proj-abc
+    ~r/\bsk-[A-Za-z0-9_-]+/,
+    # Bearer tokens: Bearer abc123
+    ~r/\bBearer\s+\S+/,
+    # Authorization header: Authorization: Bearer abc123
+    ~r/\bAuthorization:\s*Bearer\s+\S+/i,
+    # Query-string/assignment secrets: api_key=..., token=..., secret=...
+    ~r/\b(?:api_key|token|secret)=\S+/i
+  ]
+
+  @doc """
+  Recursively redact a term, returning a safe copy suitable for event data.
+
+  Preserves structural types (maps, lists) while replacing sensitive values.
+  """
+  @spec redact(term()) :: term()
+  def redact(term), do: redact(term, nil)
+
+  # Map: walk each key/value pair, redact sensitive-key values, recurse others
+  defp redact(map, _parent_key) when is_map(map) and not is_struct(map) do
+    Map.new(map, fn {k, v} ->
+      if Muse.MetadataSanitizer.sensitive_key?(k) do
+        {k, @redacted}
+      else
+        {k, redact(v, k)}
+      end
+    end)
+  end
+
+  # Struct: convert to map, redact, but preserve struct identity
+  defp redact(%{__struct__: struct_name} = struct, _parent_key) do
+    struct
+    |> Map.from_struct()
+    |> Map.new(fn {k, v} ->
+      if Muse.MetadataSanitizer.sensitive_key?(k) do
+        {k, @redacted}
+      else
+        {k, redact(v, k)}
+      end
+    end)
+    |> then(fn map -> struct(struct_name, map) end)
+  end
+
+  # List: redact each element
+  defp redact(list, parent_key) when is_list(list) do
+    Enum.map(list, &redact(&1, parent_key))
+  end
+
+  # Tuple: convert to list, redact, convert back
+  defp redact(tuple, parent_key) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&redact(&1, parent_key))
+    |> List.to_tuple()
+  end
+
+  # String: apply secret pattern redaction
+  defp redact(binary, _parent_key) when is_binary(binary) do
+    Enum.reduce(@secret_patterns, binary, fn pattern, acc ->
+      Regex.replace(pattern, acc, fn _full -> @redacted end)
+    end)
+  end
+
+  # Primitives and other terms: pass through unchanged
+  defp redact(term, _parent_key), do: term
+
+  @doc """
+  Redact a string by replacing secret patterns.
+
+  Useful for one-off string redaction without recursive map walking.
+
+      iex> Muse.EventPayloadRedactor.redact_string("key=sk-test-12345")
+      "key=[REDACTED]"
+  """
+  @spec redact_string(String.t()) :: String.t()
+  def redact_string(binary) when is_binary(binary) do
+    Enum.reduce(@secret_patterns, binary, fn pattern, acc ->
+      Regex.replace(pattern, acc, fn _full -> @redacted end)
+    end)
+  end
+end

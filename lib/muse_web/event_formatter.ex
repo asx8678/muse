@@ -184,14 +184,26 @@ defmodule MuseWeb.EventFormatter do
   # -- JSON formatting --------------------------------------------------------
 
   def event_to_map(%Event{} = event) do
-    %{
+    base = %{
       id: event.id,
       timestamp: DateTime.to_iso8601(event.timestamp),
       source: event.source,
       type: event.type,
       data: MuseWeb.ExportJSON.json_safe(event.data)
     }
+
+    # Add metadata fields when present
+    base
+    |> maybe_put(:session_id, event.session_id)
+    |> maybe_put(:turn_id, event.turn_id)
+    |> maybe_put(:seq, event.seq)
+    |> maybe_put(:parent_id, event.parent_id)
+    |> maybe_put(:visibility, event.visibility)
+    |> maybe_put(:muse_id, event.muse_id)
   end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   def format_event_json(%Event{} = event) do
     event_to_map(event)

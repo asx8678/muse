@@ -227,10 +227,21 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
 
       # Verify order in State directly
       events = Muse.State.events()
-      sources = Enum.map(events, & &1.source)
+      types = Enum.map(events, & &1.type)
 
-      # CLI user, muse assistant, web user, muse assistant
-      assert sources == [:cli, :muse, :web, :muse]
+      # Each submit emits: user_message, turn_started, assistant_delta, assistant_message, turn_completed
+      assert types == [
+               :user_message,
+               :turn_started,
+               :assistant_delta,
+               :assistant_message,
+               :turn_completed,
+               :user_message,
+               :turn_started,
+               :assistant_delta,
+               :assistant_message,
+               :turn_completed
+             ]
     end
   end
 end

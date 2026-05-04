@@ -244,6 +244,38 @@ defmodule MuseWeb.EventFormatterTest do
       assert result.type == :info
       assert result.data == %{"text" => "hello"}
     end
+
+    test "includes metadata fields when present" do
+      event =
+        Muse.Event.new(:muse, :assistant_delta, %{text: "..."},
+          id: 42,
+          timestamp: DateTime.utc_now(),
+          session_id: "sess_1",
+          turn_id: "turn_abc",
+          seq: 5,
+          visibility: :user,
+          muse_id: "planning_muse"
+        )
+
+      result = EventFormatter.event_to_map(event)
+      assert result.session_id == "sess_1"
+      assert result.turn_id == "turn_abc"
+      assert result.seq == 5
+      assert result.visibility == :user
+      assert result.muse_id == "planning_muse"
+    end
+
+    test "omits metadata fields when nil" do
+      event = make_event(:info, %{text: "hello"})
+      result = EventFormatter.event_to_map(event)
+
+      # No metadata keys present when values are nil
+      refute Map.has_key?(result, :session_id)
+      refute Map.has_key?(result, :turn_id)
+      refute Map.has_key?(result, :seq)
+      refute Map.has_key?(result, :visibility)
+      refute Map.has_key?(result, :muse_id)
+    end
   end
 
   describe "format_event_json/1" do

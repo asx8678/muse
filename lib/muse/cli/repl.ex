@@ -109,9 +109,7 @@ defmodule Muse.CLI.Repl do
   end
 
   defp submit_message(text) do
-    Muse.submit(:cli, text)
-    |> widen_result()
-    |> print_submit_result()
+    Muse.CLI.StreamPrinter.stream_submit(:cli, text)
 
     :ok
   end
@@ -159,18 +157,6 @@ defmodule Muse.CLI.Repl do
       :exit, _ -> []
     end
   end
-
-  # Breaks type inference so the {:error, _} clause of print_submit_result/1
-  # doesn't trigger an unreachable-code warning, even though Muse.submit/2
-  # currently only returns {:ok, _}.
-  @spec widen_result(term()) :: term()
-  defp widen_result(result), do: result
-
-  # -- Output helpers -----------------------------------------------------------
-
-  defp print_submit_result({:ok, text}), do: IO.puts("assistant> #{text}")
-  defp print_submit_result({:error, text}), do: IO.puts("[error] #{text}")
-  defp print_submit_result(other), do: IO.puts("[error] #{inspect(other)}")
 
   # -- DevReloader rollback (used in error recovery) ----------------------------
 

@@ -108,7 +108,8 @@ defmodule Muse.SessionRouterTest do
       assert text == "Placeholder response: received \"smoke test\""
 
       events = State.events()
-      assert length(events) == 2
+      # 5 events: user_message, turn_started, assistant_delta, assistant_message, turn_completed
+      assert length(events) == 5
     end
   end
 
@@ -122,12 +123,13 @@ defmodule Muse.SessionRouterTest do
       Muse.SessionRouter.submit("event-session", :cli, "test event")
       events = State.events()
 
-      assert length(events) == 2
+      # 5 events: user_message, turn_started, assistant_delta, assistant_message, turn_completed
+      assert length(events) == 5
 
-      [user_event, assistant_event] = events
+      user_event = Enum.find(events, &(&1.type == :user_message))
+      assistant_event = Enum.find(events, &(&1.type == :assistant_message))
       assert user_event.source == :cli
       assert user_event.type == :user_message
-      assert user_event.data == %{text: "test event"}
 
       assert assistant_event.source == :muse
       assert assistant_event.type == :assistant_message

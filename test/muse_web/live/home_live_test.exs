@@ -458,6 +458,31 @@ defmodule MuseWeb.HomeLiveTest do
     assert_push_event(view, "clear_command_input", %{})
   end
 
+  # -- Streaming delta rendering tests ----------------------------------------
+
+  describe "streaming delta chat rendering" do
+    test "replayed delta events render concatenated text in chat" do
+      # Submit a message which now emits deltas
+      Muse.submit(:cli, "delta test")
+
+      {:ok, _view, html} = live(build_conn(), "/")
+
+      # The assistant message text should appear in chat
+      assert html =~ "Placeholder response"
+    end
+
+    test "PubSub delta event updates LiveView" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      # Submit via web, which emits events via State
+      view |> element("#command-form") |> render_submit(%{"text" => "web delta"})
+
+      # LiveView should show the assistant text
+      html = render(view)
+      assert html =~ "Placeholder response"
+    end
+  end
+
   # -- Diagnostics tests -------------------------------------------------------
 
   test "does not render diagnostics drawer when there are no diagnostics" do

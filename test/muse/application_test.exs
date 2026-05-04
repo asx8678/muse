@@ -594,7 +594,7 @@ defmodule Muse.ApplicationTest do
 
       assert {:ok, text} = Muse.submit(:cli, "runtime smoke")
       assert text == "Placeholder response: received \"runtime smoke\""
-      assert {:ok, %{session_id: "default", event_count: 2}} = Muse.SessionRouter.status()
+      assert {:ok, %{session_id: "default", event_count: 5}} = Muse.SessionRouter.status()
 
       # CLI should NOT be running (web-only)
       assert Process.whereis(Muse.CLI.Repl) == nil

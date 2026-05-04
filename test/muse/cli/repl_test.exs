@@ -63,7 +63,8 @@ defmodule Muse.CLI.ReplTest do
           assert Repl.handle_input("hello world", halt?: false) == :ok
         end)
 
-      assert output =~ "assistant>"
+      # StreamPrinter prints delta text directly without "assistant>" prefix
+      assert output =~ "Placeholder response"
       assert output =~ "hello world"
     end
 
@@ -73,9 +74,11 @@ defmodule Muse.CLI.ReplTest do
       end)
 
       events = State.events()
-      assert length(events) == 2
+      # 5 events: user_message, turn_started, assistant_delta, assistant_message, turn_completed
+      assert length(events) == 5
 
-      [user_event, assistant_event] = events
+      user_event = Enum.find(events, &(&1.type == :user_message))
+      assistant_event = Enum.find(events, &(&1.type == :assistant_message))
       assert user_event.source == :cli
       assert user_event.type == :user_message
       assert assistant_event.source == :muse

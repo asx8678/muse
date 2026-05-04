@@ -27,6 +27,7 @@ defmodule MuseWeb.HomeLive do
 
   import MuseWeb.ExportJSON, only: [json_safe: 1, build_diagnostics_payload: 1]
 
+  alias Muse.EventStream
   alias MuseWeb.BackendBridge
   alias MuseWeb.ConsoleCommand
 
@@ -95,7 +96,9 @@ defmodule MuseWeb.HomeLive do
         agent_runtime: BackendBridge.safe_agent_runtime_snapshot(),
         # Legacy assigns kept for compatibility
         open_windows: MapSet.new(),
-        active_window: nil
+        active_window: nil,
+        # Streaming assistant buffer: maps turn_id -> accumulated delta text
+        streaming_buffers: %{}
       )
 
     {:ok, socket}
@@ -663,10 +666,37 @@ defmodule MuseWeb.HomeLive do
     {:noreply, socket}
   end
 
-  def handle_info({:muse_event, _event}, socket) do
+  def handle_info({:muse_event, event}, socket) do
     state = Muse.State.get()
     reload_status = BackendBridge.safe_reload_status()
-    {:noreply, assign(socket, state: state, reload_status: reload_status)}
+
+    # Update streaming buffers for assistant_delta events
+    streaming_buffers =
+      case event.type do
+        :assistant_delta ->
+          turn_id = event.turn_id
+          chunk = Map.get(event.data, :text, "")
+          existing = Map.get(socket.assigns.streaming_buffers, turn_id, "")
+          Map.put(socket.assigns.streaming_buffers, turn_id, existing <> chunk)
+
+        :assistant_message ->
+          # Final message clears the buffer for this turn
+          Map.delete(socket.assigns.streaming_buffers, event.turn_id)
+
+        :turn_completed ->
+          # Turn completed clears the buffer for this turn
+          Map.delete(socket.assigns.streaming_buffers, event.turn_id)
+
+        _ ->
+          socket.assigns.streaming_buffers
+      end
+
+    {:noreply,
+     assign(socket,
+       state: state,
+       reload_status: reload_status,
+       streaming_buffers: streaming_buffers
+     )}
   end
 
   @impl true
@@ -841,27 +871,8 @@ defmodule MuseWeb.HomeLive do
   # -- Chat-first helpers -----------------------------------------------------
 
   defp chat_messages(events) do
-    events
-    |> Enum.filter(&(&1.type in [:user_message, :assistant_message]))
-    |> Enum.map(fn event ->
-      %{
-        id: event.id,
-        role: chat_role(event),
-        text: chat_text(event),
-        timestamp: format_timestamp(event.timestamp),
-        source: event.source
-      }
-    end)
+    # Use EventStream for structured chat message derivation, which
+    # handles delta deduplication and streaming buffers.
+    EventStream.chat_messages(events)
   end
-
-  defp chat_role(%{type: :assistant_message}), do: :assistant
-  defp chat_role(%{type: :user_message}), do: :user
-  defp chat_role(_), do: :system
-
-  defp chat_text(%{data: data}) when is_map(data),
-    do: Map.get(data, :text) || Map.get(data, "text") || ""
-
-  defp chat_text(%{data: data}) when is_binary(data), do: data
-  defp chat_text(%{data: nil}), do: ""
-  defp chat_text(%{data: data}), do: inspect(data)
 end

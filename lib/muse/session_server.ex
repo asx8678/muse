@@ -26,7 +26,9 @@ defmodule Muse.SessionServer do
   use GenServer, restart: :temporary
 
   alias Muse.Event
+  alias Muse.EventPayloadRedactor
   alias Muse.State
+  alias Muse.Turn
 
   # -- Public API ---------------------------------------------------------------
 
@@ -75,14 +77,24 @@ defmodule Muse.SessionServer do
   def handle_call({:submit, source, text}, _from, state) do
     turn_id = generate_turn_id()
 
-    # Emit user event with session metadata
+    # Build a Turn struct for this submission
+    turn =
+      Turn.new(
+        session_id: state.session_id,
+        id: turn_id,
+        source: source,
+        user_text: text
+      )
+
+    # 1. Emit user message event with session metadata (redacted)
+    redacted_user_text = EventPayloadRedactor.redact_string(text)
+
     {user_event, state} =
-      emit_session_event(state, source, :user_message, %{text: text},
+      emit_session_event(state, source, :user_message, %{text: redacted_user_text},
         turn_id: turn_id,
         visibility: :user
       )
 
-    # Track all session-local events in order
     session_events = [user_event]
 
     # Atomically claim queued self-healing issues
@@ -108,6 +120,24 @@ defmodule Muse.SessionServer do
     session_events =
       if self_healing_event, do: session_events ++ [self_healing_event], else: session_events
 
+    # 2. Emit turn_started (internal visibility)
+    turn_summary = %{
+      source: source,
+      user_text_length: String.length(text)
+    }
+
+    {turn_started_event, state} =
+      emit_session_event(state, source, :turn_started, turn_summary,
+        turn_id: turn_id,
+        visibility: :internal
+      )
+
+    session_events = session_events ++ [turn_started_event]
+
+    # Transition turn to running
+    {:ok, turn} = Turn.transition(turn, :running)
+
+    # 3. Build assistant response (placeholder)
     assistant_text =
       if claimed_issues != [] do
         count = length(claimed_issues)
@@ -118,14 +148,51 @@ defmodule Muse.SessionServer do
         "Placeholder response: received #{inspect(text)}"
       end
 
-    # Emit assistant event with session metadata
+    redacted_assistant_text = EventPayloadRedactor.redact_string(assistant_text)
+
+    # 4. Emit assistant delta(s) — single chunk for placeholder
+    delta_data = %{text: redacted_assistant_text, index: 0}
+
+    {delta_event, state} =
+      emit_session_event(state, :muse, :assistant_delta, delta_data,
+        turn_id: turn_id,
+        visibility: :user
+      )
+
+    session_events = session_events ++ [delta_event]
+
+    # 5. Mark turn as streamed (deltas have been emitted)
+    turn = Turn.mark_streamed(turn)
+
+    # 6. Emit final assistant_message with streamed? flag
+    final_data = %{text: redacted_assistant_text, streamed?: true}
+
     {assistant_event, state} =
-      emit_session_event(state, :muse, :assistant_message, %{text: assistant_text},
+      emit_session_event(state, :muse, :assistant_message, final_data,
         turn_id: turn_id,
         visibility: :user
       )
 
     session_events = session_events ++ [assistant_event]
+
+    # 7. Transition turn to completed and emit turn_completed
+    {:ok, turn} =
+      Turn.transition(turn, :completed, completed_at: DateTime.utc_now())
+
+    turn_completed_data = %{
+      streamed?: turn.streamed?,
+      delta_count: 1,
+      duration_ms: 0
+    }
+
+    {turn_completed_event, state} =
+      emit_session_event(state, source, :turn_completed, turn_completed_data,
+        turn_id: turn_id,
+        visibility: :internal
+      )
+
+    session_events = session_events ++ [turn_completed_event]
+
     updated_events = state.events ++ session_events
     {:reply, {:ok, assistant_text}, %{state | events: updated_events}}
   end
