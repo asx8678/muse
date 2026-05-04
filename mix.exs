@@ -34,6 +34,7 @@ defmodule Muse.MixProject do
       {:jason, "~> 1.4"},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:esbuild, "~> 0.9", runtime: Mix.env() == :dev},
+      {:req, "~> 0.5"},
       {:ex_ratatui, "~> 0.8"}
     ]
   end
