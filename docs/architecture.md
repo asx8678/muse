@@ -1979,6 +1979,10 @@ The TurnRunner checks cancellation at these points:
 /muse coding
 /tools
 /plan
+/plans
+/plan history
+/plan status
+/plan show <id>
 /approve plan
 /reject plan
 /patch
@@ -2343,6 +2347,10 @@ Stop after bounded repair attempts. Failures should produce a repair plan, not u
 
 ```text
 /plan
+/plans
+/plan history
+/plan status
+/plan show <id>
 /approve plan
 /reject plan
 /status

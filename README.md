@@ -68,6 +68,13 @@ Inside the `muse>` REPL:
 | Command | Description |
 |---|---|
 | `/help` | Show available commands |
+| `/plan` | Show the active Muse Plan |
+| `/plans` | List Muse Plan history for this session |
+| `/plan history` | List Muse Plan history for this session |
+| `/plan status` | Show active Muse Plan lifecycle status |
+| `/plan show <id>` | Show a Muse Plan by id |
+| `/approve plan` | Approve the active Muse Plan |
+| `/reject plan` | Reject the active Muse Plan |
 | `/events` | Print the event log |
 | `/workspace` | Print current workspace path |
 | `/reload` | Force a dev hot-reload |
