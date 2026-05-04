@@ -239,7 +239,7 @@ defmodule Muse.Plan do
       risks: Map.get(normalized, :risks, []),
       alternatives: Map.get(normalized, :alternatives, []),
       validation: Map.get(normalized, :validation, []),
-      approvals: Map.get(normalized, :approvals, []),
+      approvals: normalize_approvals(Map.get(normalized, :approvals, [])),
       metadata: normalize_metadata(Map.get(normalized, :metadata, %{}))
     }
   end
@@ -319,6 +319,12 @@ defmodule Muse.Plan do
     plan
     |> Map.from_struct()
     |> Map.update!(:tasks, fn tasks -> Enum.map(tasks, &Muse.Task.to_map/1) end)
+    |> Map.update!(:approvals, fn approvals ->
+      Enum.map(approvals, fn
+        %Muse.Approval{} = a -> Muse.Approval.to_map(a)
+        other -> other
+      end)
+    end)
     |> Map.update!(:metadata, &normalize_metadata/1)
     |> drop_nil_values()
   end
@@ -538,6 +544,17 @@ defmodule Muse.Plan do
   end
 
   defp normalize_tasks(_tasks), do: []
+
+  defp normalize_approvals(approvals) when is_list(approvals) do
+    Enum.map(approvals, fn
+      %Muse.Approval{} = a -> a
+      map when is_map(map) -> Muse.Approval.from_map(map)
+      _ -> nil
+    end)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_approvals(_), do: []
 
   defp normalize_string_list(values) when is_list(values) do
     values
