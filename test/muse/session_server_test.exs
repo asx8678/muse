@@ -961,7 +961,7 @@ defmodule Muse.SessionServerTest do
         tasks: [Muse.Task.new(title: "Task A", description: "Do A")]
       )
 
-      {:ok, _plan} = Muse.Plan.transition(plan, :awaiting_approval)
+      {:ok, plan} = Muse.Plan.transition(plan, :awaiting_approval)
 
       data = %{
         "status" => "awaiting_plan_approval",
@@ -982,13 +982,14 @@ defmodule Muse.SessionServerTest do
       assert status.plan != nil
       assert status.plan.objective == "Persisted plan test"
 
-      assert status.plans != %{}
-      assert status.plans["plan_persist_1"].objective == "Persisted plan test"
+      # Verify restored status is :awaiting_approval, not :draft
+      assert status.plan.status == :awaiting_approval,
+             "Restored plan status should be :awaiting_approval, got: #{inspect(status.plan.status)}"
 
-      # Verify plan rendered correctly via Plan.render
+      # Verify rendered header reflects awaiting_approval
       rendered = Muse.Plan.render(status.plan)
-      assert rendered =~ "Persisted plan test"
-      assert rendered =~ "Task A"
+      assert rendered =~ "Planning Muse prepared a plan.",
+             "Rendered plan header should be 'Planning Muse prepared a plan.'"
     end
 
     test "handles missing session snapshot gracefully" do

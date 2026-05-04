@@ -111,6 +111,28 @@ defmodule Muse.TaskTest do
       assert task.status == :pending
     end
 
+    test "accepts string status values, normalizing to atoms" do
+      task = Task.new(title: "Test", status: "in_progress")
+      assert task.status == :in_progress
+
+      task2 = Task.new(title: "Test", status: "completed")
+      assert task2.status == :completed
+
+      task3 = Task.new(title: "Test", status: "pending")
+      assert task3.status == :pending
+
+      task4 = Task.new(title: "Test", status: "blocked")
+      assert task4.status == :blocked
+
+      task5 = Task.new(title: "Test", status: "skipped")
+      assert task5.status == :skipped
+    end
+
+    test "falls back to :pending for unknown string status" do
+      task = Task.new(title: "Test", status: "bogus_status_value")
+      assert task.status == :pending
+    end
+
     test "accepts valid custom status" do
       task = Task.new(title: "Test", status: :in_progress)
       assert task.status == :in_progress

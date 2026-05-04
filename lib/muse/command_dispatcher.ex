@@ -912,7 +912,7 @@ defmodule Muse.CommandDispatcher do
   # -- Plan resolution --------------------------------------------------------
 
   defp resolve_active_plan(context) do
-    # Check session-level plan first
+    # 1. Check explicit plan keys in context (fast path for web/LiveView)
     session = Map.get(context, :session, %{})
 
     plan =
@@ -921,18 +921,58 @@ defmodule Muse.CommandDispatcher do
         Map.get(session, :plan) ||
         Map.get(session, :active_plan)
 
-    if is_nil(plan) do
-      # Try plans + active_plan_id from context
+    if not is_nil(plan) do
+      return_plan(plan)
+    else
+      # 2. Try plans + active_plan_id from context
       plans = Map.get(context, :plans, Map.get(session, :plans, %{}))
       active_id = Map.get(context, :active_plan_id, Map.get(session, :active_plan_id))
 
-      if active_id && plans[active_id] do
-        plans[active_id]
+      if active_id && is_map(plans) && plans[active_id] do
+        return_plan(plans[active_id])
+      else
+        # 3. Fall back to SessionRouter.status for the default session
+        resolve_from_session_router(Map.get(context, :session_id, "default"))
+      end
+    end
+  end
+
+  defp return_plan(%Muse.Plan{} = plan), do: plan
+
+  defp return_plan(plan_map) when is_map(plan_map), do: plan_map
+
+  defp return_plan(_), do: nil
+
+  defp resolve_from_session_router(session_id) do
+    case Muse.SessionRouter.status(session_id) do
+      {:ok, status} ->
+        resolve_plan_from_status(status)
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
+  end
+
+  defp resolve_plan_from_status(status) when is_map(status) do
+    plan = Map.get(status, :plan) || Map.get(status, :active_plan)
+
+    if not is_nil(plan) do
+      return_plan(plan)
+    else
+      plans = Map.get(status, :plans, %{})
+      active_id = Map.get(status, :active_plan_id)
+
+      if active_id && is_map(plans) && plans[active_id] do
+        return_plan(plans[active_id])
       else
         nil
       end
-    else
-      plan
     end
   end
+
+  defp resolve_plan_from_status(_), do: nil
 end

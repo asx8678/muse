@@ -200,6 +200,23 @@ defmodule Muse.PlanSchemaTest do
       assert {:ok, _normalized} = PlanSchema.validate(data)
     end
 
+    test "normalizes tasks with atom keys, always outputs string-key 'tasks'" do
+      data = %{
+        objective: "Fix bug",
+        tasks: [%{title: "T1", description: "D1"}]
+      }
+
+      {:ok, normalized} = PlanSchema.validate(data)
+
+      # Output always has string-key "tasks"
+      assert Map.has_key?(normalized, "tasks")
+      tasks = normalized["tasks"]
+      assert is_list(tasks)
+      task = hd(tasks)
+      assert task["requires_write"] == false
+      assert task["requires_shell"] == false
+    end
+
     test "validates the docs/testing.md structured plan example" do
       data = %{
         "objective" => "Add a /version command to Muse.",

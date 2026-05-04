@@ -181,7 +181,8 @@ defmodule Muse.Plan do
     normalized = normalize_keys(attrs)
 
     now = DateTime.utc_now()
-    status = Map.get(normalized, :status, :draft)
+    raw_status = Map.get(normalized, :status, :draft)
+    status = normalize_status(raw_status)
     version = Map.get(normalized, :version, 1)
     tasks = normalize_tasks(Map.get(normalized, :tasks, []))
 
@@ -364,6 +365,27 @@ defmodule Muse.Plan do
   end
 
   # -- Private ------------------------------------------------------------------
+
+  # Map known string statuses to atoms for safe JSON deserialization.
+  # Prevents string statuses like "awaiting_approval" from defaulting to :draft.
+  @status_map %{
+    "draft" => :draft,
+    "awaiting_approval" => :awaiting_approval,
+    "approved" => :approved,
+    "rejected" => :rejected,
+    "superseded" => :superseded,
+    "in_progress" => :in_progress,
+    "executing" => :executing,
+    "completed" => :completed,
+    "cancelled" => :cancelled,
+    "needs_revision" => :needs_revision
+  }
+
+  defp normalize_status(status) when is_binary(status) do
+    Map.get(@status_map, status, :draft)
+  end
+
+  defp normalize_status(status) when is_atom(status), do: status
 
   defp normalize_keys(map) do
     Map.new(map, fn

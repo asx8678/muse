@@ -52,6 +52,28 @@ defmodule Muse.PlanTest do
       assert plan.status == :draft
     end
 
+    test "accepts string status values, normalizing to atoms" do
+      plan = Plan.new(objective: "Test", status: "awaiting_approval")
+      assert plan.status == :awaiting_approval
+
+      plan2 = Plan.new(objective: "Test", status: "draft")
+      assert plan2.status == :draft
+
+      plan3 = Plan.new(objective: "Test", status: "approved")
+      assert plan3.status == :approved
+
+      plan4 = Plan.new(objective: "Test", status: "rejected")
+      assert plan4.status == :rejected
+
+      plan5 = Plan.new(objective: "Test", status: "completed")
+      assert plan5.status == :completed
+    end
+
+    test "falls back to :draft for unknown string status" do
+      plan = Plan.new(objective: "Test", status: "nonexistent_status_value")
+      assert plan.status == :draft
+    end
+
     test "accepts keyword list with all fields" do
       plan =
         Plan.new(

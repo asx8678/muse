@@ -73,6 +73,59 @@ defmodule Muse.CommandDispatcherTest do
       assert output =~ "Thing B"
       refute output =~ "Thing A"
     end
+
+    test "falls back to SessionRouter.status when context lacks plan" do
+      # When no plan in context but a session is running with a plan,
+      # the dispatcher should resolve from SessionRouter.status
+      # Start a session server
+
+      session_id = "plan-router-fallback-#{:erlang.unique_integer([:positive])}"
+
+      # Ensure infrastructure
+      case Process.whereis(Muse.State) do
+        nil -> start_supervised!({Muse.State, []})
+        _ -> :ok
+      end
+
+      # Create and persist a plan to the session store
+      plan = Muse.Plan.new(
+        id: "plan_fallback_1",
+        session_id: session_id,
+        objective: "SessionRouter fallback plan",
+        tasks: [Muse.Task.new(title: "Fallback task", description: "Desc")]
+      )
+
+      {:ok, plan} = Muse.Plan.transition(plan, :awaiting_approval)
+
+      data = %{
+        "status" => "awaiting_plan_approval",
+        "active_plan_id" => "plan_fallback_1",
+        "plan" => Muse.Plan.to_map(plan),
+        "plans" => %{"plan_fallback_1" => Muse.Plan.to_map(plan)}
+      }
+
+      :ok = Muse.SessionStore.save_session(session_id, data)
+
+      # Start SessionServer (will restore from snapshot)
+      {:ok, pid} =
+        DynamicSupervisor.start_child(
+          Muse.SessionSupervisor,
+          {Muse.SessionServer, session_id: session_id}
+        )
+
+      # Now call /plan with empty context — should fall back to SessionRouter
+      # Pass session_id in context so resolve_from_session_router knows which session
+      {:ok, output, effects} = CommandDispatcher.dispatch(:plan, nil, %{session_id: session_id})
+
+      assert output =~ "SessionRouter fallback plan",
+             "Expected plan output via SessionRouter fallback, got: #{inspect(output)}"
+
+      assert output =~ "Fallback task"
+      assert effects == []
+
+      # Cleanup
+      DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid)
+    end
   end
 
   describe "dispatch/3 — :events" do

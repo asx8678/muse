@@ -246,13 +246,22 @@ defmodule Muse.PlanSchema do
   end
 
   defp normalize_tasks(data) do
-    Map.update(data, "tasks", [], fn tasks ->
-      Enum.map(tasks, fn task ->
-        task
-        |> Map.put_new("requires_write", false)
-        |> Map.put_new("requires_shell", false)
-      end)
+    # Handle both string-key "tasks" and atom-key :tasks input.
+    # After normalization, tasks are always stored under "tasks" (string key)
+    # so downstream consumers (Plan.from_map/1) consistently find them.
+    tasks =
+      case Map.fetch(data, "tasks") do
+        {:ok, tasks} -> tasks
+        :error -> Map.get(data, :tasks, [])
+      end
+
+    normalized_tasks = Enum.map(tasks || [], fn task ->
+      task
+      |> Map.put_new("requires_write", false)
+      |> Map.put_new("requires_shell", false)
     end)
+
+    Map.put(data, "tasks", normalized_tasks)
   end
 
   defp normalize_risks(data) do

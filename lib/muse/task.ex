@@ -139,7 +139,8 @@ defmodule Muse.Task do
 
     id = Map.get(normalized, :id) || generate_id()
     title = Map.fetch!(normalized, :title)
-    status = Map.get(normalized, :status, :pending)
+    raw_status = Map.get(normalized, :status, :pending)
+    status = normalize_status(raw_status)
 
     # Accept both `:requires_write` and `:requires_write?` key forms.
     # The JSON key is `requires_write` (no trailing `?`), but the struct
@@ -231,6 +232,22 @@ defmodule Muse.Task do
   rescue
     ArgumentError -> key
   end
+
+  # Map known string statuses to atoms for safe JSON deserialization.
+  @status_map %{
+    "draft" => :draft,
+    "pending" => :pending,
+    "in_progress" => :in_progress,
+    "completed" => :completed,
+    "blocked" => :blocked,
+    "skipped" => :skipped
+  }
+
+  defp normalize_status(status) when is_binary(status) do
+    Map.get(@status_map, status, :pending)
+  end
+
+  defp normalize_status(status) when is_atom(status), do: status
 
   # We intentionally only use String.to_atom on keys we control —
   # the task-specific field names are all known compile-time atoms.
