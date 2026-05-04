@@ -447,6 +447,141 @@ defmodule Muse.LLM.OpenAI.RequestBuilderTest do
   end
 
   # ---------------------------------------------------------------------------
+  # build_chat_completions_stream/1 — happy path
+  # ---------------------------------------------------------------------------
+
+  describe "build_chat_completions_stream/1 — happy path" do
+    test "builds streaming URL, payload, and default SSE headers" do
+      request = %Request{minimal_request("https://api.example.com/v1/") | stream: false}
+
+      assert {:ok, spec} = RequestBuilder.build_chat_completions_stream(request)
+      assert spec.url == "https://api.example.com/v1/chat/completions"
+      assert spec.endpoint_path == "/chat/completions"
+      assert spec.payload["stream"] == true
+      assert spec.payload["stream_options"] == %{"include_usage" => true}
+      assert {"Accept", "text/event-stream"} in spec.headers
+    end
+
+    test "non-streaming builder remains unchanged when stream_options are provided" do
+      request =
+        minimal_request("https://api.example.com/v1", %{
+          stream_options: %{"include_usage" => true}
+        })
+
+      assert {:ok, spec} = RequestBuilder.build_chat_completions(request)
+      assert spec.payload["stream"] == false
+      refute Map.has_key?(spec.payload, "stream_options")
+      assert spec.headers == []
+    end
+
+    test "uses caller stream_options override and normalizes atom keys" do
+      request =
+        minimal_request("https://api.example.com/v1", %{
+          stream_options: %{include_usage: false, custom: %{mode: :compact}}
+        })
+
+      assert {:ok, spec} = RequestBuilder.build_chat_completions_stream(request)
+
+      assert spec.payload["stream_options"] == %{
+               "include_usage" => false,
+               "custom" => %{"mode" => "compact"}
+             }
+
+      assert_no_atom_keys!(spec.payload)
+    end
+
+    test "allows string-key stream_options to disable stream_options payload field" do
+      request =
+        minimal_request("https://api.example.com/v1", %{
+          "stream_options" => false
+        })
+
+      assert {:ok, spec} = RequestBuilder.build_chat_completions_stream(request)
+      assert spec.payload["stream"] == true
+      refute Map.has_key?(spec.payload, "stream_options")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # build_chat_completions_stream/1 — headers
+  # ---------------------------------------------------------------------------
+
+  describe "build_chat_completions_stream/1 — headers" do
+    test "does not override caller Accept header regardless of casing" do
+      request =
+        minimal_request("https://api.example.com/v1", %{
+          headers: [{"accept", "application/json"}, {"X-Request-Id", "abc"}]
+        })
+
+      assert {:ok, spec} = RequestBuilder.build_chat_completions_stream(request)
+      assert {"accept", "application/json"} in spec.headers
+      assert {"X-Request-Id", "abc"} in spec.headers
+      refute {"Accept", "text/event-stream"} in spec.headers
+
+      accept_count =
+        Enum.count(spec.headers, fn {name, _value} -> String.downcase(name) == "accept" end)
+
+      assert accept_count == 1
+    end
+
+    test "does not synthesize Authorization header" do
+      request = minimal_request("https://api.example.com/v1")
+
+      assert {:ok, spec} = RequestBuilder.build_chat_completions_stream(request)
+
+      refute Enum.any?(spec.headers, fn {name, _value} ->
+               String.downcase(name) == "authorization"
+             end)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # build_chat_completions_stream/1 — validation and Req options
+  # ---------------------------------------------------------------------------
+
+  describe "build_chat_completions_stream/1 — validation and Req options" do
+    test "rejects unsupported wire_api exactly like non-streaming builder" do
+      request = %Request{
+        minimal_request("https://api.example.com/v1")
+        | wire_api: :responses
+      }
+
+      assert {:error, {:unsupported_wire_api, :responses}} =
+               RequestBuilder.build_chat_completions_stream(request)
+    end
+
+    test "returns missing base_url errors" do
+      request = %Request{minimal_request(nil) | options: %{}}
+
+      assert {:error, {:missing_base_url, msg}} =
+               RequestBuilder.build_chat_completions_stream(request)
+
+      assert is_binary(msg)
+    end
+
+    test "returns invalid base_url errors" do
+      request = minimal_request("ftp://files.example.com/models")
+
+      assert {:error, {:invalid_base_url, msg}} =
+               RequestBuilder.build_chat_completions_stream(request)
+
+      assert msg =~ "http or https"
+    end
+
+    test "carries timeout_ms and max_retries like non-streaming builder" do
+      request =
+        minimal_request("https://api.example.com/v1", %{
+          timeout_ms: 30_000,
+          max_retries: 2
+        })
+
+      assert {:ok, spec} = RequestBuilder.build_chat_completions_stream(request)
+      assert spec.req_options[:timeout_ms] == 30_000
+      assert spec.req_options[:max_retries] == 2
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Test helpers
   # ---------------------------------------------------------------------------
 
