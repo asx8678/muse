@@ -1,0 +1,17 @@
+{
+  "objective": "Add logging middleware.",
+  "tasks": [
+    {
+      "title": "Create middleware module",
+      "description": "Add logging middleware to the plug pipeline.",
+      "unknown_task_key": "should be safely ignored",
+      "secret_api_key": "sk-abc123fake",
+      "requires_write": true,
+      "requires_shell": false
+    }
+  ],
+  "risks": ["Middleware order may affect request processing."],
+  "unknown_top_key": "should be safely ignored",
+  "internal_token": "ghp_faketoken123",
+  "dynamic_status": "not_a_real_status_value"
+}

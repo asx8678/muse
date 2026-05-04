@@ -1,0 +1,9 @@
+{
+  "objective": "Fix the login redirect bug.",
+  "tasks": [
+    {
+      "title": "Update redirect logic",
+      "description": "Fix the post-login redirect in the session controller."
+    }
+  ]
+}
