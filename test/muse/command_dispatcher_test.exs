@@ -39,6 +39,23 @@ defmodule Muse.CommandDispatcherTest do
     :exit, _ -> :ok
   end
 
+  defp plan_fixture(attrs) do
+    defaults = [
+      id: "plan-#{:erlang.unique_integer([:positive])}",
+      session_id: "dispatcher-plan-session",
+      title: nil,
+      objective: "Inspect the workspace and prepare a Muse Plan.",
+      status: :awaiting_approval,
+      created_at: ~U[2025-01-01 00:00:00Z],
+      updated_at: ~U[2025-01-01 00:10:00Z],
+      tasks: [Muse.Task.new(title: "Inspect", description: "Inspect relevant files")]
+    ]
+
+    defaults
+    |> Keyword.merge(attrs)
+    |> Muse.Plan.new()
+  end
+
   # Most dispatch tests are pure — no process dependencies needed
   # because context provides data and Backend is only called for
   # side-effect commands (clear_logs, connect_runtime, etc.)
@@ -163,6 +180,256 @@ defmodule Muse.CommandDispatcherTest do
 
       # Cleanup
       DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid)
+    end
+
+    test "with extra args returns usage error" do
+      plan = plan_fixture(objective: "Do not ignore args")
+
+      {:error, output, effects} = CommandDispatcher.dispatch(:plan, "something", %{plan: plan})
+
+      assert output == "Error: usage: /plan"
+      assert effects == []
+    end
+  end
+
+  describe "dispatch/3 — read-only plan history commands" do
+    test "/plans returns no-history message and does not start a missing session" do
+      session_id = "missing-plans-#{:erlang.unique_integer([:positive])}"
+
+      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
+
+      {:ok, output, effects} = CommandDispatcher.dispatch(:plans, nil, %{session_id: session_id})
+
+      assert output =~ "No Muse Plan history is available yet"
+      assert effects == []
+      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
+    end
+
+    test "/plans with extra args returns usage error" do
+      {:error, output, effects} = CommandDispatcher.dispatch(:plans, "extra", %{})
+
+      assert output == "Error: usage: /plans"
+      assert effects == []
+    end
+
+    test "/plans lists multiple plans from context and marks active" do
+      active_plan =
+        plan_fixture(
+          id: "plan-active",
+          title: "Active command plan",
+          objective: "Build active plan commands",
+          status: :awaiting_approval,
+          tasks: [
+            Muse.Task.new(title: "Parse commands", description: "Add parsing"),
+            Muse.Task.new(title: "Render history", description: "Add read-only rendering")
+          ],
+          updated_at: ~U[2025-01-03 00:00:00Z]
+        )
+
+      historical_plan =
+        plan_fixture(
+          id: "plan-old",
+          title: "Historical command plan",
+          objective: "Keep old plans visible",
+          status: :rejected,
+          tasks: [Muse.Task.new(title: "Review history", description: "Review")],
+          updated_at: ~U[2025-01-02 00:00:00Z]
+        )
+
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:plans, nil, %{
+          plans: %{
+            "plan-old" => Muse.Plan.to_map(historical_plan),
+            "plan-active" => active_plan
+          },
+          active_plan_id: "plan-active"
+        })
+
+      assert output =~ "Muse Plan history: 2 Muse Plans"
+      assert output =~ "plan-active [active]"
+      assert output =~ "awaiting_approval"
+      assert output =~ "Active command plan"
+      assert output =~ "2 task(s)"
+      assert output =~ "plan-old"
+      assert output =~ "rejected"
+      assert output =~ "Historical command plan"
+      assert output =~ "1 task(s)"
+      assert effects == []
+    end
+
+    test "/plan history mirrors /plans and uses its own usage error" do
+      plan = plan_fixture(id: "history-plan", objective: "Show history alias")
+      context = %{plans: %{"history-plan" => plan}, active_plan_id: "history-plan"}
+
+      {:ok, plans_output, []} = CommandDispatcher.dispatch(:plans, nil, context)
+      {:ok, history_output, []} = CommandDispatcher.dispatch(:plan_history, nil, context)
+
+      assert history_output == plans_output
+
+      {:error, usage_output, effects} =
+        CommandDispatcher.dispatch(:plan_history, "extra", context)
+
+      assert usage_output == "Error: usage: /plan history"
+      assert effects == []
+    end
+
+    test "/plan status shows active plan lifecycle details from context" do
+      plan =
+        plan_fixture(
+          id: "status-plan",
+          title: "Status command plan",
+          objective: "Summarize active plan status",
+          status: :approved,
+          approved_at: ~U[2025-01-01 00:20:00Z],
+          tasks: [Muse.Task.new(title: "Summarize", description: "Summarize status")]
+        )
+
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:plan_status, nil, %{
+          plans: %{"status-plan" => plan},
+          active_plan_id: "status-plan",
+          session: %{status: :idle}
+        })
+
+      assert output =~ "Active Muse Plan status:"
+      assert output =~ "Active plan id: status-plan"
+      assert output =~ "Plan status: approved"
+      assert output =~ "Session status: idle"
+      assert output =~ "Status command plan"
+      assert output =~ "Task count: 1"
+      assert output =~ "Created at: 2025-01-01T00:00:00Z"
+      assert output =~ "Updated at: 2025-01-01T00:10:00Z"
+      assert output =~ "Approved at: 2025-01-01T00:20:00Z"
+      assert effects == []
+    end
+
+    test "/plan status returns friendly message when no active plan exists" do
+      session_id = "no-active-plan-#{:erlang.unique_integer([:positive])}"
+
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:plan_status, nil, %{plans: %{}, session_id: session_id})
+
+      assert output =~ "No active Muse Plan is available yet"
+      assert effects == []
+    end
+
+    test "/plan status with extra args returns usage error" do
+      {:error, output, effects} = CommandDispatcher.dispatch(:plan_status, "extra", %{})
+
+      assert output == "Error: usage: /plan status"
+      assert effects == []
+    end
+
+    test "/plan show renders a non-active plan from history" do
+      active_plan = plan_fixture(id: "show-active", objective: "Active plan")
+
+      historical_plan =
+        plan_fixture(
+          id: "show-history",
+          objective: "Render historical plan details",
+          tasks: [Muse.Task.new(title: "Show old plan", description: "Render details")]
+        )
+
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:plan_show, "show-history", %{
+          plans: %{"show-active" => active_plan, "show-history" => historical_plan},
+          active_plan_id: "show-active"
+        })
+
+      assert output =~ "Muse Plan show-history"
+      assert output =~ "Render historical plan details"
+      assert output =~ "1. Show old plan"
+      refute output =~ "Active plan"
+      assert effects == []
+    end
+
+    test "/plan show missing or extra id tokens return usage errors" do
+      for args <- [nil, "", "one two"] do
+        {:error, output, effects} = CommandDispatcher.dispatch(:plan_show, args, %{})
+
+        assert output == "Error: usage: /plan show <id>"
+        assert effects == []
+      end
+    end
+
+    test "/plan show unknown id returns not found error" do
+      plan = plan_fixture(id: "known-plan", objective: "Known plan")
+
+      {:error, output, effects} =
+        CommandDispatcher.dispatch(:plan_show, "unknown-plan", %{
+          plans: %{"known-plan" => plan},
+          active_plan_id: "known-plan"
+        })
+
+      assert output == "Error: Muse Plan unknown-plan was not found."
+      assert String.starts_with?(output, "Error:")
+      assert effects == []
+    end
+
+    test "router fallback lists and shows restored plan history without mutating session" do
+      session_id = "plan-history-router-#{:erlang.unique_integer([:positive])}"
+
+      active_plan =
+        plan_fixture(
+          id: "router-active-plan",
+          session_id: session_id,
+          objective: "Active restored plan",
+          status: :awaiting_approval,
+          updated_at: ~U[2025-01-04 00:00:00Z]
+        )
+
+      historical_plan =
+        plan_fixture(
+          id: "router-history-plan",
+          session_id: session_id,
+          objective: "Historical restored plan",
+          status: :rejected,
+          updated_at: ~U[2025-01-03 00:00:00Z]
+        )
+
+      :ok =
+        Muse.SessionStore.save_session(session_id, %{
+          "status" => "awaiting_plan_approval",
+          "active_plan_id" => active_plan.id,
+          "plan" => Muse.Plan.to_map(active_plan),
+          "plans" => %{
+            active_plan.id => Muse.Plan.to_map(active_plan),
+            historical_plan.id => Muse.Plan.to_map(historical_plan)
+          }
+        })
+
+      {:ok, pid} =
+        DynamicSupervisor.start_child(
+          Muse.SessionSupervisor,
+          {Muse.SessionServer, session_id: session_id}
+        )
+
+      try do
+        {:ok, plans_output, []} =
+          CommandDispatcher.dispatch(:plans, nil, %{session_id: session_id})
+
+        assert plans_output =~ "router-active-plan [active]"
+        assert plans_output =~ "router-history-plan"
+
+        {:ok, status_output, []} =
+          CommandDispatcher.dispatch(:plan_status, nil, %{session_id: session_id})
+
+        assert status_output =~ "Active plan id: router-active-plan"
+        assert status_output =~ "Session status: awaiting_plan_approval"
+
+        {:ok, show_output, []} =
+          CommandDispatcher.dispatch(:plan_show, "router-history-plan", %{session_id: session_id})
+
+        assert show_output =~ "Historical restored plan"
+
+        status = Muse.SessionServer.status(pid)
+        assert status.active_turn_id == nil
+        assert status.runner_pid == nil
+        assert status.active_plan_id == active_plan.id
+        assert status.plan.status == :awaiting_approval
+      after
+        stop_session(pid)
+      end
     end
   end
 

@@ -50,21 +50,56 @@ defmodule Muse.CommandDispatcher do
 
   # -- Plan --------------------------------------------------------------------
 
-  def dispatch(:plan, _args, context) do
-    plan = resolve_active_plan(context)
+  def dispatch(:plan, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /plan", []}
+    else
+      case Muse.PlanHistory.query(context).active_plan do
+        nil ->
+          {:ok, "No Muse Plan is available yet. Ask Planning Muse to create one!", []}
 
-    case plan do
+        %Muse.Plan{} = plan ->
+          {:ok, Muse.Plan.render(plan), []}
+      end
+    end
+  end
+
+  def dispatch(:plans, args, context) do
+    dispatch_plan_history(args, context, "/plans")
+  end
+
+  def dispatch(:plan_history, args, context) do
+    dispatch_plan_history(args, context, "/plan history")
+  end
+
+  def dispatch(:plan_status, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /plan status", []}
+    else
+      query = Muse.PlanHistory.query(context)
+
+      case query.active_plan do
+        nil ->
+          {:ok, "No active Muse Plan is available yet. Use /plans to view Muse Plan history.", []}
+
+        %Muse.Plan{} = plan ->
+          {:ok, Muse.PlanHistory.render_active_status(plan, query), []}
+      end
+    end
+  end
+
+  def dispatch(:plan_show, args, context) do
+    with {:ok, id} <- parse_plan_show_args(args),
+         %Muse.Plan{} = plan <-
+           Muse.PlanHistory.find_plan_by_id(Muse.PlanHistory.query(context).plans, id) do
+      {:ok, "Muse Plan #{Muse.PlanHistory.display_plan_id(plan)}\n\n" <> Muse.Plan.render(plan),
+       []}
+    else
+      :usage ->
+        {:error, "Error: usage: /plan show <id>", []}
+
       nil ->
-        {:ok, "No Muse Plan is available yet. Ask the Planning Muse to create one!", []}
-
-      %Muse.Plan{} = plan ->
-        {:ok, Muse.Plan.render(plan), []}
-
-      plan_map when is_map(plan_map) ->
-        case Muse.Plan.from_map(plan_map) do
-          %Muse.Plan{} = p -> {:ok, Muse.Plan.render(p), []}
-          _ -> {:ok, "No Muse Plan is available yet.", []}
-        end
+        {:error, "Error: Muse Plan #{String.trim(to_string(args || ""))} was not found.", []}
     end
   end
 
@@ -983,82 +1018,52 @@ defmodule Muse.CommandDispatcher do
   defp plan_lifecycle_verb(:reject_plan), do: "reject"
 
   defp context_session_id(context) do
-    context
-    |> Map.get(:session_id, "default")
-    |> to_string()
+    case map_get_any(context, [:session_id, "session_id"]) do
+      nil -> "default"
+      session_id -> to_string(session_id)
+    end
   end
 
   defp context_source(context) do
-    case Map.get(context, :source, :system) do
+    case map_get_any(context, [:source, "source"]) do
       source when is_atom(source) -> source
       _ -> :system
     end
   end
 
-  # -- Plan resolution --------------------------------------------------------
+  # -- Read-only plan command helpers -----------------------------------------
 
-  defp resolve_active_plan(context) do
-    # 1. Check explicit plan keys in context (fast path for web/LiveView)
-    session = Map.get(context, :session, %{})
-
-    plan =
-      Map.get(context, :plan) ||
-        Map.get(context, :active_plan) ||
-        Map.get(session, :plan) ||
-        Map.get(session, :active_plan)
-
-    if not is_nil(plan) do
-      return_plan(plan)
+  defp dispatch_plan_history(args, context, usage) do
+    if present_args?(args) do
+      {:error, "Error: usage: #{usage}", []}
     else
-      # 2. Try plans + active_plan_id from context
-      plans = Map.get(context, :plans, Map.get(session, :plans, %{}))
-      active_id = Map.get(context, :active_plan_id, Map.get(session, :active_plan_id))
+      query = Muse.PlanHistory.query(context)
 
-      if active_id && is_map(plans) && plans[active_id] do
-        return_plan(plans[active_id])
-      else
-        # 3. Fall back to SessionRouter.status for the default session
-        resolve_from_session_router(Map.get(context, :session_id, "default"))
+      case query.plans do
+        [] ->
+          {:ok, "No Muse Plan history is available yet. Ask Planning Muse to create a Muse Plan.",
+           []}
+
+        plans ->
+          {:ok, Muse.PlanHistory.render_history(plans, query.active_plan_id), []}
       end
     end
   end
 
-  defp return_plan(%Muse.Plan{} = plan), do: plan
-
-  defp return_plan(plan_map) when is_map(plan_map), do: plan_map
-
-  defp return_plan(_), do: nil
-
-  defp resolve_from_session_router(session_id) do
-    case Muse.SessionRouter.status(session_id) do
-      {:ok, status} ->
-        resolve_plan_from_status(status)
-
-      _ ->
-        nil
-    end
-  rescue
-    _ -> nil
-  catch
-    :exit, _ -> nil
-  end
-
-  defp resolve_plan_from_status(status) when is_map(status) do
-    plan = Map.get(status, :plan) || Map.get(status, :active_plan)
-
-    if not is_nil(plan) do
-      return_plan(plan)
-    else
-      plans = Map.get(status, :plans, %{})
-      active_id = Map.get(status, :active_plan_id)
-
-      if active_id && is_map(plans) && plans[active_id] do
-        return_plan(plans[active_id])
-      else
-        nil
-      end
+  defp parse_plan_show_args(args) when is_binary(args) do
+    case String.split(String.trim(args), ~r/\s+/, trim: true) do
+      [id] -> {:ok, id}
+      _ -> :usage
     end
   end
 
-  defp resolve_plan_from_status(_), do: nil
+  defp parse_plan_show_args(_args), do: :usage
+
+  defp map_get_any(map, keys) when is_map(map) do
+    Enum.find_value(keys, fn key ->
+      if Map.has_key?(map, key), do: Map.get(map, key), else: nil
+    end)
+  end
+
+  defp map_get_any(_map, _keys), do: nil
 end

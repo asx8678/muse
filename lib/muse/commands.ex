@@ -9,6 +9,10 @@ defmodule Muse.Commands do
   @slash_commands [
     {"/help", :help, "Show available commands"},
     {"/plan", :plan, "Show the active Muse Plan"},
+    {"/plans", :plans, "List Muse Plan history for this session"},
+    {"/plan history", :plan_history, "List Muse Plan history for this session"},
+    {"/plan status", :plan_status, "Show active Muse Plan lifecycle status"},
+    {"/plan show", :plan_show, "Show a Muse Plan by id"},
     {"/approve plan", :approve_plan, "Approve the active Muse Plan"},
     {"/reject plan", :reject_plan, "Reject the active Muse Plan"},
     {"/events", :events, "Show event summary"},

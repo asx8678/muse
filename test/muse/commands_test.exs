@@ -16,6 +16,28 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/plan extra") == {:command, :plan, "extra"}
     end
 
+    test "parses /plans" do
+      assert Commands.parse("/plans") == {:command, :plans}
+    end
+
+    test "parses /plan history" do
+      assert Commands.parse("/plan history") == {:command, :plan_history}
+    end
+
+    test "parses /plan status" do
+      assert Commands.parse("/plan status") == {:command, :plan_status}
+    end
+
+    test "parses /plan show with id" do
+      assert Commands.parse("/plan show abc") == {:command, :plan_show, "abc"}
+    end
+
+    test "longer /plan subcommands match before /plan" do
+      assert Commands.parse("/plan history extra") == {:command, :plan_history, "extra"}
+      assert Commands.parse("/plan status extra") == {:command, :plan_status, "extra"}
+      assert Commands.parse("/plan show abc extra") == {:command, :plan_show, "abc extra"}
+    end
+
     test "parses /approve plan" do
       assert Commands.parse("/approve plan") == {:command, :approve_plan}
     end
@@ -252,6 +274,10 @@ defmodule Muse.CommandsTest do
       text = Commands.help_text()
       assert text =~ "/help"
       assert text =~ "/plan"
+      assert text =~ "/plans"
+      assert text =~ "/plan history"
+      assert text =~ "/plan status"
+      assert text =~ "/plan show"
       assert text =~ "/approve plan"
       assert text =~ "/reject plan"
       assert text =~ "/muses"
@@ -305,7 +331,7 @@ defmodule Muse.CommandsTest do
     test "returns list of {command, description} tuples" do
       cmds = Commands.slash_commands()
       assert is_list(cmds)
-      assert length(cmds) == 36
+      assert length(cmds) == 40
 
       for {cmd, desc} <- cmds do
         assert is_binary(cmd)
@@ -322,8 +348,10 @@ defmodule Muse.CommandsTest do
       assert "/prompt preview" in cmd_names
       assert "/prompt-preview" in cmd_names
       assert "/plan" in cmd_names
-      assert "/approve plan" in cmd_names
-      assert "/reject plan" in cmd_names
+      assert "/plans" in cmd_names
+      assert "/plan history" in cmd_names
+      assert "/plan status" in cmd_names
+      assert "/plan show" in cmd_names
       assert "/approve plan" in cmd_names
       assert "/reject plan" in cmd_names
     end
@@ -333,7 +361,7 @@ defmodule Muse.CommandsTest do
     test "returns list of maps with command and description keys" do
       cmds = Commands.slash_commands_json()
       assert is_list(cmds)
-      assert length(cmds) == 36
+      assert length(cmds) == 40
 
       for cmd <- cmds do
         assert Map.has_key?(cmd, :command)
@@ -350,6 +378,10 @@ defmodule Muse.CommandsTest do
       assert "/prompt preview" in cmd_names
       assert "/prompt-preview" in cmd_names
       assert "/plan" in cmd_names
+      assert "/plans" in cmd_names
+      assert "/plan history" in cmd_names
+      assert "/plan status" in cmd_names
+      assert "/plan show" in cmd_names
     end
   end
 end
