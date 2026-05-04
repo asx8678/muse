@@ -84,6 +84,18 @@ defmodule Muse.Tool.RunnerTest do
       refute result.success
       assert result.error =~ "unknown tool"
     end
+
+    test "redacts secret-like unknown tool names from result errors", %{context: context} do
+      secret_tool_name = "sk-test-secret-tool-name"
+
+      result = Runner.run(secret_tool_name, %{}, context)
+
+      refute result.success
+      refute result.error =~ secret_tool_name
+      refute result.tool_name =~ secret_tool_name
+      assert result.error =~ "[REDACTED]"
+      assert result.tool_name == "[REDACTED]"
+    end
   end
 
   # -- Muse permission checks ----------------------------------------------------
@@ -361,19 +373,23 @@ defmodule Muse.Tool.RunnerTest do
     test "args summary truncates long values and redacts", %{root: _root, context: context} do
       State.clear()
 
+      secret = "sk-test-args-secret"
+
       _result =
         Runner.run(
           "read_file",
-          %{"path" => "hello.ex", "extra" => String.duplicate("x", 200)},
+          %{"path" => "hello.ex", "extra" => String.duplicate("x", 200), "token" => secret},
           context
         )
 
       events = State.events()
       started = Enum.find(events, &(&1.type == :tool_call_started))
 
-      # The args_summary should truncate long values
+      # The args_summary should truncate long values and redact secrets
       assert is_binary(started.data.args_summary)
       assert String.length(started.data.args_summary) < 500
+      refute started.data.args_summary =~ secret
+      assert started.data.args_summary =~ "[REDACTED]"
     end
 
     test "list_files with many entries: output is reliably capped to spec limit",

@@ -179,6 +179,17 @@ defmodule Muse.PlanSchemaTest do
       assert Enum.any?(errors, &String.contains?(&1, "risks must be a list"))
     end
 
+    test "rejects non-string risk entries" do
+      data = %{
+        "objective" => "Do stuff",
+        "tasks" => [%{"title" => "T1", "description" => "D1"}],
+        "risks" => ["valid risk", 123]
+      }
+
+      assert {:error, errors} = PlanSchema.validate(data)
+      assert Enum.any?(errors, &String.contains?(&1, "risk[1] must be a string"))
+    end
+
     test "rejects non-map input" do
       assert {:error, errors} = PlanSchema.validate("not a map")
       assert Enum.any?(errors, &String.contains?(&1, "plan must be a map"))

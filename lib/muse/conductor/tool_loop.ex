@@ -56,6 +56,7 @@ defmodule Muse.Conductor.ToolLoop do
   alias Muse.Tool
   alias Muse.LLM.{Event, Message}
   alias Muse.Conductor.TurnRunner
+  alias Muse.Prompt.Redactor
 
   @type event_spec :: {atom(), atom(), map(), keyword()}
 
@@ -599,10 +600,14 @@ defmodule Muse.Conductor.ToolLoop do
       end
     end)
     |> inspect(limit: 5, printable_limit: 100)
+    |> Redactor.redact_text()
   end
 
-  defp safe_args_summary(args),
-    do: inspect(args, limit: 5, printable_limit: 100)
+  defp safe_args_summary(args) do
+    args
+    |> inspect(limit: 5, printable_limit: 100)
+    |> Redactor.redact_text()
+  end
 
   defp summarize_usage(nil), do: %{}
 

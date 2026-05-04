@@ -221,6 +221,123 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       assert assistant_text =~ "/approve plan",
              "Assistant text should contain approval instructions"
     end
+
+    @tag :m1_readonly
+    test "provider-requested write and shell tools are blocked without mutating workspace",
+         %{workspace: workspace} do
+      session_id = "m1-ro-blocked-tools-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      {before_paths, before_hashes} = workspace_snapshot(workspace)
+
+      fake_event_batches = [
+        [
+          {:tool_call, "write_file", %{"path" => "owned.txt", "content" => "mutated by model"},
+           "call_block_write"},
+          {:tool_call, "shell_command", %{"command" => "touch shell-owned.txt"},
+           "call_block_shell"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_delta, @plan_json},
+          {:assistant_completed, @plan_json},
+          {:response_completed, nil}
+        ]
+      ]
+
+      {:ok, assistant_text} =
+        SessionServer.submit(pid, :cli, "plan with malicious tool calls",
+          workspace: workspace,
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{fake_event_batches: fake_event_batches}]
+        )
+
+      assert assistant_text =~ "Planning Muse prepared a plan."
+      assert_awaiting_plan!(pid)
+
+      {after_paths, after_hashes} = workspace_snapshot(workspace)
+      assert after_paths == before_paths
+      assert after_hashes == before_hashes
+      refute File.exists?(Path.join(workspace, "owned.txt"))
+      refute File.exists?(Path.join(workspace, "shell-owned.txt"))
+
+      blocked_tools =
+        State.events()
+        |> Enum.filter(&(&1.type == :tool_call_blocked))
+        |> Enum.map(&tool_name/1)
+
+      assert "write_file" in blocked_tools
+      assert "shell_command" in blocked_tools
+    end
+
+    @tag :m1_readonly
+    test "planning output without model-supplied id receives a session-owned active plan id",
+         %{workspace: workspace} do
+      session_id = "m1-ro-generated-plan-id-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      plan_without_id =
+        @plan_json
+        |> Jason.decode!()
+        |> Map.delete("id")
+        |> Jason.encode!()
+
+      fake_events = [
+        {:assistant_delta, plan_without_id},
+        {:assistant_completed, plan_without_id},
+        {:response_completed, nil}
+      ]
+
+      {:ok, _assistant_text} =
+        SessionServer.submit(pid, :cli, "plan without id",
+          workspace: workspace,
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{fake_events: fake_events}]
+        )
+
+      status = assert_awaiting_plan!(pid)
+      assert is_binary(status.active_plan_id)
+      assert String.starts_with?(status.active_plan_id, "plan_turn_")
+      assert status.plan.id == status.active_plan_id
+      assert Map.has_key?(status.plans, status.active_plan_id)
+
+      {:ok, stored} = SessionStore.load_session(session_id)
+      assert stored["active_plan_id"] == status.active_plan_id
+      assert get_in(stored, ["plans", status.active_plan_id, "id"]) == status.active_plan_id
+    end
+
+    @tag :m1_readonly
+    test "invalid plan-like model output returns safe text and stores no raw JSON events",
+         %{workspace: workspace} do
+      session_id = "m1-ro-invalid-plan-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+      invalid_plan = ~s({"objective":"","tasks":[],"note":"sk-test-invalid-plan-secret"})
+
+      fake_events = [
+        {:assistant_delta, invalid_plan},
+        {:assistant_completed, invalid_plan},
+        {:response_completed, nil}
+      ]
+
+      {:ok, assistant_text} =
+        SessionServer.submit(pid, :cli, "plan invalid output",
+          workspace: workspace,
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{fake_events: fake_events}]
+        )
+
+      assert assistant_text =~ "unable to generate a valid structured plan"
+
+      status = SessionServer.status(pid)
+      assert status.status == :idle
+      assert status.plan == nil
+      assert status.active_plan_id == nil
+
+      events_text = inspect(State.events(), limit: :infinity, printable_limit: :infinity)
+      refute events_text =~ invalid_plan
+      refute events_text =~ "sk-test-invalid-plan-secret"
+      refute events_text =~ "\"objective\""
+    end
   end
 
   # -- Completion gate: public command lifecycle -------------------------------

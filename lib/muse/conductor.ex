@@ -562,7 +562,7 @@ defmodule Muse.Conductor do
     if muse.id == :planning do
       assistant_text = result.assistant_text
 
-      case PlanParser.parse(assistant_text) do
+      case parse_plan_text(assistant_text) do
         {:ok, plan} ->
           finalize_as_plan(result, session, turn, muse, plan, start_time)
 
@@ -595,7 +595,13 @@ defmodule Muse.Conductor do
 
   defp looks_like_plan_json?(_), do: false
 
-  defp finalize_as_plan(result, _session, _turn, _muse, plan, _start_time) do
+  defp parse_plan_text(text) do
+    PlanParser.parse(text, fenced: true)
+  end
+
+  defp finalize_as_plan(result, session, turn, muse, plan, _start_time) do
+    plan = ensure_plan_identity(plan, session, turn, muse)
+
     # Transition plan to awaiting_approval
     {:ok, plan} = Plan.transition(plan, :awaiting_approval)
 
@@ -603,13 +609,14 @@ defmodule Muse.Conductor do
     plan_text = Plan.render(plan)
 
     # Replace old specs with clean plan-oriented specs.
-    # We remove the old session_status_changed(:running, :idle)
-    # AND the old :assistant_message (which contained raw JSON text).
+    # We remove the old session_status_changed(:running, :idle) plus user-visible
+    # assistant deltas/messages that may contain raw structured JSON.
     existing_specs = result.event_specs
 
     clean_specs =
       Enum.reject(existing_specs, fn
         {:conductor, :session_status_changed, %{to: :idle}, _opts} -> true
+        {:muse, :assistant_delta, _data, _opts} -> true
         {:muse, :assistant_message, _data, _opts} -> true
         _ -> false
       end)
@@ -643,6 +650,33 @@ defmodule Muse.Conductor do
     {:ok, plan_result}
   end
 
+  defp ensure_plan_identity(plan, session, turn, muse) do
+    plan
+    |> put_plan_field_if_blank(:id, generated_plan_id(turn))
+    |> put_plan_field_if_blank(:session_id, session && session.id)
+    |> put_plan_field_if_blank(:created_by, muse && Atom.to_string(muse.id))
+  end
+
+  defp put_plan_field_if_blank(plan, _field, nil), do: plan
+
+  defp put_plan_field_if_blank(plan, field, value) do
+    if blank_plan_field?(Map.get(plan, field)) do
+      Map.put(plan, field, value)
+    else
+      plan
+    end
+  end
+
+  defp blank_plan_field?(nil), do: true
+  defp blank_plan_field?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank_plan_field?(_value), do: false
+
+  defp generated_plan_id(%{id: id}) when is_binary(id) and id != "", do: "plan_#{id}"
+
+  defp generated_plan_id(_turn) do
+    "plan_" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+  end
+
   defp do_plan_repair(result, session, turn, muse, assistant_text, start_time, opts) do
     provider_module = Keyword.get(opts, :provider_module)
     request = Keyword.get(opts, :request)
@@ -654,7 +688,7 @@ defmodule Muse.Conductor do
     else
       # Build repair prompt from failed text
       errors =
-        case PlanParser.parse(assistant_text) do
+        case parse_plan_text(assistant_text) do
           {:error, errs} -> errs
           _ -> ["Invalid plan format"]
         end
@@ -684,7 +718,7 @@ defmodule Muse.Conductor do
         {:ok, repair_response} ->
           repair_text = repair_response.content || ""
 
-          case PlanParser.parse(repair_text) do
+          case parse_plan_text(repair_text) do
             {:ok, plan} ->
               # Repair succeeded — finalize with plan
               finalize_as_plan(result, session, turn, muse, plan, start_time)
@@ -708,10 +742,29 @@ defmodule Muse.Conductor do
       "I was unable to generate a valid structured plan from the output. " <>
         "Please try again or rephrase your request."
 
+    safe_specs =
+      result.event_specs
+      |> Enum.reject(fn
+        {:muse, :assistant_delta, _data, _opts} -> true
+        {:muse, :assistant_message, _data, _opts} -> true
+        _ -> false
+      end)
+      |> Kernel.++([
+        {:muse, :assistant_message, %{text: safe_text, streamed?: false},
+         safe_assistant_message_opts(result)}
+      ])
+
     result
     |> Map.put(:assistant_text, safe_text)
     |> Map.put(:session, safe_session)
+    |> Map.put(:event_specs, safe_specs)
   end
+
+  defp safe_assistant_message_opts(%{selected_muse: %{id: muse_id}}) do
+    [visibility: :user, muse_id: muse_id]
+  end
+
+  defp safe_assistant_message_opts(_result), do: [visibility: :user]
 
   # -- Event spec builders ------------------------------------------------------
 

@@ -232,9 +232,26 @@ defmodule Muse.PlanSchema do
 
   defp validate_risks(data, errors) do
     case fetch_any_key(data, "risks") do
-      nil -> errors
-      risks when not is_list(risks) -> [~s(risks must be a list) | errors]
-      _ -> errors
+      nil ->
+        errors
+
+      risks when not is_list(risks) ->
+        [~s(risks must be a list) | errors]
+
+      risks ->
+        risk_errors =
+          risks
+          |> Enum.with_index()
+          |> Enum.flat_map(fn
+            {risk, _idx} when is_binary(risk) -> []
+            {_risk, idx} -> ["risk[#{idx}] must be a string"]
+          end)
+
+        if risk_errors == [] do
+          errors
+        else
+          [Enum.join(risk_errors, "; ") | errors]
+        end
     end
   end
 

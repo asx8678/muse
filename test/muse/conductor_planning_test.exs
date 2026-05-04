@@ -134,7 +134,9 @@ defmodule Muse.ConductorPlanningTest do
 
       assert awaiting != nil
 
-      # No assistant_message event should contain raw JSON
+      # No user-visible assistant event should contain raw JSON
+      assert filter_event_specs(result.event_specs, :assistant_delta) == []
+
       assistant_msgs = filter_event_specs(result.event_specs, :assistant_message)
 
       for {_, _, data, _} <- assistant_msgs do
@@ -172,6 +174,31 @@ defmodule Muse.ConductorPlanningTest do
       assert result.assistant_text =~ "1. Add version command definition"
       assert result.assistant_text =~ "2. Add dispatch handler"
       assert result.assistant_text =~ "3. Add tests"
+    end
+
+    test "fenced structured JSON is parsed and rendered without leaking raw JSON events" do
+      session = build_session()
+      turn = build_turn(id: "turn_fenced_plan")
+      fenced_plan = "```json\n" <> valid_plan_json() <> "\n```"
+
+      fake_events = [
+        {:assistant_delta, fenced_plan},
+        {:assistant_completed, fenced_plan},
+        {:response_completed, nil}
+      ]
+
+      {:ok, result} =
+        Conductor.run(session, turn,
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{fake_events: fake_events}]
+        )
+
+      assert %Plan{} = result.plan
+      assert result.session.status == :awaiting_plan_approval
+      assert result.assistant_text =~ "Objective:"
+      refute result.assistant_text =~ "```"
+      refute result.assistant_text =~ "\"objective\""
+      assert filter_event_specs(result.event_specs, :assistant_delta) == []
     end
   end
 
@@ -297,6 +324,17 @@ defmodule Muse.ConductorPlanningTest do
       assert result.session.status == :idle
       refute Map.has_key?(result, :plan)
       assert result.assistant_text =~ "unable to generate a valid structured plan"
+
+      assert filter_event_specs(result.event_specs, :assistant_delta) == []
+
+      assistant_messages = filter_event_specs(result.event_specs, :assistant_message)
+      assert length(assistant_messages) == 1
+      assert [{:muse, :assistant_message, %{text: safe_text}, _opts}] = assistant_messages
+      assert safe_text =~ "unable to generate a valid structured plan"
+
+      event_text = inspect(result.event_specs, limit: :infinity, printable_limit: :infinity)
+      refute event_text =~ invalid_plan
+      refute event_text =~ "\"objective\""
     end
 
     test "plain text response (not plan-like) passes through without repair attempt" do
