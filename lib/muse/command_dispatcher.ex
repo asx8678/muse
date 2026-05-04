@@ -563,6 +563,35 @@ defmodule Muse.CommandDispatcher do
     end
   end
 
+  # -- Auth status -------------------------------------------------------------
+
+  def dispatch(:auth_status, _args, _context) do
+    provider_config = Muse.Config.llm_provider_config()
+
+    output =
+      case provider_config do
+        {:ok, config} ->
+          auth_mode = config.auth || :none
+          env_key = config.env_key || "N/A"
+          bearer_cmd = config.bearer_command
+
+          lines = [
+            "Auth mode: #{auth_mode}",
+            "Env key: #{env_key || "N/A"}",
+            "Bearer command: #{if bearer_cmd, do: "[configured — redacted]", else: "none"}",
+            "Credential sources: env | app_config | provider_config | codex_cache | command",
+            "Key material: [REDACTED — credentials never displayed]"
+          ]
+
+          Enum.join(lines, "\n")
+
+        {:error, reason} ->
+          "Auth status unavailable (config error: #{reason})"
+      end
+
+    {:ok, output, []}
+  end
+
   # -- Prompt preview ----------------------------------------------------------
 
   def dispatch(:prompt_preview, args, context) do

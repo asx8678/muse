@@ -46,7 +46,8 @@ defmodule Muse.Commands do
     {"/prompt preview", :prompt_preview, "Preview assembled prompt bundle"},
     {"/prompt-preview", :prompt_preview, "Preview assembled prompt bundle"},
     {"/reload", :reload, "Force dev reload"},
-    {"/rollback", :rollback, "Roll back to last good generation"}
+    {"/rollback", :rollback, "Roll back to last good generation"},
+    {"/auth status", :auth_status, "Show auth credential status (redacted, read-only)"}
   ]
 
   # Sort longest-prefix-first so "/simulate backend-error" matches before "/simulate"
