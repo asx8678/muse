@@ -23,7 +23,7 @@ defmodule Muse.LLM.OpenAI.RequestBuilder do
       `request.options["headers"]`. Streaming specs add
       `Accept: text/event-stream` unless the caller already provided an Accept
       header. Does **not** read env vars or synthesize auth headers.
-    * Carries `timeout_ms` and `max_retries` from `request.options` when valid.
+    * Carries `timeout_ms`, `receive_timeout`, and `max_retries` from `request.options` when valid.
     * The result payload and headers are JSON/request-safe: no atom keys, no
       `metadata`, `options`, or debug data.
     * Unsupported `wire_api` values return a clear error.
@@ -66,7 +66,7 @@ defmodule Muse.LLM.OpenAI.RequestBuilder do
     * `:endpoint_path`— `"/chat/completions"`
     * `:payload`     — JSON-ready map with string keys and `"stream" => false`
     * `:headers`     — list of `{name, value}` tuples from caller-provided options
-    * `:req_options` — keyword list with `:timeout_ms` / `:max_retries` when valid
+    * `:req_options` — keyword list with `:timeout_ms`, `:receive_timeout`, and `:max_retries` when valid
   """
   @spec build_chat_completions(Request.t()) :: {:ok, spec()} | {:error, error_reason()}
   def build_chat_completions(%Request{} = request) do
@@ -287,6 +287,12 @@ defmodule Muse.LLM.OpenAI.RequestBuilder do
     opts =
       case option_value(options, :timeout_ms) || option_value(options, "timeout_ms") do
         n when is_integer(n) and n > 0 -> Keyword.put(opts, :timeout_ms, n)
+        _ -> opts
+      end
+
+    opts =
+      case option_value(options, :receive_timeout) || option_value(options, "receive_timeout") do
+        n when is_integer(n) and n > 0 -> Keyword.put(opts, :receive_timeout, n)
         _ -> opts
       end
 

@@ -34,9 +34,12 @@ defmodule Muse.LLM.Transport.SSE.ReqStream do
         end
       ]
 
-      ReqStream.request(url: "...", body: %{...}, headers: [...], opts, fn chunk ->
-        IO.puts(chunk)
-      end)
+      ReqStream.request(
+        [url: "...", body: %{...}, headers: [...]] ++ opts,
+        fn chunk ->
+          IO.puts(chunk)
+        end
+      )
 
   ## Error handling
 
@@ -161,11 +164,13 @@ defmodule Muse.LLM.Transport.SSE.ReqStream do
   defp safe_summary(term) when is_binary(term) do
     term
     |> String.slice(0, 500)
+    |> Muse.EventPayloadRedactor.redact_string()
   end
 
   defp safe_summary(term) do
     term
     |> inspect(limit: :infinity, printable_limit: 500)
     |> String.slice(0, 500)
+    |> Muse.EventPayloadRedactor.redact_string()
   end
 end

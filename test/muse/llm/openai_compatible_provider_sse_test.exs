@@ -207,6 +207,35 @@ defmodule Muse.LLM.OpenAICompatibleProviderSSETest do
       assert req_options_is_list == true
       assert on_chunk_is_fn1 == true
     end
+
+    test "default ReqStream path forwards timeout, retry, and receive options" do
+      parent = self()
+
+      post_stream_fn = fn url, req_options, on_chunk ->
+        send(parent, {:req_stream_args, url, req_options})
+
+        text_sse_chunks() |> Enum.each(&on_chunk.(&1))
+
+        {:ok, %{status: 200}}
+      end
+
+      req =
+        sse_request(%{
+          post_stream_fn: post_stream_fn,
+          timeout_ms: 12_345,
+          receive_timeout: 23_456,
+          max_retries: 2
+        })
+
+      assert {:ok, _response} = stream_with_collector(req)
+
+      assert_receive {:req_stream_args, url, req_options}
+      assert url == "https://api.example.test/v1/chat/completions"
+      assert req_options[:json]["stream"] == true
+      assert req_options[:connect_options] == [timeout: 12_345]
+      assert req_options[:receive_timeout] == 23_456
+      assert req_options[:max_retries] == 2
+    end
   end
 
   # ---------------------------------------------------------------------------

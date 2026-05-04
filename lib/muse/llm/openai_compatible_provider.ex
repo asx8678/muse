@@ -40,6 +40,8 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   `{:ok, %{status: integer}}` or `{:error, reason}`.
 
   The default `sse_post_fn` uses `Muse.LLM.Transport.SSE.ReqStream.request/2`.
+  Tests that want to exercise the default provider path without a network call
+  may pass `request.options[:post_stream_fn]`, which is forwarded to ReqStream.
 
   ## Error handling
 
@@ -154,7 +156,12 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
       try do
         emit_fn.(Event.response_started())
 
-        case safe_sse_post(sse_post_fn, spec.url, sse_request_options(spec), on_chunk) do
+        case safe_sse_post(
+               sse_post_fn,
+               spec.url,
+               sse_request_options(spec, request.options),
+               on_chunk
+             ) do
           {:ok, %{status: status}} when is_integer(status) and status >= 200 and status <= 299 ->
             {parser_state, decoder_state, failed?} = Agent.get(agent, & &1)
 
@@ -259,7 +266,9 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   defp default_sse_post(url, req_options, on_chunk) do
     body = Keyword.get(req_options, :json, %{})
     headers = Keyword.get(req_options, :headers, [])
-    stream_opts = [url: url, body: body, headers: headers]
+
+    stream_opts =
+      [url: url, body: body, headers: headers] ++ Keyword.drop(req_options, [:json, :headers])
 
     case ReqStream.request(stream_opts, on_chunk) do
       {:ok, %{status: _status} = result} ->
@@ -278,9 +287,19 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  defp sse_request_options(spec) do
-    [json: spec.payload, headers: spec.headers] ++ spec.req_options
+  defp sse_request_options(spec, request_options) do
+    [json: spec.payload, headers: spec.headers] ++
+      spec.req_options ++ req_stream_adapter_options(request_options)
   end
+
+  defp req_stream_adapter_options(options) when is_map(options) do
+    case option_value(options, :post_stream_fn) || option_value(options, "post_stream_fn") do
+      post_stream_fn when is_function(post_stream_fn, 3) -> [post_stream_fn: post_stream_fn]
+      _other -> []
+    end
+  end
+
+  defp req_stream_adapter_options(_options), do: []
 
   # ---------------------------------------------------------------------------
   # Non-streaming replay path

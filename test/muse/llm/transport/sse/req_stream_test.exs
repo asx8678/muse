@@ -90,6 +90,28 @@ defmodule Muse.LLM.Transport.SSE.ReqStreamTest do
                ReqStream.request(options, fn _ -> :ok end)
     end
 
+    test "redacts secret-looking strings in transport error summaries" do
+      post_stream_fn = fn _url, _req_options, _chunk_callback ->
+        {:error, {:connection_failed, "Bearer sk-req-secret token=oops"}}
+      end
+
+      options = [
+        url: "https://api.test.example/v1/chat/completions",
+        body: %{},
+        headers: [],
+        post_stream_fn: post_stream_fn
+      ]
+
+      assert {:error, {:transport_error, summary}} =
+               ReqStream.request(options, fn _ -> :ok end)
+
+      assert is_binary(summary)
+      assert summary =~ "[REDACTED]"
+      refute summary =~ "Bearer sk-req-secret"
+      refute summary =~ "sk-req-secret"
+      refute summary =~ "token=oops"
+    end
+
     test "raises when :url is missing" do
       assert_raise KeyError, ~r/url/, fn ->
         ReqStream.request([body: %{}, headers: []], fn _ -> :ok end)
@@ -114,8 +136,7 @@ defmodule Muse.LLM.Transport.SSE.ReqStreamTest do
       assert is_binary(summary)
       assert summary != ""
 
-      # The error map IS in the summary because transport safe_summary
-      # does length-limited inspect; full redaction is at the provider layer.
+      # The error map is still summarized, with secret-looking strings redacted.
       assert summary =~ "econnrefused", "error detail should appear in summary"
     end
   end

@@ -551,55 +551,20 @@ end
 
 ### Implemented Normalizing Rules
 
-Provider-specific SSE event types must be normalized into the Muse event model. Unknown events must never crash the runtime.
+Provider-specific Chat Completions SSE frames are normalized by
+`Muse.LLM.OpenAI.ChatCompletionsStreamDecoder` after raw frames are parsed by
+`Muse.LLM.Transport.SSE.Parser`. There is no standalone
+`Muse.LLM.Transport.SSE.Normalizer` module in the current implementation.
 
-| Provider Event | Normalized Muse Event | Notes |
+| Provider Data | Normalized Muse Event | Notes |
 |---|---|---|
-| Text delta (content chunk) | `:assistant_delta` | Incremental text append |
-| Function/tool-call argument delta | `:tool_call_delta` | Partial argument accumulation |
-| Tool call completed (arguments complete) | `:tool_call_completed` | Full `Muse.LLM.ToolCall` available |
-| Usage/stats event | _(stored, not emitted as event)_ | `Response.usage` populated at end |
-| Response completed | `:response_completed` | Final event with usage |
-| Unknown/unrecognized event | `:debug` event with raw payload | Logged at debug level, never crashes |
-
-```elixir
-defmodule Muse.LLM.Transport.SSE.Normalizer do
-  @moduledoc """
-  Normalizes provider-specific SSE events into Muse.LLM.Event structs.
-  """
-
-  alias Muse.LLM.Event
-
-  @spec normalize(atom(), map()) :: Event.t()
-  def normalize(:text_delta, data) do
-    %Event{type: :assistant_delta, text: data["delta"]}
-  end
-
-  def normalize(:tool_call_delta, data) do
-    %Event{type: :tool_call_delta, tool_call: %{
-      id: data["id"],
-      name: data["name"],
-      arguments_delta: data["arguments_delta"]
-    }}
-  end
-
-  def normalize(:tool_call_completed, data) do
-    %Event{type: :tool_call_completed, tool_call: %{
-      id: data["id"],
-      name: data["name"],
-      arguments: data["arguments"]
-    }}
-  end
-
-  def normalize(:usage, data) do
-    %Event{type: :response_completed, usage: data}
-  end
-
-  def normalize(:unknown, raw) do
-    %Event{type: :debug, raw: raw}
-  end
-end
-```
+| Text delta (`choices[].delta.content`) | `:assistant_delta` | Incremental text append |
+| Tool-call start/name delta | `:tool_call_started` / `:tool_call_delta` | Accumulates OpenAI tool-call fragments by index |
+| Tool-call argument delta | `:tool_call_delta` | Partial argument accumulation |
+| Tool call finalized | `:tool_call_completed` | Full `Muse.LLM.ToolCall` emitted during finalization |
+| Usage/stats data | _(stored, not emitted immediately)_ | `Response.usage` populated and emitted with `:response_completed` |
+| Response completed / `[DONE]` | `:response_completed` | Final event with usage after decoder finalization |
+| Unknown/unrecognized chunks or fields | _(ignored safely)_ | No `:debug` event is emitted; unknown data must never crash the runtime |
 
 ### Backpressure
 
@@ -609,21 +574,29 @@ Use `Req` with streaming support. Process events in the TurnRunner process. The 
 - If the TurnRunner is blocked on an approval gate, SSE frames buffer in the Req streaming handler.
 - The TurnRunner processes events one at a time — no unbounded async queue between the SSE parser and the turn loop.
 
-```text
-Req.post!(url, body: json, into: fn chunk, acc ->
-  # Called in the TurnRunner process — natural backpressure
-  events = SSE.Parser.parse_chunk(chunk)
-  Enum.each(events, &TurnRunner.handle_llm_event/1)
-  {:cont, acc}
-end)
+```elixir
+Req.post!(
+  url,
+  json: json,
+  into: fn {:data, data}, {req, resp} ->
+    # Called by Req as response body data arrives. Production code should use
+    # Muse.LLM.Transport.SSE.ReqStream, which wraps this callback shape.
+    on_chunk.(data)
+    {:cont, {req, resp}}
+  end
+)
 ```
+
+For the actual implementation, prefer `Muse.LLM.Transport.SSE.ReqStream.request/2`
+so callers only provide an `on_chunk` callback and do not depend directly on Req's
+streaming accumulator shape.
 
 ### Testing Strategy
 
 ```text
-1. Unit test event normalization with fixture JSON files.
-   - Load saved provider response JSON from test/fixtures/sse/
-   - Assert each frame normalizes to the expected Muse.LLM.Event
+1. Unit test parser and stream-decoder normalization with fixture JSON/SSE data.
+   - Load saved provider response JSON/SSE frames from test/fixtures/sse/
+   - Assert ChatCompletionsStreamDecoder emits the expected Muse.LLM.Event values
 
 2. Unit test SSE parser with chunked strings.
    - Feed partial SSE frames (split mid-line) to SSE.Parser
