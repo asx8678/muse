@@ -29,7 +29,7 @@ defmodule Muse.CLI.CommandDispatcherTest do
       assert {:ok, approve_output, [{:refresh, :events}]} = run_command("/approve plan", context)
 
       assert approve_output ==
-               "Plan approved.\n\nThe approved plan is ready for implementation.\nActive plan: #{plan.id} (version 4)."
+               "Plan approved.\n\n- Plan id: #{plan.id}\n- Version: 4\n- Approval status: approved\n- Approval record: not available (no approval id/hash found).\n- No implementation started: approval recorded the plan only; no Coding Muse turn, shell command, file write, or patch application was started."
 
       status = SessionServer.status(pid)
       assert status.status == :idle
@@ -63,7 +63,7 @@ defmodule Muse.CLI.CommandDispatcherTest do
       assert {:ok, reject_output, [{:refresh, :events}]} = run_command("/reject plan", context)
 
       assert reject_output ==
-               "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\nActive plan: #{plan.id} (version 5)."
+               "Plan rejected.\n\n- Plan id: #{plan.id}\n- Version: 5\n- Rejection status: rejected\n- Rejection record: not available (no rejection id/hash found).\n- No implementation started: rejection recorded the decision only; no Coding Muse turn, shell command, file write, or patch application was started.\n- Next: ask Planning Muse for a revised plan before approving implementation."
 
       status = SessionServer.status(pid)
       assert status.status == :idle

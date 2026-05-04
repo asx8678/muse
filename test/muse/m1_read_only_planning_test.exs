@@ -438,7 +438,7 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       {:ok, approve_output, approve_effects} = run_slash_command("/approve plan", context)
 
       assert approve_output ==
-               "Plan approved.\n\nThe approved plan is ready for implementation.\nActive plan: #{approve_plan_id} (version 1)."
+               "Plan approved.\n\n- Plan id: #{approve_plan_id}\n- Version: 1\n- Approval status: approved\n- Approval record: not available (no approval id/hash found).\n- No implementation started: approval recorded the plan only; no Coding Muse turn, shell command, file write, or patch application was started."
 
       assert approve_effects == [{:refresh, :events}]
 
@@ -481,7 +481,7 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       {:ok, reject_output, reject_effects} = run_slash_command("/reject plan", reject_context)
 
       assert reject_output ==
-               "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\nActive plan: #{reject_plan_id} (version 1)."
+               "Plan rejected.\n\n- Plan id: #{reject_plan_id}\n- Version: 1\n- Rejection status: rejected\n- Rejection record: not available (no rejection id/hash found).\n- No implementation started: rejection recorded the decision only; no Coding Muse turn, shell command, file write, or patch application was started.\n- Next: ask Planning Muse for a revised plan before approving implementation."
 
       assert reject_effects == [{:refresh, :events}]
 

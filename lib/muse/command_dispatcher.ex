@@ -966,7 +966,7 @@ defmodule Muse.CommandDispatcher do
 
   defp dispatch_plan_lifecycle_command(action, args, context) do
     if present_args?(args) do
-      {:error, "Error: usage: #{plan_lifecycle_usage(action)}", []}
+      {:error, no_args_usage_error(plan_lifecycle_usage(action), args), []}
     else
       session_id = context_session_id(context)
       source = context_source(context)
@@ -986,15 +986,11 @@ defmodule Muse.CommandDispatcher do
   end
 
   defp format_plan_lifecycle_result({:ok, %Muse.Plan{} = plan}, :approve_plan) do
-    {:ok,
-     "Plan approved.\n\nThe approved plan is ready for implementation.\n#{plan_identity_line(plan)}",
-     [{:refresh, :events}]}
+    {:ok, Muse.ApprovalAudit.approval_message(plan), [{:refresh, :events}]}
   end
 
   defp format_plan_lifecycle_result({:ok, %Muse.Plan{} = plan}, :reject_plan) do
-    {:ok,
-     "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\n#{plan_identity_line(plan)}",
-     [{:refresh, :events}]}
+    {:ok, Muse.ApprovalAudit.rejection_message(plan), [{:refresh, :events}]}
   end
 
   defp format_plan_lifecycle_result({:error, :turn_running}, action) do
@@ -1029,6 +1025,19 @@ defmodule Muse.CommandDispatcher do
   defp plan_lifecycle_verb(:approve_plan), do: "approve"
   defp plan_lifecycle_verb(:reject_plan), do: "reject"
 
+  defp no_args_usage_error(usage, args) do
+    unexpected =
+      args
+      |> safe_to_string()
+      |> String.trim()
+
+    if unexpected == "" do
+      "Error: usage: #{usage}"
+    else
+      "Error: usage: #{usage} (no arguments). Unexpected arguments: #{unexpected}"
+    end
+  end
+
   defp context_session_id(context) do
     case map_get_any(context, [:session_id, "session_id"]) do
       nil -> "default"
@@ -1049,10 +1058,6 @@ defmodule Muse.CommandDispatcher do
 
   defp plan_show_heading(%Muse.Plan{} = plan) do
     "Muse Plan #{Muse.PlanHistory.display_plan_id(plan)} (version #{plan.version})"
-  end
-
-  defp plan_identity_line(%Muse.Plan{} = plan) do
-    "Active plan: #{Muse.PlanHistory.display_plan_id(plan)} (version #{plan.version})."
   end
 
   # -- Read-only plan command helpers -----------------------------------------

@@ -4,14 +4,21 @@ defmodule Muse.CommandDispatcherTest do
   alias Muse.CommandDispatcher
   alias Muse.LLM.ProviderConfig
 
-  defp start_session_with_awaiting_plan(session_id, objective \\ "Approve dispatcher plan") do
-    plan =
-      Muse.Plan.new(
+  defp start_session_with_awaiting_plan(
+         session_id,
+         objective \\ "Approve dispatcher plan",
+         plan_attrs \\ []
+       ) do
+    plan_attrs =
+      [
         id: "#{session_id}-plan",
         session_id: session_id,
         objective: objective,
         tasks: [Muse.Task.new(title: "Review", description: "Review the plan")]
-      )
+      ]
+      |> Keyword.merge(plan_attrs)
+
+    plan = Muse.Plan.new(plan_attrs)
 
     {:ok, plan} = Muse.Plan.transition(plan, :awaiting_approval)
 
@@ -306,6 +313,13 @@ defmodule Muse.CommandDispatcherTest do
           objective: "Summarize active plan status",
           status: :approved,
           approved_at: ~U[2025-01-01 00:20:00Z],
+          approvals: [
+            %{
+              "kind" => "plan_approval",
+              "approval_id" => "approval-status-1",
+              "approval_hash" => "sha256:status"
+            }
+          ],
           tasks: [Muse.Task.new(title: "Summarize", description: "Summarize status")]
         )
 
@@ -320,6 +334,8 @@ defmodule Muse.CommandDispatcherTest do
       assert output =~ "Active plan id: status-plan"
       assert output =~ "Version: 1"
       assert output =~ "Plan status: approved"
+      assert output =~ "Approval status: approved"
+      assert output =~ "Approval record: id=approval-status-1, hash=sha256:status"
       assert output =~ "Session status: idle"
       assert output =~ "Status command plan"
       assert output =~ "Task count: 1"
@@ -487,18 +503,30 @@ defmodule Muse.CommandDispatcherTest do
       end
     end
 
-    test "approve with extra args returns usage error" do
-      {:error, output, effects} = CommandDispatcher.dispatch(:approve_plan, "now", %{})
+    test "approve with extra args returns clear usage error without starting a session" do
+      session_id = "approve-usage-#{:erlang.unique_integer([:positive])}"
 
-      assert output == "Error: usage: /approve plan"
+      {:error, output, effects} =
+        CommandDispatcher.dispatch(:approve_plan, "now", %{session_id: session_id})
+
+      assert output ==
+               "Error: usage: /approve plan (no arguments). Unexpected arguments: now"
+
       assert effects == []
+      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
     end
 
-    test "reject with extra args returns usage error" do
-      {:error, output, effects} = CommandDispatcher.dispatch(:reject_plan, "because", %{})
+    test "reject with extra args returns clear usage error without starting a session" do
+      session_id = "reject-usage-#{:erlang.unique_integer([:positive])}"
 
-      assert output == "Error: usage: /reject plan"
+      {:error, output, effects} =
+        CommandDispatcher.dispatch(:reject_plan, "because", %{session_id: session_id})
+
+      assert output ==
+               "Error: usage: /reject plan (no arguments). Unexpected arguments: because"
+
       assert effects == []
+      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
     end
 
     test "approve transitions an awaiting restored plan without execution" do
@@ -510,7 +538,7 @@ defmodule Muse.CommandDispatcherTest do
           CommandDispatcher.dispatch(:approve_plan, nil, %{session_id: session_id, source: :cli})
 
         assert output ==
-                 "Plan approved.\n\nThe approved plan is ready for implementation.\nActive plan: #{session_id}-plan (version 1)."
+                 "Plan approved.\n\n- Plan id: #{session_id}-plan\n- Version: 1\n- Approval status: approved\n- Approval record: not available (no approval id/hash found).\n- No implementation started: approval recorded the plan only; no Coding Muse turn, shell command, file write, or patch application was started."
 
         assert effects == [{:refresh, :events}]
 
@@ -519,6 +547,33 @@ defmodule Muse.CommandDispatcherTest do
         assert status.plan.status == :approved
         assert status.active_turn_id == nil
         assert status.runner_pid == nil
+      after
+        stop_session(pid)
+      end
+    end
+
+    test "approve output includes map approval id and hash when available" do
+      session_id = "dispatcher-approve-audit-#{:erlang.unique_integer([:positive])}"
+
+      {pid, _plan} =
+        start_session_with_awaiting_plan(session_id, "Approve audit plan",
+          approvals: [
+            %{
+              "type" => "plan_approval",
+              "approval_id" => "approval-123",
+              "approval_hash" => "sha256:approval"
+            }
+          ]
+        )
+
+      try do
+        {:ok, output, _effects} =
+          CommandDispatcher.dispatch(:approve_plan, nil, %{session_id: session_id, source: :cli})
+
+        assert output =~ "- Plan id: #{session_id}-plan"
+        assert output =~ "- Version: 1"
+        assert output =~ "- Approval record: id=approval-123, hash=sha256:approval"
+        assert output =~ "No implementation started"
       after
         stop_session(pid)
       end
@@ -533,7 +588,7 @@ defmodule Muse.CommandDispatcherTest do
           CommandDispatcher.dispatch(:reject_plan, nil, %{session_id: session_id, source: :web})
 
         assert output ==
-                 "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\nActive plan: #{session_id}-plan (version 1)."
+                 "Plan rejected.\n\n- Plan id: #{session_id}-plan\n- Version: 1\n- Rejection status: rejected\n- Rejection record: not available (no rejection id/hash found).\n- No implementation started: rejection recorded the decision only; no Coding Muse turn, shell command, file write, or patch application was started.\n- Next: ask Planning Muse for a revised plan before approving implementation."
 
         assert effects == [{:refresh, :events}]
 
@@ -542,6 +597,33 @@ defmodule Muse.CommandDispatcherTest do
         assert status.plan.status == :rejected
         assert status.active_turn_id == nil
         assert status.runner_pid == nil
+      after
+        stop_session(pid)
+      end
+    end
+
+    test "reject output includes map rejection id and hash when available" do
+      session_id = "dispatcher-reject-audit-#{:erlang.unique_integer([:positive])}"
+
+      {pid, _plan} =
+        start_session_with_awaiting_plan(session_id, "Reject audit plan",
+          approvals: [
+            %{
+              "action" => "plan_rejected",
+              "rejection_id" => "rejection-123",
+              "rejection_hash" => "sha256:rejection"
+            }
+          ]
+        )
+
+      try do
+        {:ok, output, _effects} =
+          CommandDispatcher.dispatch(:reject_plan, nil, %{session_id: session_id, source: :cli})
+
+        assert output =~ "- Plan id: #{session_id}-plan"
+        assert output =~ "- Version: 1"
+        assert output =~ "- Rejection record: id=rejection-123, hash=sha256:rejection"
+        assert output =~ "ask Planning Muse for a revised plan"
       after
         stop_session(pid)
       end

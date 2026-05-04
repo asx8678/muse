@@ -284,7 +284,9 @@ defmodule Muse.CommandsTest do
       assert text =~ "/plan status"
       assert text =~ "/plan show"
       assert text =~ "/approve plan"
+      assert text =~ "no implementation starts"
       assert text =~ "/reject plan"
+      assert text =~ "request a revised plan"
       assert text =~ "/muses"
       assert text =~ "/events"
       assert text =~ "/muses"
@@ -360,6 +362,11 @@ defmodule Muse.CommandsTest do
       assert "/plan show" in cmd_names
       assert "/approve plan" in cmd_names
       assert "/reject plan" in cmd_names
+
+      assert {"/approve plan",
+              "Approve the active Muse Plan (records approval only; no implementation starts)"} in cmds
+
+      assert {"/reject plan", "Reject the active Muse Plan and request a revised plan"} in cmds
       assert "/auth status" in cmd_names
     end
   end
@@ -389,6 +396,23 @@ defmodule Muse.CommandsTest do
       assert "/plan history" in cmd_names
       assert "/plan status" in cmd_names
       assert "/plan show" in cmd_names
+
+      assert Enum.any?(cmds, fn
+               %{command: "/approve plan", description: description} ->
+                 description =~ "no implementation starts"
+
+               _ ->
+                 false
+             end)
+
+      assert Enum.any?(cmds, fn
+               %{command: "/reject plan", description: description} ->
+                 description =~ "revised plan"
+
+               _ ->
+                 false
+             end)
+
       assert "/auth status" in cmd_names
     end
   end
