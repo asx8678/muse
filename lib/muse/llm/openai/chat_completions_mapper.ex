@@ -16,6 +16,7 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsMapper do
 
   """
 
+  alias Muse.EventPayloadRedactor
   alias Muse.LLM.{Message, Request}
 
   @doc """
@@ -89,9 +90,28 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsMapper do
 
   defp map_tool(tool) when is_map(tool) do
     # Strip debug atom keys (e.g. :name) from tool specs produced by
-    # Muse.Tool.Spec.to_provider_schema/1, keeping only JSON-compatible keys.
+    # Muse.Tool.Spec.to_provider_schema/1, redact secret-like strings in tool
+    # schema/debug data, and convert nested keys to provider-ready JSON strings.
     tool
     |> Map.drop([:name])
+    |> EventPayloadRedactor.redact()
+    |> json_value()
+    |> provider_ready_tool()
+  end
+
+  defp provider_ready_tool(%{"type" => "function", "function" => function})
+       when is_map(function) do
+    %{
+      "type" => "function",
+      "function" => provider_ready_function(function)
+    }
+  end
+
+  defp provider_ready_tool(tool), do: tool
+
+  defp provider_ready_function(function) do
+    function
+    |> Map.take(["name", "description", "parameters", "strict"])
   end
 
   # ---------------------------------------------------------------------------
@@ -123,5 +143,41 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsMapper do
   # ---------------------------------------------------------------------------
 
   defp maybe_put(payload, _key, nil), do: payload
-  defp maybe_put(payload, key, value), do: Map.put(payload, key, value)
+  defp maybe_put(payload, key, value), do: Map.put(payload, key, json_value(value))
+
+  defp json_value(value)
+       when is_binary(value) or is_boolean(value) or is_number(value) or is_nil(value) do
+    value
+  end
+
+  defp json_value(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp json_value(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp json_value(%Date{} = value), do: Date.to_iso8601(value)
+  defp json_value(%Time{} = value), do: Time.to_iso8601(value)
+
+  defp json_value(value) when is_list(value), do: Enum.map(value, &json_value/1)
+
+  defp json_value(%{__struct__: _struct} = value) do
+    value
+    |> Map.from_struct()
+    |> json_value()
+  end
+
+  defp json_value(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} -> {json_key(key), json_value(nested_value)} end)
+  end
+
+  defp json_value(value) when is_tuple(value) do
+    value
+    |> Tuple.to_list()
+    |> json_value()
+  end
+
+  defp json_value(value), do: inspect(value, limit: :infinity, printable_limit: :infinity)
+
+  defp json_key(key) when is_binary(key), do: key
+  defp json_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp json_key(key) when is_number(key), do: to_string(key)
+  defp json_key(key), do: inspect(key, limit: :infinity, printable_limit: :infinity)
 end

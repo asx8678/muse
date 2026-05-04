@@ -220,10 +220,14 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsMapperTest do
       refute Map.has_key?(payload, "max_tokens")
     end
 
-    test "includes response_format when set" do
+    test "includes response_format when set with provider-ready string keys" do
       rf = %{type: "json_schema", json_schema: %{name: "test", schema: %{type: "object"}}}
       payload = build_payload(response_format: rf)
-      assert payload["response_format"] == rf
+
+      assert payload["response_format"] == %{
+               "type" => "json_schema",
+               "json_schema" => %{"name" => "test", "schema" => %{"type" => "object"}}
+             }
     end
 
     test "omits response_format when nil" do

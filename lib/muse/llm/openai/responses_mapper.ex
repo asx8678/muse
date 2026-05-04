@@ -29,6 +29,7 @@ defmodule Muse.LLM.OpenAI.ResponsesMapper do
   values suitable for `Jason.encode!/1`.
   """
 
+  alias Muse.EventPayloadRedactor
   alias Muse.LLM.{Message, Request}
   alias Muse.Tool.Spec
 
@@ -165,9 +166,12 @@ defmodule Muse.LLM.OpenAI.ResponsesMapper do
   defp function_tool(name, description, parameters) do
     %{
       "type" => "function",
-      "name" => text_value(name),
-      "description" => text_value(description) || "",
-      "parameters" => json_value(parameters || %{})
+      "name" => redact_text(text_value(name)),
+      "description" => redact_text(text_value(description) || ""),
+      "parameters" =>
+        (parameters || %{})
+        |> EventPayloadRedactor.redact()
+        |> json_value()
     }
   end
 
@@ -278,6 +282,9 @@ defmodule Muse.LLM.OpenAI.ResponsesMapper do
   defp text_value(value) when is_atom(value), do: Atom.to_string(value)
   defp text_value(value) when is_number(value) or is_boolean(value), do: to_string(value)
   defp text_value(value), do: inspect(value, limit: :infinity, printable_limit: :infinity)
+
+  defp redact_text(nil), do: nil
+  defp redact_text(value) when is_binary(value), do: EventPayloadRedactor.redact_string(value)
 
   defp blank?(nil), do: true
   defp blank?(value) when is_binary(value), do: String.trim(value) == ""
