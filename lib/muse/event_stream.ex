@@ -19,6 +19,13 @@ defmodule Muse.EventStream do
   the final `:assistant_message` is marked `streamed?: true`. The
   `chat_messages/1` helper renders the concatenated deltas as the
   assistant message and suppresses the duplicate final message.
+
+  ## Legacy events
+
+  Events created with `Event.new/3` (no metadata) have `nil` `turn_id`
+  and `seq`. The `chat_messages/1` helper handles these defensively:
+  each nil-turn event is treated as its own single-event group, rendered
+  chronologically without grouping all nil-turn events together.
   """
 
   alias Muse.Event
@@ -43,15 +50,9 @@ defmodule Muse.EventStream do
 
     * `:session_id` — only events belonging to this session (default: all)
     * `:visibility` — only events with this visibility (default: all)
-
-  ## Examples
-
-      iex> events = Muse.EventStream.replay(session_id: "sess_1", visibility: :user)
-      iex> Enum.all?(events, &(&1.session_id == "sess_1" and &1.visibility == :user))
-      true
   """
   @spec replay(keyword()) :: [Event.t()]
-  def replay(opts \\ []) do
+  def replay(opts) do
     session_id = Keyword.get(opts, :session_id)
     visibility = Keyword.get(opts, :visibility)
 
@@ -82,8 +83,9 @@ defmodule Muse.EventStream do
     * `:streaming?` — whether the message is still streaming (has deltas
       but no final `:assistant_message` yet)
 
-  Incomplete streams (deltas without a final `:assistant_message`) are
-  included as streaming assistant messages with `streaming?: true`.
+  Legacy events with `nil` `turn_id` are rendered individually in
+  chronological order. Multiple `:assistant_message` finals in a turn
+  are handled gracefully (first wins for dedup).
   """
   @spec chat_messages([Event.t()]) :: [map()]
   def chat_messages(events) when is_list(events) do
@@ -96,18 +98,25 @@ defmodule Muse.EventStream do
   # -- Private helpers ----------------------------------------------------------
 
   # Group events by turn_id while preserving the temporal order of first
-  # appearance of each turn_id. This is important because turn_ids are
-  # random strings, so lexicographic sorting would not match time order.
+  # appearance of each turn_id. Events with nil turn_id are each placed
+  # in their own single-event group (keyed by a unique reference) so they
+  # don't all get lumped together.
   defp group_by_turn_preserving_order(events) do
-    {groups, _seen} =
-      Enum.reduce(events, {[], MapSet.new()}, fn event, {acc, seen} ->
+    {groups, _seen, _nil_counter} =
+      Enum.reduce(events, {[], MapSet.new(), 0}, fn event, {acc, seen, nil_count} ->
         turn_id = event.turn_id
 
-        if MapSet.member?(seen, turn_id) do
-          {acc, seen}
+        if turn_id == nil do
+          # Each nil-turn event gets its own unique group
+          key = {:nil_turn, nil_count}
+          {[{key, [event]} | acc], seen, nil_count + 1}
         else
-          turn_events = Enum.filter(events, &(&1.turn_id == turn_id))
-          {[{turn_id, turn_events} | acc], MapSet.put(seen, turn_id)}
+          if MapSet.member?(seen, turn_id) do
+            {acc, seen, nil_count}
+          else
+            turn_events = Enum.filter(events, &(&1.turn_id == turn_id))
+            {[{turn_id, turn_events} | acc], MapSet.put(seen, turn_id), nil_count}
+          end
         end
       end)
 
@@ -127,10 +136,10 @@ defmodule Muse.EventStream do
   end
 
   # Convert a group of events for a single turn into chat messages.
-  # A turn has exactly one user message and zero or more assistant
-  # events (deltas + optional final).
+  # Handles: nil-turn single events, normal turns, multiple finals, nil seqs.
   defp turn_to_messages({_turn_id, events}) do
-    events = Enum.sort_by(events, & &1.seq)
+    # Sort by seq, treating nil seq as 0 (comes first)
+    events = Enum.sort_by(events, fn e -> e.seq || 0 end)
 
     user_events = Enum.filter(events, &(&1.type == :user_message))
     assistant_deltas = Enum.filter(events, &(&1.type == :assistant_delta))
@@ -144,18 +153,18 @@ defmodule Muse.EventStream do
         {[], []} ->
           []
 
-        # No deltas, just final message — render the final
-        {[], [final]} ->
+        # No deltas, just final(s) — render the first final only
+        {[], [final | _rest]} ->
           [event_to_chat_message(final)]
 
-        # Deltas present, final has streamed?: true — render concatenated
-        # deltas, suppress duplicate final
-        {deltas, [final]} ->
+        # Deltas present with one or more finals — check first final for streamed?
+        {deltas, [final | _rest]} ->
           if streamed?(final) do
-            [deltas_to_message(deltas, final)]
+            # Deltas were streamed — render concatenated deltas, suppress final
+            [deltas_to_message(deltas)]
           else
             # Deltas present but final not marked streamed — render both
-            [deltas_to_message(deltas, final), event_to_chat_message(final)]
+            [deltas_to_message(deltas), event_to_chat_message(final)]
           end
 
         # Deltas with no final — still streaming
@@ -177,11 +186,11 @@ defmodule Muse.EventStream do
     }
   end
 
-  defp deltas_to_message(deltas, _final) do
+  defp deltas_to_message(deltas) do
     text =
       deltas
-      |> Enum.sort_by(& &1.seq)
-      |> Enum.map_join("", &Map.get(&1.data, :text, ""))
+      |> Enum.sort_by(fn e -> e.seq || 0 end)
+      |> Enum.map_join("", &delta_text/1)
 
     first = hd(deltas)
 
@@ -198,8 +207,8 @@ defmodule Muse.EventStream do
   defp deltas_to_streaming_message(deltas) do
     text =
       deltas
-      |> Enum.sort_by(& &1.seq)
-      |> Enum.map_join("", &Map.get(&1.data, :text, ""))
+      |> Enum.sort_by(fn e -> e.seq || 0 end)
+      |> Enum.map_join("", &delta_text/1)
 
     first = hd(deltas)
 
@@ -212,6 +221,15 @@ defmodule Muse.EventStream do
       streaming?: true
     }
   end
+
+  # Extract text from delta event data, handling both atom and string keys.
+  # This is important for SessionStore JSON replay where keys become strings.
+  defp delta_text(%Event{data: data}) when is_map(data) do
+    Map.get(data, :text) || Map.get(data, "text") || ""
+  end
+
+  defp delta_text(%Event{data: data}) when is_binary(data), do: data
+  defp delta_text(_), do: ""
 
   defp chat_role(:user_message), do: :user
   defp chat_role(:assistant_message), do: :assistant

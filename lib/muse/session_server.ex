@@ -86,11 +86,9 @@ defmodule Muse.SessionServer do
         user_text: text
       )
 
-    # 1. Emit user message event with session metadata (redacted)
-    redacted_user_text = EventPayloadRedactor.redact_string(text)
-
+    # 1. Emit user message event with session metadata
     {user_event, state} =
-      emit_session_event(state, source, :user_message, %{text: redacted_user_text},
+      emit_session_event(state, source, :user_message, %{text: text},
         turn_id: turn_id,
         visibility: :user
       )
@@ -148,10 +146,9 @@ defmodule Muse.SessionServer do
         "Placeholder response: received #{inspect(text)}"
       end
 
-    redacted_assistant_text = EventPayloadRedactor.redact_string(assistant_text)
-
     # 4. Emit assistant delta(s) — single chunk for placeholder
-    delta_data = %{text: redacted_assistant_text, index: 0}
+    # Note: text is redacted centrally by emit_session_event/5
+    delta_data = %{text: assistant_text, index: 0}
 
     {delta_event, state} =
       emit_session_event(state, :muse, :assistant_delta, delta_data,
@@ -165,7 +162,8 @@ defmodule Muse.SessionServer do
     turn = Turn.mark_streamed(turn)
 
     # 6. Emit final assistant_message with streamed? flag
-    final_data = %{text: redacted_assistant_text, streamed?: true}
+    # Note: text is redacted centrally by emit_session_event/5
+    final_data = %{text: assistant_text, streamed?: true}
 
     {assistant_event, state} =
       emit_session_event(state, :muse, :assistant_message, final_data,
@@ -243,13 +241,18 @@ defmodule Muse.SessionServer do
 
   @doc false
   # Emits an event with session-scoped metadata and increments the seq counter.
+  # Data is redacted centrally via `Muse.EventPayloadRedactor.redact/1` before
+  # event creation so no secret values can leak into the event stream.
   # Returns `{event, updated_state}` so the caller can track the event.
   @spec emit_session_event(map(), atom(), atom(), map(), keyword()) :: {Event.t(), map()}
   def emit_session_event(state, source, type, data, opts) do
     seq = state.seq + 1
 
+    # Central redaction: all event data passes through the redactor
+    redacted_data = EventPayloadRedactor.redact(data)
+
     event =
-      Event.new(source, type, data,
+      Event.new(source, type, redacted_data,
         session_id: state.session_id,
         turn_id: Keyword.get(opts, :turn_id),
         seq: seq,

@@ -497,6 +497,145 @@ defmodule Muse.SessionServerTest do
     end
   end
 
+  describe "centralized redaction — self-healing secret leak regression" do
+    test "diagnostic message containing sk-test-12345 does not appear in State events" do
+      started_queue? =
+        case Process.whereis(Muse.SelfHealingQueue) do
+          nil ->
+            {:ok, _} = Muse.SelfHealingQueue.start_link([])
+            true
+
+          _pid ->
+            false
+        end
+
+      if started_queue? do
+        on_exit(fn ->
+          case Process.whereis(Muse.SelfHealingQueue) do
+            nil ->
+              :ok
+
+            pid ->
+              try do
+                GenServer.stop(pid)
+              catch
+                :exit, _ -> :ok
+              end
+          end
+        end)
+      end
+
+      # Diagnostic with a secret in the message
+      diagnostic = Muse.Diagnostic.new(:error, "api key sk-test-12345 is leaked")
+      Muse.SelfHealingQueue.add_diagnostic(diagnostic)
+
+      pid = start_server("redact-sh-session")
+      Muse.SessionServer.submit(pid, :cli, "fix it")
+
+      events = State.events()
+
+      # Search all events for the secret string
+      for event <- events do
+        event_str = inspect(event)
+
+        refute event_str =~ "sk-test-12345",
+               "Found leaked secret sk-test-12345 in event: #{inspect(event.type)}"
+      end
+
+      # Verify redaction marker appears somewhere
+      all_text = Enum.map_join(events, " ", &inspect(&1.data))
+      assert all_text =~ "[REDACTED]"
+    end
+
+    test "diagnostic message containing Bearer secret-token does not appear in State events" do
+      started_queue? =
+        case Process.whereis(Muse.SelfHealingQueue) do
+          nil ->
+            {:ok, _} = Muse.SelfHealingQueue.start_link([])
+            true
+
+          _pid ->
+            false
+        end
+
+      if started_queue? do
+        on_exit(fn ->
+          case Process.whereis(Muse.SelfHealingQueue) do
+            nil ->
+              :ok
+
+            pid ->
+              try do
+                GenServer.stop(pid)
+              catch
+                :exit, _ -> :ok
+              end
+          end
+        end)
+      end
+
+      diagnostic = Muse.Diagnostic.new(:error, "Authorization: Bearer secret-token-here")
+      Muse.SelfHealingQueue.add_diagnostic(diagnostic)
+
+      pid = start_server("redact-bearer-session")
+      Muse.SessionServer.submit(pid, :cli, "fix it")
+
+      events = State.events()
+
+      for event <- events do
+        event_str = inspect(event)
+
+        refute event_str =~ "secret-token-here",
+               "Found leaked Bearer secret in event: #{inspect(event.type)}"
+      end
+    end
+
+    test "redacted events do not leak secrets in EventFormatter export" do
+      started_queue? =
+        case Process.whereis(Muse.SelfHealingQueue) do
+          nil ->
+            {:ok, _} = Muse.SelfHealingQueue.start_link([])
+            true
+
+          _pid ->
+            false
+        end
+
+      if started_queue? do
+        on_exit(fn ->
+          case Process.whereis(Muse.SelfHealingQueue) do
+            nil ->
+              :ok
+
+            pid ->
+              try do
+                GenServer.stop(pid)
+              catch
+                :exit, _ -> :ok
+              end
+          end
+        end)
+      end
+
+      diagnostic = Muse.Diagnostic.new(:error, "key is sk-test-12345 for real")
+      Muse.SelfHealingQueue.add_diagnostic(diagnostic)
+
+      pid = start_server("redact-export-session")
+      Muse.SessionServer.submit(pid, :cli, "export test")
+
+      events = State.events()
+
+      # Verify event_to_map also doesn't leak
+      for event <- events do
+        map = MuseWeb.EventFormatter.event_to_map(event)
+        map_str = inspect(map)
+
+        refute map_str =~ "sk-test-12345",
+               "Found leaked secret in event_to_map output: #{map_str}"
+      end
+    end
+  end
+
   describe "process lifecycle" do
     test "different session ids have different processes" do
       pid_a = start_server("lifecycle-a")

@@ -36,7 +36,7 @@ defmodule Muse.EventStreamTest do
 
   # -- Helpers ------------------------------------------------------------------
 
-  defp make_event(type, data \\ %{}, opts \\ []) do
+  defp make_event(type, data, opts) do
     Event.new(:test, type, data, opts)
   end
 
@@ -46,7 +46,6 @@ defmodule Muse.EventStreamTest do
 
   describe "replay/2" do
     test "returns all events when no filters given" do
-      # replay reads from State, which is empty in a fresh setup
       filtered = EventStream.replay([])
       assert filtered == []
     end
@@ -126,22 +125,6 @@ defmodule Muse.EventStreamTest do
       messages = EventStream.chat_messages(events)
       # turn_started and turn_completed are filtered out
       assert length(messages) == 2
-    end
-
-    test "filters out events with nil turn_id" do
-      events = [
-        make_event(:user_message, %{text: "orphan"},
-          id: 1,
-          turn_id: nil,
-          seq: 1,
-          timestamp: now()
-        )
-      ]
-
-      # Events with nil turn_id get grouped under nil key — they're still
-      # included in chat_messages since we group by turn_id (nil is valid key)
-      messages = EventStream.chat_messages(events)
-      assert length(messages) == 1
     end
   end
 
@@ -247,6 +230,61 @@ defmodule Muse.EventStreamTest do
     end
   end
 
+  describe "chat_messages/1 — string-keyed delta text (JSON replay)" do
+    test "delta with string key \"text\" renders correctly" do
+      events = [
+        make_event(:user_message, %{"text" => "hello"},
+          id: 1,
+          turn_id: "t1",
+          seq: 1,
+          timestamp: now()
+        ),
+        make_event(:assistant_delta, %{"text" => "chunk1", "index" => 0},
+          id: 2,
+          turn_id: "t1",
+          seq: 2,
+          timestamp: now()
+        ),
+        make_event(:assistant_message, %{"text" => "chunk1", "streamed?" => true},
+          id: 3,
+          turn_id: "t1",
+          seq: 3,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      assert length(messages) == 2
+
+      [user_msg, asst_msg] = messages
+      assert user_msg.text == "hello"
+      assert asst_msg.text == "chunk1"
+      assert asst_msg.streaming? == false
+    end
+
+    test "streamed? with string key \"streamed?\" is detected" do
+      events = [
+        make_event(:assistant_delta, %{"text" => "hi"},
+          id: 1,
+          turn_id: "t1",
+          seq: 1,
+          timestamp: now()
+        ),
+        make_event(:assistant_message, %{"text" => "hi", "streamed?" => true},
+          id: 2,
+          turn_id: "t1",
+          seq: 2,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      # Final should be suppressed (streamed)
+      assert length(messages) == 1
+      assert hd(messages).text == "hi"
+    end
+  end
+
   describe "chat_messages/1 — multiple turns" do
     test "events from different turns produce separate messages" do
       events = [
@@ -271,6 +309,160 @@ defmodule Muse.EventStreamTest do
 
       texts = Enum.map(messages, & &1.text)
       assert texts == ["hi", "hello", "bye", "see ya"]
+    end
+  end
+
+  describe "chat_messages/1 — nil turn_id (legacy events)" do
+    test "two legacy assistant messages with nil turn_id render individually" do
+      events = [
+        make_event(:assistant_message, %{text: "first legacy"},
+          id: 1,
+          turn_id: nil,
+          seq: nil,
+          timestamp: now()
+        ),
+        make_event(:assistant_message, %{text: "second legacy"},
+          id: 2,
+          turn_id: nil,
+          seq: nil,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      assert length(messages) == 2
+
+      [first, second] = messages
+      assert first.text == "first legacy"
+      assert second.text == "second legacy"
+    end
+
+    test "mixed legacy user/assistant with nil turn_id render individually" do
+      events = [
+        make_event(:user_message, %{text: "q1"}, id: 1, turn_id: nil, seq: nil, timestamp: now()),
+        make_event(:assistant_message, %{text: "a1"},
+          id: 2,
+          turn_id: nil,
+          seq: nil,
+          timestamp: now()
+        ),
+        make_event(:user_message, %{text: "q2"}, id: 3, turn_id: nil, seq: nil, timestamp: now()),
+        make_event(:assistant_message, %{text: "a2"},
+          id: 4,
+          turn_id: nil,
+          seq: nil,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      assert length(messages) == 4
+
+      texts = Enum.map(messages, & &1.text)
+      assert texts == ["q1", "a1", "q2", "a2"]
+    end
+
+    test "legacy events with nil turn_id don't crash when mixed with structured events" do
+      events = [
+        make_event(:user_message, %{text: "legacy"},
+          id: 1,
+          turn_id: nil,
+          seq: nil,
+          timestamp: now()
+        ),
+        make_event(:assistant_message, %{text: "old reply"},
+          id: 2,
+          turn_id: nil,
+          seq: nil,
+          timestamp: now()
+        ),
+        make_event(:user_message, %{text: "new"}, id: 3, turn_id: "t1", seq: 1, timestamp: now()),
+        make_event(:assistant_message, %{text: "new reply"},
+          id: 4,
+          turn_id: "t1",
+          seq: 2,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      # Legacy: 2 messages, structured turn: 2 messages = 4 total
+      assert length(messages) == 4
+    end
+  end
+
+  describe "chat_messages/1 — multiple finals in a turn" do
+    test "handles two assistant_message events in same turn gracefully" do
+      events = [
+        make_event(:assistant_delta, %{text: "partial"},
+          id: 1,
+          turn_id: "t1",
+          seq: 1,
+          timestamp: now()
+        ),
+        make_event(:assistant_message, %{text: "final1", streamed?: true},
+          id: 2,
+          turn_id: "t1",
+          seq: 2,
+          timestamp: now()
+        ),
+        make_event(:assistant_message, %{text: "final2"},
+          id: 3,
+          turn_id: "t1",
+          seq: 3,
+          timestamp: now()
+        )
+      ]
+
+      # Should not crash — first final wins for dedup
+      messages = EventStream.chat_messages(events)
+      assert length(messages) == 1
+      # Delta text is concatenated
+      assert hd(messages).text == "partial"
+    end
+
+    test "no deltas with two finals renders first final only" do
+      events = [
+        make_event(:assistant_message, %{text: "first"},
+          id: 1,
+          turn_id: "t1",
+          seq: 1,
+          timestamp: now()
+        ),
+        make_event(:assistant_message, %{text: "second"},
+          id: 2,
+          turn_id: "t1",
+          seq: 2,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      assert length(messages) == 1
+      assert hd(messages).text == "first"
+    end
+  end
+
+  describe "chat_messages/1 — nil seq values" do
+    test "events with nil seq sort before numbered seq" do
+      events = [
+        make_event(:assistant_delta, %{text: "second"},
+          id: 1,
+          turn_id: "t1",
+          seq: 2,
+          timestamp: now()
+        ),
+        make_event(:assistant_delta, %{text: "first"},
+          id: 2,
+          turn_id: "t1",
+          seq: nil,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      # nil seq treated as 0 in sort, so "first" comes before "second"
+      assert hd(messages).text == "firstsecond"
     end
   end
 
