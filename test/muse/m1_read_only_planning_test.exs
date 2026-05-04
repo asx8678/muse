@@ -47,6 +47,8 @@ defmodule Muse.M1ReadOnlyPlanningTest do
     end)
 
     # Create a temp workspace with some initial files for tool inspection.
+    # The workspace includes a small git repo so read-only git tools
+    # (git_status, git_diff_readonly) can be exercised.
     workspace = tmp_dir!()
     seed_workspace(workspace)
     on_exit(fn -> File.rm_rf!(workspace) end)
@@ -70,22 +72,21 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       assert is_pid(pid)
 
       # Submit a planning request that triggers:
-      #   Batch 0: tool calls (list_files, read_file, repo_search) — read-only tools
-      #   Batch 1: structured plan JSON
+      #   Batch 0: tool calls (list_files, read_file, git_status) — read-only tools
+      #   Batch 1: tool calls (repo_search, git_diff_readonly) — read-only tools
+      #   Batch 2: structured plan JSON
       fake_event_batches = [
         [
-          {:assistant_delta, "Let me inspect the workspace structure first."},
+          {:assistant_delta, "Let me inspect the workspace structure and git status."},
           {:tool_call, "list_files", %{"path" => "."}, "call_list_1"},
-          {:response_completed, nil}
-        ],
-        [
-          {:assistant_delta, "Let me read the key files."},
           {:tool_call, "read_file", %{"path" => "mix.exs"}, "call_read_1"},
+          {:tool_call, "git_status", %{}, "call_git_status_1"},
           {:response_completed, nil}
         ],
         [
-          {:assistant_delta, "Let me search for command patterns."},
+          {:assistant_delta, "Let me search and check the diff."},
           {:tool_call, "repo_search", %{"pattern" => "def dispatch"}, "call_search_1"},
+          {:tool_call, "git_diff_readonly", %{"path" => "mix.exs"}, "call_git_diff_1"},
           {:response_completed, nil}
         ],
         [
@@ -137,7 +138,7 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       assert :tool_call_completed in event_types,
              "Expected tool_call_completed events from tool-loop"
 
-      # Read-only tools used: list_files, read_file, repo_search
+      # Read-only tools used: list_files, read_file, git_status, repo_search, git_diff_readonly
       completed_tools =
         events
         |> Enum.filter(&(&1.type == :tool_call_completed))
@@ -149,8 +150,14 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       assert "read_file" in completed_tools,
              "Expected read_file tool call, got: #{inspect(completed_tools)}"
 
+      assert "git_status" in completed_tools,
+             "Expected git_status tool call, got: #{inspect(completed_tools)}"
+
       assert "repo_search" in completed_tools,
              "Expected repo_search tool call, got: #{inspect(completed_tools)}"
+
+      assert "git_diff_readonly" in completed_tools,
+             "Expected git_diff_readonly tool call, got: #{inspect(completed_tools)}"
 
       # -- Assertion 5: Workspace contents are unchanged -----------------------
       {after_paths, after_hashes} = workspace_snapshot(workspace)
@@ -170,7 +177,13 @@ defmodule Muse.M1ReadOnlyPlanningTest do
              "Expected no blocked or errored tool events, got: #{inspect(blocked_or_errors)}"
 
       # Verify no write-blocked tools were even attempted
-      write_tool_types = ["write_file", "replace_in_file", "delete_file", "patch_apply"]
+      write_tool_types = [
+        "write_file",
+        "replace_in_file",
+        "delete_file",
+        "patch_apply",
+        "patch_propose"
+      ]
 
       attempted_writes =
         events
@@ -481,7 +494,7 @@ defmodule Muse.M1ReadOnlyPlanningTest do
 
   defp assert_no_forbidden_execution_or_handoff(events) do
     forbidden_tools =
-      ~w(write_file replace_in_file delete_file patch_apply shell_command network_call remote_execution)
+      ~w(write_file replace_in_file delete_file patch_apply patch_propose shell_command network_call remote_execution)
 
     forbidden_tool_events =
       Enum.filter(events, fn event ->
@@ -577,15 +590,40 @@ defmodule Muse.M1ReadOnlyPlanningTest do
     end
     """)
 
+    # Initialize a small git repo so read-only git tools
+    # (git_status, git_diff_readonly) can be exercised.
+    # This uses System.cmd directly in test setup — it does NOT go
+    # through Muse runtime shell tools.
+    File.write!(Path.join(root, ".gitignore"), "# test workspace\n")
+    System.cmd("git", ["init"], cd: root, stderr_to_stdout: true)
+
+    System.cmd("git", ["config", "user.email", "muse-test@example.com"],
+      cd: root,
+      stderr_to_stdout: true
+    )
+
+    System.cmd("git", ["config", "user.name", "Muse Test"], cd: root, stderr_to_stdout: true)
+    System.cmd("git", ["add", "."], cd: root, stderr_to_stdout: true)
+
+    System.cmd("git", ["commit", "-m", "initial workspace scaffold"],
+      cd: root,
+      stderr_to_stdout: true
+    )
+
     :ok
   end
 
   defp workspace_snapshot(root) do
+    # Exclude .git/ metadata because read-only git tools (git_status,
+    # git_diff_readonly) may update git internal state (reflog, index)
+    # without changing user-managed workspace files. We assert only
+    # user workspace files remain unchanged.
     paths =
       root
       |> Path.join("**/*")
       |> Path.wildcard()
       |> Enum.filter(&File.regular?/1)
+      |> Enum.reject(fn p -> p |> Path.split() |> Enum.any?(&(&1 == ".git")) end)
       |> Enum.sort()
 
     hashes =
