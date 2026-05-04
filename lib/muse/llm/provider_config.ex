@@ -377,3 +377,9 @@ defmodule Muse.LLM.ProviderConfig do
     ArgumentError -> config
   end
 end
+
+defimpl Inspect, for: Muse.LLM.ProviderConfig do
+  def inspect(config, _opts) do
+    Muse.LLM.ProviderConfig.redacted_inspect(config)
+  end
+end
