@@ -328,19 +328,21 @@ defmodule Muse.Conductor.ToolLoop do
     # Deferred tool calls become synthetic "limit reached" results
     deferred_results =
       Enum.map(deferred, fn tc ->
-        %Tool.Result{
-          success: false,
-          error: "Tool call deferred: total tool call limit reached",
-          tool_name: tc.name || "unknown",
-          metadata: %{tool_call_id: tc.id || "tc_unknown"}
-        }
+        Tool.Result.error(
+          tc.name || "unknown",
+          "Tool call deferred: total tool call limit reached",
+          %{tool_call_id: tc.id || "tc_unknown"}
+        )
       end)
 
     deferred_specs =
       Enum.map(deferred, fn tc ->
         {:conductor, :tool_call_deferred,
-         %{tool_name: tc.name, tool_call_id: tc.id, reason: "total limit reached"},
-         [visibility: :debug]}
+         redact_event_data(%{
+           tool_name: tc.name,
+           tool_call_id: tc.id,
+           reason: "total limit reached"
+         }), [visibility: :debug]}
       end)
 
     all_results = results ++ deferred_results
@@ -359,8 +361,11 @@ defmodule Muse.Conductor.ToolLoop do
     # Emit tool lifecycle event specs (session-owned, not Runner-owned)
     started_spec =
       {:conductor, :tool_call_started,
-       %{tool_call_id: tool_call_id, tool_name: tool_name, args_summary: safe_args_summary(args)},
-       [visibility: :debug]}
+       redact_event_data(%{
+         tool_call_id: tool_call_id,
+         tool_name: tool_name,
+         args_summary: safe_args_summary(args)
+       }), [visibility: :debug]}
 
     context = %{
       workspace: session.workspace || "/tmp/muse_workspace",
@@ -379,28 +384,47 @@ defmodule Muse.Conductor.ToolLoop do
 
     completed_spec =
       {:conductor, :tool_call_completed,
-       %{
+       redact_event_data(%{
          tool_call_id: tool_call_id,
          tool_name: tool_name,
          success: result.success,
          output_summary: Tool.Result.safe_summary(result)
-       }, [visibility: :debug]}
+       }), [visibility: :debug]}
 
-    # If blocked, add a blocked spec
+    # If blocked, add a blocked spec. Other failures get an explicit failed spec
+    # so unknown/malformed calls are visible even when Runner-owned events are disabled.
+    blocked? = blocked_result?(result)
+
     blocked_spec =
-      if not result.success and result.error != nil and
-           String.starts_with?(result.error, "blocked:") do
+      if blocked? do
         [
           {:conductor, :tool_call_blocked,
-           %{tool_call_id: tool_call_id, tool_name: tool_name, reason: result.error},
-           [visibility: :debug]}
+           redact_event_data(%{
+             tool_call_id: tool_call_id,
+             tool_name: tool_name,
+             reason: result.error
+           }), [visibility: :debug]}
+        ]
+      else
+        []
+      end
+
+    failed_spec =
+      if not result.success and not blocked? do
+        [
+          {:conductor, :tool_call_failed,
+           redact_event_data(%{
+             tool_call_id: tool_call_id,
+             tool_name: tool_name,
+             error: result.error
+           }), [visibility: :debug]}
         ]
       else
         []
       end
 
     new_total = current_total + 1
-    specs = [started_spec] ++ blocked_spec ++ [completed_spec]
+    specs = [started_spec] ++ blocked_spec ++ failed_spec ++ [completed_spec]
 
     {result, specs, new_total}
   end
@@ -419,14 +443,18 @@ defmodule Muse.Conductor.ToolLoop do
     safe = %{
       tool_name: result.tool_name,
       success: result.success,
-      error: result.error,
+      error: redact_for_model(result.error),
       output: summarize_for_model(result.output)
     }
 
     Jason.encode!(safe)
   rescue
     _ ->
-      Jason.encode!(%{tool_name: result.tool_name, success: result.success, error: result.error})
+      Jason.encode!(%{
+        tool_name: result.tool_name,
+        success: result.success,
+        error: redact_for_model(result.error)
+      })
   end
 
   defp summarize_for_model(nil), do: nil
@@ -587,6 +615,26 @@ defmodule Muse.Conductor.ToolLoop do
   defp normalize_tool_args(args) when is_map(args), do: args
   defp normalize_tool_args(args), do: %{"raw_args" => inspect(args)}
 
+  defp blocked_result?(%Tool.Result{success: false, error: error}) when is_binary(error) do
+    String.starts_with?(error, "blocked:")
+  end
+
+  defp blocked_result?(_), do: false
+
+  defp redact_event_data(data), do: Muse.Prompt.Redactor.redact_term(data)
+
+  defp redact_for_model(nil), do: nil
+
+  defp redact_for_model(binary) when is_binary(binary) do
+    Muse.Prompt.Redactor.redact_text(binary)
+  end
+
+  defp redact_for_model(term) do
+    term
+    |> inspect(limit: 10, printable_limit: 500)
+    |> Muse.Prompt.Redactor.redact_text()
+  end
+
   defp safe_args_summary(args) when is_map(args) do
     args
     |> Map.new(fn {k, v} ->
@@ -599,10 +647,14 @@ defmodule Muse.Conductor.ToolLoop do
       end
     end)
     |> inspect(limit: 5, printable_limit: 100)
+    |> Muse.Prompt.Redactor.redact_text()
   end
 
-  defp safe_args_summary(args),
-    do: inspect(args, limit: 5, printable_limit: 100)
+  defp safe_args_summary(args) do
+    args
+    |> inspect(limit: 5, printable_limit: 100)
+    |> Muse.Prompt.Redactor.redact_text()
+  end
 
   defp summarize_usage(nil), do: %{}
 

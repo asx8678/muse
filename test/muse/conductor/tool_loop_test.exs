@@ -238,6 +238,48 @@ defmodule Muse.Conductor.ToolLoopTest do
       # And the loop should continue to the next iteration
       assert result.assistant_text =~ "I cannot write files"
     end
+
+    test "blocked and failed tool event specs redact provider-supplied secrets" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+      fake_secret = "sk-test-tool-loop-secret"
+
+      fake_event_batches = [
+        [
+          {:assistant_completed, "Done."},
+          {:response_completed, nil}
+        ]
+      ]
+
+      request = build_request(fake_event_batches, 0)
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [
+          ToolCall.new("write_file", %{"path" => "x.ex", "content" => "API_KEY=#{fake_secret}"},
+            id: "call_secret_block"
+          ),
+          ToolCall.new("totally_unknown_tool", %{"api_key" => fake_secret},
+            id: "call_secret_fail"
+          )
+        ],
+        finish_reason: "tool_calls"
+      }
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: FakeProvider
+        )
+
+      assert filter_specs(result.event_specs, :tool_call_blocked) != []
+      assert filter_specs(result.event_specs, :tool_call_failed) != []
+
+      for {_source, _type, data, _opts} <- result.event_specs do
+        refute inspect(data) =~ fake_secret
+      end
+    end
   end
 
   # -- Malformed tool calls -----------------------------------------------------

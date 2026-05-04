@@ -237,6 +237,15 @@ defmodule Muse.Tool.Runner do
     %{result | output: redacted}
   end
 
+  defp cap_and_redact_result(%Result{success: false} = result, _spec) do
+    %{
+      result
+      | tool_name: redact_scalar(result.tool_name),
+        error: redact_scalar(result.error),
+        output: redact_output(result.output)
+    }
+  end
+
   defp cap_and_redact_result(%Result{} = result, _spec), do: result
 
   defp cap_output(output, limit) when is_binary(output) and byte_size(output) > limit do
@@ -382,6 +391,15 @@ defmodule Muse.Tool.Runner do
   defp redact_value(v) when is_map(v), do: redact_map(v)
   defp redact_value(v) when is_list(v), do: Enum.map(v, &redact_value/1)
   defp redact_value(v), do: v
+
+  defp redact_scalar(nil), do: nil
+  defp redact_scalar(v) when is_binary(v), do: Muse.Prompt.Redactor.redact_text(v)
+
+  defp redact_scalar(v) do
+    v
+    |> inspect(limit: 10, printable_limit: 500)
+    |> Muse.Prompt.Redactor.redact_text()
+  end
 
   # -- Event emission ------------------------------------------------------------
 

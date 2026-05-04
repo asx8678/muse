@@ -183,6 +183,20 @@ defmodule Muse.MuseRegistryTest do
       assert "list_skills" in planning.tools
     end
 
+    test "has exactly the M1 read-only planning tool surface", %{planning: planning} do
+      assert MapSet.new(planning.tools) ==
+               MapSet.new([
+                 "list_files",
+                 "read_file",
+                 "repo_search",
+                 "git_status",
+                 "git_diff_readonly",
+                 "ask_user_question",
+                 "list_muses",
+                 "list_skills"
+               ])
+    end
+
     test "has no write tools", %{planning: planning} do
       refute "patch_propose" in planning.tools
       refute "patch_apply" in planning.tools

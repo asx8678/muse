@@ -110,6 +110,12 @@ defmodule Muse.Tool.RegistryTest do
       assert hd(schemas)[:name] == "read_file"
     end
 
+    test "excludes destructive-looking unknown tool names" do
+      schemas = Registry.provider_schemas_for_names(["read_file", "apply_patch", "run_shell"])
+      assert length(schemas) == 1
+      assert hd(schemas)[:name] == "read_file"
+    end
+
     test "returns stub schema for unknown tool names" do
       schemas = Registry.provider_schemas_for_names(["unknown_tool"])
       assert length(schemas) == 1
@@ -140,6 +146,7 @@ defmodule Muse.Tool.RegistryTest do
       assert Registry.blocked_tool?("replace_in_file")
       assert Registry.blocked_tool?("delete_file")
       assert Registry.blocked_tool?("patch_apply")
+      assert Registry.blocked_tool?("patch_propose")
       assert Registry.blocked_tool?("shell_command")
       assert Registry.blocked_tool?("network_call")
       assert Registry.blocked_tool?("remote_execution")
@@ -150,7 +157,14 @@ defmodule Muse.Tool.RegistryTest do
       refute Registry.blocked_tool?("list_files")
     end
 
-    test "returns false for unknown tools" do
+    test "returns true for destructive-looking unknown tool shapes" do
+      assert Registry.blocked_tool?("apply_patch")
+      assert Registry.blocked_tool?("run_shell")
+      assert Registry.blocked_tool?("http_request")
+      assert Registry.blocked_tool?("remote_exec")
+    end
+
+    test "returns false for benign unknown tools" do
       refute Registry.blocked_tool?("totally_unknown")
     end
   end
@@ -159,6 +173,7 @@ defmodule Muse.Tool.RegistryTest do
     test "returns all blocked tool names" do
       names = Registry.blocked_tool_names()
       assert "write_file" in names
+      assert "patch_propose" in names
       assert "shell_command" in names
       assert "network_call" in names
     end

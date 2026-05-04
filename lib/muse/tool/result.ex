@@ -9,7 +9,7 @@ defmodule Muse.Tool.Result do
 
     * `:success`     — `true` if the tool executed without error
     * `:output`      — the tool output (map, string, or nil)
-    * `:error`       — error message string or nil
+    * `:error`       — redacted error message string or nil
     * `:tool_name`   — the tool name that produced this result
     * `:metadata`    — additional metadata (elapsed_ms, backend used, etc.)
 
@@ -83,8 +83,8 @@ defmodule Muse.Tool.Result do
     %__MODULE__{
       success: false,
       output: nil,
-      error: error_message,
-      tool_name: tool_name,
+      error: redact(error_message),
+      tool_name: redact(tool_name),
       metadata: metadata
     }
   end
@@ -115,10 +115,10 @@ defmodule Muse.Tool.Result do
   @spec safe_summary(t(), pos_integer()) :: map()
   def safe_summary(%__MODULE__{} = result, max_len \\ 200) do
     %{
-      tool_name: result.tool_name,
+      tool_name: redact(result.tool_name),
       success: result.success,
-      error: result.error,
-      output_summary: summarize_output(result.output, max_len)
+      error: redact(result.error),
+      output_summary: result.output |> summarize_output(max_len) |> redact()
     }
   end
 
@@ -134,5 +134,17 @@ defmodule Muse.Tool.Result do
 
   defp summarize_output(output, max_len) do
     inspect(output, limit: 5, printable_limit: max_len)
+  end
+
+  defp redact(nil), do: nil
+
+  defp redact(binary) when is_binary(binary) do
+    Muse.Prompt.Redactor.redact_text(binary)
+  end
+
+  defp redact(term) do
+    term
+    |> inspect(limit: 10, printable_limit: 500)
+    |> Muse.Prompt.Redactor.redact_text()
   end
 end
