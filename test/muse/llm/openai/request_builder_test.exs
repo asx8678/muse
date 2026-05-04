@@ -164,6 +164,15 @@ defmodule Muse.LLM.OpenAI.RequestBuilderTest do
 
       assert msg =~ "http or https"
     end
+
+    test "returns error for URL with embedded credentials" do
+      request = minimal_request("https://user:pass@api.example.com/v1")
+
+      assert {:error, {:invalid_base_url, msg}} =
+               RequestBuilder.build_chat_completions(request)
+
+      assert msg =~ "credentials"
+    end
   end
 
   # ---------------------------------------------------------------------------

@@ -134,9 +134,14 @@ defmodule Muse.LLM.OpenAI.RequestBuilder do
     url = trimmed <> path
 
     case URI.parse(url) do
-      %URI{scheme: scheme, host: host}
+      %URI{scheme: scheme, host: host, userinfo: userinfo}
       when scheme in ["http", "https"] and is_binary(host) and host != "" ->
-        {:ok, url}
+        if userinfo != nil and userinfo != "" do
+          {:error,
+           {:invalid_base_url, "base_url must not contain embedded credentials (userinfo)"}}
+        else
+          {:ok, url}
+        end
 
       %URI{scheme: scheme} when is_binary(scheme) and scheme != "" ->
         {:error,
