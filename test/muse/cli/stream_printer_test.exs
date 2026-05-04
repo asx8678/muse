@@ -200,12 +200,24 @@ defmodule Muse.CLI.StreamPrinterTest do
     test "timeout path does not crash" do
       # Use a very short timeout — the synchronous placeholder should
       # still complete in time, but this verifies the timeout path is wired
-      output =
-        ExUnit.CaptureIO.capture_io(fn ->
-          result = StreamPrinter.stream_submit(:cli, "timeout test", timeout: 50)
-          # With the synchronous placeholder, this should still succeed
-          assert match?({:ok, _}, result)
-        end)
+      ExUnit.CaptureIO.capture_io(fn ->
+        result = StreamPrinter.stream_submit(:cli, "timeout test", timeout: 50)
+        # With the synchronous placeholder, this should still succeed
+        assert match?({:ok, _}, result)
+      end)
+    end
+
+    test "task success without deltas returns actual text, not empty" do
+      # This tests the no-PubSub/no-event race: the task completes with
+      # {:ok, text} but no :assistant_delta PubSub messages arrive in time.
+      # The stream printer should return and print the real text.
+      ExUnit.CaptureIO.capture_io(fn ->
+        assert {:ok, text} = StreamPrinter.stream_submit(:cli, "task result test")
+        # Must return the actual placeholder text, not empty string
+        assert text != ""
+        assert text =~ "Placeholder response"
+        assert text =~ "task result test"
+      end)
     end
   end
 end

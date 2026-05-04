@@ -189,33 +189,26 @@ defmodule Muse.CLI.StreamPrinter do
       {:muse_event, _event} ->
         collect_loop(task, session_id, deadline, turn_id, deltas, acc_text)
 
-      # Task completed — if we already have text, return it; otherwise
-      # fall back to snapshot
-      {ref, {:ok, _result}}
-      when is_reference(ref) and ref == task.ref ->
-        if acc_text != "" do
-          # Already streamed deltas; finish
-          IO.write("\n")
-          drain_mailbox(session_id)
-          {:ok, acc_text}
-        else
-          # No deltas received via PubSub — fall back to State snapshot
-          fallback_from_state(session_id, nil)
-        end
-
+      # Task completed — handle the result shape from SessionRouter.submit/3
+      # which returns {:ok, text} on success, {:error, reason} on failure,
+      # or {:exit, reason} if the try/catch inside the Task caught a crash.
       {ref, result}
       when is_reference(ref) and ref == task.ref ->
         case result do
-          {:ok, {:ok, text}} ->
+          {:ok, text} when is_binary(text) ->
             if acc_text != "" do
+              # Already streamed deltas; finish
               IO.write("\n")
               drain_mailbox(session_id)
               {:ok, acc_text}
             else
-              fallback_text(session_id, text)
+              # No deltas received via PubSub — print and return task text
+              print_final(text)
+              drain_mailbox(session_id)
+              {:ok, text}
             end
 
-          {:ok, {:error, reason}} ->
+          {:error, reason} ->
             IO.puts("[error] #{inspect(reason)}")
             drain_mailbox(session_id)
             {:error, reason}
@@ -224,6 +217,11 @@ defmodule Muse.CLI.StreamPrinter do
             IO.puts("[error] #{inspect(reason)}")
             drain_mailbox(session_id)
             {:error, reason}
+
+          other ->
+            IO.puts("[error] unexpected task result: #{inspect(other)}")
+            drain_mailbox(session_id)
+            {:error, {:unexpected_result, other}}
         end
     after
       remaining ->
@@ -323,21 +321,6 @@ defmodule Muse.CLI.StreamPrinter do
 
         drain_mailbox(session_id)
         {:ok, text}
-    end
-  end
-
-  # Fallback when task completed with text but no PubSub messages
-  defp fallback_text(session_id, text) do
-    # Try to get full event info from State
-    case fallback_from_state(session_id, nil) do
-      {:ok, ""} ->
-        # State fallback found nothing — just print the task result
-        print_final(text)
-        drain_mailbox(session_id)
-        {:ok, text}
-
-      {:ok, state_text} ->
-        {:ok, state_text}
     end
   end
 
