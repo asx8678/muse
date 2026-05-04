@@ -52,12 +52,32 @@ MUSE_PROVIDER=openai_compatible \
   mix muse
 ```
 
-> PR12 adds `Muse.LLM.OpenAICompatibleProvider` which performs non-streaming
-> Chat Completions HTTP calls via Req. Caller-provided `request.options[:headers]`
-> can carry auth headers, but no env-var-based API-key loading exists yet —
-> that is PR13. The fake provider remains the default for offline operation.
+> The PR13 auth layer (`Muse.Auth`) is implemented: `ApiKey` resolves
+> `MUSE_OPENAI_API_KEY` from environment variables; the `Resolver` facade
+> dispatches `:api_key`, `:bearer_command`, and `:codex_cache` modes;
+> `BearerCommand` executes a configured shell command (with timeout,
+> `allow_exec?: false` default, and injectable runner); `CodexCache` reads
+> `~/.codex/auth.json` with permission checks; and `/auth status` shows
+> read-only redacted status — no shell or Codex reads from `/auth status`.
+> The `OpenAICompatibleProvider` injects `Authorization: Bearer …` after building
+> the HTTP spec; an explicit `Authorization` header wins and is not overwritten.
+>
+> The fake provider (default) uses no authentication and requires no env vars.
 
 See [`docs/provider-roadmap.md`](docs/provider-roadmap.md) for the current env/config contract.
+Use `/auth status` in the REPL to inspect active auth configuration.
+
+```bash
+# Fake provider — no auth, no env vars (default)
+MUSE_PROVIDER=fake mix muse
+
+# OpenAI-compatible — auth via MUSE_OPENAI_API_KEY (optional, real-provider opt-in)
+MUSE_PROVIDER=openai_compatible \
+  MUSE_OPENAI_BASE_URL=https://api.openai.com/v1 \
+  MUSE_MODEL=gpt-4.1 \
+  MUSE_OPENAI_API_KEY=sk-... \
+  mix muse
+```
 
 ---
 

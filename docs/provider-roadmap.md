@@ -741,83 +741,107 @@ Reconnection:
 
 ## 10. Auth Layer
 
-**Auth phase is now PR13 (implemented).** PR11 provider config may record `auth` and `env_key`, but it does not read API keys, execute bearer commands, inspect Codex caches, or attach Authorization headers.
+**PR13 (implemented).** The auth layer (`Muse.Auth`) provides credential resolution
+via API key (`ApiKey`), bearer command (`BearerCommand`), Codex cache bridge
+(`CodexCache`), and a common facade (`Resolver`). All values are redacted in
+inspect, events, logs, and debug output.
+
+`ProviderConfig` records `auth` and `env_key` metadata but never reads API keys,
+executes commands, or inspects caches — auth resolution is deferred to the
+`Resolver`/provider layer at HTTP-dispatch time.
 
 ### 10.1 Auth Modes
 
-The auth layer will support multiple authentication strategies, selected by the provider config:
+The supported authentication strategies (selected via provider config `auth` field):
 
-| Mode | Description | Use Case |
-|---|---|---|
-| `:none` | No authentication | Fake provider, local Ollama |
-| `:api_key` | Static API key from environment variable | Direct OpenAI API key usage |
-| `:bearer_command` | Shell command that outputs a bearer token | Custom token refresh scripts |
-| `:codex_cache` | Read token from `~/.codex/auth.json` | Reuse Codex CLI authentication |
-| `:openai_oauth` | Native Muse OAuth flow (future) | Browser-based sign-in without Codex |
+| Mode | Status | Description | Use Case |
+|---|---|---|---|
+| `:none` | ✅ Implemented | No authentication | Fake provider, local Ollama |
+| `:api_key` | ✅ Implemented | Static API key from environment variable | Direct API key usage |
+| `:bearer_command` | ✅ Implemented | Shell command that outputs a bearer token | Custom token refresh scripts |
+| `:codex_cache` | ✅ Implemented | Read token from `~/.codex/auth.json` | Reuse Codex CLI authentication |
+| `:openai_oauth` | 🔜 Future | Native OAuth flow | Browser sign-in without Codex |
 
-### 10.2 Implementation Order
-
-Build auth capabilities incrementally — each step is usable on its own:
+### 10.2 Implementation Status
 
 ```text
-1. API key from env
-   Read MUSE_OPENAI_API_KEY or provider-specific env var.
-   Simplest possible auth. Ship first.
+1. ✅ API key from env
+   Muse.Auth.ApiKey.resolve/2 — reads MUSE_OPENAI_API_KEY or provider-specific
+   env var from explicit env map, system env, provider config, or app config.
+   Pure when given an explicit env map; never logs the value.
 
-2. Bearer token command
-   Execute a configurable shell command that outputs a bearer token.
-   Supports custom token refresh scripts and corporate auth proxies.
+2. ✅ Bearer token command
+   Muse.Auth.BearerCommand.resolve/1 — executes a configured shell command
+   with argv support, timeout, exit-status handling, bounded output parsing,
+   and redacted error messages. Default allow_exec?: false — callers must
+   opt in. Runner/cmd_fn injection for test isolation.
 
-3. Codex cache reader for ~/.codex/auth.json
-   Read the existing Codex CLI auth cache.
-   Avoids re-authentication if the user already ran `codex login`.
+3. ✅ Codex cache reader for ~/.codex/auth.json
+   Muse.Auth.CodexCache.resolve/1 — reads ~/.codex/auth.json (or explicit
+   path), handles multiple JSON shapes (top-level, nested tokens/auth/openai),
+   enforces 1 MB size cap, checks file permissions, redacts in inspect.
 
-4. Command bridge to codex login / codex login --device-auth
-   Shell out to the Codex CLI for authentication flows.
-   Delegates OAuth complexity to a trusted external tool.
+4. 🔜 Command bridge to codex login / codex login --device-auth
+   NOT implemented in PR13. Future: shell out to Codex CLI for auth flows.
 
-5. Native Muse OAuth only if truly needed later
-   Implement browser-based OAuth flow directly in Muse.
-   Only if Codex is not installed and users need browser auth.
-   High complexity — defer as long as possible.
+5. 🔜 Native Muse OAuth
+   NOT implemented in PR13. Only if Codex CLI is not available and users
+   need browser-based auth. High complexity — deferred.
 ```
 
 ### 10.3 Commands
 
 ```text
-/auth status
-  Shows current auth state for all configured providers.
-  Redacts all token values.
+/auth status                                      ✅ PR13 MVP implemented
+  Shows current auth state for the configured provider.
+  Read-only: never executes bearer commands, never reads Codex caches.
+  Redacts all token values; shows source and status labels only.
+  For configured providers with :api_key mode, shows env key name
+  and whether a credential is configured/missing (but never the value).
 
-/auth login openai
-  Initiates OpenAI authentication.
-  Prefers `codex login` if Codex CLI is installed.
-  Falls back to API key prompt if no Codex.
+/auth login openai                                 🔜 Future (not PR13)
+  Initiates OpenAI authentication. Prefer codex CLI bridge when
+  implemented. Not part of PR13 MVP.
 
-/auth login openai --device
-  Initiates device-code flow for headless environments.
-  Prefers `codex login --device-auth` if Codex CLI is installed.
-  Displays the device code and verification URL.
+/auth login openai --device                        🔜 Future (not PR13)
+  Device-code flow for headless environments.
 
-/auth logout openai
-  Clears stored credentials for the OpenAI provider.
-  Does not revoke tokens server-side (Codex handles its own logout).
+/auth logout openai                                🔜 Future (not PR13)
+  Clears stored credentials. Does not revoke server-side.
 ```
 
-### 10.4 Recommended Behavior
+### 10.4 Resolution Behavior (Implemented)
 
-The auth layer follows a deterministic resolution order:
+Auth is resolved at HTTP-dispatch time by the provider, **not** by
+`RequestBuilder` or any pre-request mapper. `RequestBuilder.build_chat_completions/1`
+remains pure — it never reads env vars, secrets, or auth config. After the spec
+is built, `OpenAICompatibleProvider.attach_auth/3` invokes `Muse.Auth.Resolver`
+to attach the `Authorization` header.
+
+**Resolution order for `:api_key` mode (highest to lowest):**
+
+1. `opts[:api_key]` — explicit key value, no lookup needed
+2. `opts[:env]` / `opts[:env_map]` — explicit env map with provider `env_key`
+3. `opts[:app_config][:api_key]` — application config secret
+4. `System.get_env("MUSE_OPENAI_API_KEY")` — runtime system env
+   (only when `system_env?: true`, which is the runtime default; tests
+   set `system_env?: false` to stay offline)
+
+**Codex cache resolution** is only attempted when `auth: :codex_cache` is
+explicit or callers opt into fallback with `allow_auth_fallback?: true` and
+`allow_codex_cache?: true`. It is never silent.
+
+**`/auth status`** is read-only: it shows the configured auth mode, source,
+and whether a credential is present (redacted). It never executes bearer
+commands or reads Codex cache files.
+
+**Explicit `Authorization` header wins.** If the caller provides an
+`Authorization` header in `request.options[:headers]`, the auth layer does not
+overwrite or duplicate it.
+
+### 10.4b Future Behavior (Not Implemented)
 
 ```text
-OPENAI_API_KEY present:
-  → Use API key auth. Simplest, most common path.
-
-No OPENAI_API_KEY, Codex auth cache present (~/.codex/auth.json exists),
-and config explicitly allows codex_cache auth:
-  → Use Codex-managed access token, redacted in all logs.
-  → Check file permissions on ~/.codex/auth.json.
-  → Warn if file is world-readable.
-
 /auth login openai:
   → Prefer shelling out to `codex login` if codex is installed.
   → Do NOT manually invent refresh endpoints or OAuth flows.
@@ -895,41 +919,43 @@ end
 
 The `redacted` field is always populated and is the only field that may appear in logs, events, or debug output. The `value` field is **never** emitted into `Muse.Event`, prompt previews, or log output.
 
-### 10.6 Security Rules
+### 10.6 Security Rules (Enforced in PR13)
 
-These rules are non-negotiable. Violations are security bugs.
+These rules are non-negotiable. Violations are security bugs. All are enforced
+in the current implementation.
 
 ```text
 1. Never emit tokens into Muse.Event.
-   - The Muse.Event struct does not have a token/credential field.
-   - Events are broadcast via PubSub and visible to CLI, TUI, and LiveView.
+   - The Muse.Event struct has no token/credential field.
+   - The Credential `value` field appears only at the outbound HTTP
+     Authorization boundary (`Authorization: Bearer ...`).
+   - Events broadcast via PubSub (CLI, TUI, LiveView) never carry raw tokens.
 
 2. Never include tokens in prompt previews.
-   - /prompt preview must show "[REDACTED]" for any auth headers.
    - The Prompt.Assembler never sees raw credentials — auth headers are
-     injected at the transport layer, not the prompt layer.
+     injected at the provider HTTP layer, not the prompt layer.
+   - `/prompt preview` shows layer metadata only, never raw secrets.
 
 3. Never store tokens under workspace .muse/ by default.
    - Workspace .muse/ is for session state and plan data.
-   - Credentials belong in environment variables or ~/.codex/auth.json.
-   - A future ~/.muse/credentials store may be added with strict permissions.
+   - Credentials stay in environment variables, ~/.codex/auth.json, or
+     short-lived Credential structs in memory.
 
 4. Check file permissions on ~/.codex/auth.json.
-   - Warn if the file is readable by group or others (mode > 0600).
-   - Log a warning: "~/.codex/auth.json has overly permissive permissions (0644).
-     Consider: chmod 600 ~/.codex/auth.json"
+   - CodexCache checks POSIX mode bits: group/other readable or writable
+     modes produce a `{:permissive_permissions, "0600 recommended"}` warning
+     attached to the credential struct.
 
 5. Treat ~/.codex/auth.json as password-equivalent.
-   - The access token inside is as sensitive as an API key.
-   - Never log its contents.
-   - Never include its path in error messages that might be visible to
-     other users on shared systems.
+   - The access token is as sensitive as an API key.
+   - Never logged, never included in path labels (safe_path_label/1 returns
+     "~/.codex/auth.json" or the basename only).
+   - File reads are capped at 1 MB to prevent resource exhaustion.
 
 6. Redact Authorization headers in all debug events.
-   - Provider debug events that log HTTP request details must show
-     "Authorization: Bearer ...REDACTED" or "Authorization: Bearer sk-...REDACTED".
-   - Req's request/response logging must be configured to redact
-     the Authorization header.
+   - `EventPayloadRedactor` and `MetadataSanitizer` redact all Authorization
+     header values before they reach events, logs, or debug output.
+   - `ProviderConfig.redacted_inspect/1` shows `"Authorization: ...REDACTED"`.
 ```
 
 ---
