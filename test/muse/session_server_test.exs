@@ -1297,4 +1297,210 @@ defmodule Muse.SessionServerTest do
       assert status.plan == nil
     end
   end
+
+  # -- PR09 Lane 10: Stale approval prevention --------------------------------
+
+  describe "stale approval prevention — content binding" do
+    test "approve_plan captures and validates approval binding" do
+      session_id = "stale-bind-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, objective: "Stale test plan")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+
+      # Verify approval_binding was captured during restore
+      status = Muse.SessionServer.status(pid)
+      assert status.approval_binding != nil
+      assert status.approval_binding.plan_hash != nil
+
+      # Approve should succeed
+      assert {:ok, approved} = Muse.SessionServer.approve_plan(pid, :cli)
+      assert approved.status == :approved
+
+      # After approval, binding is retained for idempotency checks
+      status = Muse.SessionServer.status(pid)
+      assert status.approval_binding != nil
+      assert status.approval_binding.plan_hash != nil
+    end
+
+    test "approve_plan rejects stale content (objective changed)" do
+      session_id = "stale-content-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, id: "plan_stale", objective: "Original objective")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+
+      # Modify the plan content in place after binding was captured
+      modified_plan = %{plan | objective: "Modified objective"}
+
+      :sys.replace_state(pid, fn state ->
+        %{state | plan: modified_plan, plans: Map.put(state.plans, plan.id, modified_plan)}
+      end)
+
+      # Approval should fail with stale content
+      assert {:error, {:stale_content, _}} = Muse.SessionServer.approve_plan(pid, :cli)
+
+      # Plan should still be awaiting_approval
+      status = Muse.SessionServer.status(pid)
+      assert status.plan.status == :awaiting_approval
+    end
+
+    test "approve_plan rejects stale content (task changed)" do
+      session_id = "stale-task-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, id: "plan_task_stale")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+
+      # Change a task title in the plan
+      modified_task = %{hd(plan.tasks) | title: "Hacked Task"}
+      modified_plan = %{plan | tasks: [modified_task | tl(plan.tasks)]}
+
+      :sys.replace_state(pid, fn state ->
+        %{state | plan: modified_plan, plans: Map.put(state.plans, plan.id, modified_plan)}
+      end)
+
+      assert {:error, {:stale_content, _}} = Muse.SessionServer.approve_plan(pid, :cli)
+    end
+
+    test "reject_plan rejects stale content" do
+      session_id = "stale-reject-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, id: "plan_reject_stale", objective: "Original")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+
+      # Modify plan content
+      modified_plan = %{plan | objective: "Changed"}
+
+      :sys.replace_state(pid, fn state ->
+        %{state | plan: modified_plan, plans: Map.put(state.plans, plan.id, modified_plan)}
+      end)
+
+      assert {:error, {:stale_content, _}} = Muse.SessionServer.reject_plan(pid, :cli)
+
+      # Plan should still be awaiting_approval
+      status = Muse.SessionServer.status(pid)
+      assert status.plan.status == :awaiting_approval
+    end
+  end
+
+  describe "stale approval prevention — idempotent approval" do
+    test "re-approving already-approved plan with same binding is idempotent" do
+      session_id = "idempotent-approve-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, id: "plan_idem", objective: "Idempotent test")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+
+      # First approval succeeds
+      assert {:ok, approved} = Muse.SessionServer.approve_plan(pid, :cli)
+      assert approved.status == :approved
+
+      # Second approval is idempotent — returns same plan
+      assert {:ok, same_plan} = Muse.SessionServer.approve_plan(pid, :cli)
+      assert same_plan.status == :approved
+      assert same_plan.id == approved.id
+    end
+
+    test "re-approving already-approved plan with different binding returns stale_approval" do
+      session_id = "stale-approve-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, id: "plan_stale_idem", objective: "Original")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+
+      # First approval succeeds
+      assert {:ok, _approved} = Muse.SessionServer.approve_plan(pid, :cli)
+
+      # Replace the plan with different content but same approved status
+      different_plan = %{plan | objective: "Different", status: :approved}
+
+      :sys.replace_state(pid, fn state ->
+        %{state | plan: different_plan, plans: Map.put(state.plans, plan.id, different_plan)}
+      end)
+
+      # Approval with stale binding should fail
+      assert {:error, :stale_approval} = Muse.SessionServer.approve_plan(pid, :cli)
+    end
+
+    test "re-rejecting already-rejected plan returns plan_not_awaiting_approval" do
+      session_id = "idempotent-reject-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, id: "plan_reject_idem")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+
+      # First rejection succeeds
+      assert {:ok, rejected} = Muse.SessionServer.reject_plan(pid, :cli)
+      assert rejected.status == :rejected
+
+      # Second rejection returns error (not idempotent — rejection is terminal)
+      assert {:error, {:plan_not_awaiting_approval, :rejected}} =
+               Muse.SessionServer.reject_plan(pid, :cli)
+    end
+  end
+
+  describe "stale approval prevention — superseded/non-active plan" do
+    test "approving a superseded plan fails safely" do
+      session_id = "superseded-approve-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, id: "plan_superseded")
+      {:ok, superseded} = Muse.Plan.transition(plan, :superseded)
+      :ok = persist_plan_snapshot(session_id, superseded, "idle")
+
+      pid = start_server(session_id)
+
+      assert {:error, {:plan_not_awaiting_approval, :superseded}} =
+               Muse.SessionServer.approve_plan(pid, :cli)
+    end
+
+    test "approving an already-rejected plan fails safely" do
+      session_id = "rejected-approve-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, id: "plan_rejected_then_approve")
+      {:ok, rejected} = Muse.Plan.transition(plan, :rejected)
+      :ok = persist_plan_snapshot(session_id, rejected, "idle")
+
+      pid = start_server(session_id)
+
+      assert {:error, {:plan_not_awaiting_approval, :rejected}} =
+               Muse.SessionServer.approve_plan(pid, :cli)
+    end
+  end
+
+  describe "stale approval prevention — concurrent/double approval" do
+    test "double approval with same binding is idempotent (no duplicate contradictory records)" do
+      session_id = "double-approve-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, id: "plan_double", objective: "Double approve")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+
+      # Approve twice
+      assert {:ok, first} = Muse.SessionServer.approve_plan(pid, :cli)
+      assert {:ok, second} = Muse.SessionServer.approve_plan(pid, :cli)
+
+      # Both should return the same approved plan
+      assert first.status == :approved
+      assert second.status == :approved
+      assert first.id == second.id
+
+      # The plan should only have one approval record (from the first approval)
+      status = Muse.SessionServer.status(pid)
+      assert length(status.plan.approvals) == 1
+    end
+  end
+
+  describe "stale approval prevention — approval binding in status" do
+    test "status includes approval_binding field" do
+      session_id = "status-binding-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, id: "plan_status_bind")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+      status = Muse.SessionServer.status(pid)
+
+      assert Map.has_key?(status, :approval_binding)
+      assert status.approval_binding != nil
+    end
+  end
 end

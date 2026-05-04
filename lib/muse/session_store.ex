@@ -253,6 +253,10 @@ defmodule Muse.SessionStore do
     scrub_map(data)
   end
 
+  defp scrub_sensitive_keys(data) when is_list(data) do
+    Enum.map(data, &scrub_sensitive_keys/1)
+  end
+
   defp scrub_sensitive_keys(data), do: data
 
   defp scrub_map(map) do

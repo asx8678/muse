@@ -42,7 +42,18 @@ defmodule Muse.SessionServer do
 
   use GenServer, restart: :temporary
 
-  alias Muse.{Event, Prompt.Redactor, Session, State, Turn, Plan, SessionStore}
+  alias Muse.{
+    Approval,
+    ApprovalGate,
+    Event,
+    Prompt.Redactor,
+    Session,
+    State,
+    Turn,
+    Plan,
+    SessionStore
+  }
+
   alias Muse.Conductor.TurnRunner
 
   # -- Public API ---------------------------------------------------------------
@@ -145,7 +156,9 @@ defmodule Muse.SessionServer do
       from: nil,
       turn_start_time: nil,
       session_events_before_turn: [],
-      cancellation_requested: false
+      cancellation_requested: false,
+      approval_binding: nil,
+      approvals: []
     }
 
     # Attempt to restore plan from persisted snapshot (non-fatal on failure)
@@ -176,7 +189,9 @@ defmodule Muse.SessionServer do
       event_count: length(state.events),
       active_turn_id: state.active_turn_id,
       runner_pid: state.runner_pid,
-      cancellation_requested: state.cancellation_requested
+      cancellation_requested: state.cancellation_requested,
+      approvals: Map.get(state, :approvals, []),
+      approval_binding: Map.get(state, :approval_binding)
     }
 
     {:reply, reply, state}
@@ -417,11 +432,20 @@ defmodule Muse.SessionServer do
             state.plans || %{}
           end
 
+        # Capture approval binding when plan enters :awaiting_approval
+        approval_binding =
+          if plan.status == :awaiting_approval and session_status == :awaiting_plan_approval do
+            ApprovalGate.capture_binding(plan, workspace: get_workspace())
+          else
+            Map.get(state, :approval_binding)
+          end
+
         maybe_persist_snapshot(%{
           state
           | active_plan_id: active_plan_id,
             plan: plan,
-            plans: plans
+            plans: plans,
+            approval_binding: approval_binding
         })
       else
         state
@@ -655,39 +679,96 @@ defmodule Muse.SessionServer do
     end
   end
 
+  # Idempotent approval: re-approving an already-approved plan with the same
+  # binding returns {:ok, plan} without side effects.  Different binding
+  # returns {:error, :stale_approval} — a clear signal of contradictory state.
+  defp transition_active_plan(
+         state,
+         _source,
+         %{status: :approved} = plan,
+         _active_plan_id,
+         :approved
+       ) do
+    case state.approval_binding do
+      nil ->
+        {{:error, {:plan_not_awaiting_approval, :approved}}, state}
+
+      binding ->
+        case ApprovalGate.check_idempotent_approval(plan, binding) do
+          {:ok, :idempotent} ->
+            {{:ok, plan}, state}
+
+          {:error, :stale_approval} ->
+            {{:error, :stale_approval}, state}
+        end
+    end
+  end
+
   defp transition_active_plan(state, source, plan, active_plan_id, target_status) do
     if plan.status != :awaiting_approval do
       {{:error, {:plan_not_awaiting_approval, plan.status}}, state}
     else
-      {:ok, plan} = Plan.transition(plan, target_status)
+      # Validate against the stored approval binding (stale prevention)
+      validation_opts = [session_id: state.session_id, workspace: get_workspace()]
 
-      previous_status = state.status
+      validator =
+        if target_status == :approved,
+          do: &ApprovalGate.validate_approval/3,
+          else: &ApprovalGate.validate_rejection/3
 
-      state =
-        state
-        |> put_active_plan(plan, active_plan_id)
-        |> Map.put(:status, :idle)
+      case validator.(plan, state.approval_binding, validation_opts) do
+        :ok ->
+          do_transition_plan(state, source, plan, active_plan_id, target_status)
 
-      {plan_event, state} =
-        emit_session_event(
-          state,
-          source,
-          plan_lifecycle_event_type(target_status),
-          plan_lifecycle_event_data(plan),
-          visibility: :user
-        )
-
-      {status_event, state} = maybe_emit_plan_lifecycle_status_event(state, previous_status)
-
-      events = [plan_event, status_event] |> Enum.reject(&is_nil/1)
-
-      state =
-        state
-        |> append_session_events(events)
-        |> maybe_persist_snapshot()
-
-      {{:ok, plan}, state}
+        {:error, reason} ->
+          {{:error, reason}, state}
+      end
     end
+  end
+
+  defp do_transition_plan(state, source, plan, active_plan_id, target_status) do
+    {:ok, plan} = Plan.transition(plan, target_status)
+
+    # Create an approval record for this lifecycle action
+    approval =
+      Approval.new(
+        plan_id: active_plan_id,
+        kind: :plan,
+        status: target_status,
+        source: source
+      )
+
+    # Append the approval to the plan and session-level list
+    plan = %{plan | approvals: plan.approvals ++ [approval]}
+    session_approvals = Map.get(state, :approvals, []) ++ [approval]
+
+    previous_status = state.status
+
+    state =
+      state
+      |> put_active_plan(plan, active_plan_id)
+      |> Map.put(:status, :idle)
+      |> Map.put(:approvals, session_approvals)
+
+    {plan_event, state} =
+      emit_session_event(
+        state,
+        source,
+        plan_lifecycle_event_type(target_status),
+        plan_lifecycle_event_data(plan),
+        visibility: :user
+      )
+
+    {status_event, state} = maybe_emit_plan_lifecycle_status_event(state, previous_status)
+
+    events = [plan_event, status_event] |> Enum.reject(&is_nil/1)
+
+    state =
+      state
+      |> append_session_events(events)
+      |> maybe_persist_snapshot()
+
+    {{:ok, plan}, state}
   end
 
   defp turn_running?(state), do: state.status == :running or not is_nil(state.runner_pid)
@@ -756,6 +837,8 @@ defmodule Muse.SessionServer do
         plans_data = Map.get(data, "plans", %{})
         active_plan_id = Map.get(data, "active_plan_id")
         status_str = Map.get(data, "status", "idle")
+        approvals_data = Map.get(data, "approvals", [])
+        approval_binding_data = Map.get(data, "approval_binding")
 
         plans = restore_plans(plans_data)
         plan = restore_plan(plan_data) || active_plan_from_plans(plans, active_plan_id)
@@ -766,13 +849,33 @@ defmodule Muse.SessionServer do
 
         plans = put_restored_plan(plans, plan, active_id)
         status = safely_atom_status(status_str)
+        approvals = restore_approvals(approvals_data)
+
+        # Restore approval binding: prefer persisted, fall back to re-capture
+        approval_binding =
+          case decode_approval_binding(approval_binding_data) do
+            nil ->
+              if (plan && plan.status == :awaiting_approval) and status == :awaiting_plan_approval do
+                ApprovalGate.capture_binding(plan,
+                  session_id: state.session_id,
+                  workspace: nil
+                )
+              else
+                nil
+              end
+
+            binding ->
+              binding
+          end
 
         %{
           state
           | status: status,
             plan: plan,
             plans: plans,
-            active_plan_id: active_id
+            active_plan_id: active_id,
+            approvals: approvals,
+            approval_binding: approval_binding
         }
 
       _ ->
@@ -822,6 +925,78 @@ defmodule Muse.SessionServer do
 
   defp put_restored_plan(plans, _plan, _active_plan_id), do: plans
 
+  # -- Approval record restoration ----------------------------------------------
+
+  defp restore_approvals(nil), do: []
+
+  defp restore_approvals(approvals_data) when is_list(approvals_data) do
+    approvals_data
+    |> Enum.map(fn approval_data ->
+      try do
+        case Muse.Approval.from_map(approval_data) do
+          %Muse.Approval{} = approval -> {:ok, approval}
+          _ -> :error
+        end
+      rescue
+        _ -> :error
+      end
+    end)
+    |> Enum.flat_map(fn
+      {:ok, approval} -> [approval]
+      :error -> []
+    end)
+  end
+
+  defp restore_approvals(_), do: []
+
+  # -- Approval binding encoding/decoding --------------------------------------
+
+  defp encode_approval_binding(nil), do: nil
+
+  defp encode_approval_binding(binding) when is_map(binding) do
+    %{
+      "kind" => Map.get(binding, :kind),
+      "session_id" => Map.get(binding, :session_id),
+      "plan_id" => Map.get(binding, :plan_id),
+      "plan_version" => Map.get(binding, :plan_version),
+      "plan_hash" => Map.get(binding, :plan_hash),
+      "workspace" => Map.get(binding, :workspace),
+      "bound_at" => encode_datetime(Map.get(binding, :bound_at))
+    }
+  end
+
+  defp encode_approval_binding(_), do: nil
+
+  defp decode_approval_binding(nil), do: nil
+
+  defp decode_approval_binding(data) when is_map(data) do
+    %{
+      kind: Map.get(data, "kind"),
+      session_id: Map.get(data, "session_id"),
+      plan_id: Map.get(data, "plan_id"),
+      plan_version: Map.get(data, "plan_version"),
+      plan_hash: Map.get(data, "plan_hash"),
+      workspace: Map.get(data, "workspace"),
+      bound_at: decode_datetime(Map.get(data, "bound_at"))
+    }
+  end
+
+  defp decode_approval_binding(_), do: nil
+
+  defp encode_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+  defp encode_datetime(_), do: nil
+
+  defp decode_datetime(nil), do: nil
+
+  defp decode_datetime(str) when is_binary(str) do
+    case DateTime.from_iso8601(str) do
+      {:ok, dt, _offset} -> dt
+      _ -> nil
+    end
+  end
+
+  defp decode_datetime(_), do: nil
+
   defp maybe_persist_snapshot(state) do
     # Persist plan-related state as a session snapshot.
     # Only writes when a plan exists to avoid unnecessary I/O.
@@ -834,7 +1009,11 @@ defmodule Muse.SessionServer do
         plans:
           state.plans
           |> Enum.map(fn {id, p} -> {id, Plan.to_map(p)} end)
-          |> Enum.into(%{})
+          |> Enum.into(%{}),
+        approvals:
+          Map.get(state, :approvals, [])
+          |> Enum.map(&Approval.to_map/1),
+        approval_binding: encode_approval_binding(Map.get(state, :approval_binding))
       }
 
       case SessionStore.save_session(state.session_id, data) do
