@@ -57,6 +57,7 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   alias Muse.Auth.Resolver
   alias Muse.{EventPayloadRedactor, MetadataSanitizer}
   alias Muse.LLM.OpenAI.{ChatCompletionsStreamDecoder, RequestBuilder}
+  alias Muse.LLM.OpenAI.ResponsesWebsocket.Stream, as: ResponsesWebsocketStream
   alias Muse.LLM.Transport.SSE.Parser, as: SSEParser
   alias Muse.LLM.Transport.SSE.ReqStream
   alias Muse.LLM.{Event, Request, Response, ToolCall}
@@ -109,12 +110,21 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   @impl true
   @spec stream(Request.t(), (Event.t() -> :ok)) :: {:ok, Response.t()} | {:error, term()}
   def stream(%Request{} = request, emit_fn) when is_function(emit_fn, 1) do
-    if sse_transport?(request) do
-      stream_sse(request, emit_fn)
-    else
-      stream_non_streaming(request, emit_fn)
+    cond do
+      responses_websocket_transport?(request) -> ResponsesWebsocketStream.stream(request, emit_fn)
+      sse_transport?(request) -> stream_sse(request, emit_fn)
+      true -> stream_non_streaming(request, emit_fn)
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Responses WebSocket path
+  # ---------------------------------------------------------------------------
+
+  defp responses_websocket_transport?(%Request{transport: :websocket}), do: true
+  defp responses_websocket_transport?(%Request{options: %{transport: :websocket}}), do: true
+  defp responses_websocket_transport?(%Request{options: %{"transport" => :websocket}}), do: true
+  defp responses_websocket_transport?(_request), do: false
 
   # ---------------------------------------------------------------------------
   # SSE streaming path
