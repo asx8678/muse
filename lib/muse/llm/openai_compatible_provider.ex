@@ -1,17 +1,19 @@
 defmodule Muse.LLM.OpenAICompatibleProvider do
   @moduledoc """
-  OpenAI-compatible non-streaming provider adapter.
+  OpenAI-compatible provider adapter with SSE streaming support.
 
-  This provider performs a single Chat Completions-compatible HTTP POST, decodes
-  the complete response into Muse's normalized response struct, and can replay
-  the result as canonical Muse LLM events for callers using `stream/2`.
+  This provider performs Chat Completions-compatible HTTP calls. It supports
+  two modes:
 
-  This adapter keeps auth resolution centralized in `Muse.Auth.Resolver`:
+    * **Non-streaming** (`complete/2`): single POST, full response decode.
+    * **SSE streaming** (`stream/2` when `request.transport == :sse` or
+      `stream_fn` is provided): incremental SSE parsing, event-by-event
+      decoding, and real-time emission of canonical Muse LLM events.
 
-    * no SSE parser
-    * no WebSocket client
-    * fake provider remains the offline/default provider
-    * configured auth modes resolve before any HTTP call
+  The SSE path handles partial/final deltas, `[DONE]` markers, malformed JSON,
+  non-2xx HTTP responses, and transport errors. All error data is bounded and
+  redacted — API keys, Bearer tokens, and other secrets never leak into
+  returned/emitted error terms.
 
   Callers may pass explicit headers through `request.options[:headers]`; those
   headers are sent to the provider but are never included in returned/emitted
@@ -23,7 +25,8 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
 
   alias Muse.Auth.Resolver
   alias Muse.{EventPayloadRedactor, MetadataSanitizer}
-  alias Muse.LLM.OpenAI.RequestBuilder
+  alias Muse.LLM.OpenAI.{ChatCompletionsStreamDecoder, RequestBuilder}
+  alias Muse.LLM.Transport.SSE.Parser, as: SSEParser
   alias Muse.LLM.{Event, Request, Response, ToolCall}
 
   @chat_completions_decoder Module.concat(Muse.LLM.OpenAI, ChatCompletionsDecoder)
@@ -54,17 +57,141 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   def complete(%Request{}, _opts), do: {:error, {:invalid_options, "opts must be a keyword list"}}
 
   @doc """
-  Emit canonical Muse events by performing the same non-streaming HTTP call.
+  Emit canonical Muse events via SSE streaming or non-streaming fallback.
 
-  Because the provider behaviour only passes `(request, emit_fn)` for streaming,
-  offline tests may inject a post function via `request.options[:post_fn]` or
-  `request.options[:http_post]`.
+  When `request.transport == :sse` or `stream_fn`/`post_fn` is provided in
+  `request.options`, the SSE path is used: the provider requests
+  `"stream" => true`, parses SSE events from the HTTP response body, and
+  emits events incrementally.
+
+  Otherwise, falls back to a non-streaming call and replays the full response.
+
+  All errors are redacted before emission or return.
   """
   @impl true
   @spec stream(Request.t(), (Event.t() -> :ok)) :: {:ok, Response.t()} | {:error, term()}
   def stream(%Request{} = request, emit_fn) when is_function(emit_fn, 1) do
     opts = request_options(request)
 
+    if sse_streaming_requested?(request, opts) do
+      stream_sse(request, opts, emit_fn)
+    else
+      stream_non_streaming(request, opts, emit_fn)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # SSE streaming path
+  # ---------------------------------------------------------------------------
+
+  defp sse_streaming_requested?(request, opts) do
+    request.transport == :sse or
+      Map.has_key?(opts, :stream_fn) or
+      Map.has_key?(opts, :sse)
+  end
+
+  defp stream_sse(request, opts, emit_fn) do
+    with {:ok, spec} <- build_streaming_spec(request),
+         {:ok, spec} <- attach_auth(spec, request, []),
+         {:ok, stream_fn} <- resolve_stream_fn(opts),
+         {:ok, http_response} <- call_stream_fn(spec, stream_fn) do
+      handle_sse_http_response(http_response, emit_fn)
+    else
+      {:error, reason} ->
+        redacted = redact_error(reason)
+        emit_fn.(Event.provider_error(redacted))
+        {:error, redacted}
+    end
+  end
+
+  defp build_streaming_spec(request) do
+    case RequestBuilder.build_chat_completions(request) do
+      {:ok, spec} -> {:ok, %{spec | payload: Map.put(spec.payload, "stream", true)}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp resolve_stream_fn(opts) do
+    case option_value(opts, :stream_fn) || option_value(opts, :post_fn) ||
+           option_value(opts, :http_post) do
+      nil -> {:ok, &Req.post/2}
+      fun -> normalize_post_fn(fun)
+    end
+  end
+
+  defp call_stream_fn(spec, stream_fn) do
+    request_options = [json: spec.payload, headers: spec.headers] ++ spec.req_options
+
+    case safe_post(stream_fn, spec.url, request_options) do
+      {:ok, %{status: status} = response} when is_integer(status) ->
+        {:ok, response}
+
+      {:ok, other} ->
+        {:error,
+         {:provider_network_error, %{reason: safe_summary({:unexpected_response, other})}}}
+
+      {:error, reason} ->
+        {:error, {:provider_network_error, %{reason: safe_summary(reason)}}}
+    end
+  end
+
+  defp handle_sse_http_response(%{status: status, body: body}, emit_fn)
+       when is_integer(status) and status >= 200 and status <= 299 do
+    body_binary = body_to_binary(body)
+    sse_events = SSEParser.parse(body_binary)
+    emit_fn.(Event.response_started())
+
+    case ChatCompletionsStreamDecoder.decode(sse_events) do
+      {decoded_events, accum} when is_map(accum) ->
+        Enum.each(decoded_events, fn event -> emit_fn.(event) end)
+        response = ChatCompletionsStreamDecoder.build_response(accum)
+        {:ok, response}
+
+      {decoded_events, {:error, reason}} ->
+        # Mid-stream failure: emit valid deltas, then provider_error.
+        # No assistant_completed / response_completed after failure.
+        Enum.each(decoded_events, fn event -> emit_fn.(event) end)
+        redacted = redact_error(reason)
+        emit_fn.(Event.provider_error(redacted))
+        {:error, redacted}
+    end
+  end
+
+  defp handle_sse_http_response(%{status: status, body: body}, emit_fn)
+       when is_integer(status) do
+    error =
+      {:provider_http_error,
+       %{
+         status: status,
+         body_summary: safe_summary(body)
+       }}
+
+    redacted = redact_error(error)
+    emit_fn.(Event.provider_error(redacted))
+    {:error, redacted}
+  end
+
+  defp handle_sse_http_response(response, emit_fn) do
+    error =
+      {:provider_network_error, %{reason: safe_summary({:unexpected_response, response})}}
+
+    redacted = redact_error(error)
+    emit_fn.(Event.provider_error(redacted))
+    {:error, redacted}
+  end
+
+  defp body_to_binary(body) when is_binary(body), do: body
+
+  defp body_to_binary(body) when is_map(body) or is_list(body),
+    do: Jason.encode!(body)
+
+  defp body_to_binary(body), do: inspect(body, limit: 10, printable_limit: 500)
+
+  # ---------------------------------------------------------------------------
+  # Non-streaming fallback path (existing behaviour)
+  # ---------------------------------------------------------------------------
+
+  defp stream_non_streaming(request, opts, emit_fn) do
     result =
       request
       |> RequestBuilder.build_chat_completions()
@@ -513,7 +640,45 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
 
   defp option_value(map, key) when is_map(map), do: Map.get(map, key)
 
-  defp redact_error(reason), do: safe_summary(reason)
+  defp redact_error(reason), do: structure_preserving_redact(reason)
+
+  # Preserve tagged-tuple error structure so callers can pattern-match,
+  # while still redacting secret values in the payload.
+  defp structure_preserving_redact({:provider_http_error, %{status: status} = detail}) do
+    {:provider_http_error, %{status: status, body_summary: safe_summary(detail[:body_summary])}}
+  end
+
+  defp structure_preserving_redact({:provider_network_error, %{reason: reason}}) do
+    {:provider_network_error, %{reason: safe_summary(reason)}}
+  end
+
+  defp structure_preserving_redact({:provider_decode_error, message}) do
+    {:provider_decode_error, safe_summary(message)}
+  end
+
+  defp structure_preserving_redact({:auth_error, reason}) do
+    {:auth_error, safe_summary(reason)}
+  end
+
+  defp structure_preserving_redact({:invalid_post_fn, message}) do
+    {:invalid_post_fn, safe_summary(message)}
+  end
+
+  defp structure_preserving_redact({:unsupported_wire_api, api}) do
+    {:unsupported_wire_api, api}
+  end
+
+  defp structure_preserving_redact({:missing_base_url, message}) do
+    {:missing_base_url, safe_summary(message)}
+  end
+
+  defp structure_preserving_redact({:invalid_base_url, message}) do
+    {:invalid_base_url, safe_summary(message)}
+  end
+
+  defp structure_preserving_redact(reason) do
+    safe_summary(reason)
+  end
 
   defp safe_summary(term) when is_binary(term) do
     term
