@@ -25,9 +25,9 @@ defmodule Muse.Conductor do
     * `[:muse, :provider, :start]` / `[:muse, :provider, :stop]` / `[:muse, :provider, :error]`
   """
 
-  alias Muse.{MuseRegistry, Session, Telemetry, Turn}
+  alias Muse.{MuseRegistry, Plan, PlanParser, Session, Telemetry, Turn}
   alias Muse.Conductor.ToolLoop
-  alias Muse.LLM.{FakeProvider, ProviderConfig}
+  alias Muse.LLM.{FakeProvider, ProviderConfig, Message}
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
 
   @type event_spec :: {atom(), atom(), map(), keyword()}
@@ -202,7 +202,10 @@ defmodule Muse.Conductor do
                 muse,
                 tool_loop_result.assistant_text,
                 all_specs,
-                start_time
+                start_time,
+                provider_module: provider_module,
+                request: request,
+                bundle: bundle
               )
 
             {:cancelled, tool_loop_result} ->
@@ -226,7 +229,10 @@ defmodule Muse.Conductor do
                 muse,
                 tool_loop_result.assistant_text,
                 all_specs,
-                start_time
+                start_time,
+                provider_module: provider_module,
+                request: request,
+                bundle: bundle
               )
           end
         else
@@ -239,7 +245,8 @@ defmodule Muse.Conductor do
             request,
             response,
             provider_event_specs,
-            start_time
+            start_time,
+            provider_module: provider_module
           )
         end
 
@@ -266,7 +273,7 @@ defmodule Muse.Conductor do
 
   defp response_has_tool_calls?(_), do: false
 
-  defp finalize_with_specs(session, turn, muse, assistant_text, all_event_specs, start_time) do
+  defp finalize_with_specs(session, turn, muse, assistant_text, all_event_specs, start_time, opts) do
     turn = %{turn | selected_muse: Atom.to_string(muse.id)}
     turn = Turn.mark_streamed(turn)
     {:ok, turn} = Turn.transition(turn, :completed, completed_at: DateTime.utc_now())
@@ -280,17 +287,19 @@ defmodule Muse.Conductor do
       Telemetry.turn_stop_metadata(session_id: session.id, turn_id: turn.id, status: :completed)
     )
 
-    {:ok,
-     %{
-       assistant_text: assistant_text,
-       selected_muse: muse,
-       prompt_bundle: nil,
-       request: nil,
-       response: nil,
-       session: session,
-       turn: turn,
-       event_specs: all_event_specs
-     }}
+    result = %{
+      assistant_text: assistant_text,
+      selected_muse: muse,
+      prompt_bundle: nil,
+      request: nil,
+      response: nil,
+      session: session,
+      turn: turn,
+      event_specs: all_event_specs
+    }
+
+    # Post-process for plan creation when using Planning Muse
+    maybe_add_plan_to_result(result, session, turn, muse, start_time, opts)
   end
 
   # -- Muse selection -----------------------------------------------------------
@@ -451,8 +460,9 @@ defmodule Muse.Conductor do
          request,
          response,
          provider_event_specs,
-         start_time
-       ) do
+         start_time,
+         extra_opts
+       ) when is_list(extra_opts) do
     assistant_text = response.content || ""
 
     # Build conductor overhead event specs
@@ -489,17 +499,175 @@ defmodule Muse.Conductor do
       Telemetry.turn_stop_metadata(session_id: session.id, turn_id: turn.id, status: :completed)
     )
 
-    {:ok,
-     %{
-       assistant_text: assistant_text,
-       selected_muse: muse,
-       prompt_bundle: bundle,
-       request: request,
-       response: response,
-       session: session,
-       turn: turn,
-       event_specs: all_event_specs
-     }}
+    result = %{
+      assistant_text: assistant_text,
+      selected_muse: muse,
+      prompt_bundle: bundle,
+      request: request,
+      response: response,
+      session: session,
+      turn: turn,
+      event_specs: all_event_specs
+    }
+
+    # Build opts for plan post-processing, merging extra_opts
+    plan_opts =
+      Keyword.merge(extra_opts,
+        request: request,
+        bundle: bundle
+      )
+
+    # Post-process for plan creation when using Planning Muse
+    maybe_add_plan_to_result(result, session, turn, muse, start_time, plan_opts)
+  end
+
+  # -- Plan finalization --------------------------------------------------------
+
+  @doc false
+  # Post-process a turn result to handle Planning Muse plan creation.
+  #
+  # When the selected muse is :planning, attempts to parse the assistant
+  # text as a structured plan via PlanParser. On success, replaces the
+  # assistant message with Plan.render/1 output, emits :plan_created event,
+  # and transitions session to :awaiting_plan_approval. On failure, attempts
+  # one repair call to the provider. If repair also fails, returns the
+  # original result with a safe error message about invalid plan output.
+  defp maybe_add_plan_to_result(result, session, turn, muse, start_time, opts) do
+    if muse.id == :planning do
+      assistant_text = result.assistant_text
+
+      case PlanParser.parse(assistant_text) do
+        {:ok, plan} ->
+          finalize_as_plan(result, session, turn, muse, plan, start_time)
+
+        {:error, _parse_errors} ->
+          # Only attempt repair if the text looks like it's trying to be JSON
+          # (starts with '{' or contains a fenced JSON code block or has JSON-like plan markers)
+          if looks_like_plan_json?(assistant_text) do
+            do_plan_repair(result, session, turn, muse, assistant_text, start_time, opts)
+          else
+            # Plain text response from Planning Muse for non-plan queries — pass through
+            {:ok, result}
+          end
+      end
+    else
+      {:ok, result}
+    end
+  end
+
+  # Check if text looks like it's trying to be a structured plan JSON
+  defp looks_like_plan_json?(text) when is_binary(text) do
+    trimmed = String.trim(text)
+    String.starts_with?(trimmed, "{") or
+      String.starts_with?(trimmed, "```") or
+      String.contains?(text, "\"objective\"") or
+      String.contains?(text, "\"tasks\"") or
+      String.contains?(text, "'objective'") or
+      String.contains?(text, "'tasks'")
+  end
+
+  defp looks_like_plan_json?(_), do: false
+
+  defp finalize_as_plan(result, _session, _turn, _muse, plan, _start_time) do
+    # Transition plan to awaiting_approval
+    {:ok, plan} = Plan.transition(plan, :awaiting_approval)
+
+    # Build user-friendly text from plan render
+    plan_text = Plan.render(plan)
+
+    # Replace the final session_status_changed(:running, :idle) with plan events
+    existing_specs = result.event_specs
+
+    # Remove the session_status_changed running -> idle
+    specs_without_final_status =
+      Enum.reject(existing_specs, fn
+        {:conductor, :session_status_changed, %{to: :idle}, _opts} -> true
+        _ -> false
+      end)
+
+    plan_specs = [
+      {:conductor, :plan_created,
+       %{
+         plan_id: plan.id,
+         version: plan.version,
+         objective: plan.objective,
+         task_count: length(plan.tasks)
+       }, [visibility: :user]},
+      session_status_changed_spec(:running, :awaiting_plan_approval)
+    ]
+
+    all_specs = specs_without_final_status ++ plan_specs
+
+    # Transition from running (already in result.session) to awaiting_plan_approval
+    {:ok, plan_session} = Session.transition(result.session, :awaiting_plan_approval)
+
+    # Build the result with plan data
+    plan_result =
+      result
+      |> Map.put(:assistant_text, plan_text)
+      |> Map.put(:session, plan_session)
+      |> Map.put(:event_specs, all_specs)
+      |> Map.put(:plan, plan)
+
+    {:ok, plan_result}
+  end
+
+  defp do_plan_repair(result, session, turn, muse, assistant_text, start_time, opts) do
+    provider_module = Keyword.get(opts, :provider_module)
+    request = Keyword.get(opts, :request)
+
+    if is_nil(provider_module) or is_nil(request) do
+      # No provider available for repair (e.g. tool_loop without context) —
+      # return original result with safe error message
+      {:ok, safe_invalid_plan_result(result, session)}
+    else
+      # Build repair prompt from failed text
+      errors =
+        case PlanParser.parse(assistant_text) do
+          {:error, errs} -> errs
+          _ -> ["Invalid plan format"]
+        end
+
+      repair_prompt_text = PlanParser.repair_prompt(assistant_text, errors: errors)
+
+      # Create a repair message and rebuild request with tools disabled
+      repair_message = Message.user(repair_prompt_text)
+      repair_request = %{request | messages: [repair_message], tools: [], tool_choice: :none}
+
+      # Call provider once for repair
+      emit_fn = fn _llm_event -> :ok end
+
+      case provider_module.stream(repair_request, emit_fn) do
+        {:ok, repair_response} ->
+          repair_text = repair_response.content || ""
+
+          case PlanParser.parse(repair_text) do
+            {:ok, plan} ->
+              # Repair succeeded — finalize with plan
+              finalize_as_plan(result, session, turn, muse, plan, start_time)
+
+            {:error, _repair_errors} ->
+              # Repair also failed — return safe message
+              {:ok, safe_invalid_plan_result(result, session)}
+          end
+
+        {:error, _reason} ->
+          # Provider error during repair — return safe message
+          {:ok, safe_invalid_plan_result(result, session)}
+      end
+    end
+  end
+
+  defp safe_invalid_plan_result(result, session) do
+    {:ok, safe_session} = Session.transition(session, :idle)
+
+    safe_text =
+      "I was unable to generate a valid structured plan from the output. " <>
+        "Please try again or rephrase your request."
+
+    result
+    |> Map.put(:assistant_text, safe_text)
+    |> Map.put(:session, safe_session)
   end
 
   # -- Event spec builders ------------------------------------------------------

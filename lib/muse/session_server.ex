@@ -107,6 +107,8 @@ defmodule Muse.SessionServer do
        seq: 0,
        events: [],
        active_muse: nil,
+       active_plan_id: nil,
+       plan: nil,
        # TurnRunner state
        active_turn_id: nil,
        runner_pid: nil,
@@ -218,6 +220,7 @@ defmodule Muse.SessionServer do
       session_id: state.session_id,
       status: state.status,
       active_muse: state.active_muse,
+      active_plan_id: state.active_plan_id,
       seq: state.seq,
       event_count: length(state.events),
       active_turn_id: state.active_turn_id,
@@ -309,7 +312,17 @@ defmodule Muse.SessionServer do
     {conductor_events, state} = emit_event_specs(state, result.event_specs, turn_id)
     session_events = session_events ++ conductor_events
 
-    state = %{state | status: :idle, active_muse: Atom.to_string(result.selected_muse.id)}
+    # Use the session status from the Conductor result (may be :awaiting_plan_approval)
+    session_status = result.session.status
+    state = %{state | status: session_status, active_muse: Atom.to_string(result.selected_muse.id)}
+
+    # Store plan if present in the result
+    state =
+      if Map.has_key?(result, :plan) and not is_nil(result.plan) do
+        %{state | active_plan_id: result.plan.id, plan: result.plan}
+      else
+        state
+      end
 
     # Emit turn_completed
     delta_count = Enum.count(session_events, &(&1.type == :assistant_delta))
