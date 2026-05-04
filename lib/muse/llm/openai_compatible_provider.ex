@@ -35,10 +35,11 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   Tests and offline callers can inject `opts[:post_fn]`, a two-arity function
   with the same call shape as `Req.post/2`: `post_fn.(url, options)`.
   """
+  @spec complete(Request.t()) :: {:ok, Response.t()} | {:error, term()}
+  def complete(request), do: complete(request, [])
+
   @impl true
   @spec complete(Request.t(), keyword()) :: {:ok, Response.t()} | {:error, term()}
-  def complete(request, opts \\ [])
-
   def complete(%Request{} = request, opts) when is_list(opts) do
     with {:ok, spec} <- RequestBuilder.build_chat_completions(request),
          {:ok, post_fn} <- complete_post_fn(opts),
