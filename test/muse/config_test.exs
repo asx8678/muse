@@ -282,6 +282,88 @@ defmodule Muse.ConfigTest do
   end
 
   # ---------------------------------------------------------------------------
+  # SSE transport and wire_api config via Muse.Config
+  # ---------------------------------------------------------------------------
+
+  describe "llm_provider_config/1 — SSE transport and wire_api" do
+    test "openai_compatible defaults to wire_api :responses and transport :sse" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.wire_api == :responses
+      assert config.transport == :sse
+    end
+
+    test "MUSE_WIRE_API=chat_completions + MUSE_TRANSPORT=sse configures SSE Chat Completions" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1",
+        "MUSE_WIRE_API" => "chat_completions",
+        "MUSE_TRANSPORT" => "sse"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.wire_api == :chat_completions
+      assert config.transport == :sse
+      assert config.supports_streaming == true
+    end
+
+    test "MUSE_TRANSPORT=none configures no-network transport" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1",
+        "MUSE_TRANSPORT" => "none"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.transport == :none
+    end
+
+    test "unknown MUSE_WIRE_API resolves to nil (valid via safe fallback)" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1",
+        "MUSE_WIRE_API" => "grpc"
+      }
+
+      # Muse.Config.parse_wire_api returns nil for unknown → nil is valid
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.wire_api == nil
+    end
+
+    test "unknown MUSE_TRANSPORT resolves to nil (valid via safe fallback)" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1",
+        "MUSE_TRANSPORT" => "quic"
+      }
+
+      # Muse.Config.parse_transport returns nil for unknown → nil is valid
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.transport == nil
+    end
+
+    test "unknown transport string does not leak atoms" do
+      unknown = "never_gonna_be_a_transport_atom_xyz"
+      env = %{"MUSE_TRANSPORT" => unknown}
+
+      assert {:ok, _config} = Config.llm_provider_config(env)
+
+      assert_raise ArgumentError, fn ->
+        String.to_existing_atom(unknown)
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # App config integration (uses Application.get_env under the hood)
   # ---------------------------------------------------------------------------
 

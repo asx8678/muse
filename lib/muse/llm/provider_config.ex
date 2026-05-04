@@ -15,6 +15,11 @@ defmodule Muse.LLM.ProviderConfig do
     * `base_url`                — API base URL (nil for fake/no-network providers)
     * `wire_api`                — `:responses` | `:chat_completions` | `nil`
     * `transport`               — `:none` | `:sse` | `:websocket` | `nil`
+
+  The `wire_api` and `transport` fields can be overridden via `MUSE_WIRE_API`
+  and `MUSE_TRANSPORT` environment variables when loading config from env.
+  Unknown values safely fall back to defaults; see `parse_wire_api/1` and
+  `parse_transport/1`.
     * `model`                   — model identifier
     * `auth`                    — `:none` | `:api_key` | `:bearer_command` | `:codex_cache` | `:openai_oauth` | `nil`
     * `env_key`                 — environment variable name for the API key
@@ -167,8 +172,14 @@ defmodule Muse.LLM.ProviderConfig do
     * `MUSE_PROVIDER` — provider identifier (default: `"fake"`)
     * `MUSE_MODEL` — model identifier (default: `"fake-planning-model"` for fake)
     * `MUSE_OPENAI_BASE_URL` — required base URL for OpenAI-compatible providers
+    * `MUSE_WIRE_API` — wire API for OpenAI-compatible providers (default: `"responses"`)
+    * `MUSE_TRANSPORT` — transport for OpenAI-compatible providers (default: `"sse"`)
     * `MUSE_LLM_TIMEOUT_MS` — per-request timeout in ms (default: `120_000`)
     * `MUSE_LLM_MAX_RETRIES` — max retries (default: `2`, `0` for fake)
+
+  Unknown `MUSE_WIRE_API` or `MUSE_TRANSPORT` values fall back to their defaults
+  (`:responses` and `:sse` respectively) rather than raising — this mirrors
+  `Muse.Config`'s safe-parsing behavior.
 
   Invalid env values return structured `{:error, reason}` tuples instead of
   raising or being silently swallowed. Auth/key presence is intentionally not
@@ -389,6 +400,51 @@ defmodule Muse.LLM.ProviderConfig do
 
   def provider_atom(%__MODULE__{}), do: :unknown
 
+  @doc """
+  Safely parse a transport value from a string or atom to a known transport atom.
+
+  Accepts strings (`"sse"`, `"none"`, `"websocket"`) and atoms (`:sse`, `:none`,
+  `:websocket`). Returns the corresponding known transport atom, or `nil` for
+  unrecognized values. Never calls `String.to_atom/1`.
+
+  ## Examples
+
+      iex> Muse.LLM.ProviderConfig.parse_transport("sse")
+      :sse
+      iex> Muse.LLM.ProviderConfig.parse_transport(:websocket)
+      :websocket
+      iex> Muse.LLM.ProviderConfig.parse_transport("grpc")
+      nil
+  """
+  @spec parse_transport(String.t() | atom() | nil) :: transport() | nil
+  def parse_transport("none"), do: :none
+  def parse_transport("sse"), do: :sse
+  def parse_transport("websocket"), do: :websocket
+  def parse_transport(atom) when atom in @known_transports, do: atom
+  def parse_transport(_), do: nil
+
+  @doc """
+  Safely parse a wire API value from a string or atom to a known wire API atom.
+
+  Accepts strings (`"responses"`, `"chat_completions"`) and atoms (`:responses`,
+  `:chat_completions`). Returns the corresponding known wire API atom, or `nil`
+  for unrecognized values. Never calls `String.to_atom/1`.
+
+  ## Examples
+
+      iex> Muse.LLM.ProviderConfig.parse_wire_api("chat_completions")
+      :chat_completions
+      iex> Muse.LLM.ProviderConfig.parse_wire_api(:responses)
+      :responses
+      iex> Muse.LLM.ProviderConfig.parse_wire_api("grpc")
+      nil
+  """
+  @spec parse_wire_api(String.t() | atom() | nil) :: wire_api() | nil
+  def parse_wire_api("responses"), do: :responses
+  def parse_wire_api("chat_completions"), do: :chat_completions
+  def parse_wire_api(atom) when atom in @known_wire_apis, do: atom
+  def parse_wire_api(_), do: nil
+
   # ---------------------------------------------------------------------------
   # Private helpers for env loading
   # ---------------------------------------------------------------------------
@@ -434,12 +490,24 @@ defmodule Muse.LLM.ProviderConfig do
     base_url = env_value(env_map, "MUSE_OPENAI_BASE_URL")
     base_url = if strict?, do: base_url, else: base_url || "https://api.openai.com/v1"
 
+    wire_api =
+      case env_value(env_map, "MUSE_WIRE_API") do
+        nil -> :responses
+        value -> parse_wire_api(value) || :responses
+      end
+
+    transport =
+      case env_value(env_map, "MUSE_TRANSPORT") do
+        nil -> :sse
+        value -> parse_transport(value) || :sse
+      end
+
     %__MODULE__{
       id: "openai_compatible",
       name: "OpenAI Compatible",
       base_url: base_url,
-      wire_api: :responses,
-      transport: :sse,
+      wire_api: wire_api,
+      transport: transport,
       auth: :api_key,
       env_key: "MUSE_OPENAI_API_KEY",
       supports_streaming: true,

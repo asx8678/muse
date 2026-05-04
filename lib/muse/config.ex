@@ -216,14 +216,9 @@ defmodule Muse.Config do
   # Parsing helpers (safe — return fallback on parse failure)
   # ---------------------------------------------------------------------------
 
-  defp parse_wire_api("responses"), do: :responses
-  defp parse_wire_api("chat_completions"), do: :chat_completions
-  defp parse_wire_api(_), do: nil
+  defp parse_wire_api(value), do: ProviderConfig.parse_wire_api(value)
 
-  defp parse_transport("none"), do: :none
-  defp parse_transport("sse"), do: :sse
-  defp parse_transport("websocket"), do: :websocket
-  defp parse_transport(_), do: nil
+  defp parse_transport(value), do: ProviderConfig.parse_transport(value)
 
   defp parse_integer(str, fallback) when is_binary(str) do
     case Integer.parse(str) do
