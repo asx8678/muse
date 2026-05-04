@@ -8,7 +8,7 @@
 
 ## Table of Contents
 
-0. [PR08 Prompt Contract Scope](#0-pr08-prompt-contract-scope)
+0. [PR09 Prompt Contract Scope](#0-pr09-prompt-contract-scope)
 1. [Muse Profiles](#1-muse-profiles)
    - 1.1 [Planning Muse](#11-planning-muse)
    - 1.2 [Coding Muse](#12-coding-muse)
@@ -36,14 +36,16 @@
 
 ---
 
-## 0. PR08 Prompt Contract Scope
+## 0. PR09 Prompt Contract Scope
 
-Implemented runtime scope on this branch:
+Implemented runtime scope for PR09:
 
 - `Muse.MuseRegistry` currently registers **Planning Muse** and **Coding Muse** only.
 - `Muse.Conductor.select_muse/2` currently executes turns with **Planning Muse**.
 - Planning Muse is expected to output **structured JSON plan text** parsed by `Muse.PlanParser`.
 - On successful parse, users see `Muse.Plan.render/1` output with `/approve plan` and `/reject plan` guidance.
+- Plan lifecycle approvals are explicit and auditable in PR09.
+- Approval remains lifecycle-only in PR09; no patch apply, shell execution, network execution, or automatic Coding Muse handoff is enabled.
 
 The additional Muse profiles and prompts below are roadmap references unless explicitly noted as implemented.
 
@@ -118,7 +120,7 @@ The additional Muse profiles and prompts below are roadmap references unless exp
 }
 ```
 
-> PR08 note: Coding Muse profile metadata is present, but Conductor does not route active turns to Coding Muse yet and `patch_propose`/`patch_apply` are not part of the current registered executable tool set.
+> PR09 note: Coding Muse profile metadata is present, but Conductor does not route active turns to Coding Muse yet and `patch_propose`/`patch_apply` are not part of the current registered executable tool set.
 
 ### 1.3 Reviewing Muse
 
@@ -182,7 +184,7 @@ The additional Muse profiles and prompts below are roadmap references unless exp
 
 ### 1.8 Tool Muse (Note)
 
-Tool Muse does not need to be a chat persona in v0. It is a product-facing way to describe the **Tool Registry** and **Tool Runner** control plane. In PR08 there is no standalone `Muse.ApprovalGate` module yet; blocked-tool and role enforcement happen in `Muse.Tool.Runner`.
+Tool Muse does not need to be a chat persona in v0. It is a product-facing way to describe the **Tool Registry** and **Tool Runner** control plane. In PR09, plan lifecycle approval is explicit and auditable, while risky execution categories (patch apply, shell, network, delete, remote) remain deny-by-default in `Muse.Tool.Runner`/`Muse.Tool.Registry` until later gates are implemented.
 
 ---
 
@@ -256,7 +258,7 @@ Goal:
 - Produce a structured implementation plan.
 - Stop before implementation.
 
-Allowed tools in PR08:
+Allowed tools in PR09:
 - list_files
 - read_file
 - repo_search
@@ -266,7 +268,7 @@ Allowed tools in PR08:
 - list_muses
 - list_skills
 
-Blocked tools in PR08:
+Blocked tools in PR09:
 - write_file
 - replace_in_file
 - delete_file
@@ -299,7 +301,7 @@ Behavior:
 
 ## 4. Coding Muse Prompt
 
-> Roadmap: this prompt is documented for contract clarity, but Coding Muse execution/handoff is not active in the current PR08 Conductor routing.
+> Roadmap: this prompt is documented for contract clarity, but Coding Muse execution/handoff is not active in the current PR09 Conductor routing.
 
 ```text
 You are the Coding Muse, the implementation specialist inside Muse.

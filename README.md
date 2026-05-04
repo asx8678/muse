@@ -130,6 +130,8 @@ Inside the `muse>` REPL:
 | `/reload-status` | Show reload generation and last error |
 | `/quit` | Stop Muse (`:quit` also works) |
 
+> PR09 boundary: `/approve plan` and `/reject plan` update plan lifecycle state only. They do not apply patches, write files, run shell commands, run network actions, or trigger automatic Coding Muse execution.
+
 ---
 
 ## Building an Escript
