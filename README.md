@@ -2,9 +2,10 @@
 
 Minimal Elixir/Phoenix LiveView coding-runtime foundation for Muse.
 
-Muse gives you a CLI REPL and a web interface that both funnel through a
-single `Muse.submit/2` API — so adding real AI behavior later is a one-module
-change.
+Muse gives you a CLI REPL and a web interface that both funnel user messages
+through a single `Muse.submit/2` API — so adding real AI behavior later is a
+one-module change. Slash commands (`/help`, `/plan`, `/approve plan`, etc.)
+are dispatched separately through `Muse.CommandDispatcher`.
 
 > **⚠️ Provider-ready** — `Muse.submit/2` routes through the Conductor which
 > delegates to an LLM provider. The fake provider (offline, deterministic) is the
@@ -123,20 +124,22 @@ Inside the `muse>` REPL:
 | `/plan show <id>` | Show a Muse Plan by id |
 | `/approve plan` | Approve the active Muse Plan; records approval only and does **not** start implementation |
 | `/reject plan` | Reject the active Muse Plan and request a revised plan |
-| `/events` | Print the event log |
-| `/workspace` | Print current workspace path |
-| `/reload` | Force a dev hot-reload |
-| `/rollback` | Roll back to last good code generation |
-| `/reload-status` | Show reload generation and last error |
+| `/events` | Show event summary |
+| `/workspace` | Show workspace info |
+| `/reload` | Force dev reload |
+| `/rollback` | Roll back to last good generation |
+| `/reload-status` | Show reload/watcher status |
+| `/auth status` | Show auth credential status (redacted, read-only) |
 | `/quit` | Stop Muse (`:quit` also works) |
 
 Approval commands are lifecycle-only. `/approve plan` prints the plan id,
 version, any available approval id/hash, and an explicit "no implementation
 started" line. `/reject plan` prints the plan id/version, any available rejection
-record, and tells you to ask Planning Muse for a revised plan. `/plan status`
+record, and tells you to request a revised plan. `/plan status`
 includes approval/rejection audit status and id/hash details when the active plan
-has them. Approval of a plan does not start Coding Muse, shell commands, file
-writes, patch application, or network execution.
+has them. Plan approval records the decision only — it does not trigger
+implementation, patch application, shell commands, file writes, or network
+execution. Implementation and patch-approval gates are separate roadmap items.
 
 ---
 
@@ -307,7 +310,7 @@ cd ~/projects/muse
      │                 │
      └───────┬─────────┘
              ▼
-      Muse.submit/2        ← single entry point for all input
+      Muse.submit/2        ← single entry point for user messages
              │
              ▼
        Muse.State          ← ordered event log (GenServer)
@@ -323,7 +326,7 @@ cd ~/projects/muse
 
 | Module | Role |
 |---|---|
-| `Muse.submit/2` | Public API — accepts `(source, text)`, returns `{:ok, response}` |
+| `Muse.submit/2` | Public API — accepts `(source, text)`, returns `{:ok, String.t()}` |
 | `Muse.State` | GenServer holding the event log; broadcasts via PubSub |
 | `Muse.Event` | Struct — `%{id, source, type, data, timestamp}` |
 | `Muse.BootOptions` | Parses CLI flags into a typed struct |
