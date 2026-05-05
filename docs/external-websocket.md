@@ -146,6 +146,10 @@ Only events with `visibility: :user` or nil-visibility events on the explicit al
 | `plan_created` | `planning_muse` | `{objective, task_count, ...}` (summary, not raw plan) |
 | `plan_approved` | `approval_gate` | `{plan_id, ...}` |
 | `plan_rejected` | `approval_gate` | `{plan_id, ...}` |
+| `patch_proposed` | `conductor`, `coding_muse` | `{patch_id, plan_id, diff_hash, affected_files, ...}` (diff content capped/redacted) |
+| `patch_approval_requested` | `conductor` | `{patch_id, plan_id, approval_binding, ...}` |
+| `patch_approved` | `session` | `{patch_id, plan_id, diff_hash, ...}` |
+| `patch_rejected` | `session` | `{patch_id, plan_id, diff_hash, reason, ...}` |
 | `approval_requested` | `approval_gate` | `{kind, id, ...}` |
 | `approval_approved` | `approval_gate` | `{kind, id, ...}` |
 | `approval_rejected` | `approval_gate` | `{kind, id, ...}` |
@@ -253,6 +257,10 @@ wscat -c ws://127.0.0.1:4000/socket/websocket
 | `plan_created` | `planning_muse` | `{objective, task_count, ...}` |
 | `plan_approved` | `approval_gate` | `{plan_id, ...}` |
 | `plan_rejected` | `approval_gate` | `{plan_id, ...}` |
+| `patch_proposed` | `conductor`, `coding_muse` | `{patch_id, ...}` |
+| `patch_approval_requested` | `conductor` | `{patch_id, ...}` |
+| `patch_approved` | `session` | `{patch_id, ...}` |
+| `patch_rejected` | `session` | `{patch_id, ...}` |
 | `approval_requested` | `approval_gate` | `{kind, id, ...}` |
 | `approval_approved` | `approval_gate` | `{kind, id, ...}` |
 | `approval_rejected` | `approval_gate` | `{kind, id, ...}` |
@@ -270,4 +278,20 @@ wscat -c ws://127.0.0.1:4000/socket/websocket
    ┌─ User approves:       plan_approved + approval_approved
    └─ User rejects:        plan_rejected + approval_rejected
 6. Turn finishes:          turn_completed
+```
+
+## Appendix C: Patch Approval Lifecycle Sequence (PR17)
+
+```text
+1. User requests implementation after plan approval
+2. Coding Muse selected:   muse_selected (coding)
+3. Coding Muse inspects:   tool_call_started/completed (read_file, etc.)
+4. Coding Muse proposes:   patch_proposed + patch_approval_requested
+5. Session status:          session_status_changed (awaiting_patch_approval)
+   ┌─ User approves:       patch_approved + approval_approved
+   └─ User rejects:        patch_rejected + approval_rejected
+6. Session returns:         session_status_changed (idle)
+
+Note: Patch approval in PR17 is lifecycle-only. No files are written,
+no checkpoints are created, and no patch_apply is triggered.
 ```

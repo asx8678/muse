@@ -1387,4 +1387,144 @@ defmodule MuseWeb.HomeLiveTest do
       assert conn.resp_body =~ ".agent-runtime-endpoint-input"
     end
   end
+
+  # -- Patch proposal panel (PR17) -----------------------------------------------
+
+  describe "patch proposal panel" do
+    test "does not render patch proposal panel when no patch_proposal assign" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      refute html =~ ~s(id="patch-proposal-panel")
+    end
+
+    test "renders patch proposal panel when patch_proposed event arrives" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      event =
+        Muse.Event.new(
+          :conductor,
+          :patch_proposed,
+          %{
+            patch_id: "patch_abc123",
+            hash: "abc123def456",
+            affected_files: ["lib/muse/example.ex"],
+            diff: "--- a/foo.ex\n+++ b/foo.ex\n@@ -1 +1 @@\n-old\n+new"
+          },
+          visibility: :user
+        )
+
+      Muse.State.append(event)
+      html = render(view)
+      assert html =~ ~s(id="patch-proposal-panel")
+      assert html =~ "patch_abc123"
+    end
+
+    test "clears patch proposal panel when patch_approved event arrives" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      # First, show the panel via a patch_proposed event
+      proposed_event =
+        Muse.Event.new(
+          :conductor,
+          :patch_proposed,
+          %{
+            patch_id: "patch_abc123",
+            hash: "abc123def456",
+            affected_files: ["lib/muse/example.ex"],
+            diff: "--- a/foo.ex"
+          },
+          visibility: :user
+        )
+
+      Muse.State.append(proposed_event)
+      html = render(view)
+      assert html =~ ~s(id="patch-proposal-panel")
+
+      # Now approve — panel should clear
+      approved_event =
+        Muse.Event.new(:cli, :patch_approved, %{patch_id: "patch_abc123", status: "approved"},
+          visibility: :user
+        )
+
+      Muse.State.append(approved_event)
+      html = render(view)
+      refute html =~ ~s(id="patch-proposal-panel")
+    end
+
+    test "clears patch proposal panel when patch_rejected event arrives" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      proposed_event =
+        Muse.Event.new(
+          :conductor,
+          :patch_proposed,
+          %{
+            patch_id: "patch_abc123",
+            hash: "abc123def456",
+            affected_files: ["lib/muse/example.ex"],
+            diff: "--- a/foo.ex"
+          },
+          visibility: :user
+        )
+
+      Muse.State.append(proposed_event)
+      html = render(view)
+      assert html =~ ~s(id="patch-proposal-panel")
+
+      rejected_event =
+        Muse.Event.new(:cli, :patch_rejected, %{patch_id: "patch_abc123", status: "rejected"},
+          visibility: :user
+        )
+
+      Muse.State.append(rejected_event)
+      html = render(view)
+      refute html =~ ~s(id="patch-proposal-panel")
+    end
+
+    test "dismiss button clears patch proposal panel" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      proposed_event =
+        Muse.Event.new(
+          :conductor,
+          :patch_proposed,
+          %{
+            patch_id: "patch_abc123",
+            hash: "abc123def456",
+            affected_files: ["lib/muse/example.ex"],
+            diff: "--- a/foo.ex"
+          },
+          visibility: :user
+        )
+
+      Muse.State.append(proposed_event)
+      html = render(view)
+      assert html =~ ~s(id="patch-proposal-panel")
+
+      view |> element(".patch-proposal-dismiss") |> render_click()
+      html = render(view)
+      refute html =~ ~s(id="patch-proposal-panel")
+    end
+
+    test "patch proposal panel shows /approve patch guidance" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      proposed_event =
+        Muse.Event.new(
+          :conductor,
+          :patch_proposed,
+          %{
+            patch_id: "patch_abc123",
+            hash: "abc123def456",
+            affected_files: ["lib/muse/example.ex"],
+            diff: "--- a/foo.ex"
+          },
+          visibility: :user
+        )
+
+      Muse.State.append(proposed_event)
+      html = render(view)
+      assert html =~ "/approve patch"
+      assert html =~ "no apply"
+    end
+  end
 end

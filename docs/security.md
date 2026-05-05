@@ -16,8 +16,10 @@
 4. [Redaction Rules](#4-redaction-rules)
 5. [Tool Permissions Matrix](#5-tool-permissions-matrix)
 6. [Plan Approval Lifecycle Security (PR09)](#6-plan-approval-lifecycle-security-pr09)
-7. [Auth Security Rules](#7-auth-security-rules)
-8. [Prompt Security](#8-prompt-security)
+7. [Patch Approval Lifecycle Security (PR17)](#7-patch-approval-lifecycle-security-pr17)
+8. [Auth Security Rules](#8-auth-security-rules)
+9. [Prompt Security](#9-prompt-security)
+10. [External WebSocket Channel Security (PR16)](#10-external-websocket-channel-security-pr16)
 
 ---
 
@@ -34,6 +36,8 @@ Every item must be verified before the Muse Runtime reaches MVP. No exceptions.
 - [ ] Patch apply blocks outside-workspace paths
 - [ ] Patch apply blocks secret file paths
 - [ ] Patch apply creates checkpoint first
+- [ ] Patch approval is lifecycle-only and does not apply files (PR17)
+- [ ] Patch proposals are content-hashed and stale approvals rejected (PR17)
 - [ ] Shell commands are approval-gated
 - [ ] Network calls are approval-gated or disabled
 - [ ] Remote execution is disabled
@@ -272,11 +276,44 @@ The hash is deterministic over stable plan content, so stale approvals are rejec
 
 Plan approval in PR09 is lifecycle-only. It does **not** apply patches, write files, run shell/network operations, or hand off execution to Coding Muse.
 
-Future scope (PR17/PR18/PR19): patch approval/apply, checkpoint restore approvals, shell/test/network approval categories.
+Future scope (PR18/PR19): patch apply with checkpoint, checkpoint restore approvals, shell/test/network approval categories.
 
 ---
 
-## 7. Auth Security Rules
+## 7. Patch Approval Lifecycle Security (PR17)
+
+PR17 introduces patch approval as a lifecycle-only gate, extending the PR09 plan approval pattern to the Coding Muse workflow.
+
+### Implemented data models
+
+- `Muse.Approval` struct supports `:patch` kind with `patch_id` and `patch_hash` fields.
+- `Muse.Session` includes `:awaiting_patch_approval` status and `pending_patch` field.
+- `Muse.Patch` struct (see `docs/architecture.md` §3.10) defines id, diff, hash, affected_files, and status.
+
+### Patch approval security properties
+
+- **Coding Muse can propose patches only after an approved plan.** Conductor routes to Coding Muse when the session is `:idle` with an approved plan. The `patch_propose` tool is blocked for Planning Muse and only available to Coding Muse after plan approval.
+- **Patch proposals are content-hashed.** Hash is deterministic over stable patch content; stale patch approvals are rejected by `Muse.ApprovalGate` binding checks (session_id, patch_id, patch_hash, plan_id).
+- **Diff is displayed and approval requested.** The user sees the unified diff and affected files before approving.
+- **`/approve patch` records approval only — no apply authority in PR17.** Patch approval does not trigger `patch_apply`, checkpoint creation, or file writes. That authority is reserved for PR18.
+- **No file modifications occur before patch approval.** `patch_propose` generates/stores a diff only. `patch_apply` remains blocked in `Muse.Tool.Registry` for all roles.
+- **Shell/network remain blocked/approval-gated future scope.** No shell execution, network calls, or remote execution is enabled in PR17.
+
+### Explicit PR17 boundary
+
+Patch approval in PR17 is **lifecycle-only**. It does **not**:
+
+- apply the patch to files,
+- create checkpoints,
+- run shell commands or test runners,
+- perform network calls,
+- or trigger automatic execution of any kind.
+
+Future scope (PR18/PR19): patch apply with checkpoint, checkpoint restore approvals, shell/test/network approval categories.
+
+---
+
+## 8. Auth Security Rules
 
 Authentication tokens and credentials are among the most sensitive data in the Muse Runtime. The following rules are absolute — no exceptions, no convenience shortcuts.
 
@@ -316,7 +353,7 @@ The `redacted` field is the **only** value that may appear in events, logs, or d
 
 ---
 
-## 8. Prompt Security
+## 9. Prompt Security
 
 The internal prompt system is assembled from multiple layers (core invariants, mode policies, Muse profiles, workspace policies, project rules, memory, plan state, history). Users and developers must **not** see the full raw internal prompt.
 
@@ -372,11 +409,11 @@ These restrictions apply regardless of the user's intent. Even in `--debug` mode
 
 ---
 
-## 9. External WebSocket Channel Security (PR16)
+## 10. External WebSocket Channel Security (PR16)
 
 The optional external Phoenix WebSocket channel (documented in [`architecture.md` §8.5](architecture.md#85-optional-external-phoenix-websocket-channel-pr16)) exposes session events to non-LiveView clients. The following security rules are **mandatory** — they are enforced in `MuseWeb.ExternalEventFilter` and cannot be bypassed by client configuration.
 
-### 9.1 Network Binding
+### 10.1 Network Binding
 
 ```text
 ✓ Server binds to 127.0.0.1 (localhost) by default.
@@ -385,7 +422,7 @@ The optional external Phoenix WebSocket channel (documented in [`architecture.md
 ✓ Do NOT bind to 0.0.0.0 without explicit authentication and transport encryption.
 ```
 
-### 9.2 Disabled by Default
+### 10.2 Disabled by Default
 
 The external WebSocket channel is **disabled by default** (`config :muse, :external_ws, enabled: false`). When disabled:
 
@@ -393,7 +430,7 @@ The external WebSocket channel is **disabled by default** (`config :muse, :exter
 - No channel processes start; no resources consumed.
 - Opt-in via `MUSE_EXTERNAL_WS` env var in production (accepted values: `true`, `1`, `yes`, `on`), or explicit config in dev/test.
 
-### 9.3 Visibility Filtering
+### 10.3 Visibility Filtering
 
 The channel enforces strict visibility-based filtering before forwarding any event:
 
@@ -411,14 +448,15 @@ The channel enforces strict visibility-based filtering before forwarding any eve
 user_message, assistant_delta, assistant_message,
 plan_created, plan_approved, plan_rejected,
 approval_requested, approval_approved, approval_rejected,
-turn_completed, turn_failed, session_status_changed
+turn_completed, turn_failed, session_status_changed,
+patch_proposed, patch_approval_requested, patch_approved, patch_rejected
 ```
 
 **Provider/auth/debug denial:** Even if a nil-visibility event type is on the allowlist, it is denied when the source:type combination suggests provider/auth/debug content (e.g., `openai_provider_debug:assistant_delta`).
 
 Any event type **not** on this allowlist and without `:user` visibility is silently dropped.
 
-### 9.4 Session Isolation
+### 10.4 Session Isolation
 
 - A client must join topic `session:<session_id>` explicitly.
 - Only events with an **exact** `session_id` match are forwarded.
@@ -426,7 +464,7 @@ Any event type **not** on this allowlist and without `:user` visibility is silen
 - Cross-session events are never forwarded.
 - Session IDs are validated: empty, `.`, `..`, and path-traversal characters (`/`, `\`, NUL) are rejected.
 
-### 9.5 Payload Redaction
+### 10.5 Payload Redaction
 
 Even for allowed events, payloads are redacted before forwarding:
 
@@ -440,7 +478,7 @@ Even for allowed events, payloads are redacted before forwarding:
 ✓ No String.to_atom/1 on client input.
 ```
 
-### 9.6 No Secrets Exposed
+### 10.6 No Secrets Exposed
 
 The external channel must **never** expose:
 
@@ -452,7 +490,7 @@ The external channel must **never** expose:
 ✗ Internal event types (approval_state_change, secret_read_attempt, etc.)
 ```
 
-### 9.7 Read-Only Channel
+### 10.7 Read-Only Channel
 
 The external WebSocket channel is **read-only**. It does **not** grant:
 

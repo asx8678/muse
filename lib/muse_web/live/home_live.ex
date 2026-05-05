@@ -701,11 +701,27 @@ defmodule MuseWeb.HomeLive do
           socket.assigns.streaming_buffers
       end
 
+    # Update patch proposal assign for PR17 patch lifecycle events
+    patch_proposal =
+      case event.type do
+        type when type in [:patch_proposed, :patch_approval_requested] ->
+          # Show the patch proposal panel when a patch is awaiting approval
+          event.data
+
+        type when type in [:patch_approved, :patch_rejected] ->
+          # Clear the panel once the patch decision is recorded
+          nil
+
+        _ ->
+          socket.assigns.patch_proposal
+      end
+
     {:noreply,
      assign(socket,
        state: state,
        reload_status: reload_status,
-       streaming_buffers: streaming_buffers
+       streaming_buffers: streaming_buffers,
+       patch_proposal: patch_proposal
      )}
   end
 

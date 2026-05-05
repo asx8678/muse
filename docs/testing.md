@@ -139,6 +139,33 @@ Live provider integration remains opt-in via env-gated `:external` tests.
 
 ---
 
+## 4.5 PR17 Patch Proposal & Approval Contract Coverage
+
+PR17 contract coverage focuses on patch proposal after plan approval, content-hashed patch identity, patch approval lifecycle, and the explicit boundary that patch approval does not apply/checkpoint files.
+
+Primary coverage areas:
+
+- `test/muse/patch_test.exs`
+  - Patch struct construction, status transitions, field validation, and deterministic hashing
+- `test/muse/patch/diff_parser_test.exs` and `test/muse/patch/validator_test.exs`
+  - Diff parsing, canonicalization, path safety, size limits, binary rejection, and secret detection
+- `test/muse/approval_test.exs` (extended)
+  - `:patch` kind approvals carry `patch_id` and `patch_hash`
+  - patch approval kind normalization and serialization
+- `test/muse/approval_gate_test.exs` (extended)
+  - patch approval binding validation with stale/mismatch rejection
+- `test/muse/session_server_test.exs` (extended)
+  - patch creation/approval/rejection lifecycle via SessionServer
+  - session transition to `:awaiting_patch_approval` is valid
+  - `patch_apply` remains blocked for all roles
+- `test/muse/muse_registry_test.exs` and `test/muse/tool/registry_test.exs` (extended)
+  - `patch_propose` blocked for Planning Muse; available to Coding Muse after plan approval
+  - `patch_apply` blocked for all roles in PR17
+
+**Gaps:** Full end-to-end patch proposal flow with a live Coding Muse turn (Conductor → `patch_propose` tool → `:awaiting_patch_approval` → `/approve patch`) requires provider-driven Coding Muse execution, which is exercised at the unit/integration layer but not as a single fake-provider E2E script. The PR17 test coverage validates each layer independently; a full E2E script is a future enhancement.
+
+---
+
 ## 5. Unit Tests
 
 Complete checklist. Every item must have at least one passing test before merge.
@@ -217,7 +244,7 @@ Current PR09 integration happy path (fake provider only):
 | 5 | Session enters `:awaiting_plan_approval` | Active plan id, pending approval record, and approval binding are set |
 | 6 | User runs `/approve plan` or `/reject plan` | Plan status updates; approval record is persisted; session returns to `:idle` |
 
-> Out of scope for current PR09 integration: coding write execution, patch proposal/apply, checkpoint orchestration, and shell/test/network execution gates (PR17/PR18/PR19).
+> Out of scope for current PR17 integration: patch apply execution, checkpoint orchestration, and shell/test/network execution gates (PR18/PR19). Patch approval in PR17 is lifecycle-only and does not apply files.
 
 ### Integration Test Principles
 
@@ -251,6 +278,16 @@ Every safety boundary must have a dedicated test. No exceptions.
 - [ ] Blocked: `requires_approval: true` tool specs cannot execute yet
 - [ ] Blocked: `/approve plan` or `/reject plan` when no active plan awaiting approval
 - [ ] Blocked: stale/mismatched plan approval binding
+
+### Approval / Blocking Boundaries (PR17)
+
+- [ ] Blocked: `patch_apply` for all roles in PR17 (no apply authority)
+- [ ] Blocked: `patch_propose` for Planning Muse (Coding Muse only, after plan approval)
+- [ ] Session transition to `:awaiting_patch_approval` is valid
+- [ ] `:patch` kind approval with `patch_id`/`patch_hash` binding
+- [ ] Stale/mismatched patch approval binding is rejected
+- [ ] Patch approval does not apply files, create checkpoints, or run shell/network commands
+- [ ] No file modifications occur before patch approval
 
 ### Data Boundaries
 

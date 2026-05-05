@@ -52,7 +52,7 @@ PR09 approval boundary reminder:
 
 - `/approve plan` and `/reject plan` are lifecycle-only and auditable.
 - They do not execute patch/file/shell/network actions.
-- Provider work in this document must preserve that boundary until PR17/PR18/PR19 gates land.
+- Provider work in this document must preserve that boundary until PR18/PR19 gates land (patch apply, shell/network approval).
 
 ---
 
@@ -73,9 +73,9 @@ The fake provider must cover every event shape the runtime will encounter from r
 | `:malformed_tool_call` | Emits a tool call with invalid JSON arguments. Tests the runtime's recovery path when `Jason.decode!/1` fails on tool arguments. |
 | `:mid_stream_error` | Emits several assistant deltas, then fails mid-stream. Tests error handling during active streaming — the runtime must emit a `:provider_error` event and not hang. |
 | `:cancellation` | Streams slowly (with deliberate delays), and checks for a cancellation signal on each step. Tests the TurnRunner's ability to cancel an in-flight provider call. |
-| Coding Muse proposes a patch (roadmap) | Emits a `patch_propose` tool call with structured patch arguments. Planned for post-PR09 write workflow (PR17+). |
-| Coding Muse requests `patch_apply` (roadmap) | Emits a `patch_apply` tool call. Planned for post-PR09 approval-gated write flow (PR18+). |
-| Testing Muse requests `test_runner` (roadmap) | Emits a `test_runner` tool call. Planned for post-PR09 verification workflow (PR19). |
+| Coding Muse proposes a patch (PR17) | Emits a `patch_propose` tool call with structured patch arguments. `patch_propose` is available to Coding Muse after plan approval; `:patch` approval kind and content-bound patch identity are defined. |
+| Coding Muse requests `patch_apply` (PR18) | Emits a `patch_apply` tool call. Planned for PR18 approval-gated write flow with checkpoint orchestration. |
+| Testing Muse requests `test_runner` (PR19) | Emits a `test_runner` tool call. Planned for PR19 verification workflow. |
 | Provider streams partial response | Emits a sequence of `:assistant_delta` events without completing. Tests the runtime's handling of incomplete responses. |
 | Provider fails and runtime retries or fails safely | Emits a `:provider_error` event. Tests retry logic and safe failure propagation — the runtime must not silently swallow errors. |
 

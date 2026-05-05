@@ -179,6 +179,28 @@ defmodule MuseWeb.ExternalEventFilterTest do
       assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
     end
 
+    test "allows patch_proposed with nil visibility" do
+      event =
+        make_event(:patch_proposed, %{patch_id: "p1", hash: "abc", affected_files: ["lib/a.ex"]})
+
+      assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
+    end
+
+    test "allows patch_approval_requested with nil visibility" do
+      event = make_event(:patch_approval_requested, %{patch_id: "p1", hash: "abc"})
+      assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
+    end
+
+    test "allows patch_approved with nil visibility" do
+      event = make_event(:patch_approved, %{patch_id: "p1", status: "approved"})
+      assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
+    end
+
+    test "allows patch_rejected with nil visibility" do
+      event = make_event(:patch_rejected, %{patch_id: "p1", status: "rejected"})
+      assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
+    end
+
     test "allows turn_completed with nil visibility" do
       event = make_event(:turn_completed, %{})
       assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
@@ -540,12 +562,22 @@ defmodule MuseWeb.ExternalEventFilterTest do
       assert MapSet.member?(types, :turn_completed)
       assert MapSet.member?(types, :session_status_changed)
     end
+
+    test "includes all patch lifecycle types" do
+      types = ExternalEventFilter.nil_visibility_safe_types()
+      assert MapSet.member?(types, :patch_proposed)
+      assert MapSet.member?(types, :patch_approval_requested)
+      assert MapSet.member?(types, :patch_approved)
+      assert MapSet.member?(types, :patch_rejected)
+    end
   end
 
   describe "nil_visibility_type_allowed?/1" do
     test "returns true for allowlisted types" do
       assert ExternalEventFilter.nil_visibility_type_allowed?(:user_message)
       assert ExternalEventFilter.nil_visibility_type_allowed?(:plan_created)
+      assert ExternalEventFilter.nil_visibility_type_allowed?(:patch_proposed)
+      assert ExternalEventFilter.nil_visibility_type_allowed?(:patch_approved)
     end
 
     test "returns false for non-allowlisted types" do
@@ -570,6 +602,52 @@ defmodule MuseWeb.ExternalEventFilterTest do
 
       assert {:error, {:denied_visibility, :internal}} =
                ExternalEventFilter.to_external_json(event, [])
+    end
+  end
+
+  # -- Patch diff capping (PR17) -------------------------------------------------
+
+  describe "patch diff capping for external envelopes" do
+    test "patch_proposed event caps large diff to 2000 chars" do
+      huge_diff = String.duplicate("a", 5_000)
+
+      event =
+        make_event(:patch_proposed, %{patch_id: "p1", diff: huge_diff},
+          visibility: :user,
+          session_id: "s1"
+        )
+
+      {:ok, envelope} = ExternalEventFilter.to_external_map(event, session_id: "s1")
+      payload_diff = envelope["payload"]["diff"]
+      assert String.length(payload_diff) <= 2_002
+      assert String.ends_with?(payload_diff, "…")
+    end
+
+    test "patch_proposed event preserves short diff under cap" do
+      short_diff = "--- a/foo.ex\n+++ b/foo.ex\n@@ -1 +1 @@\n-old\n+new"
+
+      event =
+        make_event(:patch_proposed, %{patch_id: "p1", diff: short_diff},
+          visibility: :user,
+          session_id: "s1"
+        )
+
+      {:ok, envelope} = ExternalEventFilter.to_external_map(event, session_id: "s1")
+      assert envelope["payload"]["diff"] == short_diff
+    end
+
+    test "non-patch event types are not capped by patch logic" do
+      long_text = String.duplicate("x", 5_000)
+
+      event =
+        make_event(:assistant_message, %{text: long_text},
+          visibility: :user,
+          session_id: "s1"
+        )
+
+      {:ok, envelope} = ExternalEventFilter.to_external_map(event, session_id: "s1")
+      # assistant_message text is capped by string truncation (2000 chars), not patch logic
+      assert envelope["payload"]["text"] != nil
     end
   end
 end

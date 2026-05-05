@@ -311,6 +311,29 @@ defmodule Muse.SessionServer do
     {:reply, :ok, state_with_patch}
   end
 
+  # Test-only handler to store an approved plan directly for patch proposal E2E tests.
+  @impl true
+  def handle_call({:store_approved_plan, %Plan{} = plan}, _from, state) do
+    active_plan_id = plan.id || state.active_plan_id
+
+    plans =
+      if active_plan_id do
+        Map.put(state.plans || %{}, active_plan_id, plan)
+      else
+        state.plans || %{}
+      end
+
+    state = %{
+      state
+      | active_plan_id: active_plan_id,
+        plan: plan,
+        plans: plans,
+        status: :idle
+    }
+
+    {:reply, :ok, state}
+  end
+
   defp do_submit(source, text, opts, from, state) do
     turn_start_time = System.monotonic_time(:millisecond)
     turn_id = generate_turn_id()

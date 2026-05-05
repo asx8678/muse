@@ -163,7 +163,7 @@ Each turn → TurnRunner (Task):
 | 14 | HTTP SSE provider | SSE parser, event normalizer, streaming deltas/tool calls |
 | 15 | Responses WebSocket provider | Persistent WS, previous_response_id, SSE fallback |
 | 16 | Optional external WebSocket channel | Phoenix channel for non-LiveView clients, event filtering |
-| 17 | Coding Muse patch proposal | Patch struct/parser/formatter, `patch_propose` tool, hash, `/approve patch` |
+| 17 | Coding Muse patch proposal | Patch struct/parser/formatter, `patch_propose` tool, hash, `/approve patch`, `/reject patch`, Conductor Coding Muse routing ✓ |
 | 18 | Patch apply, checkpoint, rollback | Checkpoint store, `patch_apply`/`rollback_checkpoint` tools, git stash preferred |
 | 19 | Test runner, Testing & Reviewing Muse | Safe test commands, bounded repair, review findings & recommendations |
 | 20 | CLI/TUI/LiveView integration polish | Unified commands, session panels, Muse-first strings everywhere |
@@ -215,7 +215,7 @@ lib/muse/muse_profile.ex            lib/muse/muses/testing_muse.ex
 
 **M1 — Read-Only Planning Muse.** User request → session → Planning Muse inspects with read-only tools → structured plan persisted → `:awaiting_plan_approval`. No files modified, no shell run, no implementation before approval.
 
-**M2 — Basic Coding Muse.** After plan approval → Coding Muse proposes patch → diff shown → `:awaiting_patch_approval`. No file modified before `/approve patch`.
+**M2 — Basic Coding Muse.** After plan approval → Conductor routes to Coding Muse → Coding Muse proposes patch via `patch_propose` tool → diff displayed → session enters `:awaiting_patch_approval`. `/approve patch` records approval only; no file modifications. Patch apply is PR18.
 
 **M3 — Patch Apply, Verification, Rollback.** Approved patch → checkpoint → apply → git diff visible → optional safe test commands → rollback works. Bounded repair, not infinite loops.
 
