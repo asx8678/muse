@@ -203,6 +203,40 @@ defmodule Muse.SessionStore do
     load_jsonl(base_dir, session_id, "messages.jsonl")
   end
 
+  @doc """
+  Appends a patch proposal to the session's `patches.jsonl` file.
+
+  Same encoding and redaction rules as `append_event/3`.
+
+  Returns:
+    - `:ok` on success
+    - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
+    - `{:error, {:mkdir_failed, reason, dir}}` if the directory cannot be created
+    - `{:error, {:encode_failed, reason}}` if the data cannot be serialized
+    - `{:error, {:write_failed, reason}}` if the file write fails
+  """
+  @spec append_patch(String.t(), String.t(), map() | struct()) :: :ok | {:error, tuple()}
+  def append_patch(base_dir \\ @default_base_dir, session_id, patch) do
+    append_jsonl(base_dir, session_id, "patches.jsonl", patch)
+  end
+
+  @doc """
+  Loads all patch proposals from the session's `patches.jsonl` file, oldest first.
+
+  Same semantics as `load_events/2`.
+
+  Returns:
+    - `{:ok, patches, %{skipped: count}}`
+    - `{:ok, [], %{skipped: 0}}` if the file does not exist
+    - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
+    - `{:error, reason}` on file read errors
+  """
+  @spec load_patches(String.t(), String.t()) ::
+          {:ok, list(map()), %{skipped: non_neg_integer()}} | {:error, term()}
+  def load_patches(base_dir \\ @default_base_dir, session_id) do
+    load_jsonl(base_dir, session_id, "patches.jsonl")
+  end
+
   # ── Private: Session ID validation ─────────────────────────────────────
 
   defp validate_session_id(session_id) when is_binary(session_id) do

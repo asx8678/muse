@@ -10,6 +10,7 @@ defmodule Muse.ApprovalGate do
   """
 
   alias Muse.{Approval, Plan, PlanBinding}
+  alias Muse.Patch
   alias Muse.Tool.Spec
 
   @default_expiry_seconds 86_400
@@ -391,6 +392,196 @@ defmodule Muse.ApprovalGate do
       plan_hash: approval.plan_hash,
       content_hash: approval.content_hash
     })
+  end
+
+  # -- Patch approval helpers -------------------------------------------------
+
+  @doc """
+  Ensures a pending patch approval exists for a patch proposal.
+
+  Returns `{:ok, approval, approvals, patch}` with a new or existing pending
+  approval of kind `:patch`. The approval binds to the patch's plan_id,
+  plan_version, plan_hash, and session_id.
+
+  This is the patch-level equivalent of `ensure_pending_plan_approval/4`.
+  """
+  @spec ensure_pending_patch_approval(String.t(), Patch.t(), list(), keyword()) ::
+          {:ok, Approval.t(), [Approval.t()], Patch.t()} | {:error, term()}
+  def ensure_pending_patch_approval(session_id, patch, approvals, opts \\ [])
+
+  def ensure_pending_patch_approval(
+        session_id,
+        %Muse.Patch{status: :awaiting_approval} = patch,
+        approvals,
+        opts
+      ) do
+    approvals = merge_approvals(approvals, patch.approvals)
+    binding = patch_approval_binding(session_id, patch, opts)
+
+    approval = new_pending_patch_approval(binding, opts)
+    approvals = upsert_approval(approvals, approval)
+    patch = %{patch | approvals: upsert_approval(patch.approvals, approval)}
+
+    {:ok, approval, approvals, patch}
+  end
+
+  def ensure_pending_patch_approval(_session_id, %Muse.Patch{} = patch, approvals, _opts) do
+    {:ok, nil, normalize_approvals(approvals), patch}
+  end
+
+  @doc """
+  Approves a pending patch approval.
+
+  Returns `{:ok, approval, approvals, patch}` when the patch has a pending
+  approval and binding validation succeeds. The approval kind is `:patch`.
+  """
+  @spec approve_patch(String.t(), Patch.t(), list(), keyword()) ::
+          {:ok, Approval.t(), [Approval.t()], Patch.t()} | {:error, reason()}
+  def approve_patch(session_id, patch, approvals, opts \\ [])
+
+  def approve_patch(session_id, %Muse.Patch{status: :awaiting_approval} = patch, approvals, opts) do
+    approvals = merge_approvals(approvals, patch.approvals)
+    binding = patch_approval_binding(session_id, patch, opts)
+
+    with {:ok, %Approval{} = pending} <- find_pending_patch_approval(approvals, binding),
+         {:ok, %Approval{} = approved} <-
+           Approval.approve(pending,
+             approved_by: Keyword.get(opts, :approved_by, Keyword.get(opts, :actor)),
+             approved_at: Keyword.get(opts, :approved_at, Keyword.get(opts, :now)),
+             source: Keyword.get(opts, :source)
+           ),
+         {:ok, %Muse.Patch{} = transitioned} <- Muse.Patch.transition(patch, :approved, opts) do
+      approvals = upsert_approval(approvals, approved)
+
+      transitioned = %{
+        transitioned
+        | approvals: upsert_approval(transitioned.approvals, approved)
+      }
+
+      {:ok, approved, approvals, transitioned}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def approve_patch(_session_id, %Muse.Patch{status: status}, _approvals, _opts) do
+    {:error, {:patch_not_awaiting_approval, status}}
+  end
+
+  @doc """
+  Rejects a pending patch approval.
+
+  Returns `{:ok, approval, approvals, patch}` when the patch has a pending
+  approval. The approval kind is `:patch`.
+  """
+  @spec reject_patch(String.t(), Patch.t(), list(), keyword()) ::
+          {:ok, Approval.t(), [Approval.t()], Patch.t()} | {:error, reason()}
+  def reject_patch(session_id, patch, approvals, opts \\ [])
+
+  def reject_patch(session_id, %Muse.Patch{status: :awaiting_approval} = patch, approvals, opts) do
+    approvals = merge_approvals(approvals, patch.approvals)
+    binding = patch_approval_binding(session_id, patch, opts)
+
+    with {:ok, %Approval{} = pending} <- find_pending_patch_approval(approvals, binding),
+         {:ok, %Approval{} = rejected} <-
+           Approval.reject(pending,
+             rejected_by: Keyword.get(opts, :rejected_by, Keyword.get(opts, :actor)),
+             rejected_at: Keyword.get(opts, :rejected_at, Keyword.get(opts, :now)),
+             reason: Keyword.get(opts, :reason),
+             source: Keyword.get(opts, :source)
+           ),
+         {:ok, %Muse.Patch{} = transitioned} <- Muse.Patch.transition(patch, :rejected, opts) do
+      approvals = upsert_approval(approvals, rejected)
+
+      transitioned = %{
+        transitioned
+        | approvals: upsert_approval(transitioned.approvals, rejected)
+      }
+
+      {:ok, rejected, approvals, transitioned}
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def reject_patch(_session_id, %Muse.Patch{status: status}, _approvals, _opts) do
+    {:error, {:patch_not_awaiting_approval, status}}
+  end
+
+  @doc "Capture an approval binding for a patch proposal."
+  @spec capture_patch_binding(Patch.t(), keyword()) :: binding()
+  def capture_patch_binding(%Muse.Patch{} = patch, opts \\ []) do
+    now = keyword_datetime(opts, :now, DateTime.utc_now())
+    workspace = Keyword.get(opts, :workspace) || patch.workspace
+
+    patch
+    |> Muse.Patch.approval_binding(workspace: workspace)
+    |> Map.put(:session_id, patch.session_id)
+    |> Map.put(:bound_at, now)
+  end
+
+  @doc "Safe event metadata for patch approval lifecycle events."
+  @spec patch_approval_event_data(Approval.t()) :: map()
+  def patch_approval_event_data(%Approval{} = approval) do
+    Approval.event_payload(%{
+      approval_id: approval.id,
+      kind: approval.kind,
+      status: approval.status,
+      plan_id: approval.plan_id,
+      plan_version: approval.plan_version,
+      plan_hash: approval.plan_hash,
+      patch_id: approval.patch_id,
+      patch_hash: approval.patch_hash
+    })
+  end
+
+  defp patch_approval_binding(session_id, %Muse.Patch{} = patch, opts) do
+    workspace = Keyword.get(opts, :workspace) || patch.workspace
+
+    patch
+    |> Muse.Patch.approval_binding(workspace: workspace)
+    |> Map.put(:session_id, to_string(session_id))
+  end
+
+  defp new_pending_patch_approval(binding, opts) do
+    created_at = keyword_datetime(opts, :now, DateTime.utc_now())
+
+    Approval.new(%{
+      kind: :patch,
+      type: :patch,
+      status: :pending,
+      session_id: binding.session_id,
+      plan_id: binding.plan_id,
+      plan_version: binding.plan_version,
+      plan_hash: binding.plan_hash,
+      content_hash: binding.plan_hash,
+      patch_id: binding.patch_id,
+      patch_hash: binding.patch_hash,
+      workspace: binding.workspace,
+      scope: :patch,
+      requested_by: Keyword.get(opts, :requested_by, :patch_proposal),
+      source: Keyword.get(opts, :source),
+      expires_at: pending_expires_at(created_at, opts),
+      created_at: created_at,
+      metadata: Map.merge(%{hash_algorithm: "sha256"}, Keyword.get(opts, :metadata, %{}))
+    })
+  end
+
+  defp find_pending_patch_approval(approvals, binding) do
+    match =
+      approvals
+      |> normalize_approvals()
+      |> Enum.reverse()
+      |> Enum.find(fn approval ->
+        approval.kind == :patch and approval.status == :pending and
+          approval.session_id == binding.session_id and
+          approval.patch_id == binding.patch_id
+      end)
+
+    case match do
+      %Approval{} = approval -> {:ok, approval}
+      nil -> {:error, :missing_patch_approval}
+    end
   end
 
   # -- Tool authorization facade ----------------------------------------------

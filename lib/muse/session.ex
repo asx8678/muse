@@ -86,7 +86,7 @@ defmodule Muse.Session do
           checkpoints: list(),
           tool_calls: list(),
           artifacts: list(),
-          pending_patch: term() | nil
+          pending_patch: Muse.Patch.t() | nil
         }
 
   @doc """
