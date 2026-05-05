@@ -119,23 +119,26 @@ defmodule Muse.PlanTest do
     end
 
     test "unknown string keys from JSON are ignored without creating atoms" do
-      before_atoms = :erlang.system_info(:atom_count)
+      unique1 = "unknown_plan_key_#{System.unique_integer([:positive])}"
+      unique2 = "another_bogus_#{System.unique_integer([:positive])}"
+
+      # Verify these strings are not already atoms before the call
+      refute atom_exists?(unique1)
+      refute atom_exists?(unique2)
 
       plan =
         Plan.new(%{
           "objective" => "Safe plan",
-          "unknown_plan_key_99999" => "should be ignored",
-          "another_bogus_key" => "also ignored"
+          unique1 => "should be ignored",
+          unique2 => "also ignored"
         })
 
-      after_atoms = :erlang.system_info(:atom_count)
+      # Verify they are STILL not atoms after the call — proves no atom leak
+      refute atom_exists?(unique1)
+      refute atom_exists?(unique2)
 
       assert %Plan{} = plan
       assert plan.objective == "Safe plan"
-
-      # Unknown keys should not increase the atom count significantly
-      assert after_atoms - before_atoms < 3,
-             "Unknown JSON keys should not create atoms: #{after_atoms - before_atoms} new atoms"
     end
 
     test "accepts versioned structured plan fields and filters metadata" do
@@ -484,25 +487,41 @@ defmodule Muse.PlanTest do
     end
 
     test "does not create atoms from unknown JSON keys or statuses" do
-      before_atoms = :erlang.system_info(:atom_count)
+      unique_status = "unknown_status_#{System.unique_integer([:positive])}"
+      unique_key = "unknown_plan_key_#{System.unique_integer([:positive])}"
+      unique_meta_key = "unknown_metadata_key_#{System.unique_integer([:positive])}"
+
+      # Verify none are existing atoms before the call
+      refute atom_exists?(unique_status)
+      refute atom_exists?(unique_key)
+      refute atom_exists?(unique_meta_key)
 
       plan =
         Plan.from_map(%{
           "objective" => "Safe legacy payload",
-          "status" => "unknown_status_value_12345",
-          "unknown_plan_key_12345" => "ignored",
+          "status" => unique_status,
+          unique_key => "ignored",
           "tasks" => [],
-          "metadata" => %{"unknown_metadata_key_12345" => "kept as a string key"}
+          "metadata" => %{unique_meta_key => "kept as a string key"}
         })
 
-      after_atoms = :erlang.system_info(:atom_count)
+      # Verify they are STILL not atoms after the call — proves no atom leak
+      refute atom_exists?(unique_status)
+      refute atom_exists?(unique_key)
+      refute atom_exists?(unique_meta_key)
 
       assert plan.status == :draft
-      assert plan.metadata["unknown_metadata_key_12345"] == "kept as a string key"
-
-      assert after_atoms - before_atoms < 3,
-             "Unknown JSON keys/statuses should not create atoms: #{after_atoms - before_atoms} new atoms"
+      assert plan.metadata[unique_meta_key] == "kept as a string key"
     end
+  end
+
+  # -- Private helpers --------------------------------------------------------
+
+  defp atom_exists?(string) when is_binary(string) do
+    String.to_existing_atom(string)
+    true
+  rescue
+    ArgumentError -> false
   end
 
   describe "render/1" do
