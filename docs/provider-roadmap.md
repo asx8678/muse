@@ -656,7 +656,7 @@ When WebSocket setup fails **before any inbound provider frame**, callers can en
 ### Limitations (PR16 scope)
 
 - No built-in low-level WebSocket client dependency — callers must provide `ws_stream_fn` or configure a `:websocket_client`. The `default_stream/3` returns `{:error, {:transport_error, :websocket_client_not_configured}}` without one.
-- External Phoenix WebSocket channel remains **future/PR16** scope.
+- External Phoenix WebSocket channel is **PR16 — implemented**. See [`architecture.md` §8.5](architecture.md#85-optional-external-phoenix-websocket-channel-pr16) and [`security.md` §9](security.md#9-external-websocket-channel-security-pr16).
 - No automatic reconnection or subscription-style persistent connections.
 
 ### Responsibilities

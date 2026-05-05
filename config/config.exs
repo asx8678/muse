@@ -29,5 +29,17 @@ config :esbuild,
 # --- JSON library ---
 config :phoenix, :json_library, Jason
 
+# --- Optional external WebSocket channel ---
+# Disabled by default.  When enabled, provides an externally-facing
+# Phoenix WebSocket (UserSocket / SessionChannel) bound to whatever
+# address the endpoint listens on.
+#
+# Production endpoints bind to 127.0.0.1 (see prod.exs) so the
+# socket is still local-only unless the endpoint config is changed.
+# Enable this with care — the external socket bypasses LiveView.
+config :muse, :external_ws,
+  enabled: false,
+  replay_limit: 100
+
 # --- Environment-specific overrides ---
 import_config "#{config_env()}.exs"

@@ -1,0 +1,15 @@
+{
+  "type": "assistant_message",
+  "id": 9015,
+  "timestamp": "2025-05-27T14:32:05.500Z",
+  "session_id": "sess_a1b2c3",
+  "turn_id": "turn_f7e8d9",
+  "seq": 22,
+  "source": "planning_muse",
+  "muse_id": "planning_muse",
+  "visibility": "user",
+  "payload": {
+    "text": "I'll inspect the CLI command structure, find the project version source, create an implementation plan, and wait for approval before changes.",
+    "streamed": true
+  }
+}

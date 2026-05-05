@@ -1,0 +1,18 @@
+{
+  "_comment": "NEGATIVE EXAMPLE: This event must NEVER be forwarded to external WebSocket clients. Self-healing events are internal-only and not relevant to external clients.",
+  "_negative": true,
+  "_reason": "Internal self-healing event; visibility is :internal",
+  "type": "self_healing_attempt",
+  "id": 8070,
+  "timestamp": "2025-05-27T14:32:20.000Z",
+  "session_id": "sess_a1b2c3",
+  "turn_id": "turn_f7e8d9",
+  "seq": 31,
+  "source": "self_healing_queue",
+  "muse_id": null,
+  "visibility": "internal",
+  "payload": {
+    "issue_id": "beads-123",
+    "repair_action": "restart_turn"
+  }
+}

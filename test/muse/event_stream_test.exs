@@ -14,7 +14,8 @@ defmodule Muse.EventStreamTest do
         Process.unlink(pid)
 
       _pid ->
-        :ok
+        # Reset for test isolation — prior sync tests may have left events
+        Muse.State.clear()
     end
 
     on_exit(fn ->
@@ -478,6 +479,236 @@ defmodule Muse.EventStreamTest do
       ]
 
       assert EventStream.chat_messages(events) == []
+    end
+  end
+
+  # -- external replay/envelopes ------------------------------------------------
+
+  describe "external_replay/1 and external_replay/2" do
+    test "returns JSON-safe envelopes for a session" do
+      events = [
+        make_event(:user_message, %{text: "first"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:01Z],
+          session_id: "s1",
+          visibility: :user
+        ),
+        make_event(:assistant_delta, %{text: "second"},
+          id: 2,
+          timestamp: ~U[2025-01-01 00:00:02Z],
+          session_id: "s1",
+          visibility: :user
+        )
+      ]
+
+      envelopes = EventStream.external_replay(events, session_id: "s1", replay_limit: 10)
+
+      assert length(envelopes) == 2
+      assert hd(envelopes)["type"] == "user_message"
+      assert hd(envelopes)["session_id"] == "s1"
+      assert Map.has_key?(hd(envelopes), "payload")
+    end
+
+    test "requires a session_id and isolates events by session" do
+      events = [
+        make_event(:user_message, %{text: "s1"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:01Z],
+          session_id: "s1",
+          visibility: :user
+        ),
+        make_event(:user_message, %{text: "s2"},
+          id: 2,
+          timestamp: ~U[2025-01-01 00:00:02Z],
+          session_id: "s2",
+          visibility: :user
+        )
+      ]
+
+      assert EventStream.external_replay(events, session_id: "s1", replay_limit: 10)
+             |> Enum.map(& &1["id"]) == [1]
+
+      # Missing session_id returns []
+      assert EventStream.external_replay(events, replay_limit: 10) == []
+    end
+
+    test "returns [] for invalid/missing session_id without calling Muse.State" do
+      # Stop Muse.State so it would crash if called
+      case Process.whereis(Muse.State) do
+        nil ->
+          :ok
+
+        pid ->
+          try do
+            GenServer.stop(pid)
+          catch
+            :exit, _ -> :ok
+          end
+      end
+
+      # Invalid session_id — should not touch State at all
+      assert EventStream.external_replay(session_id: nil) == []
+      assert EventStream.external_replay(session_id: "") == []
+      assert EventStream.external_replay(session_id: "../escape") == []
+
+      # Missing session_id — also short-circuits
+      assert EventStream.external_replay([]) == []
+      assert EventStream.external_replay(%{}) == []
+    end
+
+    test "returns empty list when session_id is nil" do
+      events = [
+        make_event(:user_message, %{text: "hi"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:01Z],
+          session_id: "s1",
+          visibility: :user
+        )
+      ]
+
+      # Explicitly nil
+      assert EventStream.external_replay(events, session_id: nil, replay_limit: 10) == []
+    end
+
+    test "returns empty list for blank or invalid session_id" do
+      events = [
+        make_event(:user_message, %{text: "hi"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:01Z],
+          session_id: "s1",
+          visibility: :user
+        )
+      ]
+
+      # Empty string
+      assert EventStream.external_replay(events, session_id: "", replay_limit: 10) == []
+
+      # Path traversal
+      assert EventStream.external_replay(events, session_id: "../escape", replay_limit: 10) == []
+
+      # Too long
+      too_long = String.duplicate("a", 257)
+      assert EventStream.external_replay(events, session_id: too_long, replay_limit: 10) == []
+    end
+
+    test "does not replay nil-session events even with a valid session_id" do
+      events = [
+        make_event(:user_message, %{text: "global"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:01Z],
+          session_id: nil,
+          visibility: :user
+        ),
+        make_event(:user_message, %{text: "scoped"},
+          id: 2,
+          timestamp: ~U[2025-01-01 00:00:02Z],
+          session_id: "s1",
+          visibility: :user
+        )
+      ]
+
+      result = EventStream.external_replay(events, session_id: "s1", replay_limit: 10)
+      assert length(result) == 1
+      assert hd(result)["session_id"] == "s1"
+    end
+
+    test "filters to externally safe visibility only" do
+      events = [
+        make_event(:user_message, %{text: "visible"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:01Z],
+          session_id: "s1",
+          visibility: :user
+        ),
+        make_event(:user_message, %{text: "debug"},
+          id: 2,
+          timestamp: ~U[2025-01-01 00:00:02Z],
+          session_id: "s1",
+          visibility: :debug
+        ),
+        make_event(:user_message, %{text: "internal"},
+          id: 3,
+          timestamp: ~U[2025-01-01 00:00:03Z],
+          session_id: "s1",
+          visibility: :internal
+        ),
+        make_event(:user_message, %{text: "sensitive"},
+          id: 4,
+          timestamp: ~U[2025-01-01 00:00:04Z],
+          session_id: "s1",
+          visibility: :sensitive
+        )
+      ]
+
+      assert EventStream.external_replay(events, session_id: "s1", replay_limit: 10)
+             |> Enum.map(& &1["id"]) == [1]
+    end
+
+    test "applies replay limit" do
+      events =
+        for i <- 1..5 do
+          make_event(:user_message, %{text: "msg#{i}"},
+            id: i,
+            timestamp: ~U[2025-01-01 00:00:00Z],
+            session_id: "s1",
+            visibility: :user
+          )
+        end
+
+      result = EventStream.external_replay(events, session_id: "s1", replay_limit: 2)
+      assert length(result) == 2
+    end
+
+    test "returns JSON-encodable envelopes" do
+      event =
+        make_event(:user_message, %{text: "hello"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:00Z],
+          session_id: "s1",
+          visibility: :user
+        )
+
+      [envelope] = EventStream.external_replay([event], session_id: "s1", replay_limit: 10)
+      assert {:ok, _json} = Jason.encode(envelope)
+    end
+  end
+
+  describe "external_envelope/2" do
+    test "returns envelope for allowed event" do
+      event =
+        make_event(:user_message, %{text: "hello"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:00Z],
+          session_id: "s1",
+          visibility: :user
+        )
+
+      assert %{"type" => "user_message", "session_id" => "s1"} =
+               EventStream.external_envelope(event, session_id: "s1")
+    end
+
+    test "returns nil for denied event" do
+      event =
+        make_event(:user_message, %{text: "hidden"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:00Z],
+          session_id: "s1",
+          visibility: :internal
+        )
+
+      assert EventStream.external_envelope(event, session_id: "s1") == nil
+    end
+
+    test "returns nil for session mismatch" do
+      event =
+        make_event(:user_message, %{text: "other"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:00Z],
+          session_id: "s2",
+          visibility: :user
+        )
+
+      assert EventStream.external_envelope(event, session_id: "s1") == nil
     end
   end
 end

@@ -14,6 +14,11 @@ config :logger, :default_formatter,
   format: "$time [$level] $message\n",
   metadata: []
 
+# Enable external WebSocket channel for test coverage.
+config :muse, :external_ws,
+  enabled: true,
+  replay_limit: 50
+
 # Prevent the Application supervisor from starting runtime children
 # (Workspace, State, CLI.Repl, Endpoint, DevReloader) during mix test.
 # Existing tests manually start/stop those globally-named processes,

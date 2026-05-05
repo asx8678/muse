@@ -1,0 +1,17 @@
+{
+  "type": "approval_requested",
+  "id": 9025,
+  "timestamp": "2025-05-27T14:32:12.000Z",
+  "session_id": "sess_a1b2c3",
+  "turn_id": "turn_f7e8d9",
+  "seq": 27,
+  "source": "approval_gate",
+  "muse_id": null,
+  "visibility": "user",
+  "payload": {
+    "kind": "plan",
+    "id": "approval_x1y2z3",
+    "plan_id": "plan_c4d5e6",
+    "note": "Awaiting plan approval."
+  }
+}

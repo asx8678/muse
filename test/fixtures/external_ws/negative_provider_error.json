@@ -1,0 +1,20 @@
+{
+  "_comment": "NEGATIVE EXAMPLE: This event must NEVER be forwarded to external WebSocket clients. It contains internal provider debug info with auth headers. If this appears on the external channel, it is a security bug.",
+  "_negative": true,
+  "_reason": "Internal provider event with auth headers; visibility is :debug",
+  "type": "provider_error",
+  "id": 8050,
+  "timestamp": "2025-05-27T14:32:15.000Z",
+  "session_id": "sess_a1b2c3",
+  "turn_id": "turn_f7e8d9",
+  "seq": 28,
+  "source": "openai_compatible_provider",
+  "muse_id": null,
+  "visibility": "debug",
+  "payload": {
+    "error": "Authorization: Bearer [REDACTED]",
+    "status": 401,
+    "provider_config": "[REDACTED]",
+    "model": "gpt-4o"
+  }
+}

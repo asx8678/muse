@@ -111,6 +111,18 @@ defmodule Muse.EventPayloadRedactorTest do
       result = EventPayloadRedactor.redact_string("Hello world")
       assert result == "Hello world"
     end
+
+    test "redacts OAuth and Codex-looking tokens" do
+      text =
+        "oauth_token=ya29.oauth-secret codex_auth_token=codex-secret gho_abcdefghijklmnopqrstuvwxyz123456"
+
+      result = EventPayloadRedactor.redact_string(text)
+
+      assert result =~ "[REDACTED]"
+      refute result =~ "ya29.oauth-secret"
+      refute result =~ "codex-secret"
+      refute result =~ "gho_abcdefghijklmnopqrstuvwxyz123456"
+    end
   end
 
   # -- Integration with Event creation -------------------------------------------

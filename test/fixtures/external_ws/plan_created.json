@@ -1,0 +1,17 @@
+{
+  "type": "plan_created",
+  "id": 9020,
+  "timestamp": "2025-05-27T14:32:10.000Z",
+  "session_id": "sess_a1b2c3",
+  "turn_id": "turn_f7e8d9",
+  "seq": 25,
+  "source": "planning_muse",
+  "muse_id": "planning_muse",
+  "visibility": "user",
+  "payload": {
+    "plan_id": "plan_c4d5e6",
+    "objective": "Add a /version command",
+    "task_count": 5,
+    "summary": "Locate CLI routing, add /version handler, source version from mix.exs, add tests, run verification."
+  }
+}

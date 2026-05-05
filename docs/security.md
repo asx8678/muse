@@ -369,3 +369,99 @@ end
 ```
 
 These restrictions apply regardless of the user's intent. Even in `--debug` mode, the full internal prompt is never dumped verbatim — only the redacted layer summary is shown. This prevents accidental credential exposure during debugging or support interactions.
+
+---
+
+## 9. External WebSocket Channel Security (PR16)
+
+The optional external Phoenix WebSocket channel (documented in [`architecture.md` §8.5](architecture.md#85-optional-external-phoenix-websocket-channel-pr16)) exposes session events to non-LiveView clients. The following security rules are **mandatory** — they are enforced in `MuseWeb.ExternalEventFilter` and cannot be bypassed by client configuration.
+
+### 9.1 Network Binding
+
+```text
+✓ Server binds to 127.0.0.1 (localhost) by default.
+✓ Do NOT expose the WebSocket endpoint externally without authentication.
+✓ Production deployments MUST use a reverse proxy (nginx, caddy, etc.) with TLS termination.
+✓ Do NOT bind to 0.0.0.0 without explicit authentication and transport encryption.
+```
+
+### 9.2 Disabled by Default
+
+The external WebSocket channel is **disabled by default** (`config :muse, :external_ws, enabled: false`). When disabled:
+
+- `MuseWeb.UserSocket.connect/3` rejects all connections.
+- No channel processes start; no resources consumed.
+- Opt-in via `MUSE_EXTERNAL_WS` env var in production (accepted values: `true`, `1`, `yes`, `on`), or explicit config in dev/test.
+
+### 9.3 Visibility Filtering
+
+The channel enforces strict visibility-based filtering before forwarding any event:
+
+| Visibility | Forwarding | Rationale |
+|---|---|---|
+| `:user` | **Allowed** — payload redacted before forwarding | Safe for external consumption after redaction |
+| `:internal` | **DENIED** — never forwarded | Internal runtime events |
+| `:sensitive` | **DENIED** — never forwarded | Secrets, credentials, auth tokens |
+| `:debug` | **DENIED** by default — `allow_debug?` option exists but is NOT used by the channel | Debug/diagnostic events not designed for external consumers |
+| `nil` | **DENIED by default** — only allowlisted event types forwarded | Events without explicit visibility must be reviewed before exposure |
+
+**Allowlist for nil-visibility events** (safe types only):
+
+```text
+user_message, assistant_delta, assistant_message,
+plan_created, plan_approved, plan_rejected,
+approval_requested, approval_approved, approval_rejected,
+turn_completed, turn_failed, session_status_changed
+```
+
+**Provider/auth/debug denial:** Even if a nil-visibility event type is on the allowlist, it is denied when the source:type combination suggests provider/auth/debug content (e.g., `openai_provider_debug:assistant_delta`).
+
+Any event type **not** on this allowlist and without `:user` visibility is silently dropped.
+
+### 9.4 Session Isolation
+
+- A client must join topic `session:<session_id>` explicitly.
+- Only events with an **exact** `session_id` match are forwarded.
+- Nil `session_id` (global/legacy) events are **NOT** forwarded on session-scoped topics.
+- Cross-session events are never forwarded.
+- Session IDs are validated: empty, `.`, `..`, and path-traversal characters (`/`, `\`, NUL) are rejected.
+
+### 9.5 Payload Redaction
+
+Even for allowed events, payloads are redacted before forwarding:
+
+```text
+✓ Data passes through Muse.EventDisplay.safe_data/1 first.
+✓ Then converted to JSON-safe format with depth limits and struct suppression.
+✓ API keys, bearer tokens, OAuth/Codex/GitHub tokens are redacted.
+✓ Arbitrary structs are replaced with "[struct omitted]".
+✓ Nested Muse.Event structs are replaced with "[event omitted]".
+✓ Strings exceeding 2000 chars are truncated.
+✓ No String.to_atom/1 on client input.
+```
+
+### 9.6 No Secrets Exposed
+
+The external channel must **never** expose:
+
+```text
+✗ Auth tokens (Bearer tokens, API keys, session tokens)
+✗ Provider secrets (API keys, base URLs with embedded credentials)
+✗ Session secrets (internal state tokens, approval bindings with raw hashes)
+✗ Credential values (from Muse.Auth.Credential or ~/.codex/auth.json)
+✗ Internal event types (approval_state_change, secret_read_attempt, etc.)
+```
+
+### 9.7 Read-Only Channel
+
+The external WebSocket channel is **read-only**. It does **not** grant:
+
+```text
+✗ Tool execution permissions
+✗ File write/patch/delete permissions
+✗ Shell command execution permissions
+✗ Network call permissions
+✗ Ability to invoke Muse.submit/2 or any mutation API
+```
+
+Subscribing to the channel allows observing filtered session events only. No user action through the WebSocket can trigger runtime mutations. This is the **PR17+ safety invariant**: external WS grants zero tool/write/shell/network/approval authority.
