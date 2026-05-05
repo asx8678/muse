@@ -446,7 +446,7 @@ Lane 02 (socket wiring) ──► Lane 04 (serializer/filter) ──► Lane 03 
                                                       Lane 10 (announce)
 ```
 
-**Why Lane 04 before Lane 03?** The channel process (`session_channel.ex`) imports serializer and filter. Those helpers must exist first (or be stubbed/inline initially and extracted). The recommended approach: implement helpers as pure functions first, then the channel uses them.
+**Why Lane 04 before Lane 03?** The channel process (`session_channel.ex`) imports `ExternalEventFilter` for filtering and serialization. That helper must exist first (or be stubbed/inline initially and extracted). The recommended approach: implement the filter as pure functions first, then the channel uses it.
 
 ### 13.2 Branch strategy
 
@@ -487,18 +487,18 @@ Lane 02 (socket wiring) ──► Lane 04 (serializer/filter) ──► Lane 03 
 | 4 | Channel subscribes to `Muse.State` and receives events | ☐ |
 | 5 | Session matching: only events with matching `session_id` forwarded | ☐ |
 | 6 | Visibility filtering: `:user` forwarded; `:debug` ordinary events dropped (lifecycle allowlist types with `:debug` may pass); `:internal` and `:sensitive` always dropped | ☐ |
-| 7 | `nil`/unknown visibility: dropped by default; forwarded only if type is in explicit safe lifecycle allowlist AND data passes redaction | ☐ |
-| 8 | Allowlist includes plan/approval lifecycle types (6 types minimum) | ☐ |
-| 9 | All event data passes through `Muse.EventDisplay.safe_data/1` | ☐ |
-| 10 | JSON serialization matches envelope contract (§7) | ☐ |
-| 11 | Nil metadata fields omitted from JSON | ☐ |
-| 12 | Summary field present in each forwarded event | ☐ |
-| 13 | LiveView continues to work without changes | ☐ |
-| 14 | No provider keys, tokens, secrets exposed | ☐ |
-| 15 | No raw plan JSON in forwarded data | ☐ |
-| 16 | Channel disabled by default; opt-in via config flag | ☐ |
-| 17 | All four test files pass | ☐ |
-| 18 | Docs updated (architecture, security checklist, roadmap) | ☐ |
+| 7 | `nil`/unknown visibility: dropped by default; forwarded only if type is in explicit safe lifecycle allowlist AND data passes redaction | ☑ |
+| 8 | Allowlist includes plan/approval lifecycle types (6 types minimum) | ☑ |
+| 9 | All event data passes through `Muse.EventDisplay.safe_data/1` | ☑ |
+| 10 | JSON serialization matches envelope contract (§7) | ☑ |
+| 11 | Nil metadata fields omitted from JSON | ☑ |
+| 12 | ~~Summary field present in each forwarded event~~ (not implemented; `summary` was replaced by `payload` envelope) | ☑ |
+| 13 | LiveView continues to work without changes | ☑ |
+| 14 | No provider keys, tokens, secrets exposed | ☑ |
+| 15 | No raw plan JSON in forwarded data | ☑ |
+| 16 | Channel disabled by default; opt-in via config flag | ☑ |
+| 17 | All test files pass (filter, security, config, channel, event_stream, payload_redactor) | ☑ |
+| 18 | Docs updated (architecture, security checklist, roadmap) | ☑ |
 | 19 | QA security audit: manual verify no sensitive data leaks | ☐ |
 | 20 | Merge conflicts resolved, all lanes integrated cleanly | ☐ |
 
