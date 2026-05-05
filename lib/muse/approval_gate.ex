@@ -434,18 +434,26 @@ defmodule Muse.ApprovalGate do
 
   # -- Patch tool authorization (PR17) ------------------------------------------
 
-  # patch_propose is allowed for Coding Muse — it records a proposal
-  # without applying it (side-effect free). This is the PR17 exception
-  # that enables the Coding Muse routing after plan approval.
-  defp patch_propose_allowed?(%Spec{permission: :patch}, %{muse_id: :coding}) do
-    true
+  # patch_propose is allowed for Coding Muse ONLY when there is an approved
+  # plan in the context. This prevents direct Runner calls from bypassing
+  # plan approval. Planning Muse and other muses are always denied.
+  defp patch_propose_allowed?(%Spec{permission: :patch}, %{muse_id: :coding} = context) do
+    approved_plan_context?(context)
   end
 
-  defp patch_propose_allowed?(%Spec{name: "patch_propose"}, %{muse_id: :coding}) do
-    true
+  defp patch_propose_allowed?(%Spec{name: "patch_propose"}, %{muse_id: :coding} = context) do
+    approved_plan_context?(context)
   end
 
   defp patch_propose_allowed?(_, _), do: false
+
+  # Coding Muse may only call patch_propose when bound to an approved plan.
+  # This prevents direct Runner invocations without plan approval metadata.
+  defp approved_plan_context?(context) when is_map(context) do
+    Map.get(context, :plan_status) == :approved and
+      is_binary(Map.get(context, :plan_id)) and Map.get(context, :plan_id) != "" and
+      is_binary(Map.get(context, :plan_hash)) and Map.get(context, :plan_hash) != ""
+  end
 
   # -- Internal plan approval transitions --------------------------------------
 

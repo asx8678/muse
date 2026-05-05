@@ -42,7 +42,7 @@ defmodule Muse.Patch do
 
   alias Muse.Patch.DiffParser
 
-  @enforce_keys [:id, :session_id, :plan_id, :plan_version, :plan_hash, :diff, :hash, :status]
+  @enforce_keys [:session_id, :plan_id, :plan_version, :plan_hash, :diff, :hash, :status]
 
   defstruct [
     :id,
@@ -71,7 +71,7 @@ defmodule Muse.Patch do
           | :cancelled
 
   @type t :: %__MODULE__{
-          id: String.t() | nil,
+          id: String.t(),
           session_id: String.t(),
           plan_id: String.t(),
           plan_version: non_neg_integer(),
@@ -117,7 +117,7 @@ defmodule Muse.Patch do
   contains a binary patch or has fatally malformed structure.
 
   Defaults:
-    - `:id`             → `nil` (assigned by session/persistence layer)
+    - `:id`             → auto-generated from content hash (`patch_<hash12>`)
     - `:status`         → `:proposed`
     - `:affected_files` → extracted from diff (can be overridden)
     - `:hash`           → computed via `content_hash_for/1`
@@ -154,8 +154,10 @@ defmodule Muse.Patch do
       status = normalize_status(raw_status)
 
       # Build a preliminary struct to compute hash
+      raw_id = Map.get(normalized, :id)
+
       patch = %__MODULE__{
-        id: Map.get(normalized, :id),
+        id: raw_id,
         session_id: Map.get(normalized, :session_id),
         plan_id: Map.get(normalized, :plan_id),
         plan_version: Map.get(normalized, :plan_version, 1),
@@ -171,6 +173,15 @@ defmodule Muse.Patch do
         verified_at: Map.get(normalized, :verified_at),
         metadata: normalize_metadata(Map.get(normalized, :metadata, %{}))
       }
+
+      # PR17 hardening: generate stable patch id when absent so every
+      # patch has a deterministic identity for approval records.
+      patch =
+        if is_nil(patch.id) do
+          %{patch | id: "patch_#{String.slice(patch.hash, 0, 12)}"}
+        else
+          patch
+        end
 
       {:ok, patch}
     end
@@ -295,8 +306,10 @@ defmodule Muse.Patch do
       raw_status = Map.get(normalized, :status, :proposed)
       status = normalize_status(raw_status)
 
+      raw_id = Map.get(normalized, :id)
+
       patch = %__MODULE__{
-        id: Map.get(normalized, :id),
+        id: raw_id,
         session_id: Map.get(normalized, :session_id),
         plan_id: Map.get(normalized, :plan_id),
         plan_version: Map.get(normalized, :plan_version, 1),
@@ -312,6 +325,14 @@ defmodule Muse.Patch do
         verified_at: Map.get(normalized, :verified_at),
         metadata: normalize_metadata(Map.get(normalized, :metadata, %{}))
       }
+
+      # PR17 hardening: generate stable patch id when absent
+      patch =
+        if is_nil(patch.id) do
+          %{patch | id: "patch_#{String.slice(patch.hash, 0, 12)}"}
+        else
+          patch
+        end
 
       {:ok, patch}
     end

@@ -383,13 +383,31 @@ defmodule Muse.Conductor.ToolLoop do
          args_summary: safe_args_summary(args)
        }), [visibility: :debug]}
 
-    context = %{
-      workspace: session.workspace || "/tmp/muse_workspace",
-      muse_id: muse.id,
-      session_id: session.id,
-      turn_id: turn.id,
-      emit_events?: false
-    }
+    # Build plan context for Coding Muse so patch_propose can verify
+    # approved plan binding (PR17 hardening).
+    plan_context =
+      case {session.active_plan_id, Map.get(session.plans, session.active_plan_id)} do
+        {plan_id, %Muse.Plan{status: :approved} = plan} when is_binary(plan_id) ->
+          %{
+            plan_status: :approved,
+            plan_id: plan_id,
+            plan_version: plan.version,
+            plan_hash: Muse.PlanBinding.content_hash(plan)
+          }
+
+        _ ->
+          %{}
+      end
+
+    context =
+      %{
+        workspace: session.workspace || "/tmp/muse_workspace",
+        muse_id: muse.id,
+        session_id: session.id,
+        turn_id: turn.id,
+        emit_events?: false
+      }
+      |> Map.merge(plan_context)
 
     result = tool_runner.run(tool_name, args, context)
 

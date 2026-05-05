@@ -410,18 +410,30 @@ defmodule Muse.EventDisplay do
   defp patch_files_sentence(_), do: nil
 
   defp diff_snippet_sentence(data) when is_map(data) do
+    # PR17 hardening (Gap G): prefer diff_ref over raw diff in event payloads.
+    # If only a diff_ref (hash) is present, show a reference instead of snippet.
     diff = map_get_any(data, [:diff, "diff", :diff_text, "diff_text"])
+    diff_ref = map_get_any(data, [:diff_ref, "diff_ref"])
 
-    case cap_diff(diff, @max_diff_chars) do
-      {:ok, text} when text != "" ->
-        first_line = text |> String.split("\n", parts: 2) |> hd() |> String.slice(0, 120)
-        "Diff: #{first_line}"
+    cond do
+      is_binary(diff) and diff != "" ->
+        case cap_diff(diff, @max_diff_chars) do
+          {:ok, text} when text != "" ->
+            first_line = text |> String.split("\n", parts: 2) |> hd() |> String.slice(0, 120)
+            "Diff: #{first_line}"
 
-      {:truncated, _text} ->
-        first_line = diff |> String.split("\n", parts: 2) |> hd() |> String.slice(0, 120)
-        "Diff: #{first_line} (truncated)"
+          {:truncated, _text} ->
+            first_line = diff |> String.split("\n", parts: 2) |> hd() |> String.slice(0, 120)
+            "Diff: #{first_line} (truncated)"
 
-      _ ->
+          _ ->
+            nil
+        end
+
+      is_binary(diff_ref) and diff_ref != "" ->
+        "Diff ref: #{String.slice(diff_ref, 0, 12)}"
+
+      true ->
         nil
     end
   end

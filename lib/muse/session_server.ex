@@ -43,6 +43,7 @@ defmodule Muse.SessionServer do
   use GenServer, restart: :temporary
 
   alias Muse.{
+    Approval,
     ApprovalGate,
     Event,
     Patch,
@@ -524,10 +525,15 @@ defmodule Muse.SessionServer do
     # Use the session status from the Conductor result (may be :awaiting_plan_approval)
     session_status = result.session.status
 
+    # PR17 hardening: carry pending_patch from Conductor result into SessionServer
+    # state so that /approve patch and /reject patch can operate on it.
+    pending_patch = Map.get(result.session, :pending_patch) || state.pending_patch
+
     state = %{
       state
       | status: session_status,
-        active_muse: Atom.to_string(result.selected_muse.id)
+        active_muse: Atom.to_string(result.selected_muse.id),
+        pending_patch: pending_patch
     }
 
     # Store plan if present in the result and create a content-bound pending
@@ -954,7 +960,9 @@ defmodule Muse.SessionServer do
 
     case Patch.new(patch_attrs) do
       {:ok, patch} ->
-        # Emit events
+        # Emit events (Gap G: avoid unrestricted raw diff in event payloads;
+        # user-facing diff display is through the pending_patch / patch display
+        # mechanism, not through event data)
         {patch_proposed_event, state} =
           emit_session_event(
             state,
@@ -965,7 +973,7 @@ defmodule Muse.SessionServer do
               plan_id: patch.plan_id,
               hash: patch.hash,
               affected_files: patch.affected_files,
-              diff: patch.diff
+              diff_ref: patch.hash
             },
             visibility: :user
           )
@@ -1055,11 +1063,24 @@ defmodule Muse.SessionServer do
     else
       {:ok, transitioned_patch} = Patch.transition(patch, target_status)
 
-      {patch_event_type, _approval_event_type} =
+      {patch_event_type, approval_event_type} =
         case target_status do
           :approved -> {:patch_approved, :approval_approved}
           :rejected -> {:patch_rejected, :approval_rejected}
         end
+
+      # PR17 hardening: create a content-bound %Muse.Approval{kind: :patch}
+      # record for audit. This is persisted in the session snapshot and
+      # survives pending_patch clearing (Gap D/F).
+      approval_attrs =
+        build_patch_approval_attrs(
+          patch,
+          target_status,
+          source,
+          state.session_id
+        )
+
+      approval_record = Approval.new(approval_attrs)
 
       # Emit patch lifecycle event
       {patch_event, state} =
@@ -1076,6 +1097,24 @@ defmodule Muse.SessionServer do
           visibility: :user
         )
 
+      # Emit approval event for the patch decision
+      {approval_event, state} =
+        emit_session_event(
+          state,
+          source,
+          approval_event_type,
+          %{
+            approval_id: approval_record.id,
+            kind: :patch,
+            patch_id: transitioned_patch.id,
+            patch_hash: transitioned_patch.hash,
+            plan_id: transitioned_patch.plan_id,
+            plan_version: transitioned_patch.plan_version,
+            status: Atom.to_string(target_status)
+          },
+          visibility: :internal
+        )
+
       # Emit session status change if coming from awaiting_patch_approval
       {status_event, state} =
         if state.status == :awaiting_patch_approval do
@@ -1090,7 +1129,11 @@ defmodule Muse.SessionServer do
           {nil, state}
         end
 
-      events = [patch_event, status_event] |> Enum.reject(&is_nil/1)
+      events = [patch_event, approval_event, status_event] |> Enum.reject(&is_nil/1)
+
+      # Persist approval record in session approvals list before clearing pending_patch
+      approvals = state.approvals || []
+      approvals = approvals ++ [approval_record]
 
       # Reset patch state and transition session back to idle
       # PR17: no file modifications, no checkpoint, no patch_apply
@@ -1098,6 +1141,7 @@ defmodule Muse.SessionServer do
         state
         |> Map.put(:pending_patch, nil)
         |> Map.put(:status, :idle)
+        |> Map.put(:approvals, approvals)
         |> append_session_events(events)
         |> maybe_persist_snapshot()
 
@@ -1159,6 +1203,38 @@ defmodule Muse.SessionServer do
       |> maybe_persist_snapshot()
 
     {{:ok, transitioned_patch}, state}
+  end
+
+  defp build_patch_approval_attrs(%Patch{} = patch, target_status, source, session_id) do
+    actor = if is_atom(source), do: Atom.to_string(source), else: to_string(source)
+
+    base = %{
+      kind: :patch,
+      session_id: session_id,
+      patch_id: patch.id,
+      patch_hash: patch.hash,
+      plan_id: patch.plan_id,
+      plan_version: patch.plan_version,
+      plan_hash: patch.plan_hash,
+      source: actor,
+      metadata: %{patch_status: patch.status}
+    }
+
+    case target_status do
+      :approved ->
+        Map.merge(base, %{
+          status: :approved,
+          approved_by: actor,
+          approved_at: DateTime.utc_now()
+        })
+
+      :rejected ->
+        Map.merge(base, %{
+          status: :rejected,
+          rejected_by: actor,
+          rejected_at: DateTime.utc_now()
+        })
+    end
   end
 
   defp resolve_active_plan_state(state) do
@@ -1259,6 +1335,9 @@ defmodule Muse.SessionServer do
             approval_binding
           )
 
+        # PR17 hardening: restore pending_patch from snapshot (Gap E)
+        pending_patch = restore_pending_patch(Map.get(data, "pending_patch"))
+
         %{
           state
           | status: status,
@@ -1267,7 +1346,8 @@ defmodule Muse.SessionServer do
             active_plan_id: active_id,
             approvals: approvals,
             approval_binding: approval_binding,
-            active_approval: active_approval
+            active_approval: active_approval,
+            pending_patch: pending_patch
         }
 
       _ ->
@@ -1348,6 +1428,19 @@ defmodule Muse.SessionServer do
   end
 
   defp restore_plan(_), do: nil
+
+  defp restore_pending_patch(nil), do: nil
+
+  defp restore_pending_patch(data) when is_map(data) do
+    case Patch.from_map(data) do
+      {:ok, %Patch{} = patch} -> patch
+      {:error, _} -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp restore_pending_patch(_data), do: nil
 
   defp restore_plans(plans_data) when is_map(plans_data) do
     plans_data

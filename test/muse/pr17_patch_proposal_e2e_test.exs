@@ -230,7 +230,7 @@ defmodule Muse.PR17PatchProposalE2ETest do
         plan_id: "plan_abc",
         hash: String.duplicate("a", 64),
         affected_files: ["lib/muse/example.ex"],
-        diff: @simple_diff
+        diff_ref: String.duplicate("a", 64)
       }
 
       proposed_event =

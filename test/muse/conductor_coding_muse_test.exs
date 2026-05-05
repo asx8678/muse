@@ -155,11 +155,30 @@ defmodule Muse.ConductorCodingMuseTest do
   # -- ApprovalGate patch_propose authorization tests ---------------------------
 
   describe "ApprovalGate.authorize_tool/2 for patch_propose" do
-    test "patch_propose is allowed for Coding Muse" do
+    test "patch_propose is allowed for Coding Muse with approved plan context" do
       spec = Registry.get("patch_propose")
       assert spec != nil
-      context = %{muse_id: :coding}
+
+      context = %{
+        muse_id: :coding,
+        plan_status: :approved,
+        plan_id: "plan_1",
+        plan_hash: "abc123"
+      }
+
       assert ApprovalGate.authorize_tool(spec, context) == :ok
+    end
+
+    test "patch_propose is blocked for Coding Muse without approved plan context" do
+      spec = Registry.get("patch_propose")
+      context = %{muse_id: :coding}
+      assert {:blocked, _reason} = ApprovalGate.authorize_tool(spec, context)
+    end
+
+    test "patch_propose is blocked for Coding Muse with non-approved plan" do
+      spec = Registry.get("patch_propose")
+      context = %{muse_id: :coding, plan_status: :pending, plan_id: "plan_1", plan_hash: "abc123"}
+      assert {:blocked, _reason} = ApprovalGate.authorize_tool(spec, context)
     end
 
     test "patch_propose is blocked for Planning Muse" do
@@ -479,13 +498,26 @@ defmodule Muse.ConductorCodingMuseTest do
   # -- normalize_scope patch_propose test ---------------------------------------
 
   describe "ApprovalGate normalize_scope for patch_propose" do
-    test "patch_propose is allowed for Coding Muse via authorize_tool" do
+    test "patch_propose is allowed for Coding Muse with approved plan via authorize_tool" do
       spec = Registry.get("patch_propose")
       assert spec != nil
       assert spec.permission == :patch
 
-      context = %{muse_id: :coding}
+      context = %{
+        muse_id: :coding,
+        plan_status: :approved,
+        plan_id: "plan_1",
+        plan_hash: "abc123"
+      }
+
       assert ApprovalGate.authorize_tool(spec, context) == :ok
+    end
+
+    test "patch_propose is blocked for Coding Muse without approved plan via authorize_tool" do
+      spec = Registry.get("patch_propose")
+      assert spec != nil
+      context = %{muse_id: :coding}
+      assert {:blocked, _reason} = ApprovalGate.authorize_tool(spec, context)
     end
 
     test "patch_propose permission is :patch (shared scope with patch_apply)" do
