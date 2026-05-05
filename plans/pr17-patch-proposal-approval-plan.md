@@ -309,8 +309,9 @@ Spec.new!(
 
 | Handler | Route |
 |---|---|
-| `handle_call({:approve_patch, source}, …)` | Analogous to `handle_plan_lifecycle_command` |
-| `handle_call({:reject_patch, source}, …)` | Analogous plan rejection |
+| `handle_call({:propose_patch, source}, …)` | Validate active approved plan, grant `:patch_proposal` scope, emit `:patch_proposal_scope_granted`, start Coding Muse proposal turn |
+| `handle_call({:approve_patch, source}, …)` | Validate pending patch proposal, transition `:patch` approval to approved, bind to patch id/hash |
+| `handle_call({:reject_patch, source}, …)` | Reject `:patch` scope, emit `:patch_rejected` |
 | `handle_call({:patch_status, …})` | Returns patch proposal + approval status |
 | `emit_event(:patch_approval_requested, …)` | New event emission helper |
 
@@ -348,11 +349,11 @@ Spec.new!(
 
 ```elixir
 # In parse/1:
-"/propose patch"           -> {:approve_patch, :propose}
-"/approve patch proposal"  -> {:approve_patch, :approve}
-"/approve patch"           -> {:approve_patch, :approve}
-"/reject patch"            -> {:approve_patch, :reject}
-"/patch status"            -> {:approve_patch, :status}
+"/propose patch"           -> {:propose_patch, %{}}
+"/approve patch proposal"  -> {:approve_patch, %{kind: :proposal}}
+"/approve patch"           -> {:approve_patch, %{kind: :proposal}}
+"/reject patch"            -> {:reject_patch, %{}}
+"/patch status"            -> {:patch_status, %{}}
 ```
 
 ### Add to `Muse.Commands`
@@ -409,7 +410,7 @@ Spec.new!(
 | Test | File | Coverage |
 |---|---|---|
 | `Muse.PatchProposal` struct, parse/format roundtrip, content_hash, to_map/from_map, redacted_preview | `test/muse/patch_proposal_test.exs` | All fields, hash stability, JSON roundtrip, redaction safety |
-| `Muse.ApprovalGate` patch scope | `test/muse/approval_gate_test.exs` | `capture_patch_binding`, `require_patch_approval`, stale detection, scope denial |
+| `Muse.ApprovalGate` patch proposal scope + patch scope | `test/muse/approval_gate_test.exs` | `require_patch_proposal_scope`, `require_patch_approval`, stale detection, scope denial for both `:patch_proposal` and `:patch` |
 | `Muse.Tool.Registry` patch_propose registration | `test/muse/tool/registry_test.exs` | `patch_propose` registered, not blocked; `patch_apply` still blocked |
 | `Muse.Tool.Runner` patch_propose gating | `test/muse/tool/runner_test.exs` | Patch proposal allowed with approval; blocked without; `patch_apply` still blocked |
 | `Muse.CommandDispatcher` patch commands | `test/muse/command_dispatcher_test.exs` | Parse/dispatch for all 4 commands, unknown subcommand handling |
@@ -614,7 +615,7 @@ Lanes A–E can run in parallel *after* A completes, since B–E depend on the `
 | `lib/muse/approval_gate.ex` | **Modify** — add `:patch_proposal` scope, `require_patch_proposal_scope`, `require_patch_approval`, `approve_patch`, `reject_patch` | B |
 | `lib/muse/tool/registry.ex` | **Modify** — remove patch_propose from blocked list, add Spec | C |
 | `lib/muse/tools/patch_propose.ex` | **Create** — handler module | C |
-| `lib/muse/tool/runner.ex` | **Modify** — gate patch_propose on :patch scope + plan approval | C |
+| `lib/muse/tool/runner.ex` | **Modify** — gate patch_propose on `:patch_proposal` scope + plan approval; `:patch` scope is reserved for future apply (PR18) | C |
 | `lib/muse/command_dispatcher.ex` | **Modify** — add propose_patch, approve_patch, reject_patch, patch_status | D |
 | `lib/muse/commands.ex` | **Modify** — add new command registrations | D |
 | `lib/muse/session_server.ex` | **Modify** — add scope-grant, approve_patch/reject_patch/patch_status handlers, event emission for both gates | E |
