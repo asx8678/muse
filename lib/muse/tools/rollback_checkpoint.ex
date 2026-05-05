@@ -47,10 +47,13 @@ defmodule Muse.Tools.RollbackCheckpoint do
     workspace = to_string(Map.get(context, :workspace, ""))
     session_id = to_string(Map.get(context, :session_id, ""))
 
-    with {:ok, checkpoint_id} <- require_checkpoint_id(checkpoint_id),
+    with :ok <- require_coding_muse(context),
+         :ok <- require_approved_plan(context),
+         {:ok, checkpoint_id} <- require_checkpoint_id(checkpoint_id),
          {:ok, checkpoint} <- load_checkpoint(checkpoint_id, session_id),
          :ok <- verify_checkpoint_ownership(checkpoint, context),
          :ok <- verify_workspace_match(checkpoint, workspace),
+         :ok <- verify_plan_binding(checkpoint, context),
          {:ok, rolled_back} <- Store.rollback(checkpoint) do
       Result.ok(
         "rollback_checkpoint",
@@ -73,6 +76,37 @@ defmodule Muse.Tools.RollbackCheckpoint do
         Result.error("rollback_checkpoint", format_error(reason))
     end
   end
+
+  # -- Runtime authorization ---------------------------------------------------
+
+  defp require_coding_muse(context) do
+    if Map.get(context, :muse_id) == :coding do
+      :ok
+    else
+      {:error, "rollback_checkpoint requires Coding Muse context"}
+    end
+  end
+
+  defp require_approved_plan(context) do
+    cond do
+      Map.get(context, :plan_status) != :approved ->
+        {:error,
+         "rollback_checkpoint requires an approved plan (got plan_status: #{inspect(Map.get(context, :plan_status))})"}
+
+      blank?(Map.get(context, :plan_id)) ->
+        {:error, "rollback_checkpoint requires plan_id in context"}
+
+      blank?(Map.get(context, :session_id)) ->
+        {:error, "rollback_checkpoint requires session_id in context"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp blank?(nil), do: true
+  defp blank?(""), do: true
+  defp blank?(_), do: false
 
   # -- Input validation ---------------------------------------------------------
 
@@ -127,6 +161,27 @@ defmodule Muse.Tools.RollbackCheckpoint do
        "checkpoint workspace #{checkpoint.workspace} does not match current workspace #{workspace}"}
     else
       :ok
+    end
+  end
+
+  # -- Plan binding verification ------------------------------------------------
+
+  defp verify_plan_binding(%Checkpoint{} = checkpoint, context) do
+    plan_id = Map.get(context, :plan_id)
+    plan_hash = Map.get(context, :plan_hash)
+
+    cond do
+      checkpoint.plan_id != nil and checkpoint.plan_id != plan_id ->
+        {:error,
+         "checkpoint plan_id #{inspect(checkpoint.plan_id)} does not match active plan #{inspect(plan_id)}"}
+
+      checkpoint.plan_hash != nil and checkpoint.plan_hash != "" and
+        plan_hash != nil and plan_hash != "" and
+          checkpoint.plan_hash != plan_hash ->
+        {:error, "checkpoint plan_hash does not match active plan hash (stale plan binding)"}
+
+      true ->
+        :ok
     end
   end
 

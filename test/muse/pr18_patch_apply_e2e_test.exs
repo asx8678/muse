@@ -10,7 +10,7 @@ defmodule Muse.PR18PatchApplyE2ETest do
   """
   use ExUnit.Case, async: false
 
-  alias Muse.{Approval, Checkpoint, Patch, Plan, SessionServer, State}
+  alias Muse.{Approval, Patch, Plan, SessionServer, State}
   alias Muse.Checkpoint.Store
 
   import Muse.PR09ApprovalGateWorkspaceHelpers,

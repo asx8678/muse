@@ -155,12 +155,36 @@ defmodule Muse.Checkpoint do
     }
   end
 
+  # Whitelists for safe deserialization — never String.to_atom on untrusted input
+  @status_map %{
+    "created" => :created,
+    "active" => :active,
+    "rolled_back" => :rolled_back,
+    "failed" => :failed
+  }
+
+  @strategy_map %{
+    "git_apply" => :git_apply,
+    "elixir_fallback" => :elixir_fallback
+  }
+
+  # Only these snapshot keys are atomized; all others kept as strings.
+  @snapshot_key_map %{
+    "path" => :path,
+    "existed" => :existed,
+    "content_hash" => :content_hash,
+    "snapshot_path" => :snapshot_path
+  }
+
   defp normalize_status(status) when status in @statuses, do: status
-  defp normalize_status(status) when is_binary(status), do: String.to_atom(status)
+  defp normalize_status(status) when is_binary(status), do: Map.get(@status_map, status, :created)
   defp normalize_status(_), do: :created
 
   defp normalize_strategy(strategy) when is_atom(strategy), do: strategy
-  defp normalize_strategy(strategy) when is_binary(strategy), do: String.to_atom(strategy)
+
+  defp normalize_strategy(strategy) when is_binary(strategy),
+    do: Map.get(@strategy_map, strategy, :git_apply)
+
   defp normalize_strategy(_), do: :git_apply
 
   @doc "Transition a checkpoint to a new status."
@@ -227,8 +251,12 @@ defmodule Muse.Checkpoint do
 
   defp normalize_snapshot_keys(snapshot) when is_map(snapshot) do
     Enum.reduce(snapshot, %{}, fn
-      {k, v}, acc when is_binary(k) -> Map.put(acc, String.to_atom(k), v)
-      {k, v}, acc -> Map.put(acc, k, v)
+      {k, v}, acc when is_binary(k) ->
+        atom_key = Map.get(@snapshot_key_map, k)
+        if atom_key, do: Map.put(acc, atom_key, v), else: Map.put(acc, k, v)
+
+      {k, v}, acc ->
+        Map.put(acc, k, v)
     end)
   end
 

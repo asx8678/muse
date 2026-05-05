@@ -40,7 +40,8 @@ defmodule Muse.Tools.PatchApply do
       the workspace is left in a recoverable state.
   """
 
-  alias Muse.{Approval, Checkpoint, Checkpoint.Store, Patch, Patch.Validator}
+  alias Muse.{Approval, Checkpoint, Checkpoint.Store, Patch, Patch.Validator, SessionStore}
+  alias Muse.Patch.DiffParser
   alias Muse.Tool.Result
 
   @max_git_diff_output 20_000
@@ -65,8 +66,11 @@ defmodule Muse.Tools.PatchApply do
   def execute(args, context) do
     workspace = to_string(Map.get(context, :workspace, ""))
 
-    with {:ok, patch_id, patch_hash} <- resolve_patch_identity(args),
+    with :ok <- require_coding_muse(context),
+         :ok <- require_approved_plan(context),
+         {:ok, patch_id, patch_hash} <- resolve_patch_identity(args),
          {:ok, patch} <- load_approved_patch(patch_id, patch_hash, context),
+         :ok <- verify_patch_binding(patch, context),
          :ok <- verify_approval(patch, context),
          :ok <- revalidate_patch(patch, workspace),
          :ok <- reject_deletes(patch),
@@ -77,23 +81,45 @@ defmodule Muse.Tools.PatchApply do
 
       # Mark checkpoint as active
       {:ok, checkpoint} = Checkpoint.transition(checkpoint, :active)
-      :ok = Store.update_manifest(checkpoint)
+
+      manifest_result = Store.update_manifest(checkpoint)
+
+      # Persist auditable apply record to session patches.jsonl
+      :ok =
+        persist_apply_audit(context, applied_patch, checkpoint)
 
       # Get bounded post-apply diff preview
       diff_preview = bounded_git_diff(workspace)
 
+      base_output = %{
+        checkpoint_id: checkpoint.id,
+        patch_id: applied_patch.id,
+        patch_hash: applied_patch.hash,
+        affected_files: applied_patch.affected_files,
+        status: :applied,
+        git_diff_preview: diff_preview,
+        message:
+          "Patch #{applied_patch.id} applied successfully. Checkpoint #{checkpoint.id} created."
+      }
+
+      # If manifest update failed, add audit warning but don't crash.
+      # Workspace WAS modified; checkpoint exists but manifest may be stale.
+      output =
+        case manifest_result do
+          {:ok, _} ->
+            base_output
+
+          {:error, reason} ->
+            Map.put(
+              base_output,
+              :audit_warning,
+              "checkpoint manifest update failed: #{inspect(reason)}; workspace was modified"
+            )
+        end
+
       Result.ok(
         "patch_apply",
-        %{
-          checkpoint_id: checkpoint.id,
-          patch_id: applied_patch.id,
-          patch_hash: applied_patch.hash,
-          affected_files: applied_patch.affected_files,
-          status: :applied,
-          git_diff_preview: diff_preview,
-          message:
-            "Patch #{applied_patch.id} applied successfully. Checkpoint #{checkpoint.id} created."
-        },
+        output,
         %{
           checkpoint: Checkpoint.event_summary(checkpoint),
           patch: %{id: applied_patch.id, hash: applied_patch.hash, status: :applied}
@@ -115,7 +141,7 @@ defmodule Muse.Tools.PatchApply do
       {:error, {:apply_failed, reason, checkpoint}} ->
         # Mark checkpoint as failed
         {:ok, failed} = Checkpoint.transition(checkpoint, :failed, failure_reason: reason)
-        :ok = Store.update_manifest(failed)
+        _ = Store.update_manifest(failed)
 
         Result.error(
           "patch_apply",
@@ -124,6 +150,68 @@ defmodule Muse.Tools.PatchApply do
 
       {:error, reason} ->
         Result.error("patch_apply", format_error(reason))
+    end
+  end
+
+  # -- Runtime authorization ---------------------------------------------------
+
+  defp require_coding_muse(context) do
+    if Map.get(context, :muse_id) == :coding do
+      :ok
+    else
+      {:error, "patch_apply requires Coding Muse context"}
+    end
+  end
+
+  defp require_approved_plan(context) do
+    cond do
+      Map.get(context, :plan_status) != :approved ->
+        {:error,
+         "patch_apply requires an approved plan (got plan_status: #{inspect(Map.get(context, :plan_status))})"}
+
+      blank?(Map.get(context, :plan_id)) ->
+        {:error, "patch_apply requires plan_id in context"}
+
+      blank?(Map.get(context, :plan_hash)) ->
+        {:error, "patch_apply requires plan_hash in context"}
+
+      blank?(Map.get(context, :session_id)) ->
+        {:error, "patch_apply requires session_id in context"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp blank?(nil), do: true
+  defp blank?(""), do: true
+  defp blank?(_), do: false
+
+  # Verify patch belongs to same session + active plan with matching hashes.
+  defp verify_patch_binding(%Patch{} = patch, context) do
+    session_id = to_string(Map.get(context, :session_id, ""))
+    plan_id = Map.get(context, :plan_id)
+    plan_version = Map.get(context, :plan_version)
+    plan_hash = Map.get(context, :plan_hash)
+
+    cond do
+      patch.session_id != nil and patch.session_id != session_id ->
+        {:error,
+         "patch session_id #{inspect(patch.session_id)} does not match context session_id #{inspect(session_id)}"}
+
+      patch.plan_id != nil and patch.plan_id != plan_id ->
+        {:error,
+         "patch plan_id #{inspect(patch.plan_id)} does not match active plan #{inspect(plan_id)}"}
+
+      patch.plan_version != nil and patch.plan_version != plan_version ->
+        {:error,
+         "patch plan_version #{inspect(patch.plan_version)} does not match active plan version #{inspect(plan_version)}"}
+
+      patch.plan_hash != nil and patch.plan_hash != "" and patch.plan_hash != plan_hash ->
+        {:error, "patch plan_hash does not match active plan hash (stale plan binding)"}
+
+      true ->
+        :ok
     end
   end
 
@@ -194,6 +282,8 @@ defmodule Muse.Tools.PatchApply do
 
   defp verify_approval(%Patch{} = patch, context) do
     session_id = to_string(Map.get(context, :session_id, ""))
+    plan_id = Map.get(context, :plan_id)
+    plan_hash = Map.get(context, :plan_hash)
     approvals = Map.get(context, :approvals, [])
 
     matching =
@@ -202,15 +292,18 @@ defmodule Muse.Tools.PatchApply do
       |> Enum.any?(fn a ->
         a.kind == :patch and
           a.status == :approved and
-          (a.session_id == session_id or is_nil(a.session_id)) and
+          a.session_id == session_id and
           a.patch_id == patch.id and
-          (a.patch_hash == patch.hash or is_nil(a.patch_hash))
+          a.patch_hash == patch.hash and
+          a.plan_id == plan_id and
+          (a.plan_hash == plan_hash or is_nil(a.plan_hash))
       end)
 
     if matching do
       :ok
     else
-      {:error, "no matching approved patch approval found for patch #{patch.id}"}
+      {:error,
+       "no matching approved patch approval for patch #{patch.id} in session #{session_id} plan #{plan_id}"}
     end
   end
 
@@ -231,15 +324,24 @@ defmodule Muse.Tools.PatchApply do
 
   # -- Delete rejection ---------------------------------------------------------
 
-  # MVP: block patches that delete files (no /dev/null new file)
   defp reject_deletes(%Patch{} = patch) do
-    has_deletes = String.contains?(patch.diff, "/dev/null")
+    case DiffParser.parse(patch.diff) do
+      {:ok, entries} ->
+        has_deletes =
+          Enum.any?(entries, fn entry ->
+            entry.new_path == nil and entry.old_path != nil
+          end)
 
-    if has_deletes do
-      {:error,
-       "patch contains file deletion diffs; delete operations require explicit approval (not implemented in MVP)"}
-    else
-      :ok
+        if has_deletes do
+          {:error,
+           "patch contains file deletion diffs; delete operations require explicit approval (not implemented in MVP)"}
+        else
+          :ok
+        end
+
+      {:error, _reason} ->
+        # If we can't parse the diff, reject it
+        {:error, "failed to parse diff for deletion check"}
     end
   end
 
@@ -315,4 +417,29 @@ defmodule Muse.Tools.PatchApply do
 
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason), do: "patch apply failed: #{inspect(reason)}"
+
+  # -- Audit persistence --------------------------------------------------------
+
+  defp persist_apply_audit(context, %Patch{} = patch, %Checkpoint{} = checkpoint) do
+    session_id = to_string(Map.get(context, :session_id, ""))
+
+    audit_record = %{
+      event: :patch_applied,
+      patch_id: patch.id,
+      patch_hash: patch.hash,
+      plan_id: Map.get(context, :plan_id),
+      plan_hash: Map.get(context, :plan_hash),
+      checkpoint_id: checkpoint.id,
+      session_id: session_id,
+      source: "coding_muse",
+      timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
+      status: :applied
+    }
+
+    case SessionStore.append_patch(session_id, audit_record) do
+      :ok -> :ok
+      # non-fatal; already applied
+      {:error, _reason} -> :ok
+    end
+  end
 end

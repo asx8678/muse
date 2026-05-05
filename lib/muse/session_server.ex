@@ -1351,6 +1351,9 @@ defmodule Muse.SessionServer do
       {:error, :no_active_plan} ->
         {{:error, :no_active_plan}, state}
 
+      {:error, {:plan_not_approved, status}} ->
+        {{:error, {:plan_not_approved, status}}, state}
+
       {:error, :no_approved_patch} ->
         {{:error, :no_approved_patch}, state}
     end
@@ -1359,8 +1362,7 @@ defmodule Muse.SessionServer do
   defp resolve_active_plan_for_apply(state) do
     case resolve_active_plan_state(state) do
       {%Plan{status: :approved} = plan, _id} -> {:ok, plan}
-      # Accept any active plan for apply
-      {%Plan{} = plan, _id} -> {:ok, plan}
+      {%Plan{status: status}, _id} -> {:error, {:plan_not_approved, status}}
       nil -> {:error, :no_active_plan}
     end
   end
@@ -1475,19 +1477,28 @@ defmodule Muse.SessionServer do
   end
 
   defp emit_apply_failure_event(state, result) do
+    # Strip raw diff from error to avoid leaking in events
+    safe_error = truncate_and_redact(result.error, 300)
+
     {_event, state} =
       emit_session_event(
         state,
         :conductor,
         :patch_apply_failed,
-        %{
-          error: result.error
-        },
+        %{error: safe_error},
         visibility: :user
       )
 
     state
   end
+
+  defp truncate_and_redact(text, max) when is_binary(text) do
+    text
+    |> String.slice(0, max)
+    |> String.replace(~r/\n---\s+a\//, "\n[diff redacted]")
+  end
+
+  defp truncate_and_redact(text, _max), do: inspect(text)
 
   # -- PR18: Rollback checkpoint ---------------------------------------------------
 
@@ -1504,11 +1515,24 @@ defmodule Muse.SessionServer do
   defp do_rollback_checkpoint(state, checkpoint_id) do
     workspace = plan_workspace(state.plan) || current_workspace()
 
+    # Build full approved plan context for runtime auth
+    {plan_id, plan_version, plan_hash, plan_status} =
+      case resolve_active_plan_state(state) do
+        {%Plan{} = plan, _id} ->
+          {plan.id, plan.version, PlanBinding.content_hash(plan), plan.status}
+
+        nil ->
+          {state.active_plan_id, nil, nil, nil}
+      end
+
     context = %{
       workspace: workspace,
       session_id: state.session_id,
       muse_id: :coding,
-      plan_id: state.active_plan_id
+      plan_id: plan_id,
+      plan_version: plan_version,
+      plan_hash: plan_hash,
+      plan_status: plan_status
     }
 
     result =
@@ -1552,12 +1576,14 @@ defmodule Muse.SessionServer do
   end
 
   defp emit_rollback_failure_event(state, result) do
+    safe_error = truncate_and_redact(result.error, 300)
+
     {_event, state} =
       emit_session_event(
         state,
         :conductor,
         :rollback_failed,
-        %{error: result.error},
+        %{error: safe_error},
         visibility: :user
       )
 

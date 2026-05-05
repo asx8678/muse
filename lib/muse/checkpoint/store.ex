@@ -57,13 +57,13 @@ defmodule Muse.Checkpoint.Store do
 
       # Persist the patch diff
       patch_path = Path.join(chk_dir, "patch.diff")
-      :ok = File.write(patch_path, fetch_patch_diff(checkpoint))
 
-      # Persist the manifest atomically
-      manifest_path = Path.join(chk_dir, "manifest.json")
-      :ok = write_manifest(manifest_path, checkpoint)
-
-      {:ok, checkpoint}
+      with {:ok, _} <- safe_write_file(patch_path, fetch_patch_diff(checkpoint)),
+           {:ok, _} <- write_manifest(Path.join(chk_dir, "manifest.json"), checkpoint) do
+        {:ok, checkpoint}
+      else
+        {:error, reason} -> {:error, reason}
+      end
     else
       {:error, reason} -> {:error, reason}
     end
@@ -93,15 +93,20 @@ defmodule Muse.Checkpoint.Store do
   @doc """
   Update the checkpoint manifest on disk (e.g. after status transition).
   """
-  @spec update_manifest(Checkpoint.t(), keyword()) :: :ok | {:error, term()}
+  @spec update_manifest(Checkpoint.t(), keyword()) :: {:ok, :ok} | {:error, term()}
   def update_manifest(%Checkpoint{} = checkpoint, opts \\ []) do
     base_dir = Keyword.get(opts, :base_dir, @default_base_dir)
 
-    manifest_path =
-      checkpoint_dir(base_dir, checkpoint.session_id, checkpoint.id)
-      |> Path.join("manifest.json")
+    with :ok <- validate_path_component(checkpoint.session_id, "session_id"),
+         :ok <- validate_path_component(checkpoint.id, "checkpoint_id") do
+      manifest_path =
+        checkpoint_dir(base_dir, checkpoint.session_id, checkpoint.id)
+        |> Path.join("manifest.json")
 
-    write_manifest(manifest_path, checkpoint)
+      write_manifest(manifest_path, checkpoint)
+    else
+      {:error, reason} -> {:error, {:manifest_path_invalid, reason}}
+    end
   end
 
   @doc """
@@ -113,18 +118,29 @@ defmodule Muse.Checkpoint.Store do
 
   After restoration, update the checkpoint manifest status to `:rolled_back`.
   """
-  @spec rollback(Checkpoint.t(), keyword()) :: {:ok, Checkpoint.t()} | {:error, term()}
+  @spec rollback(Checkpoint.t(), keyword()) ::
+          {:ok, Checkpoint.t()} | {:error, {:rollback_failed, [term()]}}
   def rollback(%Checkpoint{} = checkpoint, opts \\ []) do
     base_dir = Keyword.get(opts, :base_dir, @default_base_dir)
     workspace = checkpoint.workspace
-    chk_dir = checkpoint_dir(base_dir, checkpoint.session_id, checkpoint.id)
-    snapshots_dir = Path.join(chk_dir, "snapshots")
 
-    with {:ok, checkpoint} <- Checkpoint.transition(checkpoint, :rolled_back) do
-      # Restore each file from snapshot
+    # Validate IDs before any I/O
+    with :ok <- validate_path_component(checkpoint.session_id, "session_id"),
+         :ok <- validate_path_component(checkpoint.id, "checkpoint_id"),
+         {:ok, chk_dir} <-
+           validate_checkpoint_dir(
+             base_dir,
+             checkpoint.session_id,
+             checkpoint.id
+           ) do
+      snapshots_dir = Path.join(chk_dir, "snapshots")
+
+      # Restore FIRST; only transition to :rolled_back on success
       restore_results =
         checkpoint.file_snapshots
-        |> Enum.map(fn snapshot -> restore_file_snapshot(snapshot, workspace, snapshots_dir) end)
+        |> Enum.map(fn snapshot ->
+          restore_file_snapshot(snapshot, workspace, snapshots_dir, base_dir)
+        end)
 
       errors =
         Enum.filter(restore_results, fn
@@ -133,23 +149,26 @@ defmodule Muse.Checkpoint.Store do
         end)
 
       if errors == [] do
-        :ok = update_manifest(checkpoint, base_dir: base_dir)
-        {:ok, checkpoint}
-      else
-        # Some files failed to restore — still mark as rolled_back but record errors
-        checkpoint = %{
-          checkpoint
-          | metadata:
-              Map.put(
-                checkpoint.metadata,
-                :rollback_errors,
-                Enum.map(errors, fn {:error, e} -> e end)
-              )
-        }
+        # All restores succeeded — now transition
+        {:ok, rolled_back} = Checkpoint.transition(checkpoint, :rolled_back)
 
-        :ok = update_manifest(checkpoint, base_dir: base_dir)
-        {:ok, checkpoint}
+        case update_manifest(rolled_back, base_dir: base_dir) do
+          {:ok, _} -> {:ok, rolled_back}
+          {:error, reason} -> {:error, {:rollback_failed, [reason]}}
+        end
+      else
+        # Restore failed — mark checkpoint as :failed (not :rolled_back)
+        error_details = Enum.map(errors, fn {:error, e} -> e end)
+
+        {:ok, failed} =
+          Checkpoint.transition(checkpoint, :failed, failure_reason: "rollback restore failed")
+
+        _ = update_manifest(failed, base_dir: base_dir)
+        {:error, {:rollback_failed, error_details}}
       end
+    else
+      {:error, reason} ->
+        {:error, {:rollback_failed, [reason]}}
     end
   end
 
@@ -231,36 +250,51 @@ defmodule Muse.Checkpoint.Store do
     with :ok <- validate_snapshot_path(rel_path, workspace) do
       abs_path = Path.join(workspace, rel_path)
 
-      if File.exists?(abs_path) do
-        case File.read(abs_path) do
-          {:ok, content} ->
-            content_hash = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
-            # Write snapshot content
-            snapshot_rel = snapshot_file_path(rel_path)
-            snapshot_abs = Path.join(snapshots_dir, snapshot_rel)
-            :ok = File.mkdir_p!(Path.dirname(snapshot_abs))
-            :ok = File.write(snapshot_abs, content)
+      # Check for symlink escape at capture time
+      with :ok <- reject_symlink_at(abs_path, workspace) do
+        if File.exists?(abs_path) do
+          case File.read(abs_path) do
+            {:ok, content} ->
+              content_hash =
+                :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
 
-            {:ok,
-             %{
-               path: rel_path,
-               existed: true,
-               content_hash: content_hash,
-               snapshot_path: snapshot_rel
-             }}
+              # Write snapshot content
+              snapshot_rel = snapshot_file_path(rel_path)
+              snapshot_abs = Path.join(snapshots_dir, snapshot_rel)
 
-          {:error, reason} ->
-            {:error, {:read_failed, rel_path, reason}}
+              case safe_mkdir_p(Path.dirname(snapshot_abs)) do
+                {:ok, _} ->
+                  case safe_write_file(snapshot_abs, content) do
+                    {:ok, _} ->
+                      {:ok,
+                       %{
+                         path: rel_path,
+                         existed: true,
+                         content_hash: content_hash,
+                         snapshot_path: snapshot_rel
+                       }}
+
+                    {:error, reason} ->
+                      {:error, {:snapshot_write_failed, rel_path, reason}}
+                  end
+
+                {:error, reason} ->
+                  {:error, {:snapshot_mkdir_failed, rel_path, reason}}
+              end
+
+            {:error, reason} ->
+              {:error, {:read_failed, rel_path, reason}}
+          end
+        else
+          # File does not exist before patch — rollback should delete it
+          {:ok,
+           %{
+             path: rel_path,
+             existed: false,
+             content_hash: nil,
+             snapshot_path: nil
+           }}
         end
-      else
-        # File does not exist before patch — rollback should delete it
-        {:ok,
-         %{
-           path: rel_path,
-           existed: false,
-           content_hash: nil,
-           snapshot_path: nil
-         }}
       end
     end
   end
@@ -281,42 +315,122 @@ defmodule Muse.Checkpoint.Store do
 
   # -- Private: restore from snapshot ------------------------------------------
 
-  defp restore_file_snapshot(%{existed: false, path: rel_path}, workspace, _snapshots_dir) do
-    abs_path = Path.join(workspace, rel_path)
+  defp restore_file_snapshot(
+         %{existed: false, path: rel_path},
+         workspace,
+         _snapshots_dir,
+         _base_dir
+       ) do
+    with :ok <- validate_restore_path(rel_path, workspace) do
+      abs_path = Path.join(workspace, rel_path)
 
-    if File.exists?(abs_path) do
-      case File.rm(abs_path) do
-        :ok -> :ok
-        {:error, reason} -> {:error, {:delete_failed, rel_path, reason}}
+      if File.exists?(abs_path) do
+        case File.rm(abs_path) do
+          :ok -> :ok
+          {:error, reason} -> {:error, {:delete_failed, rel_path, reason}}
+        end
+      else
+        :ok
       end
-    else
-      :ok
     end
   end
 
   defp restore_file_snapshot(
-         %{existed: true, path: rel_path, snapshot_path: snap_rel},
+         %{existed: true, path: rel_path, snapshot_path: snap_rel, content_hash: expected_hash},
          workspace,
-         snapshots_dir
+         snapshots_dir,
+         base_dir
        ) do
-    snapshot_abs = Path.join(snapshots_dir, snap_rel)
-    abs_path = Path.join(workspace, rel_path)
+    with :ok <- validate_restore_path(rel_path, workspace),
+         :ok <- validate_snapshot_path_boundary(snap_rel, snapshots_dir, base_dir) do
+      snapshot_abs = Path.join(snapshots_dir, snap_rel)
+      abs_path = Path.join(workspace, rel_path)
 
-    case File.read(snapshot_abs) do
-      {:ok, content} ->
-        :ok = File.mkdir_p!(Path.dirname(abs_path))
+      case File.read(snapshot_abs) do
+        {:ok, content} ->
+          # Verify content hash if present
+          with :ok <- verify_snapshot_hash(content, expected_hash, rel_path),
+               :ok <- reject_symlink_at(abs_path, workspace),
+               {:ok, _} <- safe_mkdir_p(Path.dirname(abs_path)),
+               {:ok, _} <- safe_write_file(abs_path, content) do
+            :ok
+          else
+            {:error, {:hash_mismatch, _path, _expected, _actual} = reason} -> {:error, reason}
+            {:error, reason} -> {:error, {:restore_write_failed, rel_path, reason}}
+          end
 
-        case File.write(abs_path, content) do
-          :ok -> :ok
-          {:error, reason} -> {:error, {:restore_write_failed, rel_path, reason}}
-        end
-
-      {:error, reason} ->
-        {:error, {:snapshot_read_failed, rel_path, reason}}
+        {:error, reason} ->
+          {:error, {:snapshot_read_failed, rel_path, reason}}
+      end
     end
   end
 
-  defp restore_file_snapshot(_, _workspace, _snapshots_dir), do: :ok
+  defp restore_file_snapshot(_, _workspace, _snapshots_dir, _base_dir), do: :ok
+
+  # -- Private: restore-time path safety ----------------------------------------
+
+  defp validate_restore_path(rel_path, workspace) do
+    try do
+      Workspace.safe_resolve!(rel_path, workspace, allow_hidden: true)
+
+      abs = Path.join(workspace, rel_path) |> Path.expand()
+      ws = Path.expand(workspace)
+
+      cond do
+        not String.starts_with?(abs, ws <> "/") and abs != ws ->
+          {:error, {:restore_path_escape, rel_path}}
+
+        Workspace.secret_path?(abs, ws) ->
+          {:error, {:restore_secret_path, rel_path}}
+
+        true ->
+          :ok
+      end
+    rescue
+      e -> {:error, {:restore_path_unsafe, rel_path, Exception.message(e)}}
+    end
+  end
+
+  # Ensure snapshot_path doesn't escape the checkpoint snapshots directory.
+  defp validate_snapshot_path_boundary(snap_rel, snapshots_dir, _base_dir) do
+    snapshot_abs = Path.expand(Path.join(snapshots_dir, snap_rel))
+    snapshots_expanded = Path.expand(snapshots_dir)
+
+    if String.starts_with?(snapshot_abs, snapshots_expanded <> "/") or
+         snapshot_abs == snapshots_expanded do
+      :ok
+    else
+      {:error, {:snapshot_path_escape, snap_rel}}
+    end
+  end
+
+  # Verify snapshot content hash matches the recorded hash (if present).
+  defp verify_snapshot_hash(_content, nil, _rel_path), do: :ok
+
+  defp verify_snapshot_hash(content, expected_hash, rel_path) when is_binary(expected_hash) do
+    actual = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
+
+    if String.equivalent?(actual, expected_hash) do
+      :ok
+    else
+      {:error, {:hash_mismatch, rel_path, expected_hash, actual}}
+    end
+  end
+
+  defp verify_snapshot_hash(_content, _expected, _rel_path), do: :ok
+
+  # Reject if the target path is a symlink pointing outside the workspace.
+  defp reject_symlink_at(abs_path, _workspace) do
+    case File.lstat(abs_path) do
+      {:ok, %{type: :symlink}} ->
+        {:error, {:symlink_target, abs_path}}
+
+      _ ->
+        :ok
+    end
+  rescue
+    _ -> :ok
+  end
 
   # -- Private: git metadata ----------------------------------------------------
 
@@ -380,14 +494,51 @@ defmodule Muse.Checkpoint.Store do
     checkpoint.metadata[:diff] || checkpoint.metadata["diff"] || ""
   end
 
+  # -- Private: safe I/O helpers ------------------------------------------------
+
+  defp safe_mkdir_p(path) do
+    case File.mkdir_p(path) do
+      :ok -> {:ok, :ok}
+      {:error, reason} -> {:error, {:mkdir_failed, reason, path}}
+    end
+  end
+
+  defp safe_write_file(path, content) do
+    case File.write(path, content) do
+      :ok -> {:ok, :ok}
+      {:error, reason} -> {:error, {:write_failed, reason, path}}
+    end
+  end
+
+  # Validate checkpoint dir exists and that session_id/checkpoint_id
+  # didn't get tampered since creation.
+  defp validate_checkpoint_dir(base_dir, session_id, checkpoint_id) do
+    with :ok <- validate_path_component(session_id, "session_id"),
+         :ok <- validate_path_component(checkpoint_id, "checkpoint_id") do
+      dir = checkpoint_dir(base_dir, session_id, checkpoint_id)
+
+      if File.dir?(dir) do
+        {:ok, dir}
+      else
+        {:error, {:checkpoint_not_found, dir}}
+      end
+    end
+  end
+
   # -- Private: manifest persistence -------------------------------------------
 
   defp write_manifest(path, %Checkpoint{} = checkpoint) do
     data = Checkpoint.to_map(checkpoint)
 
     case Jason.encode(data, pretty: true) do
-      {:ok, json} -> atomic_write(path, json)
-      {:error, reason} -> {:error, {:encode_failed, reason}}
+      {:ok, json} ->
+        case atomic_write(path, json) do
+          :ok -> {:ok, :ok}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, {:encode_failed, reason}}
     end
   end
 

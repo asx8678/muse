@@ -469,7 +469,8 @@ defmodule Muse.ApprovalGate do
          %{muse_id: :coding} = context
        ) do
     approved_plan_context?(context) and
-      is_binary(Map.get(context, :session_id)) and Map.get(context, :session_id) != ""
+      is_binary(Map.get(context, :session_id)) and Map.get(context, :session_id) != "" and
+      is_binary(Map.get(context, :plan_id)) and Map.get(context, :plan_id) != ""
   end
 
   defp rollback_checkpoint_allowed?(_, _), do: false
@@ -483,13 +484,23 @@ defmodule Muse.ApprovalGate do
   end
 
   # PR18: verify there is an approved patch approval in the context.
-  # The approvals list must contain a matching approved patch approval.
+  # The approvals list must contain a matching approved patch approval
+  # with non-blank patch_id and patch_hash matching the session + plan.
   defp approved_patch_context?(context) when is_map(context) do
+    session_id = Map.get(context, :session_id)
+    plan_id = Map.get(context, :plan_id)
     approvals = Approval.normalize_list(Map.get(context, :approvals, []))
 
-    Enum.any?(approvals, fn a ->
-      a.kind == :patch and a.status == :approved
-    end)
+    is_binary(session_id) and session_id != "" and
+      is_binary(plan_id) and plan_id != "" and
+      Enum.any?(approvals, fn a ->
+        a.kind == :patch and
+          a.status == :approved and
+          a.session_id == session_id and
+          is_binary(a.patch_id) and a.patch_id != "" and
+          is_binary(a.patch_hash) and a.patch_hash != "" and
+          a.plan_id == plan_id
+      end)
   end
 
   # -- Internal plan approval transitions --------------------------------------

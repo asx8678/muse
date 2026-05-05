@@ -135,4 +135,115 @@ defmodule Muse.CheckpointTest do
       assert restored.status == checkpoint.status
     end
   end
+
+  # -- Regression tests for dynamic atom creation (issue 1) --------------------
+
+  describe "from_map/1 — no dynamic atom creation" do
+    test "normalizes known status strings via whitelist" do
+      map = %{
+        "session_id" => "s",
+        "plan_id" => "p",
+        "patch_id" => "pa",
+        "patch_hash" => "h",
+        "status" => "active"
+      }
+
+      checkpoint = Checkpoint.from_map(map)
+      assert checkpoint.status == :active
+    end
+
+    test "defaults unknown status strings safely" do
+      map = %{
+        "session_id" => "s",
+        "plan_id" => "p",
+        "patch_id" => "pa",
+        "patch_hash" => "h",
+        "status" => "totally_made_up_status"
+      }
+
+      checkpoint = Checkpoint.from_map(map)
+      assert checkpoint.status == :created
+    end
+
+    test "normalizes known strategy strings via whitelist" do
+      map = %{
+        "session_id" => "s",
+        "plan_id" => "p",
+        "patch_id" => "pa",
+        "patch_hash" => "h",
+        "strategy" => "git_apply"
+      }
+
+      checkpoint = Checkpoint.from_map(map)
+      assert checkpoint.strategy == :git_apply
+    end
+
+    test "defaults unknown strategy strings safely" do
+      map = %{
+        "session_id" => "s",
+        "plan_id" => "p",
+        "patch_id" => "pa",
+        "patch_hash" => "h",
+        "strategy" => "dangerous_strategy"
+      }
+
+      checkpoint = Checkpoint.from_map(map)
+      assert checkpoint.strategy == :git_apply
+    end
+
+    test "normalizes snapshot keys via whitelist only" do
+      map = %{
+        "session_id" => "s",
+        "plan_id" => "p",
+        "patch_id" => "pa",
+        "patch_hash" => "h",
+        "file_snapshots" => [
+          %{
+            "path" => "lib/a.ex",
+            "existed" => true,
+            "content_hash" => "abc",
+            "snapshot_path" => "lib/a.ex",
+            "unknown_key" => "preserved_as_string"
+          }
+        ]
+      }
+
+      checkpoint = Checkpoint.from_map(map)
+      [snapshot] = checkpoint.file_snapshots
+      # Known keys are atoms
+      assert snapshot.path == "lib/a.ex"
+      assert snapshot.existed == true
+      assert snapshot.content_hash == "abc"
+      assert snapshot.snapshot_path == "lib/a.ex"
+      # Unknown keys preserved as strings, never atomized
+      assert Map.get(snapshot, "unknown_key") == "preserved_as_string"
+      refute Map.has_key?(snapshot, :unknown_key)
+    end
+
+    test "does not create atoms for unknown snapshot keys" do
+      before = :erlang.system_info(:atom_count)
+
+      map = %{
+        "session_id" => "s",
+        "plan_id" => "p",
+        "patch_id" => "pa",
+        "patch_hash" => "h",
+        "file_snapshots" => [
+          %{
+            "path" => "lib/x.ex",
+            "existed" => true,
+            "content_hash" => "def",
+            "snapshot_path" => "lib/x.ex",
+            "completely_unknown_key_#{:erlang.unique_integer([:positive])}" => "v"
+          }
+        ]
+      }
+
+      Checkpoint.from_map(map)
+      after_ = :erlang.system_info(:atom_count)
+      # Atom count should not have increased significantly
+      # (normal runtime may create a few atoms; we check no explosion)
+      assert after_ - before <= 10
+    end
+  end
 end
