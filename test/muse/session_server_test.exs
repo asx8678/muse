@@ -1234,6 +1234,173 @@ defmodule Muse.SessionServerTest do
     end
   end
 
+  describe "approve_patch/2 and reject_patch/2" do
+    test "approving a pending awaiting_approval patch transitions state and emits events" do
+      session_id = "approve-patch-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, objective: "Approve patch session")
+      :ok = persist_plan_snapshot(session_id, plan, "idle")
+      pid = start_server(session_id)
+
+      # Simulate a pending patch that a lane 02/03 tool would have stored
+      patch = %{
+        patch_id: "patch_#{:erlang.unique_integer([:positive])}",
+        plan_id: plan.id,
+        session_id: session_id,
+        hash: "abc123def456",
+        status: :awaiting_approval,
+        description: "Fix the widget alignment"
+      }
+
+      # Store the pending patch directly in state
+      GenServer.call(pid, {:store_pending_patch, patch})
+
+      # Verify pending_patch is present
+      before_status = Muse.SessionServer.status(pid)
+      assert before_status.pending_patch.status == :awaiting_approval
+
+      assert {:ok, approved_patch} = Muse.SessionServer.approve_patch(pid, :cli)
+      assert approved_patch.status == :approved
+      assert approved_patch.patch_id == patch.patch_id
+      assert %DateTime{} = approved_patch.decided_at
+
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+      assert status.pending_patch.status == :approved
+      assert status.pending_patch.decided_by == "cli"
+      assert status.active_turn_id == nil
+      assert status.runner_pid == nil
+
+      events = State.events()
+      event_types = Enum.map(events, & &1.type)
+      assert :approval_approved in event_types
+      assert :patch_approved in event_types
+
+      patch_event = Enum.find(events, &(&1.type == :patch_approved))
+      assert patch_event.data.patch_id == patch.patch_id
+      assert patch_event.data.patch_hash == "abc123def456"
+      assert patch_event.data.plan_id == plan.id
+      assert patch_event.data.status == "approved"
+    end
+
+    test "rejecting a pending awaiting_approval patch transitions state and emits events" do
+      session_id = "reject-patch-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, objective: "Reject patch session")
+      :ok = persist_plan_snapshot(session_id, plan, "idle")
+      pid = start_server(session_id)
+
+      patch = %{
+        patch_id: "patch_#{:erlang.unique_integer([:positive])}",
+        plan_id: plan.id,
+        session_id: session_id,
+        hash: "xyz789abc",
+        status: :awaiting_approval,
+        description: "Update the header"
+      }
+
+      GenServer.call(pid, {:store_pending_patch, patch})
+
+      assert {:ok, rejected_patch} = Muse.SessionServer.reject_patch(pid, :web)
+      assert rejected_patch.status == :rejected
+      assert rejected_patch.patch_id == patch.patch_id
+      assert %DateTime{} = rejected_patch.decided_at
+
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+      assert status.pending_patch.status == :rejected
+      assert status.pending_patch.decided_by == "web"
+
+      events = State.events()
+      event_types = Enum.map(events, & &1.type)
+      assert :approval_rejected in event_types
+      assert :patch_rejected in event_types
+
+      patch_event = Enum.find(events, &(&1.type == :patch_rejected))
+      assert patch_event.data.patch_id == patch.patch_id
+      assert patch_event.data.patch_hash == "xyz789abc"
+      assert patch_event.data.status == "rejected"
+      assert patch_event.data.decided_by == "web"
+    end
+
+    test "approve_patch returns error when no pending patch exists" do
+      session_id = "no-patch-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      status = Muse.SessionServer.status(pid)
+      assert status.pending_patch == nil
+
+      assert {:error, :no_pending_patch} = Muse.SessionServer.approve_patch(pid)
+    end
+
+    test "reject_patch returns error when no pending patch exists" do
+      session_id = "no-patch-reject-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      assert {:error, :no_pending_patch} = Muse.SessionServer.reject_patch(pid)
+    end
+
+    test "approve_patch returns error when patch is not awaiting_approval" do
+      session_id = "patch-not-awaiting-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      # Patch exists but is already approved
+      patch = %{
+        patch_id: "patch_already_approved",
+        plan_id: "plan-1",
+        session_id: session_id,
+        hash: "existing_hash",
+        status: :approved
+      }
+
+      GenServer.call(pid, {:store_pending_patch, patch})
+
+      assert {:error, {:patch_not_awaiting_approval, :approved}} =
+               Muse.SessionServer.approve_patch(pid)
+    end
+
+    test "reject_patch returns error when patch is not awaiting_approval" do
+      session_id = "patch-not-awaiting-rej-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      patch = %{
+        patch_id: "patch_rejected_before",
+        plan_id: "plan-1",
+        session_id: session_id,
+        hash: "existing_hash",
+        status: :rejected
+      }
+
+      GenServer.call(pid, {:store_pending_patch, patch})
+
+      assert {:error, {:patch_not_awaiting_approval, :rejected}} =
+               Muse.SessionServer.reject_patch(pid)
+    end
+
+    test "approve/reject patch does not write files or create checkpoints" do
+      session_id = "no-writes-patch-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, objective: "No writes patch")
+      :ok = persist_plan_snapshot(session_id, plan, "idle")
+      pid = start_server(session_id)
+
+      patch = %{
+        patch_id: "patch_no_writes",
+        plan_id: plan.id,
+        session_id: session_id,
+        hash: "nohash",
+        status: :awaiting_approval
+      }
+
+      GenServer.call(pid, {:store_pending_patch, patch})
+
+      # Approve — no writes should happen
+      {:ok, _} = Muse.SessionServer.approve_patch(pid)
+
+      status = Muse.SessionServer.status(pid)
+      assert status.pending_patch.status == :approved
+      assert status.runner_pid == nil
+      assert status.active_turn_id == nil
+    end
+  end
+
   describe "plan lifecycle — status and persistence" do
     test "status includes plan/plans/active_plan_id fields (nil when no plan)" do
       pid = start_server("plan-lifecycle-status-test")

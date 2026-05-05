@@ -604,6 +604,133 @@ defmodule Muse.CommandDispatcherTest do
     end
   end
 
+  describe "dispatch/3 — patch approval lifecycle" do
+    test "approve_patch with extra args returns usage error" do
+      {:error, output, effects} = CommandDispatcher.dispatch(:approve_patch, "now", %{})
+
+      assert output =~ "Error: usage: /approve patch"
+      assert output =~ "Unexpected arguments: now"
+      assert effects == []
+    end
+
+    test "reject_patch with extra args returns usage error" do
+      {:error, output, effects} = CommandDispatcher.dispatch(:reject_patch, "bad", %{})
+
+      assert output =~ "Error: usage: /reject patch"
+      assert output =~ "Unexpected arguments: bad"
+      assert effects == []
+    end
+
+    test "approve_patch returns safe error when session does not exist" do
+      session_id = "missing-approve-patch-#{:erlang.unique_integer([:positive])}"
+
+      {:error, output, effects} =
+        CommandDispatcher.dispatch(:approve_patch, nil, %{session_id: session_id})
+
+      assert output == "Error: no pending patch proposal is awaiting approval."
+      assert effects == []
+      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
+    end
+
+    test "reject_patch returns safe error when session has no pending patch" do
+      session_id = "missing-patch-reject-#{:erlang.unique_integer([:positive])}"
+      {:ok, pid} = Muse.SessionRouter.find_or_start_session(session_id)
+
+      try do
+        {:error, output, effects} =
+          CommandDispatcher.dispatch(:reject_patch, nil, %{session_id: session_id})
+
+        assert output == "Error: no pending patch proposal is awaiting approval."
+        assert effects == []
+      after
+        stop_session(pid)
+      end
+    end
+
+    test "approve_patch transitions a pending patch and returns PR17-safe output" do
+      session_id = "dispatcher-approve-patch-#{:erlang.unique_integer([:positive])}"
+      {pid, plan} = start_session_with_awaiting_plan(session_id, "Approve patch via dispatcher")
+
+      # First approve the plan so we can set up a patch scenario
+      {:ok, _} = Muse.SessionServer.approve_plan(pid, :cli)
+
+      patch = %{
+        patch_id: "dispatcher_patch_1",
+        plan_id: plan.id,
+        session_id: session_id,
+        hash: "abc123",
+        status: :awaiting_approval
+      }
+
+      GenServer.call(pid, {:store_pending_patch, patch})
+
+      try do
+        {:ok, output, effects} =
+          CommandDispatcher.dispatch(:approve_patch, nil, %{session_id: session_id, source: :cli})
+
+        assert output =~ "Patch proposal approved."
+        assert output =~ "- Patch id: dispatcher_patch_1"
+        assert output =~ "- Patch hash: abc123"
+        assert output =~ "- Plan id: #{plan.id}"
+        assert output =~ "- Approval status: approved"
+        assert output =~ "- PR17: approval recorded the patch proposal only"
+        assert output =~ "no files were modified, no checkpoint was created"
+        refute output =~ "Patch applied"
+
+        assert effects == [{:refresh, :events}]
+
+        status = Muse.SessionServer.status(pid)
+        assert status.status == :idle
+        assert status.pending_patch.status == :approved
+        assert status.active_turn_id == nil
+        assert status.runner_pid == nil
+      after
+        stop_session(pid)
+      end
+    end
+
+    test "reject_patch transitions a pending patch and returns PR17-safe output" do
+      session_id = "dispatcher-reject-patch-#{:erlang.unique_integer([:positive])}"
+      {pid, plan} = start_session_with_awaiting_plan(session_id, "Reject patch via dispatcher")
+
+      {:ok, _} = Muse.SessionServer.approve_plan(pid, :cli)
+
+      patch = %{
+        patch_id: "dispatcher_patch_to_reject",
+        plan_id: plan.id,
+        session_id: session_id,
+        hash: "def456",
+        status: :awaiting_approval
+      }
+
+      GenServer.call(pid, {:store_pending_patch, patch})
+
+      try do
+        {:ok, output, effects} =
+          CommandDispatcher.dispatch(:reject_patch, nil, %{session_id: session_id, source: :web})
+
+        assert output =~ "Patch proposal rejected."
+        assert output =~ "- Patch id: dispatcher_patch_to_reject"
+        assert output =~ "- Patch hash: def456"
+        assert output =~ "- Plan id: #{plan.id}"
+        assert output =~ "- Rejection status: rejected"
+        assert output =~ "- PR17: rejection recorded the decision only"
+        assert output =~ "no files were modified"
+        assert output =~ "Next: ask Coding Muse for a revised patch proposal."
+
+        assert effects == [{:refresh, :events}]
+
+        status = Muse.SessionServer.status(pid)
+        assert status.status == :idle
+        assert status.pending_patch.status == :rejected
+        assert status.active_turn_id == nil
+        assert status.runner_pid == nil
+      after
+        stop_session(pid)
+      end
+    end
+  end
+
   describe "dispatch/3 — :events" do
     test "counts events from context" do
       events = [

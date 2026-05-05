@@ -225,6 +225,69 @@ defmodule Muse.SessionRouterTest do
     end
   end
 
+  describe "approve_patch/2 and reject_patch/2" do
+    test "returns {:error, :not_found} without starting missing sessions" do
+      session_id = "router-patch-missing-#{:erlang.unique_integer([:positive])}"
+
+      assert {:error, :not_found} = Muse.SessionRouter.approve_patch(session_id)
+      assert {:error, :not_found} = Muse.SessionRouter.reject_patch(session_id)
+      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
+    end
+
+    test "routes approve_patch to an existing session" do
+      session_id = "router-approve-patch-#{:erlang.unique_integer([:positive])}"
+      plan = persist_awaiting_plan(session_id)
+      {:ok, pid} = Muse.SessionRouter.find_or_start_session(session_id)
+
+      # Approve plan first, then set up a pending patch
+      {:ok, _} = Muse.SessionServer.approve_plan(pid, :cli)
+
+      patch = %{
+        patch_id: "router_patch_1",
+        plan_id: plan.id,
+        session_id: session_id,
+        hash: "router_hash_abc",
+        status: :awaiting_approval
+      }
+
+      GenServer.call(pid, {:store_pending_patch, patch})
+
+      assert {:ok, approved_patch} = Muse.SessionRouter.approve_patch(session_id, :cli)
+      assert approved_patch.status == :approved
+      assert approved_patch.patch_id == "router_patch_1"
+
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+      assert status.pending_patch.status == :approved
+    end
+
+    test "routes reject_patch to an existing session" do
+      session_id = "router-reject-patch-#{:erlang.unique_integer([:positive])}"
+      plan = persist_awaiting_plan(session_id)
+      {:ok, pid} = Muse.SessionRouter.find_or_start_session(session_id)
+
+      {:ok, _} = Muse.SessionServer.approve_plan(pid, :cli)
+
+      patch = %{
+        patch_id: "router_patch_reject",
+        plan_id: plan.id,
+        session_id: session_id,
+        hash: "router_hash_def",
+        status: :awaiting_approval
+      }
+
+      GenServer.call(pid, {:store_pending_patch, patch})
+
+      assert {:ok, rejected_patch} = Muse.SessionRouter.reject_patch(session_id, :web)
+      assert rejected_patch.status == :rejected
+      assert rejected_patch.patch_id == "router_patch_reject"
+
+      status = Muse.SessionServer.status(pid)
+      assert status.status == :idle
+      assert status.pending_patch.status == :rejected
+    end
+  end
+
   describe "status/1" do
     test "returns session status for active session" do
       {:ok, _pid} = Muse.SessionRouter.find_or_start_session("status-active")

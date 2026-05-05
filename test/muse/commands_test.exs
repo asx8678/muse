@@ -54,6 +54,22 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/reject plan because") == {:command, :reject_plan, "because"}
     end
 
+    test "parses /approve patch" do
+      assert Commands.parse("/approve patch") == {:command, :approve_patch}
+    end
+
+    test "parses /approve patch with args" do
+      assert Commands.parse("/approve patch now") == {:command, :approve_patch, "now"}
+    end
+
+    test "parses /reject patch" do
+      assert Commands.parse("/reject patch") == {:command, :reject_patch}
+    end
+
+    test "parses /reject patch with args" do
+      assert Commands.parse("/reject patch because") == {:command, :reject_patch, "because"}
+    end
+
     test "/approve and /reject alone are unknown" do
       assert Commands.parse("/approve") == {:unknown, "/approve"}
       assert Commands.parse("/reject") == {:unknown, "/reject"}
@@ -285,6 +301,8 @@ defmodule Muse.CommandsTest do
       assert text =~ "/plan show"
       assert text =~ "/approve plan"
       assert text =~ "/reject plan"
+      assert text =~ "/approve patch"
+      assert text =~ "/reject patch"
       assert text =~ "/muses"
       assert text =~ "/events"
       assert text =~ "/muses"
@@ -337,7 +355,7 @@ defmodule Muse.CommandsTest do
     test "returns list of {command, description} tuples" do
       cmds = Commands.slash_commands()
       assert is_list(cmds)
-      assert length(cmds) == 41
+      assert length(cmds) == 43
 
       for {cmd, desc} <- cmds do
         assert is_binary(cmd)
@@ -360,6 +378,8 @@ defmodule Muse.CommandsTest do
       assert "/plan show" in cmd_names
       assert "/approve plan" in cmd_names
       assert "/reject plan" in cmd_names
+      assert "/approve patch" in cmd_names
+      assert "/reject patch" in cmd_names
       assert "/auth status" in cmd_names
     end
   end
@@ -368,7 +388,7 @@ defmodule Muse.CommandsTest do
     test "returns list of maps with command and description keys" do
       cmds = Commands.slash_commands_json()
       assert is_list(cmds)
-      assert length(cmds) == 41
+      assert length(cmds) == 43
 
       for cmd <- cmds do
         assert Map.has_key?(cmd, :command)
@@ -389,6 +409,8 @@ defmodule Muse.CommandsTest do
       assert "/plan history" in cmd_names
       assert "/plan status" in cmd_names
       assert "/plan show" in cmd_names
+      assert "/approve patch" in cmd_names
+      assert "/reject patch" in cmd_names
       assert "/auth status" in cmd_names
     end
   end

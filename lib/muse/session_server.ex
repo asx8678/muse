@@ -121,6 +121,33 @@ defmodule Muse.SessionServer do
     GenServer.call(pid, {:reject_plan, source})
   end
 
+  @doc """
+  Approves the active pending patch proposal.
+
+  PR17: approval is a lifecycle transition only. It records that the active
+  pending patch was accepted. It does not apply the patch, create a checkpoint,
+  write files, run shell commands, or hand off to any execution layer.
+  """
+  @spec approve_patch(pid(), atom()) ::
+          {:ok, map()}
+          | {:error, :turn_running | :no_pending_patch | {:patch_not_awaiting_approval, term()}}
+  def approve_patch(pid, source \\ :system) do
+    GenServer.call(pid, {:approve_patch, source})
+  end
+
+  @doc """
+  Rejects the active pending patch proposal.
+
+  Rejection is safe and non-executing: it records that the current pending patch
+  was rejected so a revised patch can be requested.
+  """
+  @spec reject_patch(pid(), atom()) ::
+          {:ok, map()}
+          | {:error, :turn_running | :no_pending_patch | {:patch_not_awaiting_approval, term()}}
+  def reject_patch(pid, source \\ :system) do
+    GenServer.call(pid, {:reject_patch, source})
+  end
+
   # -- GenServer callbacks -----------------------------------------------------
 
   @impl true
@@ -148,7 +175,10 @@ defmodule Muse.SessionServer do
       from: nil,
       turn_start_time: nil,
       session_events_before_turn: [],
-      cancellation_requested: false
+      cancellation_requested: false,
+      # Patch proposal state
+      pending_patch: nil,
+      pending_patch_binding: nil
     }
 
     # Attempt to restore plan from persisted snapshot (non-fatal on failure)
@@ -182,7 +212,9 @@ defmodule Muse.SessionServer do
       event_count: length(state.events),
       active_turn_id: state.active_turn_id,
       runner_pid: state.runner_pid,
-      cancellation_requested: state.cancellation_requested
+      cancellation_requested: state.cancellation_requested,
+      pending_patch: state.pending_patch,
+      pending_patch_binding: state.pending_patch_binding
     }
 
     {:reply, reply, state}
@@ -213,6 +245,31 @@ defmodule Muse.SessionServer do
   def handle_call({:reject_plan, source}, _from, state) do
     {reply, state} = handle_plan_lifecycle_command(state, source, :rejected)
     {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:approve_patch, source}, _from, state) do
+    {reply, state} = handle_patch_lifecycle_command(state, source, :approved)
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:reject_patch, source}, _from, state) do
+    {reply, state} = handle_patch_lifecycle_command(state, source, :rejected)
+    {:reply, reply, state}
+  end
+
+  @impl true
+  # Test-only handler to store a pending patch in session state.
+  # Used by session_server_test to simulate lane 02/03 patch proposal.
+  def handle_call({:store_pending_patch, patch}, _from, state) do
+    state_with_patch = %{
+      state
+      | pending_patch: patch,
+        status: :awaiting_patch_approval
+    }
+
+    {:reply, :ok, state_with_patch}
   end
 
   defp do_submit(source, text, opts, from, state) do
@@ -798,6 +855,120 @@ defmodule Muse.SessionServer do
 
   defp turn_running?(state), do: state.status == :running or not is_nil(state.runner_pid)
 
+  # -- Patch lifecycle commands -------------------------------------------------
+
+  defp handle_patch_lifecycle_command(state, source, target_status) do
+    cond do
+      turn_running?(state) ->
+        {{:error, :turn_running}, state}
+
+      true ->
+        case resolve_pending_patch(state) do
+          nil ->
+            {{:error, :no_pending_patch}, state}
+
+          %{} = patch ->
+            transition_patch(state, source, patch, target_status)
+        end
+    end
+  end
+
+  defp resolve_pending_patch(state) do
+    case state.pending_patch do
+      %{status: :awaiting_approval} = patch ->
+        patch
+
+      %{} = patch ->
+        # Patch exists but not awaiting approval — include status for error reporting
+        patch
+
+      nil ->
+        nil
+    end
+  end
+
+  defp transition_patch(state, source, patch, target_status) do
+    if patch.status != :awaiting_approval do
+      {{:error, {:patch_not_awaiting_approval, patch.status}}, state}
+    else
+      actor = Atom.to_string(source || :system)
+      now = DateTime.utc_now()
+
+      # Build the transitioned patch map (no writes, no checkpoints)
+      transitioned_patch =
+        patch
+        |> Map.put(:status, target_status)
+        |> Map.put(:decided_by, actor)
+        |> Map.put(:decided_at, now)
+
+      {patch_event_type, approval_event_type} =
+        case target_status do
+          :approved -> {:patch_approved, :approval_approved}
+          :rejected -> {:patch_rejected, :approval_rejected}
+        end
+
+      # Emit approval event
+      {approval_event, state} =
+        emit_session_event(
+          state,
+          source,
+          approval_event_type,
+          %{
+            kind: :patch,
+            status: Atom.to_string(target_status),
+            patch_id: transitioned_patch.patch_id,
+            patch_hash: transitioned_patch.hash,
+            plan_id: transitioned_patch.plan_id
+          },
+          visibility: :user
+        )
+
+      # Emit patch lifecycle event
+      {patch_event, state} =
+        emit_session_event(
+          state,
+          source,
+          patch_event_type,
+          %{
+            patch_id: transitioned_patch.patch_id,
+            patch_hash: transitioned_patch.hash,
+            plan_id: transitioned_patch.plan_id,
+            status: Atom.to_string(target_status),
+            decided_by: actor
+          },
+          visibility: :user
+        )
+
+      # Emit session status change if coming from awaiting_patch_approval
+      {status_event, state} = maybe_emit_patch_status_event(state, state.status)
+
+      events = [approval_event, patch_event, status_event] |> Enum.reject(&is_nil/1)
+
+      # Reset patch state and transition session back to idle
+      state =
+        state
+        |> Map.put(:pending_patch, transitioned_patch)
+        |> Map.put(:pending_patch_binding, nil)
+        |> Map.put(:status, :idle)
+        |> append_session_events(events)
+        |> maybe_persist_snapshot()
+
+      {{:ok, transitioned_patch}, state}
+    end
+  end
+
+  defp maybe_emit_patch_status_event(state, :awaiting_patch_approval) do
+    emit_session_event(
+      state,
+      :conductor,
+      :session_status_changed,
+      %{from: :awaiting_patch_approval, to: :idle},
+      visibility: :internal
+    )
+  end
+
+  defp maybe_emit_patch_status_event(state, _previous_status), do: {nil, state}
+
   defp resolve_active_plan_state(state) do
     cond do
       state.active_plan_id && match?(%Plan{}, Map.get(state.plans, state.active_plan_id)) ->
@@ -904,7 +1075,9 @@ defmodule Muse.SessionServer do
             active_plan_id: active_id,
             approvals: approvals,
             approval_binding: approval_binding,
-            active_approval: active_approval
+            active_approval: active_approval,
+            pending_patch: Map.get(data, "pending_patch"),
+            pending_patch_binding: Map.get(data, "pending_patch_binding")
         }
 
       _ ->
@@ -1015,22 +1188,24 @@ defmodule Muse.SessionServer do
   defp put_restored_plan(plans, _plan, _active_plan_id), do: plans
 
   defp maybe_persist_snapshot(state) do
-    # Persist plan-related state as a session snapshot.
-    # Only writes when a plan exists to avoid unnecessary I/O.
-    if state.plan do
-      data = %{
-        status: Atom.to_string(state.status),
-        active_muse: state.active_muse,
-        active_plan_id: state.active_plan_id,
-        approval_binding: state.approval_binding,
-        active_approval: approval_to_map(state.active_approval),
-        approvals: Enum.map(state.approvals || [], &approval_to_map/1),
-        plan: Plan.to_map(state.plan),
-        plans:
-          state.plans
-          |> Enum.map(fn {id, p} -> {id, Plan.to_map(p)} end)
-          |> Enum.into(%{})
-      }
+    # Persist plan/patch-related state as a session snapshot.
+    # Only writes when a plan or pending_patch exists to avoid unnecessary I/O.
+    if state.plan != nil or state.pending_patch != nil do
+      data =
+        %{
+          status: Atom.to_string(state.status),
+          active_muse: state.active_muse,
+          active_plan_id: state.active_plan_id,
+          approval_binding: state.approval_binding,
+          active_approval: approval_to_map(state.active_approval),
+          approvals: Enum.map(state.approvals || [], &approval_to_map/1),
+          plan: state.plan && Plan.to_map(state.plan),
+          plans:
+            state.plans
+            |> Enum.map(fn {id, p} -> {id, Plan.to_map(p)} end)
+            |> Enum.into(%{})
+        }
+        |> maybe_put_pending_patch(state)
 
       case SessionStore.save_session(state.session_id, data) do
         :ok -> :ok
@@ -1041,11 +1216,21 @@ defmodule Muse.SessionServer do
     state
   end
 
+  defp maybe_put_pending_patch(data, %{pending_patch: %{} = patch, pending_patch_binding: binding}) do
+    Map.merge(data, %{
+      pending_patch: patch,
+      pending_patch_binding: binding
+    })
+  end
+
+  defp maybe_put_pending_patch(data, _state), do: data
+
   defp safely_atom_status(str) when is_binary(str) do
     case str do
       "idle" -> :idle
       "running" -> :running
       "awaiting_plan_approval" -> :awaiting_plan_approval
+      "awaiting_patch_approval" -> :awaiting_patch_approval
       "planning" -> :planning
       _ -> :idle
     end
