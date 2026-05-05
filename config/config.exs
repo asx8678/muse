@@ -41,5 +41,13 @@ config :muse, :external_ws,
   enabled: false,
   replay_limit: 100
 
+# --- WebSocket client for LLM transport ---
+# Unset (nil) by default so that dev/test environments remain deterministic.
+# In production, set this to Muse.LLM.Transport.WebSocket.MintAdapter to
+# enable the Mint-backed WebSocket client.  When nil,
+# Stream.default_stream/3 returns {:error, {:transport_error,
+# :websocket_client_not_configured}}.
+config :muse, :websocket_client, nil
+
 # --- Environment-specific overrides ---
 import_config "#{config_env()}.exs"

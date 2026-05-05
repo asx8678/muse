@@ -7,6 +7,14 @@ if config_env() == :prod do
     config :muse, :external_ws, enabled: true
   end
 
+  # WebSocket client for LLM transport — opt-in via env var for production.
+  # When set to "mint", enables the Mint-backed WebSocket client.
+  # Without this var the client remains unconfigured (safe for air-gapped
+  # or SSE-only deployments).
+  if System.get_env("MUSE_WS_CLIENT") == "mint" do
+    config :muse, :websocket_client, Muse.LLM.Transport.WebSocket.MintAdapter
+  end
+
   secret_key_base =
     System.get_env("MUSE_SECRET_KEY_BASE") ||
       raise """

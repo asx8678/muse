@@ -32,12 +32,20 @@ defmodule Muse.LLM.Transport.WebSocket.Stream do
         {:ok, %{close_code: 1000, close_reason: "done"}}
       end
 
-  `default_stream/3` is intentionally dependency-free for this PR. It supports
-  injectable low-level callbacks (`:connect_fn`, `:send_fn`, `:recv_fn`) or a
-  `:websocket_client` module/map with equivalent callbacks. If no client is
-  configured it returns `{:error, {:transport_error,
+  `default_stream/3` supports injectable low-level callbacks (`:connect_fn`,
+  `:send_fn`, `:recv_fn`) or a `:websocket_client` module/map with equivalent
+  callbacks. When no client is provided in options, it falls back to
+  `Application.get_env(:muse, :websocket_client)`. If that is also unconfigured
+  (the default in dev/test), it returns `{:error, {:transport_error,
   :websocket_client_not_configured}}` rather than attempting a real network
   connection.
+
+  To enable the production WebSocket client, configure:
+
+      config :muse, :websocket_client, Muse.LLM.Transport.WebSocket.MintAdapter
+
+  The built-in `MintAdapter` is backed by `Mint.WebSocket` and requires the
+  `:mint_web_socket` dependency.
 
   Low-level callbacks use `connect_fn.(url, opts)`,
   `send_fn.(conn, create_frame, opts)`, and `recv_fn.(conn, opts)`. Inbound
@@ -140,7 +148,9 @@ defmodule Muse.LLM.Transport.WebSocket.Stream do
   Default dependency-free WebSocket stream runner.
 
   This function has the provider-test-friendly shape
-  `(url, ws_options, on_frame)`. Without injected low-level callbacks it returns
+  `(url, ws_options, on_frame)`. Without injected low-level callbacks it falls
+  back to `Application.get_env(:muse, :websocket_client)`. If no client is
+  configured (the default in dev/test), it returns
   `{:error, {:transport_error, :websocket_client_not_configured}}` and performs
   no network work.
   """
@@ -399,7 +409,17 @@ defmodule Muse.LLM.Transport.WebSocket.Stream do
   defp resolve_client_callback(ws_options, name, arity) do
     case Keyword.get(ws_options, :websocket_client) do
       nil ->
-        {:error, {:transport_error, :websocket_client_not_configured}}
+        case resolve_configured_client() do
+          nil ->
+            {:error, {:transport_error, :websocket_client_not_configured}}
+
+          client ->
+            resolve_client_callback(
+              Keyword.put(ws_options, :websocket_client, client),
+              name,
+              arity
+            )
+        end
 
       module when is_atom(module) ->
         resolve_module_callback(module, name, arity)
@@ -410,6 +430,10 @@ defmodule Muse.LLM.Transport.WebSocket.Stream do
       _other ->
         {:error, {:transport_error, :invalid_websocket_client}}
     end
+  end
+
+  defp resolve_configured_client do
+    Application.get_env(:muse, :websocket_client)
   end
 
   defp resolve_module_callback(module, name, arity) do

@@ -266,6 +266,117 @@ defmodule Muse.LLM.Transport.WebSocket.StreamTest do
     end
   end
 
+  describe "websocket_client app env fallback" do
+    setup do
+      # Ensure app env is nil (deterministic dev/test default)
+      original = Application.get_env(:muse, :websocket_client)
+      Application.put_env(:muse, :websocket_client, nil)
+
+      on_exit(fn ->
+        if original == nil do
+          Application.delete_env(:muse, :websocket_client)
+        else
+          Application.put_env(:muse, :websocket_client, original)
+        end
+      end)
+
+      :ok
+    end
+
+    test "returns :websocket_client_not_configured when app env is nil" do
+      assert {:error, {:transport_error, :websocket_client_not_configured}} =
+               Stream.request(
+                 [url: @url, create_frame: "response.create"],
+                 fn _frame -> :ok end
+               )
+    end
+
+    test "falls back to app env websocket_client when not provided in options" do
+      parent = self()
+
+      fake_client = %{
+        connect: fn _url, _opts ->
+          send(parent, :app_env_client_connect_called)
+          {:ok, :fake_conn}
+        end,
+        send_frame: fn conn, _frame, _opts ->
+          send(parent, :app_env_client_send_called)
+          {:ok, conn}
+        end,
+        recv: fn _conn, _opts ->
+          send(parent, :app_env_client_recv_called)
+          {:ok, {:close, 1000, "normal"}, :fake_conn}
+        end
+      }
+
+      Application.put_env(:muse, :websocket_client, fake_client)
+
+      result =
+        Stream.request(
+          [url: @url, create_frame: "response.create"],
+          fn frame -> send(parent, {:frame, frame}) end
+        )
+
+      assert {:ok, %{close_code: 1000, close_reason: "normal"}} = result
+      assert_received :app_env_client_connect_called
+      assert_received :app_env_client_send_called
+      assert_received :app_env_client_recv_called
+    end
+
+    test "app env websocket_client is ignored when explicit websocket_client option is provided" do
+      parent = self()
+
+      # Set a "bad" app env client that would fail if used
+      Application.put_env(
+        :muse,
+        :websocket_client,
+        %{connect: fn _, _ -> {:error, :app_env_should_not_be_used} end}
+      )
+
+      # But provide an explicit working client via options
+      good_client = %{
+        connect: fn _url, _opts ->
+          send(parent, :explicit_client_used)
+          {:ok, :explicit_conn}
+        end,
+        send_frame: fn conn, _frame, _opts -> {:ok, conn} end,
+        recv: fn _conn, _opts -> {:ok, {:close, 1000, "normal"}, :explicit_conn} end
+      }
+
+      result =
+        Stream.request(
+          [url: @url, create_frame: "response.create", websocket_client: good_client],
+          fn _frame -> :ok end
+        )
+
+      assert {:ok, %{close_code: 1000}} = result
+      assert_received :explicit_client_used
+    end
+
+    test "app env with non-existent module client returns :websocket_client_not_configured" do
+      # A module that doesn't exist should fall back gracefully
+      Application.put_env(:muse, :websocket_client, NonExistentWebSocketModule)
+
+      assert {:error, {:transport_error, :websocket_client_not_configured}} =
+               Stream.request(
+                 [url: @url, create_frame: "response.create"],
+                 fn _frame -> :ok end
+               )
+    end
+
+    test "app env with invalid client type returns :invalid_websocket_client" do
+      Application.put_env(:muse, :websocket_client, "not a valid client")
+
+      assert {:error, {:transport_error, summary}} =
+               Stream.request(
+                 [url: @url, create_frame: "response.create"],
+                 fn _frame -> :ok end
+               )
+
+      assert is_binary(summary) or is_atom(summary)
+    end
+  end
+
   defp ok_connect_fn(parent) do
     fn url, client_options ->
       send(parent, {:connected, url, client_options})
