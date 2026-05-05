@@ -103,7 +103,7 @@ defmodule Muse.EventStreamTest do
       assert asst_msg.streaming? == false
     end
 
-    test "only includes user_message, assistant_delta, and assistant_message events" do
+    test "only includes chat and safe plan lifecycle events" do
       events = [
         make_event(:user_message, %{text: "hi"}, id: 1, turn_id: "t1", seq: 1, timestamp: now()),
         make_event(:turn_started, %{}, id: 2, turn_id: "t1", seq: 2, timestamp: now()),
@@ -125,6 +125,64 @@ defmodule Muse.EventStreamTest do
       messages = EventStream.chat_messages(events)
       # turn_started and turn_completed are filtered out
       assert length(messages) == 2
+    end
+
+    test "plan lifecycle events render as safe system status messages" do
+      raw_plan_json =
+        ~s({"objective":"Secret plan","tasks":[{"title":"Leak","description":"Nope"}]})
+
+      events = [
+        make_event(
+          :plan_approved,
+          %{plan_id: "plan_1", version: 2, task_count: 3, raw: raw_plan_json},
+          id: 10,
+          turn_id: nil,
+          seq: nil,
+          timestamp: now()
+        )
+      ]
+
+      [message] = EventStream.chat_messages(events)
+
+      assert message.role == :system
+      assert message.text =~ "Plan approved: plan_1 (version 2)"
+      assert message.text =~ "implementation still requires a later explicit gate"
+      refute message.text =~ "Secret plan"
+      refute message.text =~ ~s("tasks")
+    end
+
+    test "internal plan lifecycle events are not rendered into chat" do
+      events = [
+        make_event(:plan_approved, %{plan_id: "internal-plan"},
+          id: 11,
+          turn_id: nil,
+          seq: nil,
+          timestamp: now(),
+          visibility: :internal
+        )
+      ]
+
+      assert EventStream.chat_messages(events) == []
+    end
+
+    test "chat text suppresses raw plan JSON and redacts secrets" do
+      events = [
+        make_event(
+          :assistant_message,
+          %{text: "token=abc123 #{~s({"objective":"Hidden","tasks":[]})}"},
+          id: 12,
+          turn_id: "t-safe",
+          seq: 1,
+          timestamp: now()
+        )
+      ]
+
+      [message] = EventStream.chat_messages(events)
+
+      assert message.text =~ "structured plan JSON omitted"
+      refute message.text =~ "abc123"
+      refute message.text =~ "Hidden"
+      refute message.text =~ ~s("tasks")
     end
   end
 

@@ -755,16 +755,14 @@ defmodule Muse.CommandDispatcher do
       Atom.to_string(event.source),
       Atom.to_string(event.type),
       event_display_text(event),
-      inspect(event.data)
+      inspect(Muse.EventDisplay.safe_data(event.data))
     ]
 
     searchable = searchable_parts |> Enum.join(" ") |> String.downcase()
     String.contains?(searchable, query)
   end
 
-  defp event_display_text(%Muse.Event{data: %{text: text}}), do: text
-  defp event_display_text(%Muse.Event{data: %{file: file}}), do: file
-  defp event_display_text(%Muse.Event{data: data}), do: inspect(data)
+  defp event_display_text(%Muse.Event{} = event), do: Muse.EventDisplay.summary(event)
 
   defp event_to_map(%Muse.Event{} = event) do
     %{
@@ -772,7 +770,7 @@ defmodule Muse.CommandDispatcher do
       "timestamp" => DateTime.to_iso8601(event.timestamp),
       "source" => Atom.to_string(event.source),
       "type" => Atom.to_string(event.type),
-      "data" => json_safe(event.data)
+      "data" => event.data |> Muse.EventDisplay.safe_data() |> json_safe()
     }
   end
 
@@ -987,7 +985,7 @@ defmodule Muse.CommandDispatcher do
 
   defp format_plan_lifecycle_result({:ok, %Muse.Plan{} = plan}, :approve_plan) do
     {:ok,
-     "Plan approved.\n\nThe approved plan is ready for implementation.\n#{plan_identity_line(plan)}",
+     "Plan approved.\n\nApproval records the plan decision only; implementation still requires a later explicit gate.\n#{plan_identity_line(plan)}",
      [{:refresh, :events}]}
   end
 

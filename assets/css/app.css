@@ -2102,7 +2102,8 @@ textarea:focus-visible {
 }
 
 .chat-messages > .chat-message-user:first-child,
-.chat-messages > .chat-message-assistant:first-child {
+.chat-messages > .chat-message-assistant:first-child,
+.chat-messages > .chat-message-system:first-child {
   margin-top: 8px;
 }
 
@@ -2116,6 +2117,12 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
+}
+
+.chat-message-system {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .chat-bubble {
@@ -2143,6 +2150,14 @@ textarea:focus-visible {
   padding: 0;
   color: var(--text);
   max-width: 100%;
+}
+
+.chat-message-system .chat-bubble {
+  background: rgba(109, 93, 235, 0.10);
+  border: 1px solid rgba(109, 93, 235, 0.20);
+  color: var(--text-secondary);
+  max-width: 92%;
+  font-size: 13px;
 }
 
 .chat-meta {

@@ -510,7 +510,7 @@ defmodule Muse.CommandDispatcherTest do
           CommandDispatcher.dispatch(:approve_plan, nil, %{session_id: session_id, source: :cli})
 
         assert output ==
-                 "Plan approved.\n\nThe approved plan is ready for implementation.\nActive plan: #{session_id}-plan (version 1)."
+                 "Plan approved.\n\nApproval records the plan decision only; implementation still requires a later explicit gate.\nActive plan: #{session_id}-plan (version 1)."
 
         assert effects == [{:refresh, :events}]
 
@@ -584,6 +584,30 @@ defmodule Muse.CommandDispatcherTest do
       {:ok, output, _effects} = CommandDispatcher.dispatch(:events, nil, %{events: events})
       assert output =~ "[cli]"
       assert output =~ "hi"
+    end
+
+    test "shows plan approval events safely" do
+      events = [
+        %Muse.Event{
+          id: 2,
+          timestamp: DateTime.utc_now(),
+          source: :cli,
+          type: :plan_approved,
+          data: %{
+            plan_id: "plan_cli",
+            version: 1,
+            task_count: 1,
+            raw: ~s({"objective":"Hidden","tasks":[{"title":"Nope"}]})
+          }
+        }
+      ]
+
+      {:ok, output, _effects} = CommandDispatcher.dispatch(:events, nil, %{events: events})
+
+      assert output =~ "Plan approved: plan_cli (version 1)"
+      assert output =~ "implementation still requires a later explicit gate"
+      refute output =~ "Hidden"
+      refute output =~ ~s("tasks")
     end
   end
 

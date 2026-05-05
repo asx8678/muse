@@ -179,6 +179,30 @@ defmodule Muse.CLI.TuiTest do
       assert length(main_widget(state).items) == 1
     end
 
+    test "events tab renders approval status without raw plan JSON" do
+      event = %Muse.Event{
+        id: 2,
+        timestamp: DateTime.utc_now(),
+        source: :cli,
+        type: :plan_approved,
+        data: %{
+          plan_id: "plan_tui",
+          version: 3,
+          task_count: 2,
+          raw: ~s({"objective":"Hidden","tasks":[{"title":"Nope"}]})
+        }
+      }
+
+      {:ok, state} = mount_tui() |> then(fn {:ok, s} -> {:ok, %{s | events: [event]}} end)
+      [item] = main_widget(state).items
+      summary_span = List.last(item.spans)
+
+      assert summary_span.content =~ "Plan approved: plan_tui (version 3)"
+      assert summary_span.content =~ "implementation still requires a later explicit gate"
+      refute summary_span.content =~ "Hidden"
+      refute summary_span.content =~ ~s("tasks")
+    end
+
     test "logs tab renders List" do
       {:ok, state} = mount_tui()
       assert %ExRatatui.Widgets.List{} = main_widget(%{state | active_tab: "logs"})

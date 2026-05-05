@@ -168,9 +168,28 @@ defmodule MuseWeb.EventFormatterTest do
                "3 issue(s) attached"
     end
 
-    test "falls back to inspect for other data" do
-      result = EventFormatter.event_display(make_event(:info, %{custom: 42}))
-      assert is_binary(result)
+    test "falls back to compact key-value summary for other data" do
+      assert EventFormatter.event_display(make_event(:info, %{custom: 42})) == "custom=42"
+    end
+
+    test "displays approval lifecycle status without implying implementation starts" do
+      result =
+        EventFormatter.event_display(
+          make_event(:plan_approved, %{plan_id: "plan_123", version: 1, task_count: 2})
+        )
+
+      assert result =~ "Plan approved: plan_123 (version 1)"
+      assert result =~ "implementation still requires a later explicit gate"
+      refute result =~ "ready for implementation"
+    end
+
+    test "suppresses raw structured plan JSON in display text" do
+      raw = ~s({"objective":"Do secret things","tasks":[{"title":"Leak","description":"Nope"}]})
+      result = EventFormatter.event_display(make_event(:info, %{text: raw}))
+
+      assert result =~ "structured plan JSON omitted"
+      refute result =~ "Do secret things"
+      refute result =~ ~s("tasks")
     end
   end
 
@@ -275,6 +294,27 @@ defmodule MuseWeb.EventFormatterTest do
       refute Map.has_key?(result, :seq)
       refute Map.has_key?(result, :visibility)
       refute Map.has_key?(result, :muse_id)
+    end
+
+    test "sanitizes secrets and nested raw plan payloads for UI-facing JSON" do
+      event =
+        make_event(:info, %{
+          api_key: "sk-test-secret",
+          plan: %{
+            "id" => "plan_raw",
+            "objective" => "Render safely",
+            "tasks" => [%{"title" => "Avoid raw JSON", "description" => "No leak"}]
+          },
+          raw: ~s({"objective":"Do secret things","tasks":[{"title":"Leak"}]})
+        })
+
+      result = EventFormatter.event_to_map(event)
+
+      assert result.data["api_key"] == "[REDACTED]"
+      assert result.data["plan"]["plan_id"] == "plan_raw"
+      assert result.data["plan"]["task_count"] == 1
+      refute result.data["plan"]["tasks"]
+      assert result.data["raw"] =~ "structured plan JSON omitted"
     end
   end
 
