@@ -110,13 +110,26 @@ defmodule Muse.EventStream do
   """
   @spec external_replay(keyword() | map()) :: [map()]
   def external_replay(opts) when is_list(opts) or is_map(opts) do
-    events =
-      case fetch_opt(opts, :events) do
-        {:ok, events} when is_list(events) -> events
-        _ -> Muse.State.events()
+    session_id =
+      case fetch_opt(opts, :session_id) do
+        {:ok, sid} -> sid
+        :error -> nil
       end
 
-    external_replay(events, opts)
+    # Short-circuit before reading State when session_id is invalid.
+    # This avoids crashing when Muse.State is not running and also skips
+    # the unnecessary work of loading all events just to filter them out.
+    if not ExternalEventFilter.valid_session_id?(session_id) do
+      []
+    else
+      events =
+        case fetch_opt(opts, :events) do
+          {:ok, events} when is_list(events) -> events
+          _ -> Muse.State.events()
+        end
+
+      external_replay(events, opts)
+    end
   end
 
   @doc """

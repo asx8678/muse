@@ -17,13 +17,19 @@ defmodule MuseWeb.ExternalSocketConfig do
 
   ## Environment variable
 
-  The `MUSE_EXTERNAL_WS` environment variable is also checked when no explicit
-  app config `enabled:` key is set. Accepted truthy values are `"true"`, `"1"`,
-  `"yes"`, and `"on"` (case-sensitive). All other values (including `"TRUE"`,
-  `"Yes"`) are treated as disabled.
+  The `MUSE_EXTERNAL_WS` environment variable is checked **in addition** to app
+  config. If the app config is `enabled: false` (the default in
+  `config/config.exs`) but the env var is set to one of the truthy values below,
+  the env var **wins** — this allows developers to opt in at runtime without
+  modifying config files.
 
-  App config `enabled: true/false` takes priority over the env var when both
-  are present.
+  Accepted truthy values are `"true"`, `"1"`, `"yes"`, and `"on"`
+  (case-sensitive). All other values (including `"TRUE"`, `"Yes"`) are treated
+  as disabled.
+
+  The only case where app config truly overrides the env var is
+  `enabled: true` — that unconditionally enables the socket.
+  `enabled: false` does **not** mask a runtime env opt-in.
 
   ## Safe defaults
 
@@ -35,7 +41,6 @@ defmodule MuseWeb.ExternalSocketConfig do
   will be replayed to a reconnecting client.
   """
 
-  @default_enabled false
   @default_replay_limit 100
 
   @env_true_values ["true", "1", "yes", "on"]
@@ -49,8 +54,10 @@ defmodule MuseWeb.ExternalSocketConfig do
     * Environment variable `MUSE_EXTERNAL_WS` is set to one of
       `#{Enum.join(@env_true_values, "`, `")}` (case-sensitive).
 
-  App config takes precedence over env var when both are present. If neither
-  is explicitly truthy, the channel remains disabled.
+  App config `enabled: true` unconditionally enables the socket.
+  App config `enabled: false` (the default) does **not** block an env var
+  opt-in — the env var is checked regardless. If neither is truthy, the
+  channel remains disabled.
   """
   @spec enabled?() :: boolean()
   def enabled? do
@@ -70,15 +77,12 @@ defmodule MuseWeb.ExternalSocketConfig do
 
   defp app_env, do: Application.get_env(:muse, :external_ws, [])
 
-  # When app config has an explicit boolean, use it directly.
+  # App config enabled: true unconditionally enables.
   defp resolve_enabled(true), do: true
-  defp resolve_enabled(false), do: false
 
-  # When app config is nil or missing, fall back to env var.
-  defp resolve_enabled(nil) do
-    case System.get_env("MUSE_EXTERNAL_WS") do
-      value when value in @env_true_values -> true
-      _ -> @default_enabled
-    end
+  # App config enabled: false (the safe default) does NOT mask env var.
+  # Also handles nil/missing — always check env var as a fallback.
+  defp resolve_enabled(_) do
+    System.get_env("MUSE_EXTERNAL_WS") in @env_true_values
   end
 end

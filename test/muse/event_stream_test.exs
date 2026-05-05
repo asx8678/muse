@@ -531,6 +531,30 @@ defmodule Muse.EventStreamTest do
       assert EventStream.external_replay(events, replay_limit: 10) == []
     end
 
+    test "returns [] for invalid/missing session_id without calling Muse.State" do
+      # Stop Muse.State so it would crash if called
+      case Process.whereis(Muse.State) do
+        nil ->
+          :ok
+
+        pid ->
+          try do
+            GenServer.stop(pid)
+          catch
+            :exit, _ -> :ok
+          end
+      end
+
+      # Invalid session_id — should not touch State at all
+      assert EventStream.external_replay(session_id: nil) == []
+      assert EventStream.external_replay(session_id: "") == []
+      assert EventStream.external_replay(session_id: "../escape") == []
+
+      # Missing session_id — also short-circuits
+      assert EventStream.external_replay([]) == []
+      assert EventStream.external_replay(%{}) == []
+    end
+
     test "returns empty list when session_id is nil" do
       events = [
         make_event(:user_message, %{text: "hi"},

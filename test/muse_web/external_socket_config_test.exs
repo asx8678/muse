@@ -37,11 +37,11 @@ defmodule MuseWeb.ExternalSocketConfigTest do
       assert ExternalSocketConfig.enabled?()
     end
 
-    test "returns false when enabled: false is configured" do
+    test "returns true when MUSE_EXTERNAL_WS=true even if app config is false" do
       System.put_env("MUSE_EXTERNAL_WS", "true")
       Application.put_env(:muse, :external_ws, enabled: false)
-      # App config false overrides env var true
-      refute ExternalSocketConfig.enabled?()
+      # Env var wins — enabled: false does not mask runtime opt-in
+      assert ExternalSocketConfig.enabled?()
     end
   end
 
@@ -93,10 +93,10 @@ defmodule MuseWeb.ExternalSocketConfigTest do
       assert ExternalSocketConfig.enabled?()
     end
 
-    test "app config false takes priority over env var true" do
+    test "env var truthy values enable the socket regardless of app config false" do
       System.put_env("MUSE_EXTERNAL_WS", "true")
       Application.put_env(:muse, :external_ws, enabled: false)
-      refute ExternalSocketConfig.enabled?()
+      assert ExternalSocketConfig.enabled?()
     end
   end
 
