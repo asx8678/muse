@@ -34,8 +34,8 @@ Every item must be verified before the Muse Runtime reaches MVP. No exceptions.
 - [ ] Patch apply blocks outside-workspace paths
 - [ ] Patch apply blocks secret file paths
 - [ ] Patch apply creates checkpoint first
-- [ ] Shell commands are approval-gated
-- [ ] Network calls are approval-gated or disabled
+- [ ] Shell commands require explicit shell/test approval (not plan approval)
+- [ ] Network calls require explicit network approval or remain disabled
 - [ ] Remote execution is disabled
 - [ ] Web server defaults to localhost
 - [ ] External WebSocket channel does not forward internal/sensitive events
@@ -73,7 +73,7 @@ Every file tool in the Muse Runtime must pass through the following 9-step path 
 | 3. Normalize the path | Eliminates `..` traversal, double slashes, and encoding tricks (`lib/../../etc/shadow`) |
 | 4. Resolve symlinks | Symlinks can point outside the workspace; they must be followed and checked |
 | 5. Confirm inside workspace | After resolution, the real path must still fall under the workspace root |
-| 6. Enforce permission policy | Read-only vs. read/write depends on the active Muse and approval state |
+| 6. Enforce permission policy | PR09 permits only read/interactive tools; future write/patch/shell/network scopes require explicit scope-specific approval, never plan approval alone |
 | 7. Enforce secret-file policy | Secret paths are always blocked regardless of other permissions (see §3) |
 | 8. Block writes through symlinks | Prevents writing to targets outside the workspace via symlink chains |
 | 9. Emit a tool event | Auditability — every file access is recorded in the session event log |
@@ -196,9 +196,15 @@ Codex auth tokens     Tokens from ~/.codex/auth.json
 
 ## 5. Tool Permissions Matrix
 
-PR09 runtime enforcement uses both `Muse.Tool.Registry` + `Muse.Tool.Runner` and plan lifecycle checks in `Muse.ApprovalGate`.
+PR09 enforcement is split across `Muse.Tool.Registry`, `Muse.Tool.Runner`, and `Muse.ApprovalGate`:
+
+- `Muse.Tool.Registry` contains the deterministic allowlist of currently registered read-only/interactive tools and separately recognizes dangerous tool names/shapes so they can be denied instead of executed.
+- `Muse.Tool.Runner` denies blocked tool names before lookup, errors on unknown non-destructive names, verifies the active Muse is allowed to use the registered spec, then delegates final approval-policy checks to `Muse.ApprovalGate.authorize_tool/2`.
+- `Muse.ApprovalGate` approves only non-approval-required `:read`/`:interactive` specs for tool execution in PR09. It denies `requires_approval: true` specs and future approval-scoped permissions (`:write`, `:patch`, `:shell`, `:network`, `:delete`, `:restore`, `:remote_execution`) by default. Plan approval is not a tool grant.
 
 ### Registered runtime tools (available)
+
+The Coding Muse column below only describes profile-level tool availability for these safe specs. It does **not** mean `/approve plan` invokes Coding Muse, starts implementation, generates a patch, applies a patch, opens shell/network access, or writes files.
 
 | Tool | Planning Muse | Coding Muse | Notes |
 |---|:---:|:---:|---|
@@ -218,6 +224,7 @@ PR09 runtime enforcement uses both `Muse.Tool.Registry` + `Muse.Tool.Runner` and
 | `write_file` | blocked as dangerous |
 | `replace_in_file` | blocked as dangerous |
 | `delete_file` | blocked as dangerous |
+| `patch_propose` | blocked as dangerous |
 | `patch_apply` | blocked as dangerous |
 | `shell_command` | blocked as dangerous |
 | `network_call` | blocked as dangerous |
@@ -227,20 +234,22 @@ Runner behavior:
 
 - blocked tool name → `:tool_call_blocked`
 - destructive unknown tool-name shapes (write/patch/shell/network/remote-like names) → blocked
-- unknown tool → error result
-- `requires_approval: true` tool spec → blocked (PR09 deny-by-default behavior until later approval categories are implemented)
+- unknown non-destructive tool → error result
+- registered tool not allowed for the active Muse → blocked
+- `requires_approval: true` tool spec or future approval-scoped permission → blocked (PR09 deny-by-default behavior until separate approval categories are implemented)
 
 ---
 
 ## 6. Plan Approval Lifecycle Security (PR09)
 
-PR09 secures plan lifecycle commands with content-bound approval validation.
+PR09 secures plan lifecycle commands with content-bound approval validation. These commands mutate only plan/session lifecycle state and emit safe audit events; they do not start a model/tool turn.
 
 ### Implemented command lifecycle
 
 - `/approve plan` transitions active plan from `:awaiting_approval` to `:approved`
 - `/reject plan` transitions active plan from `:awaiting_approval` to `:rejected`
 - if session was `:awaiting_plan_approval`, it returns to `:idle`
+- neither command starts Coding Muse, patch proposal/generation, patch application, shell commands, network calls, or workspace writes
 
 ### Content-bound approval binding
 
@@ -270,9 +279,9 @@ The hash is deterministic over stable plan content, so stale approvals are rejec
 
 ### Explicit PR09 boundary
 
-Plan approval in PR09 is lifecycle-only. It does **not** apply patches, write files, run shell/network operations, or hand off execution to Coding Muse.
+Plan approval in PR09 is lifecycle-only. It does **not** start implementation, generate/propose patches, apply patches, write files, run shell/network operations, or hand off execution to Coding Muse.
 
-Future scope (PR17/PR18/PR19): patch approval/apply, checkpoint restore approvals, shell/test/network approval categories.
+Future scope (PR17/PR18/PR19): patch proposal, patch apply, checkpoint restore, workspace write, shell/test, and network capabilities require explicit separate approvals. Those future approvals must be scope-specific; `/approve plan` must not be reused as authorization for patch generation/application, shell, network, write, restore, or remote-execution actions.
 
 ---
 
@@ -329,7 +338,7 @@ Prompt bundle for session s_123
 Active Muse: Planning Muse
 Model: fake
 Tools: list_files, read_file, repo_search, git_status, git_diff_readonly, ask_user_question, list_muses, list_skills
-Blocked tools: write_file, replace_in_file, delete_file, patch_apply, shell_command, network_call, remote_execution
+Blocked tools: write_file, replace_in_file, delete_file, patch_propose, patch_apply, shell_command, network_call, remote_execution
 
 Layers:
  1. muse_core_invariants      internal    720 tokens
