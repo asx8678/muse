@@ -966,6 +966,8 @@ Prompt text is guidance, not a security boundary. Runtime safety is enforced in 
 
 ### 3.10 Patch Model
 
+> PR09 note: The `Muse.Patch` struct and patch lifecycle are future scope (PR17+). This section documents the intended data model; no patch tool is currently registered or active.
+
 #### Muse.Patch Struct
 
 ```elixir
@@ -1025,6 +1027,8 @@ end
 ---
 
 ### 3.11 Checkpoint Model
+
+> PR09 note: Checkpoint creation and rollback are future scope (PR18+). This section documents the intended data model and disk layout.
 
 #### Muse.Checkpoint Struct
 
@@ -1092,7 +1096,7 @@ The full high-level module map, organized by category:
 ### Public API
 
 ```text
-lib/muse.ex                  Public API. Delegates submit/resume/approve to SessionServer.
+lib/muse.ex                  Public API. Muse.submit/2 delegates to SessionRouter. Plan approval/rejection routed via /approve plan and /reject plan slash commands through SessionRouter → SessionServer (not exposed as Muse.approve/… public functions).
 ```
 
 ### Application
@@ -1510,7 +1514,7 @@ rollback_checkpoint
 
 ### 6.3 Tool Permissions Matrix
 
-> PR09 scope: only the first eight read-only tools are registered in `Muse.Tool.Registry`. The write/shell rows below are roadmap intent and are currently blocked or unavailable.
+> PR09 scope: only the first eight read-only tools are registered in `Muse.Tool.Registry`. The "Coding Muse (after plan approval)" column and the write/shell rows below are roadmap intent — Coding Muse is not yet selected by Conductor routing, and write/shell tools are currently blocked or unavailable.
 
 | Tool | Planning Muse (before approval) | Coding Muse (after plan approval) | Patch approval required | Notes |
 |---|:---:|:---:|:---:|---|
@@ -2149,6 +2153,8 @@ All telemetry events use `:telemetry.execute/3`. Attach handlers in `Muse.Applic
 ---
 
 ## 10. Patch, Checkpoint, Rollback, and Verification
+
+> PR09 note: The entire patch/checkpoint/rollback/test-runner subsystem described in this section is future scope. `patch_propose`, `patch_apply`, `test_runner`, and the Coding Muse handoff they imply require separate future approval gates (PR17/PR18/PR19). This section documents the intended contracts for implementation planning.
 
 ### 10.1 Patch Proposal Policy
 
