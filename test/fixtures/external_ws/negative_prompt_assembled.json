@@ -1,0 +1,19 @@
+{
+  "_comment": "NEGATIVE EXAMPLE: This event must NEVER be forwarded to external WebSocket clients. It contains assembled prompt layers (hidden system prompts) and has sensitive visibility. If this appears on the external channel, it is a security bug.",
+  "_negative": true,
+  "_reason": "Sensitive visibility event with raw prompt layers; must never leave the server",
+  "type": "prompt_assembled",
+  "id": 8045,
+  "timestamp": "2025-05-27T14:32:03.000Z",
+  "session_id": "sess_a1b2c3",
+  "turn_id": "turn_f7e8d9",
+  "seq": 19,
+  "source": "prompt_assembler",
+  "muse_id": null,
+  "visibility": "sensitive",
+  "payload": {
+    "system_prompt": "[REDACTED - full prompt layers are internal]",
+    "api_key": "[REDACTED]",
+    "layer_count": 5
+  }
+}

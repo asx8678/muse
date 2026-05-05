@@ -393,6 +393,14 @@ The main area is a conversation sourced from `Muse.State` `:user_message`
 and `:assistant_message` events, rendered as chat bubbles. No tab nav, no
 separate Backend console, no dev tools panel.
 
+### External WebSocket Channel (Optional)
+
+For non-LiveView clients (CLI integrations, automation tools, IDE extensions),
+an optional WebSocket channel is available at `ws://127.0.0.1:4000/socket`.
+This channel is **disabled by default** and read-only (no tool/write/shell/network
+permissions). See [`docs/architecture.md` §8.5](docs/architecture.md#85-optional-external-phoenix-websocket-channel-pr16)
+and [`docs/security.md` §9](docs/security.md#9-external-websocket-channel-security-pr16) for details.
+
 ---
 
 ## Requirements

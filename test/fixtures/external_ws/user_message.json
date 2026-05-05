@@ -1,0 +1,14 @@
+{
+  "type": "user_message",
+  "id": 9005,
+  "timestamp": "2025-05-27T14:32:00.000Z",
+  "session_id": "sess_a1b2c3",
+  "turn_id": "turn_f7e8d9",
+  "seq": 15,
+  "source": "cli",
+  "muse_id": null,
+  "visibility": "user",
+  "payload": {
+    "text": "add a /version command"
+  }
+}

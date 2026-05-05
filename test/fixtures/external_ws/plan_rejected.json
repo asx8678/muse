@@ -1,0 +1,16 @@
+{
+  "type": "plan_rejected",
+  "id": 9030,
+  "timestamp": "2025-05-27T14:32:30.000Z",
+  "session_id": "sess_a1b2c3",
+  "turn_id": "turn_f7e8d9",
+  "seq": 30,
+  "source": "approval_gate",
+  "muse_id": null,
+  "visibility": "user",
+  "payload": {
+    "plan_id": "plan_c4d5e6",
+    "rejected_by": "user",
+    "note": "Plan rejected; Planning Muse may revise."
+  }
+}

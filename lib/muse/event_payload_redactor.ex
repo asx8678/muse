@@ -15,9 +15,10 @@ defmodule Muse.EventPayloadRedactor do
 
   ## Supported secret patterns
 
-    * `sk-...` (OpenAI-style API key prefixes)
+    * `sk-...`, `key-...` (API key prefixes)
     * `Bearer ...` / `Authorization: Bearer ...`
     * `Authorization: ...` and common API-key/token headers
+    * OAuth/Codex-looking tokens (`oauth_token=...`, `ya29....`, `gho_...`)
     * `api_key=...` / `api-key: ...` / `token=...` / `secret=...`
 
   ## Usage
@@ -43,11 +44,16 @@ defmodule Muse.EventPayloadRedactor do
     ~r/\b(?:X-Api-Key|X-Auth-Token|X-Access-Token|X-Session-Token|X-Authorization)\s*:\s*[^\s"'`,;]+/i,
     # Bearer tokens: Bearer abc123
     ~r/\bBearer\s+[^\s"'`,;]+/i,
-    # OpenAI-style keys: sk-test-12345, sk-proj-abc
-    ~r/\bsk-[A-Za-z0-9_-]+/,
-    # Query-string/assignment secrets: api_key=..., api-key: ..., token=...
-    ~r/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password)\s*=\s*["']?[^\s"'&,;)]+/i,
-    ~r/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password)\s*:\s*["']?[^\s"',;)]+/i
+    # JWT/OIDC tokens and common OAuth/PAT prefixes.
+    ~r/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/,
+    ~r/\bya29\.[A-Za-z0-9._-]+/,
+    ~r/\bgh[opsu]_[A-Za-z0-9_]{20,}/,
+    ~r/\bxox[baprs]-[A-Za-z0-9-]+/,
+    # API key prefixes: sk-test-12345, sk-proj-abc, key-live-abc123
+    ~r/\b(?:sk|pk|key)-[A-Za-z0-9_-]{6,}/,
+    # Query-string/assignment secrets: api_key=..., oauth_token=..., token=...
+    ~r/\b(?:api[_-]?key|oauth(?:2)?[_-]?(?:access[_-]?)?token|codex(?:[_-]?auth)?[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password)\s*=\s*["']?[^\s"'&,;)]+/i,
+    ~r/\b(?:api[_-]?key|oauth(?:2)?[_-]?(?:access[_-]?)?token|codex(?:[_-]?auth)?[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password)\s*:\s*["']?[^\s"',;)]+/i
   ]
 
   @doc """

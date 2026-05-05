@@ -1,6 +1,12 @@
 import Config
 
 if config_env() == :prod do
+  # External WebSocket channel — opt-in via env var for production.
+  # Without this var the socket remains disabled.
+  if System.get_env("MUSE_EXTERNAL_WS") == "true" do
+    config :muse, :external_ws, enabled: true
+  end
+
   secret_key_base =
     System.get_env("MUSE_SECRET_KEY_BASE") ||
       raise """

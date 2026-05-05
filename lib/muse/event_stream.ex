@@ -29,6 +29,7 @@ defmodule Muse.EventStream do
   """
 
   alias Muse.Event
+  alias MuseWeb.ExternalEventFilter
 
   @chat_event_types [
     :user_message,
@@ -50,6 +51,8 @@ defmodule Muse.EventStream do
     :approval_approved,
     :approval_rejected
   ]
+
+  @default_external_replay_limit 100
 
   @doc """
   Subscribe to real-time event broadcasts via `Muse.State.subscribe/0`.
@@ -81,6 +84,83 @@ defmodule Muse.EventStream do
     |> maybe_filter_by_session(session_id)
     |> maybe_filter_by_visibility(visibility)
   end
+
+  @doc """
+  Replay externally-visible events for one session as JSON-safe envelopes.
+
+  This is intended for external WebSocket clients that need a bounded replay
+  before subscribing to live events. It delegates filtering to
+  `MuseWeb.ExternalEventFilter.to_external_map/2` so replay and live push
+  share the same security policy.
+
+  ## Options
+
+    * `:session_id` — required; only events with this exact session ID pass.
+    * `:replay_limit` / `:limit` — maximum number of most-recent events to
+      replay. Defaults to `MuseWeb.ExternalSocketConfig.replay_limit/0` then
+      #{@default_external_replay_limit}.
+    * `:events` — optional event list for pure/offline use; if omitted, events
+      are read from `Muse.State.events/0`.
+
+  The returned envelopes use string keys and JSON-safe values so callers can
+  pass them directly to Phoenix channel `push/3` or Jason encoding.
+  """
+  @spec external_replay(keyword() | map()) :: [map()]
+  def external_replay(opts) when is_list(opts) or is_map(opts) do
+    events =
+      case fetch_opt(opts, :events) do
+        {:ok, events} when is_list(events) -> events
+        _ -> Muse.State.events()
+      end
+
+    external_replay(events, opts)
+  end
+
+  @doc """
+  Pure variant of `external_replay/1` for callers that already have an event log.
+  """
+  @spec external_replay([Event.t()], keyword() | map()) :: [map()]
+  def external_replay(events, opts) when is_list(events) and (is_list(opts) or is_map(opts)) do
+    session_id =
+      case fetch_opt(opts, :session_id) do
+        {:ok, sid} -> sid
+        :error -> nil
+      end
+
+    limit = external_replay_limit(opts)
+    filter_opts = if session_id, do: [session_id: session_id], else: []
+
+    events
+    |> Enum.filter(&(&1.session_id == session_id))
+    |> apply_external_replay_limit(limit)
+    |> Enum.flat_map(fn event ->
+      case ExternalEventFilter.to_external_map(event, filter_opts) do
+        {:ok, envelope} -> [envelope]
+        {:error, _reason} -> []
+      end
+    end)
+  end
+
+  @doc """
+  Return an external envelope for one live event, or `nil` if it is not visible.
+
+  `SessionChannel`-style callers can use this on `{:muse_event, event}` messages
+  and push only when a map is returned:
+
+      case Muse.EventStream.external_envelope(event, session_id: session_id) do
+        nil -> :ok
+        envelope -> push(socket, "muse_event", envelope)
+      end
+  """
+  @spec external_envelope(Event.t(), keyword()) :: map() | nil
+  def external_envelope(%Event{} = event, opts) when is_list(opts) or is_map(opts) do
+    case ExternalEventFilter.to_external_map(event, opts) do
+      {:ok, envelope} -> envelope
+      {:error, _reason} -> nil
+    end
+  end
+
+  def external_envelope(_event, _opts), do: nil
 
   @doc """
   Derive chat messages from an event stream.
@@ -119,6 +199,59 @@ defmodule Muse.EventStream do
   end
 
   # -- Private helpers ----------------------------------------------------------
+
+  defp external_replay_limit(opts) do
+    case fetch_first_opt(opts, [:replay_limit, :limit]) do
+      {:ok, limit} when is_integer(limit) and limit >= 0 ->
+        limit
+
+      {:ok, limit} when is_binary(limit) ->
+        case Integer.parse(String.trim(limit)) do
+          {parsed, ""} when parsed >= 0 -> parsed
+          _ -> configured_external_replay_limit()
+        end
+
+      _ ->
+        configured_external_replay_limit()
+    end
+  end
+
+  defp configured_external_replay_limit do
+    MuseWeb.ExternalSocketConfig.replay_limit()
+  end
+
+  defp apply_external_replay_limit(_events, 0), do: []
+
+  defp apply_external_replay_limit(events, limit) when is_integer(limit) and limit > 0 do
+    Enum.take(events, -limit)
+  end
+
+  defp fetch_first_opt(opts, keys) do
+    Enum.find_value(keys, :error, fn key ->
+      case fetch_opt(opts, key) do
+        {:ok, _value} = found -> found
+        :error -> false
+      end
+    end)
+  end
+
+  defp fetch_opt(opts, key) when is_list(opts) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} -> {:ok, value}
+      :error -> :error
+    end
+  end
+
+  defp fetch_opt(opts, key) when is_map(opts) do
+    case Map.fetch(opts, key) do
+      {:ok, value} ->
+        {:ok, value}
+
+      :error ->
+        string_key = Atom.to_string(key)
+        if Map.has_key?(opts, string_key), do: {:ok, Map.fetch!(opts, string_key)}, else: :error
+    end
+  end
 
   # Group events by turn_id while preserving the temporal order of first
   # appearance of each turn_id. Events with nil turn_id are each placed

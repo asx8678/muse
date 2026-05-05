@@ -255,7 +255,22 @@ Every safety boundary must have a dedicated test. No exceptions.
 ### Data Boundaries
 
 - [ ] Provider request debug snapshots redact `Authorization` headers (show `Bearer sk-...****`)
-- [ ] External WebSocket channel does **not** forward internal/sensitive events (e.g., `secret_read_attempt`, `approval_state_change`)
+- [x] External WebSocket channel does **not** forward internal/sensitive events (e.g., `secret_read_attempt`, `approval_state_change`) — enforced in `MuseWeb.ExternalEventFilter`
+
+---
+
+## 10. PR16 — External WebSocket Channel Testing
+
+The external WebSocket channel (`MuseWeb.SessionChannel`) is tested through:
+
+| Test file | Scope |
+|---|---|
+| `test/muse_web/external_event_filter_test.exs` | Visibility filtering, nil-visibility allowlist, session matching, envelope structure, JSON safety |
+| `test/muse_web/external_event_security_test.exs` | Security boundary: redaction, secret suppression, struct omission, session ID validation |
+| `test/muse_web/external_socket_config_test.exs` | Config defaults: enabled/disabled, replay_limit |
+| `test/muse_web/channels/session_channel_test.exs` | Channel join/replay/live forwarding: session isolation, topic validation, config guard |
+| `test/muse/event_stream_test.exs` | `external_replay/1,2` and `external_envelope/2` integration tests |
+| `test/muse/event_payload_redactor_test.exs` | Enhanced redaction patterns (OAuth, JWT, Codex, GitHub PAT) |
 
 ---
 

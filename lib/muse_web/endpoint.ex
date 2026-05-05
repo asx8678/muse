@@ -7,6 +7,8 @@ defmodule MuseWeb.Endpoint do
     signing_salt: "dev-salt"
   ]
 
+  socket("/socket", MuseWeb.UserSocket, websocket: [log: false])
+
   socket("/live", Phoenix.LiveView.Socket,
     websocket: [connect_info: [session: @session_options], log: false]
   )
