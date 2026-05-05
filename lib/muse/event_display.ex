@@ -25,11 +25,18 @@ defmodule Muse.EventDisplay do
     :plan_rejected,
     :approval_requested,
     :approval_approved,
-    :approval_rejected
+    :approval_rejected,
+    :patch_proposal
   ]
 
   @doc "Return a concise, redacted summary for an event."
   @spec summary(Event.t() | term()) :: String.t()
+  def summary(%Event{type: :patch_proposal, data: data}) do
+    data
+    |> safe_data()
+    |> patch_proposal_summary()
+  end
+
   def summary(%Event{type: type, data: data}) when type in @plan_lifecycle_types do
     data
     |> safe_data()
@@ -116,6 +123,54 @@ defmodule Muse.EventDisplay do
     ]
     |> compact_sentences()
   end
+
+  # -- Patch proposal summaries ----------------------------------------------
+
+  @max_diff_summary_chars 120
+
+  defp patch_proposal_summary(data) when is_map(data) do
+    hash =
+      map_get_any(data, [:patch_hash, "patch_hash", :content_hash, "content_hash"])
+      |> present_string()
+
+    files =
+      map_get_any(data, [:files, "files"])
+      |> files_summary()
+
+    diff_preview =
+      map_get_any(data, [:diff, "diff"])
+      |> diff_summary()
+
+    [
+      if(hash, do: "Patch hash: #{String.slice(hash, 0, 12)}", else: nil),
+      files,
+      diff_preview,
+      "PR17 lifecycle only: no apply, no checkpoints, no file modifications"
+    ]
+    |> compact_sentences()
+  end
+
+  defp patch_proposal_summary(data), do: data_summary(data)
+
+  defp files_summary(nil), do: nil
+
+  defp files_summary(files) when is_list(files) do
+    case length(files) do
+      0 -> nil
+      n -> "#{n} file(s) affected"
+    end
+  end
+
+  defp files_summary(_), do: nil
+
+  defp diff_summary(nil), do: nil
+
+  defp diff_summary(diff) when is_binary(diff) do
+    preview = String.slice(diff, 0, @max_diff_summary_chars)
+    if String.length(diff) > @max_diff_summary_chars, do: "#{preview}…", else: preview
+  end
+
+  defp diff_summary(_), do: nil
 
   # -- Generic summaries --------------------------------------------------------
 

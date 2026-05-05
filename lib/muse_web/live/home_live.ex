@@ -7,7 +7,8 @@ defmodule MuseWeb.HomeLive do
       chat_panel: 1,
       context_panel: 1,
       diagnostics_popup: 1,
-      toast_container: 1
+      toast_container: 1,
+      patch_proposal_panel: 1
     ]
 
   import MuseWeb.EventFormatter,
@@ -56,6 +57,17 @@ defmodule MuseWeb.HomeLive do
     # Diagnostics drawer always closed on initial render, even if diagnostics exist
     diagnostics_open? = false
 
+    # Derive initial patch proposal from the latest patch_proposal event in state (PR17)
+    patch_proposal =
+      state.events
+      |> Enum.filter(&(&1.type == :patch_proposal))
+      |> Enum.filter(&(&1.visibility != :internal and &1.visibility != :sensitive))
+      |> List.last()
+      |> case do
+        nil -> nil
+        event -> event.data
+      end
+
     if connected?(socket) do
       Muse.State.subscribe()
       BackendBridge.safe_subscribe_diagnostics()
@@ -98,7 +110,9 @@ defmodule MuseWeb.HomeLive do
         open_windows: MapSet.new(),
         active_window: nil,
         # Streaming assistant buffer: maps turn_id -> accumulated delta text
-        streaming_buffers: %{}
+        streaming_buffers: %{},
+        # PR17: patch proposal panel state (nil when no pending proposal)
+        patch_proposal: patch_proposal
       )
 
     {:ok, socket}
@@ -553,6 +567,13 @@ defmodule MuseWeb.HomeLive do
     {:noreply, assign(socket, sidebar_state: new_state)}
   end
 
+  # -- Patch proposal handlers (PR17) ------------------------------------------
+
+  @impl true
+  def handle_event("dismiss_patch_proposal", _params, socket) do
+    {:noreply, assign(socket, patch_proposal: nil)}
+  end
+
   # -- Diagnostics handlers ---------------------------------------------------
 
   @impl true
@@ -691,11 +712,24 @@ defmodule MuseWeb.HomeLive do
           socket.assigns.streaming_buffers
       end
 
+    # Update patch proposal panel when a patch_proposal event arrives (PR17)
+    patch_proposal =
+      case event.type do
+        :patch_proposal ->
+          event.data
+          |> Map.drop([:diff, "diff"])
+          |> Map.put(:diff, event.data[:diff] || event.data["diff"])
+
+        _ ->
+          socket.assigns.patch_proposal
+      end
+
     {:noreply,
      assign(socket,
        state: state,
        reload_status: reload_status,
-       streaming_buffers: streaming_buffers
+       streaming_buffers: streaming_buffers,
+       patch_proposal: patch_proposal
      )}
   end
 
@@ -819,6 +853,7 @@ defmodule MuseWeb.HomeLive do
         <.chat_panel messages={chat_messages(@state.events)} input={@input} />
       </main>
       <.diagnostics_popup diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
+      <.patch_proposal_panel patch_proposal={@patch_proposal} />
       <.toast_container toasts={@toasts} />
     </main>
     """

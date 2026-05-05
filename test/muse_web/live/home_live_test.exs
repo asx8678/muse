@@ -1166,6 +1166,145 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "toast-container"
   end
 
+  # -- Patch proposal panel tests (PR17) -------------------------------------
+
+  describe "patch proposal panel" do
+    test "hidden by default when no pending patch proposal" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      refute html =~ ~s(id="patch-proposal-panel")
+      refute html =~ "Patch Proposal"
+    end
+
+    test "renders details for patch proposal event" do
+      event =
+        Muse.Event.new(:cli, :patch_proposal, %{
+          patch_hash: "abcdef1234567890",
+          files: ["lib/foo.ex", "test/foo_test.exs"],
+          diff:
+            "diff --git a/lib/foo.ex\n--- a/lib/foo.ex\n+++ b/lib/foo.ex\n@@ -1,3 +1,4 @@\n hello\n+world\n"
+        })
+
+      Muse.State.append(event)
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      # The patch proposal should appear via the event
+      html = render(view)
+      assert html =~ ~s(id="patch-proposal-panel")
+      assert html =~ "Patch Proposal"
+      assert html =~ "abcdef123456"
+      assert html =~ "lib/foo.ex"
+      assert html =~ "test/foo_test.exs"
+      assert html =~ "/approve patch"
+      assert html =~ "/reject patch"
+    end
+
+    test "HTML and diff are escaped for XSS safety" do
+      event =
+        Muse.Event.new(:cli, :patch_proposal, %{
+          patch_hash: "xss_hash",
+          files: ["<script>alert('xss')</script>"],
+          diff: "<img src=x onerror=alert('xss')>"
+        })
+
+      Muse.State.append(event)
+      {:ok, view, _html} = live(build_conn(), "/")
+      html = render(view)
+
+      # HEEx auto-escapes — raw script/img tags must NOT appear as HTML
+      # Angle brackets must be entity-encoded
+      refute html =~ "<script>alert"
+      refute html =~ "<img src=x"
+      # Escaped versions should be present (&lt; and &gt;)
+      assert html =~ "&lt;script&gt;" or html =~ "&lt;img"
+    end
+
+    test "long diff is truncated" do
+      long_lines =
+        Enum.map_join(1..200, "\n", fn i -> "+line #{i} of a very long diff" end)
+
+      event =
+        Muse.Event.new(:cli, :patch_proposal, %{
+          patch_hash: "long_diff_hash",
+          files: ["lib/big_file.ex"],
+          diff: long_lines
+        })
+
+      Muse.State.append(event)
+      {:ok, view, _html} = live(build_conn(), "/")
+      html = render(view)
+
+      # The panel should render and indicate truncation
+      assert html =~ "more lines"
+      # Early lines should be present
+      assert html =~ "+line 1 of a very long diff"
+    end
+
+    test "no apply action or authority text in patch proposal panel" do
+      event =
+        Muse.Event.new(:cli, :patch_proposal, %{
+          patch_hash: "no_apply_hash",
+          files: ["lib/no_apply.ex"],
+          diff: "some diff content"
+        })
+
+      Muse.State.append(event)
+      {:ok, view, _html} = live(build_conn(), "/")
+      html = render(view)
+
+      # Must NOT contain apply-related text or buttons
+      refute html =~ ~s(phx-click="apply_patch")
+      refute html =~ "Apply patch"
+      refute html =~ "Apply changes"
+      # Must state the lifecycle constraint
+      assert html =~ "no apply"
+      assert html =~ "no checkpoints"
+      assert html =~ "no file modifications"
+    end
+
+    test "dismiss_patch_proposal hides the panel" do
+      event =
+        Muse.Event.new(:cli, :patch_proposal, %{
+          patch_hash: "dismiss_hash",
+          files: ["lib/dismiss.ex"],
+          diff: "dismiss diff"
+        })
+
+      Muse.State.append(event)
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      html = render(view)
+      assert html =~ ~s(id="patch-proposal-panel")
+
+      # Click dismiss
+      view |> element(".patch-proposal-dismiss") |> render_click()
+      html = render(view)
+      refute html =~ ~s(id="patch-proposal-panel")
+    end
+
+    test "patch proposal event via PubSub updates LiveView" do
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      # No panel initially
+      html = render(view)
+      refute html =~ ~s(id="patch-proposal-panel")
+
+      # Broadcast a patch proposal event
+      event =
+        Muse.Event.new(:cli, :patch_proposal, %{
+          patch_hash: "pubsub_hash",
+          files: ["lib/pubsub.ex"],
+          diff: "pubsub diff"
+        })
+
+      Muse.State.append(event)
+      Phoenix.PubSub.broadcast(Muse.PubSub, "muse:events", {:muse_event, event})
+
+      html = render(view)
+      assert html =~ ~s(id="patch-proposal-panel")
+      assert html =~ "pubsub_hash"
+    end
+  end
+
   # -- Diagnostics in header chip test -----------------------------------------
 
   test "diagnostics status chip appears in header when diagnostics exist" do

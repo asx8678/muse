@@ -40,7 +40,8 @@ defmodule Muse.EventStream do
     :plan_rejected,
     :approval_requested,
     :approval_approved,
-    :approval_rejected
+    :approval_rejected,
+    :patch_proposal
   ]
 
   @system_event_types [
@@ -49,7 +50,8 @@ defmodule Muse.EventStream do
     :plan_rejected,
     :approval_requested,
     :approval_approved,
-    :approval_rejected
+    :approval_rejected,
+    :patch_proposal
   ]
 
   @default_external_replay_limit 100
