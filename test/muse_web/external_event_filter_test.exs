@@ -50,6 +50,38 @@ defmodule MuseWeb.ExternalEventFilterTest do
       assert {:error, :session_mismatch} =
                ExternalEventFilter.to_external_map(event, session_id: "s_wrong")
     end
+
+    test "rejects invalid session_id option with invalid_session_id error" do
+      event = make_event(:user_message, %{text: "hi"}, visibility: :user, session_id: "s1")
+
+      # Path traversal in requested session_id
+      assert {:error, {:invalid_session_id, "../x"}} =
+               ExternalEventFilter.to_external_map(event, session_id: "../x")
+
+      # Dot-only
+      assert {:error, {:invalid_session_id, ".."}} =
+               ExternalEventFilter.to_external_map(event, session_id: "..")
+
+      # Empty string
+      assert {:error, {:invalid_session_id, ""}} =
+               ExternalEventFilter.to_external_map(event, session_id: "")
+    end
+
+    test "rejects too-long session_id option with invalid_session_id error" do
+      event = make_event(:user_message, %{text: "hi"}, visibility: :user, session_id: "s1")
+      too_long = String.duplicate("a", 257)
+
+      assert {:error, {:invalid_session_id, ^too_long}} =
+               ExternalEventFilter.to_external_map(event, session_id: too_long)
+    end
+
+    test "invalid session_id error takes priority over visibility and mismatch" do
+      event = make_event(:internal_op, %{}, visibility: :internal, session_id: "s1")
+
+      # Invalid session_id should be caught before mismatch or visibility
+      assert {:error, {:invalid_session_id, "../bad"}} =
+               ExternalEventFilter.to_external_map(event, session_id: "../bad")
+    end
   end
 
   # -- Visibility filter tests --------------------------------------------------
@@ -451,8 +483,8 @@ defmodule MuseWeb.ExternalEventFilterTest do
   # -- Session id validation tests ----------------------------------------------
 
   describe "valid_session_id?/1" do
-    test "accepts nil" do
-      assert ExternalEventFilter.valid_session_id?(nil)
+    test "rejects nil" do
+      refute ExternalEventFilter.valid_session_id?(nil)
     end
 
     test "accepts simple non-empty strings" do
@@ -480,6 +512,21 @@ defmodule MuseWeb.ExternalEventFilterTest do
     test "rejects non-binary values" do
       refute ExternalEventFilter.valid_session_id?(:atom_session)
       refute ExternalEventFilter.valid_session_id?(123)
+    end
+
+    test "accepts session ids up to 256 bytes" do
+      # Exactly 256 bytes should be accepted
+      sid_256 = String.duplicate("a", 256)
+      assert ExternalEventFilter.valid_session_id?(sid_256)
+    end
+
+    test "rejects session ids longer than 256 bytes" do
+      sid_257 = String.duplicate("a", 257)
+      refute ExternalEventFilter.valid_session_id?(sid_257)
+
+      # Very long string
+      sid_long = String.duplicate("x", 1000)
+      refute ExternalEventFilter.valid_session_id?(sid_long)
     end
   end
 

@@ -1,26 +1,100 @@
 defmodule MuseWeb.ExternalSocketConfigTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias MuseWeb.ExternalSocketConfig
 
   setup do
-    original = Application.get_env(:muse, :external_ws)
-    on_exit(fn -> Application.put_env(:muse, :external_ws, original) end)
+    original_env = Application.get_env(:muse, :external_ws)
+    original_sys = System.get_env("MUSE_EXTERNAL_WS")
+
+    on_exit(fn ->
+      if original_env do
+        Application.put_env(:muse, :external_ws, original_env)
+      else
+        Application.delete_env(:muse, :external_ws)
+      end
+
+      if original_sys do
+        System.put_env("MUSE_EXTERNAL_WS", original_sys)
+      else
+        System.delete_env("MUSE_EXTERNAL_WS")
+      end
+    end)
+
     :ok
   end
 
   describe "enabled?/0" do
-    test "defaults to false when no app env is set" do
+    test "defaults to false when no app env or env var is set" do
       Application.delete_env(:muse, :external_ws)
+      System.delete_env("MUSE_EXTERNAL_WS")
       refute ExternalSocketConfig.enabled?()
     end
 
     test "returns true when enabled: true is configured" do
+      System.delete_env("MUSE_EXTERNAL_WS")
       Application.put_env(:muse, :external_ws, enabled: true)
       assert ExternalSocketConfig.enabled?()
     end
 
     test "returns false when enabled: false is configured" do
+      System.put_env("MUSE_EXTERNAL_WS", "true")
+      Application.put_env(:muse, :external_ws, enabled: false)
+      # App config false overrides env var true
+      refute ExternalSocketConfig.enabled?()
+    end
+  end
+
+  describe "enabled?/0 — MUSE_EXTERNAL_WS env var" do
+    test "returns true when MUSE_EXTERNAL_WS=true" do
+      Application.delete_env(:muse, :external_ws)
+      System.put_env("MUSE_EXTERNAL_WS", "true")
+      assert ExternalSocketConfig.enabled?()
+    end
+
+    test "returns true when MUSE_EXTERNAL_WS=1" do
+      Application.delete_env(:muse, :external_ws)
+      System.put_env("MUSE_EXTERNAL_WS", "1")
+      assert ExternalSocketConfig.enabled?()
+    end
+
+    test "returns true when MUSE_EXTERNAL_WS=yes" do
+      Application.delete_env(:muse, :external_ws)
+      System.put_env("MUSE_EXTERNAL_WS", "yes")
+      assert ExternalSocketConfig.enabled?()
+    end
+
+    test "returns true when MUSE_EXTERNAL_WS=on" do
+      Application.delete_env(:muse, :external_ws)
+      System.put_env("MUSE_EXTERNAL_WS", "on")
+      assert ExternalSocketConfig.enabled?()
+    end
+
+    test "returns false when MUSE_EXTERNAL_WS is set to other values" do
+      Application.delete_env(:muse, :external_ws)
+
+      for value <- ["false", "0", "no", "off", "TRUE", "Yes", "ON", "", "random"] do
+        System.put_env("MUSE_EXTERNAL_WS", value)
+
+        refute ExternalSocketConfig.enabled?(),
+               "Expected false for MUSE_EXTERNAL_WS=#{inspect(value)}"
+      end
+    end
+
+    test "returns false when MUSE_EXTERNAL_WS is not set" do
+      Application.delete_env(:muse, :external_ws)
+      System.delete_env("MUSE_EXTERNAL_WS")
+      refute ExternalSocketConfig.enabled?()
+    end
+
+    test "app config true overrides env var not set" do
+      System.delete_env("MUSE_EXTERNAL_WS")
+      Application.put_env(:muse, :external_ws, enabled: true)
+      assert ExternalSocketConfig.enabled?()
+    end
+
+    test "app config false takes priority over env var true" do
+      System.put_env("MUSE_EXTERNAL_WS", "true")
       Application.put_env(:muse, :external_ws, enabled: false)
       refute ExternalSocketConfig.enabled?()
     end

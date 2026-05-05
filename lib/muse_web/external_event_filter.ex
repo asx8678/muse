@@ -15,7 +15,8 @@ defmodule MuseWeb.ExternalEventFilter do
       to JSON-safe data without dumping arbitrary structs or raw internals;
     * no `String.to_atom/1` on client input;
     * session IDs are validated to prevent path traversal — they are never used
-      as filesystem paths.
+      as filesystem paths. Nil session IDs are rejected (no global topics in
+      PR16). Session IDs exceeding 256 bytes are also rejected.
 
   ## APIs
 
@@ -157,20 +158,27 @@ defmodule MuseWeb.ExternalEventFilter do
     end)
   end
 
+  @max_session_id_length 256
+
   @doc """
   Validate an external session id without using it as a filesystem path.
 
-  Returns `true` for `nil` (nil session_id is valid as a value — it just won't
-  pass session-scoped topic filtering) and for non-empty binary strings that
-  contain no path-traversal characters (`/`, `\\`, NUL) and are not `.` or `..`.
+  Returns `true` only for non-empty binary strings that contain no
+  path-traversal characters (`/`, `\\`, NUL), are not `.` or `..`, and do not
+  exceed `#{@max_session_id_length}` bytes. Returns `false` for `nil`, empty
+  strings, and any other value.
+
+  Nil session IDs are rejected because there are no global/debug external
+  topics in PR16 — every external channel requires a valid session scope.
   """
   @spec valid_session_id?(term()) :: boolean()
-  def valid_session_id?(nil), do: true
+  def valid_session_id?(nil), do: false
 
   def valid_session_id?(session_id) when is_binary(session_id) do
     cond do
       session_id == "" -> false
       session_id in [".", ".."] -> false
+      byte_size(session_id) > @max_session_id_length -> false
       Regex.match?(@path_traversal_chars, session_id) -> false
       true -> true
     end
@@ -212,10 +220,15 @@ defmodule MuseWeb.ExternalEventFilter do
         :ok
 
       requested ->
-        if event.session_id == requested do
-          :ok
-        else
-          {:error, :session_mismatch}
+        cond do
+          not valid_session_id?(requested) ->
+            {:error, {:invalid_session_id, requested}}
+
+          event.session_id == requested ->
+            :ok
+
+          true ->
+            {:error, :session_mismatch}
         end
     end
   end

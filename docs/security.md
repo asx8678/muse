@@ -391,7 +391,7 @@ The external WebSocket channel is **disabled by default** (`config :muse, :exter
 
 - `MuseWeb.UserSocket.connect/3` rejects all connections.
 - No channel processes start; no resources consumed.
-- Opt-in via `MUSE_EXTERNAL_WS=true` env var in production, or explicit config in dev/test.
+- Opt-in via `MUSE_EXTERNAL_WS` env var in production (accepted values: `true`, `1`, `yes`, `on`), or explicit config in dev/test.
 
 ### 9.3 Visibility Filtering
 

@@ -95,7 +95,10 @@ defmodule Muse.EventStream do
 
   ## Options
 
-    * `:session_id` — required; only events with this exact session ID pass.
+    * `:session_id` — **required**; must be a valid, non-nil session ID per
+      `MuseWeb.ExternalEventFilter.valid_session_id?/1`. Missing, blank, or
+      invalid session IDs cause an immediate empty return — no nil-session
+      events are ever replayed.
     * `:replay_limit` / `:limit` — maximum number of most-recent events to
       replay. Defaults to `MuseWeb.ExternalSocketConfig.replay_limit/0` then
       #{@default_external_replay_limit}.
@@ -127,18 +130,22 @@ defmodule Muse.EventStream do
         :error -> nil
       end
 
-    limit = external_replay_limit(opts)
-    filter_opts = if session_id, do: [session_id: session_id], else: []
+    # Reject missing, blank, or invalid session IDs — no nil-session replay.
+    if not ExternalEventFilter.valid_session_id?(session_id) do
+      []
+    else
+      limit = external_replay_limit(opts)
 
-    events
-    |> Enum.filter(&(&1.session_id == session_id))
-    |> apply_external_replay_limit(limit)
-    |> Enum.flat_map(fn event ->
-      case ExternalEventFilter.to_external_map(event, filter_opts) do
-        {:ok, envelope} -> [envelope]
-        {:error, _reason} -> []
-      end
-    end)
+      events
+      |> Enum.filter(&(&1.session_id == session_id))
+      |> apply_external_replay_limit(limit)
+      |> Enum.flat_map(fn event ->
+        case ExternalEventFilter.to_external_map(event, session_id: session_id) do
+          {:ok, envelope} -> [envelope]
+          {:error, _reason} -> []
+        end
+      end)
+    end
   end
 
   @doc """

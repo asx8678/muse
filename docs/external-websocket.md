@@ -51,7 +51,7 @@ wss://127.0.0.1:4000/socket/websocket   # TLS in production
 The external WebSocket channel is **disabled by default**.
 
 - Enable in config: `config :muse, :external_ws, enabled: true`
-- Enable in production: `MUSE_EXTERNAL_WS=true` environment variable
+- Enable in production: `MUSE_EXTERNAL_WS=true` environment variable (accepted values: `true`, `1`, `yes`, `on`)
 - Test environment: enabled by default for test coverage
 
 When disabled, `MuseWeb.UserSocket.connect/3` rejects all connections.

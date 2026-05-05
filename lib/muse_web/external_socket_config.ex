@@ -15,6 +15,16 @@ defmodule MuseWeb.ExternalSocketConfig do
         enabled: true,
         replay_limit: 200
 
+  ## Environment variable
+
+  The `MUSE_EXTERNAL_WS` environment variable is also checked when no explicit
+  app config `enabled:` key is set. Accepted truthy values are `"true"`, `"1"`,
+  `"yes"`, and `"on"` (case-sensitive). All other values (including `"TRUE"`,
+  `"Yes"`) are treated as disabled.
+
+  App config `enabled: true/false` takes priority over the env var when both
+  are present.
+
   ## Safe defaults
 
   By default the external WebSocket is **disabled** (enabled: false).  This
@@ -28,15 +38,23 @@ defmodule MuseWeb.ExternalSocketConfig do
   @default_enabled false
   @default_replay_limit 100
 
+  @env_true_values ["true", "1", "yes", "on"]
+
   @doc """
   Returns `true` if the external WebSocket channel is enabled.
 
-  Config values propagate through `Application.get_env/2` so tests may
-  temporarily set `Application.put_env(:muse, :external_ws, enabled: true)`.
+  The channel is enabled when **either** of the following is true:
+
+    * Application config `config :muse, :external_ws, enabled: true` is set.
+    * Environment variable `MUSE_EXTERNAL_WS` is set to one of
+      `#{Enum.join(@env_true_values, "`, `")}` (case-sensitive).
+
+  App config takes precedence over env var when both are present. If neither
+  is explicitly truthy, the channel remains disabled.
   """
   @spec enabled?() :: boolean()
   def enabled? do
-    app_env() |> Keyword.get(:enabled, @default_enabled)
+    app_env() |> Keyword.get(:enabled) |> resolve_enabled()
   end
 
   @doc """
@@ -51,4 +69,16 @@ defmodule MuseWeb.ExternalSocketConfig do
   # -- Helpers -----------------------------------------------------------------
 
   defp app_env, do: Application.get_env(:muse, :external_ws, [])
+
+  # When app config has an explicit boolean, use it directly.
+  defp resolve_enabled(true), do: true
+  defp resolve_enabled(false), do: false
+
+  # When app config is nil or missing, fall back to env var.
+  defp resolve_enabled(nil) do
+    case System.get_env("MUSE_EXTERNAL_WS") do
+      value when value in @env_true_values -> true
+      _ -> @default_enabled
+    end
+  end
 end

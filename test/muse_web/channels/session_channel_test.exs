@@ -55,10 +55,18 @@ defmodule MuseWeb.SessionChannelTest do
 
     # Enable external WS for channel tests
     original_ws = Application.get_env(:muse, :external_ws)
+    original_sys = System.get_env("MUSE_EXTERNAL_WS")
     Application.put_env(:muse, :external_ws, enabled: true, replay_limit: 50)
 
     on_exit(fn ->
       Application.put_env(:muse, :external_ws, original_ws || [enabled: false, replay_limit: 100])
+
+      if original_sys do
+        System.put_env("MUSE_EXTERNAL_WS", original_sys)
+      else
+        System.delete_env("MUSE_EXTERNAL_WS")
+      end
+
       stop_named(MuseWeb.Endpoint)
       stop_named(Muse.State)
     end)
@@ -107,6 +115,11 @@ defmodule MuseWeb.SessionChannelTest do
       assert {:error, %{reason: "invalid_session_id"}} = join_session("session:foo\0bar")
     end
 
+    test "rejects join with overly-long session id (> 256 bytes)" do
+      too_long = String.duplicate("a", 257)
+      assert {:error, %{reason: "invalid_session_id"}} = join_session("session:" <> too_long)
+    end
+
     test "rejects join with non-session topic" do
       assert {:error, %{reason: "invalid_topic"}} = join_session("other:topic")
     end
@@ -116,6 +129,7 @@ defmodule MuseWeb.SessionChannelTest do
 
   describe "join/3 — config guard" do
     test "rejects join when external WS is disabled" do
+      System.delete_env("MUSE_EXTERNAL_WS")
       Application.put_env(:muse, :external_ws, enabled: false)
 
       assert {:error, %{reason: "invalid_session_id"}} = join_session("session:valid-id")

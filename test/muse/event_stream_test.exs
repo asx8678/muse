@@ -527,7 +527,64 @@ defmodule Muse.EventStreamTest do
       assert EventStream.external_replay(events, session_id: "s1", replay_limit: 10)
              |> Enum.map(& &1["id"]) == [1]
 
+      # Missing session_id returns []
       assert EventStream.external_replay(events, replay_limit: 10) == []
+    end
+
+    test "returns empty list when session_id is nil" do
+      events = [
+        make_event(:user_message, %{text: "hi"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:01Z],
+          session_id: "s1",
+          visibility: :user
+        )
+      ]
+
+      # Explicitly nil
+      assert EventStream.external_replay(events, session_id: nil, replay_limit: 10) == []
+    end
+
+    test "returns empty list for blank or invalid session_id" do
+      events = [
+        make_event(:user_message, %{text: "hi"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:01Z],
+          session_id: "s1",
+          visibility: :user
+        )
+      ]
+
+      # Empty string
+      assert EventStream.external_replay(events, session_id: "", replay_limit: 10) == []
+
+      # Path traversal
+      assert EventStream.external_replay(events, session_id: "../escape", replay_limit: 10) == []
+
+      # Too long
+      too_long = String.duplicate("a", 257)
+      assert EventStream.external_replay(events, session_id: too_long, replay_limit: 10) == []
+    end
+
+    test "does not replay nil-session events even with a valid session_id" do
+      events = [
+        make_event(:user_message, %{text: "global"},
+          id: 1,
+          timestamp: ~U[2025-01-01 00:00:01Z],
+          session_id: nil,
+          visibility: :user
+        ),
+        make_event(:user_message, %{text: "scoped"},
+          id: 2,
+          timestamp: ~U[2025-01-01 00:00:02Z],
+          session_id: "s1",
+          visibility: :user
+        )
+      ]
+
+      result = EventStream.external_replay(events, session_id: "s1", replay_limit: 10)
+      assert length(result) == 1
+      assert hd(result)["session_id"] == "s1"
     end
 
     test "filters to externally safe visibility only" do

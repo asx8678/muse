@@ -185,8 +185,8 @@ defmodule MuseWeb.ExternalEventSecurityTest do
       end
     end
 
-    test "valid_session_id?/1 accepts nil or simple ids and rejects path-like/non-binary ids" do
-      assert ExternalEventFilter.valid_session_id?(nil)
+    test "valid_session_id?/1 rejects nil, path-like/non-binary ids, and too-long values" do
+      refute ExternalEventFilter.valid_session_id?(nil)
       assert ExternalEventFilter.valid_session_id?("session-123_ok")
 
       refute ExternalEventFilter.valid_session_id?("../escape")
@@ -194,6 +194,7 @@ defmodule MuseWeb.ExternalEventSecurityTest do
       refute ExternalEventFilter.valid_session_id?("foo\\bar")
       refute ExternalEventFilter.valid_session_id?("foo\0bar")
       refute ExternalEventFilter.valid_session_id?(:atom_session)
+      refute ExternalEventFilter.valid_session_id?(String.duplicate("a", 257))
     end
   end
 end

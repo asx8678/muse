@@ -2096,7 +2096,7 @@ lib/muse_web/external_socket_config.ex
 - Join topic `session:<session_id>` — only events for the joined session are forwarded.
 - The channel process subscribes to `Muse.State` and forwards matching events.
 - Server binds to `127.0.0.1` by default. **Do not expose externally without authentication and reverse-proxy controls.**
-- External WS is **disabled by default**; opt-in via `config :muse, :external_ws, enabled: true` or `MUSE_EXTERNAL_WS=true` env var.
+- External WS is **disabled by default**; opt-in via `config :muse, :external_ws, enabled: true` or `MUSE_EXTERNAL_WS` env var (accepted values: `true`, `1`, `yes`, `on`).
 
 #### Topic
 
