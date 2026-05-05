@@ -295,6 +295,154 @@ defmodule Muse.ConductorCodingMuseTest do
     end
   end
 
+  # -- Regression: muse-cnb patch_proposals propagated through Conductor.run/3 ---
+
+  describe "Conductor.run/3 propagates patch_proposals (muse-cnb regression)" do
+    @simple_diff """
+    diff --git a/lib/example.ex b/lib/example.ex
+    --- a/lib/example.ex
+    +++ b/lib/example.ex
+    @@ -1,3 +1,4 @@
+     defmodule Example do
+    +  @moduledoc "Example"
+       def hello, do: :world
+     end
+    """
+
+    @tag :m1_readonly
+    test "patch_propose tool call through ToolLoop captures pending patch and transitions to :awaiting_patch_approval" do
+      approved = make_approved_plan()
+      plans = %{approved.id => approved}
+      workspace = "/tmp/muse_test_workspace_#{:erlang.unique_integer([:positive])}"
+      File.mkdir_p!(workspace)
+
+      session =
+        make_session(
+          status: :idle,
+          plans: plans,
+          active_plan_id: approved.id,
+          workspace: workspace
+        )
+
+      turn = make_turn("implement the plan")
+
+      batch0 = [
+        {:tool_call, "patch_propose",
+         %{
+           "diff" => @simple_diff,
+           "affected_files" => ["lib/example.ex"],
+           "summary" => "Add moduledoc to Example"
+         }},
+        {:response_completed, nil}
+      ]
+
+      batch1 = [
+        {:assistant_delta, "I've proposed a patch."},
+        {:assistant_completed, "I've proposed a patch."},
+        {:response_completed, nil}
+      ]
+
+      opts = [
+        request_options: [options: %{fake_event_batches: [batch0, batch1], fake_iteration: 0}],
+        tool_runner: Muse.Tool.Runner
+      ]
+
+      {:ok, result} = Conductor.run(session, turn, opts)
+
+      # Session should transition to :awaiting_patch_approval
+      assert result.session.status == :awaiting_patch_approval,
+             "Expected session to be :awaiting_patch_approval, got: #{result.session.status}"
+
+      # pending_patch should be present with expected fields
+      pending = result.session.pending_patch
+      assert pending != nil, "Expected pending_patch to be set"
+      assert pending[:hash] != nil, "Expected pending_patch hash to be present"
+      assert pending[:affected_files] == ["lib/example.ex"]
+      assert pending[:summary] == "Add moduledoc to Example"
+      assert pending[:proposed_at] != nil, "Expected proposed_at timestamp"
+      assert pending[:tool_call_id] != nil, "Expected tool_call_id from ToolLoop"
+
+      # Assistant guidance should mention awaiting approval
+      assert result.assistant_text =~ "Awaiting approval",
+             "Expected assistant text to mention awaiting approval, got: #{inspect(result.assistant_text)}"
+
+      assert result.assistant_text =~ "/approve patch",
+             "Expected assistant text to mention /approve patch"
+
+      assert result.assistant_text =~ "lib/example.ex",
+             "Expected assistant text to list affected files"
+
+      # :patch_proposed event spec should be present
+      patch_proposed_specs =
+        Enum.filter(result.event_specs, fn
+          {:conductor, :patch_proposed, _, _} -> true
+          _ -> false
+        end)
+
+      assert length(patch_proposed_specs) >= 1,
+             "Expected at least one :patch_proposed event spec"
+
+      # No workspace files should have been created
+      assert File.ls!(workspace) == [],
+             "Expected no files in workspace, got: #{inspect(File.ls!(workspace))}"
+
+      # Cleanup
+      File.rm_rf!(workspace)
+    end
+
+    @tag :m1_readonly
+    test "Coding Muse with read-only tool calls and no patch_propose stays at :idle" do
+      approved = make_approved_plan()
+      plans = %{approved.id => approved}
+      workspace = "/tmp/muse_test_workspace_#{:erlang.unique_integer([:positive])}"
+      File.mkdir_p!(workspace)
+
+      session =
+        make_session(
+          status: :idle,
+          plans: plans,
+          active_plan_id: approved.id,
+          workspace: workspace
+        )
+
+      turn = make_turn("just read the files")
+
+      batch0 = [
+        {:tool_call, "list_files", %{"path" => "."}},
+        {:response_completed, nil}
+      ]
+
+      batch1 = [
+        {:assistant_delta, "I've listed the files."},
+        {:assistant_completed, "I've listed the files."},
+        {:response_completed, nil}
+      ]
+
+      opts = [
+        request_options: [options: %{fake_event_batches: [batch0, batch1], fake_iteration: 0}],
+        tool_runner: Muse.Tool.Runner
+      ]
+
+      {:ok, result} = Conductor.run(session, turn, opts)
+
+      # Session should stay at :idle (no patch proposed)
+      assert result.session.status == :idle
+      assert result.session.pending_patch == nil
+
+      # No patch_proposed events
+      patch_proposed_specs =
+        Enum.filter(result.event_specs, fn
+          {:conductor, :patch_proposed, _, _} -> true
+          _ -> false
+        end)
+
+      assert patch_proposed_specs == []
+
+      # Cleanup
+      File.rm_rf!(workspace)
+    end
+  end
+
   # -- Unapproved plan cannot route to Coding Muse proposal path ----------------
 
   describe "unapproved plan cannot route to Coding Muse" do

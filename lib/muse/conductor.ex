@@ -243,7 +243,8 @@ defmodule Muse.Conductor do
                 provider_module: provider_module,
                 request: request,
                 bundle: bundle,
-                tool_loop_provider_state: tool_loop_result.provider_state
+                tool_loop_provider_state: tool_loop_result.provider_state,
+                patch_proposals: tool_loop_result.patch_proposals
               )
 
             {:cancelled, tool_loop_result} ->
@@ -271,7 +272,8 @@ defmodule Muse.Conductor do
                 provider_module: provider_module,
                 request: request,
                 bundle: bundle,
-                tool_loop_provider_state: tool_loop_result.provider_state
+                tool_loop_provider_state: tool_loop_result.provider_state,
+                patch_proposals: tool_loop_result.patch_proposals
               )
           end
         else
