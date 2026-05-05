@@ -81,7 +81,7 @@ This section is the **source of truth for the PR09 approval contract**.
   - `session_id`, `plan_id`, `plan_version`, `plan_hash`, `workspace`.
 - Runtime enforcement remains deny-by-default for risky tool categories via `Muse.Tool.Registry` + `Muse.Tool.Runner`.
 
-### Explicit PR09 boundaries (still out of scope)
+### Explicit PR09 boundaries (plan lifecycle)
 
 Plan approval in PR09 is **lifecycle-only**. It does **not**:
 
@@ -91,11 +91,22 @@ Plan approval in PR09 is **lifecycle-only**. It does **not**:
 - run arbitrary network calls,
 - or hand off automatically to Coding Muse execution.
 
-### Future scope (PR17/PR18/PR19)
+### PR17 — Patch Proposal & Patch Approval (implemented data models, runtime wiring pending)
 
-- Patch proposal/approval/apply workflow (`patch_propose`, `patch_apply`, checkpoint/rollback).
+PR17 extends the approval contract beyond plan lifecycle:
+
+- **Coding Muse can propose patches only after an approved plan.** The `Muse.Approval` struct supports `:patch` kind with `patch_id` and `patch_hash` fields. The `Muse.Session` struct includes `:awaiting_patch_approval` status and `pending_patch` field.
+- **Patch proposals are parseable, formatable, and content-hashed.** The `Muse.Patch` struct (§3.10) defines id, diff, hash, affected_files, and status fields. Patch hash is deterministic over stable patch content so stale approvals are rejected.
+- **Diff is displayed and approval requested.** The `patch_propose` tool generates/stores a unified diff and emits `:patch_proposed` and `:patch_approval_requested` events.
+- **`/approve patch` lifecycle exists in PR17 but does not apply/checkpoint files.** Patch approval records the user decision; it does not trigger `patch_apply`, checkpoint creation, or file writes. That authority is reserved for PR18.
+- **No file modifications occur before patch approval.** The runtime enforces this: `patch_propose` is blocked in `Muse.Tool.Registry` for Planning Muse and only available to Coding Muse after plan approval; `patch_apply` remains blocked for all roles in PR17.
+- **Shell/network remain blocked/approval-gated future scope.** No shell execution, network calls, or remote execution is enabled in PR17.
+
+### Future scope (PR18/PR19)
+
+- Patch apply, checkpoint creation, and rollback orchestration (`patch_apply`, `checkpoint_create`, `rollback_checkpoint`).
 - Shell/test/network explicit approval paths.
-- Coding Muse execution handoff after later approval gates exist.
+- Coding Muse automatic execution handoff after patch approval.
 
 Use the remaining sections in this document as architecture context; where they diverge, this PR09 section and code are authoritative.
 
@@ -1133,7 +1144,7 @@ lib/muse/conductor/tool_loop.ex      Iterative tool-call loop within a turn.
 ```text
 lib/muse/muse_profile.ex            MuseProfile struct definition.
 lib/muse/muse_registry.ex           Static registry of built-in profiles.
-                                    PR09 currently registers :planning and :coding.
+                                    Registers :planning and :coding profiles. PR09 wired Planning Muse routing; PR17 defines :patch approval kind and :awaiting_patch_approval session status for Coding Muse.
 ```
 
 ### Prompt System
@@ -1510,7 +1521,7 @@ rollback_checkpoint
 
 ### 6.3 Tool Permissions Matrix
 
-> PR09 scope: only the first eight read-only tools are registered in `Muse.Tool.Registry`. The write/shell rows below are roadmap intent and are currently blocked or unavailable.
+> PR17 scope: the first eight read-only tools are registered in `Muse.Tool.Registry`. `patch_propose` is blocked for Planning Muse and available to Coding Muse after plan approval (runtime wiring pending). `patch_apply` remains blocked for all roles in PR17 (PR18 scope). The remaining write/shell rows are roadmap intent and are currently blocked or unavailable.
 
 | Tool | Planning Muse (before approval) | Coding Muse (after plan approval) | Patch approval required | Notes |
 |---|:---:|:---:|:---:|---|
@@ -1831,7 +1842,7 @@ end
 
 ### 7.4 Muse Selection and Routing
 
-Current PR09 behavior is intentionally simple:
+Current PR17 behavior:
 
 ```text
 Conductor.select_muse/2 returns Planning Muse for active turn execution.
@@ -1839,10 +1850,14 @@ Conductor.select_muse/2 returns Planning Muse for active turn execution.
 
 - Session statuses `:idle`, `:running`, `:planning`, and `:awaiting_plan_approval`
   are treated as Planning-Muse-applicable by `planning_muse_applicable?/1`.
-- Coding Muse profile exists in `Muse.MuseRegistry` but is not yet selected by
-  Conductor execution routing.
+- Coding Muse profile exists in `Muse.MuseRegistry` with `patch_propose` and
+  `patch_apply` in its tool list, but Conductor does not yet route active turns
+  to Coding Muse. The `:patch` approval kind and `:awaiting_patch_approval`
+  session status are defined for when Coding Muse routing is enabled.
 - Plan approval/rejection is handled by command + `SessionServer` lifecycle APIs,
   not by automatic Conductor handoff.
+- Patch approval/rejection follows the same lifecycle-only pattern in PR17;
+  it does not trigger `patch_apply` or file writes (PR18).
 
 ### 7.5 Tool Loop
 
@@ -1930,11 +1945,11 @@ The TurnRunner checks cancellation at these points:
 
 ### 8.1 Commands
 
-#### Canonical Command List (PR09 docs focus)
+#### Canonical Command List (PR09/PR17 docs focus)
 
 `lib/muse/commands.ex` is the source of truth for all currently parsed slash commands.
 
-For PR09 planning + approval lifecycle, the key commands are:
+For PR09 planning + PR17 patch approval lifecycle, the key commands are:
 
 ```text
 /help
@@ -1946,10 +1961,14 @@ For PR09 planning + approval lifecycle, the key commands are:
 /plan show <id>
 /approve plan
 /reject plan
+/approve patch
+/reject patch
 /prompt preview
 /prompt-preview
 /auth status
 ```
+
+> Note: `/approve patch` and `/reject patch` are documented for PR17 contract completeness. Runtime command wiring is pending (see PR17 gaps).
 
 **Potential natural-language aliases:**
 
@@ -2214,7 +2233,7 @@ All telemetry events use `:telemetry.execute/3`. Attach handlers in `Muse.Applic
 
 ## 10. Patch, Checkpoint, Rollback, and Verification
 
-### 10.1 Patch Proposal Policy
+### 10.1 Patch Proposal Policy (PR17)
 
 `patch_propose` validates:
 
@@ -2225,9 +2244,17 @@ All telemetry events use `:telemetry.execute/3`. Attach handlers in `Muse.Applic
 - Secret files are not modified.
 - Patch size is capped.
 - Binary patches are rejected in v1.
-- Patch hash is generated.
+- Patch hash is generated (deterministic over stable patch content).
 - Patch is persisted and displayed.
+- Patch can only be proposed after an approved plan (Coding Muse requires plan approval).
+- No file modifications occur before patch approval.
 ```
+
+**PR17 boundary:** `patch_propose` generates and stores a diff only. It does not
+apply files, create checkpoints, or run shell/network commands. Patch apply
+authority (`patch_apply`) is reserved for PR18.
+
+**Display format:**
 
 **Display format:**
 
@@ -2375,10 +2402,39 @@ Stop after bounded repair attempts. Failures should produce a repair plan, not u
 - Lifecycle commands do not run shell/network actions.
 - Lifecycle commands do not trigger automatic Coding Muse handoff.
 
-### Future Approval Flows (PR17/PR18/PR19)
+### PR17 — Patch Approval Flow
 
-The following remain future scope and are intentionally not active in PR09:
+PR17 introduces the patch approval lifecycle, mirroring the plan approval pattern:
 
-- Patch approval/apply (`/approve patch`, `patch_apply`, checkpoint/rollback orchestration).
+**Lifecycle commands:**
+
+```text
+/approve patch
+/reject patch
+```
+
+**PR17 behavior:**
+
+1. Coding Muse (after approved plan) proposes a patch via `patch_propose` tool.
+2. Runtime validates the patch: unified diff format, paths inside workspace, no secrets, size cap, hash generated.
+3. Runtime records the patch, emits `:patch_proposed` and `:patch_approval_requested` events.
+4. Session status transitions to `:awaiting_patch_approval`.
+5. User runs `/approve patch` or `/reject patch`.
+6. `Muse.ApprovalGate` validates binding freshness (session_id, patch_id, patch_hash, plan_id).
+7. Session emits auditable lifecycle events and returns to appropriate status.
+
+**PR17 explicit boundary — no apply authority:**
+
+- `/approve patch` records the user approval decision only.
+- It does **not** apply the patch to files (`patch_apply` is PR18).
+- It does **not** create checkpoints.
+- It does **not** trigger shell execution, network calls, or file writes.
+- `patch_apply` remains blocked in `Muse.Tool.Registry` for all roles in PR17.
+
+### Future Approval Flows (PR18/PR19)
+
+The following remain future scope:
+
+- Patch apply with checkpoint/rollback (`patch_apply`, `checkpoint_create`, `rollback_checkpoint` orchestration).
 - Shell/test command approval (`/approve shell`, `/approve command`).
 - Restore/checkpoint approval workflows.

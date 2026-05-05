@@ -123,6 +123,8 @@ Inside the `muse>` REPL:
 | `/plan show <id>` | Show a Muse Plan by id |
 | `/approve plan` | Approve the active Muse Plan; records approval only and does **not** start implementation |
 | `/reject plan` | Reject the active Muse Plan and request a revised plan |
+| `/approve patch` | Approve the pending patch proposal; records approval only and does **not** apply or checkpoint files (PR17) |
+| `/reject patch` | Reject the pending patch proposal |
 | `/events` | Print the event log |
 | `/workspace` | Print current workspace path |
 | `/reload` | Force a dev hot-reload |
@@ -137,6 +139,12 @@ record, and tells you to ask Planning Muse for a revised plan. `/plan status`
 includes approval/rejection audit status and id/hash details when the active plan
 has them. Approval of a plan does not start Coding Muse, shell commands, file
 writes, patch application, or network execution.
+
+Similarly, `/approve patch` records the user's approval of a pending patch
+proposal but does **not** apply the patch to files, create checkpoints, or
+trigger any execution. Patch apply authority is reserved for PR18. No file
+modifications occur before patch approval, and shell/network remain
+blocked/approval-gated future scope.
 
 ---
 

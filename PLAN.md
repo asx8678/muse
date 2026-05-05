@@ -92,7 +92,7 @@ Session status: idle  (ready for future patch-proposal command)
 6. **Prompt text is guidance, not security** — runtime safety enforced in Elixir code
 7. **Planning Muse uses read-only tools only** before plan approval
 8. **Coding Muse prepares patches only after an approved plan**
-9. **File writes require patch approval**; shell commands require explicit approval
+9. **File writes require patch approval**; patch approval in PR17 is lifecycle-only and does not apply/checkpoint files (PR18); shell commands require explicit approval
 10. **Network disabled or approval-gated by default**; remote execution always denied until later milestone
 11. **Secrets never appear** in prompt previews, logs, events, crash text, or provider debug output
 12. **Every important step emits structured events** for CLI/TUI/LiveView and persistence
@@ -215,7 +215,7 @@ lib/muse/muse_profile.ex            lib/muse/muses/testing_muse.ex
 
 **M1 — Read-Only Planning Muse.** User request → session → Planning Muse inspects with read-only tools → structured plan persisted → `:awaiting_plan_approval`. No files modified, no shell run, no implementation before approval.
 
-**M2 — Basic Coding Muse.** After plan approval → Coding Muse proposes patch → diff shown → `:awaiting_patch_approval`. No file modified before `/approve patch`.
+**M2 — Basic Coding Muse.** After plan approval → Coding Muse proposes patch → diff shown → `:awaiting_patch_approval`. No file modified before `/approve patch`. **PR17 explicit boundary:** patch approval is lifecycle-only; it does not apply/checkpoint files, run shell/network commands, or trigger execution. Patch apply authority is reserved for PR18. Shell/network remain blocked/approval-gated future scope.
 
 **M3 — Patch Apply, Verification, Rollback.** Approved patch → checkpoint → apply → git diff visible → optional safe test commands → rollback works. Bounded repair, not infinite loops.
 
@@ -235,6 +235,20 @@ lib/muse/muse_profile.ex            lib/muse/muses/testing_muse.ex
 - Structured plan created, persisted, shown by `/plan`
 - Session status `:awaiting_plan_approval`; CLI/TUI/LiveView show plan
 - **Zero files modified, zero shell commands, zero implementation handoffs**
+
+### Patch Proposal & Patch Approval (M2 — PR17)
+
+- Coding Muse can propose patches only after an approved plan
+- Patch proposals are parseable, formatable, and content-hashed
+- Diff is displayed and approval requested (`/approve patch`, `/reject patch`)
+- Session status `:awaiting_patch_approval` is valid and supported
+- `:patch` approval kind with `patch_id`/`patch_hash` binding is defined
+- Stale/mismatched patch approvals are rejected
+- **No file modifications occur before patch approval**
+- **Patch approval is lifecycle-only in PR17** — does not apply/checkpoint files (PR18)
+- **Shell/network remain blocked/approval-gated future scope**
+- `patch_apply` is blocked for all roles in PR17
+- `patch_propose` is blocked for Planning Muse; available to Coding Muse after plan approval
 
 ### Muse Runtime v0
 

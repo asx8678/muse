@@ -36,7 +36,7 @@
 
 ---
 
-## 0. PR09 Prompt Contract Scope
+## 0. Prompt Contract Scope (PR09 + PR17)
 
 Implemented runtime scope for PR09:
 
@@ -46,6 +46,14 @@ Implemented runtime scope for PR09:
 - On successful parse, users see `Muse.Plan.render/1` output with `/approve plan` and `/reject plan` guidance.
 - Plan lifecycle approvals are explicit and auditable in PR09.
 - Approval remains lifecycle-only in PR09; no patch apply, shell execution, network execution, or automatic Coding Muse handoff is enabled.
+
+PR17 extension:
+
+- Coding Muse can propose patches only after an approved plan.
+- `patch_propose` tool is defined in the Coding Muse profile but not yet registered in the executable tool set; `patch_apply` remains blocked for all roles.
+- Patch approval lifecycle (`/approve patch`, `/reject patch`) follows the same pattern as plan approval: content-bound, stale-safe, and lifecycle-only.
+- **No file modifications occur before patch approval.** Patch approval in PR17 does not apply/checkpoint files (PR18).
+- Shell/network remain blocked/approval-gated future scope.
 
 The additional Muse profiles and prompts below are roadmap references unless explicitly noted as implemented.
 
@@ -120,7 +128,7 @@ The additional Muse profiles and prompts below are roadmap references unless exp
 }
 ```
 
-> PR09 note: Coding Muse profile metadata is present, but Conductor does not route active turns to Coding Muse yet and `patch_propose`/`patch_apply` are not part of the current registered executable tool set.
+> PR17 note: Coding Muse profile metadata is present, and the `:patch` approval kind and `:awaiting_patch_approval` session status are defined. Conductor does not yet route active turns to Coding Muse. `patch_propose` is blocked for Planning Muse and available to Coding Muse after plan approval; `patch_apply` remains blocked for all roles in PR17 (PR18 scope).
 
 ### 1.3 Reviewing Muse
 
@@ -301,7 +309,7 @@ Behavior:
 
 ## 4. Coding Muse Prompt
 
-> Roadmap: this prompt is documented for contract clarity, but Coding Muse execution/handoff is not active in the current PR09 Conductor routing.
+> PR17 note: this prompt documents the Coding Muse contract. The `:patch` approval kind and patch proposal/approval data models are defined in PR17. Conductor routing to Coding Muse and `patch_propose` tool execution are not yet active; `/approve patch` lifecycle is documented but runtime wiring is pending.
 
 ```text
 You are the Coding Muse, the implementation specialist inside Muse.
