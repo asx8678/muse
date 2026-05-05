@@ -403,11 +403,18 @@ defmodule Muse.ApprovalGate do
   In PR09, only specs that do **not** require approval and use a safe permission
   category (`:read` or `:interactive`) are allowed. Plan approval or any other
   current context field is deliberately not treated as a tool grant.
+
+  PR17 adds an exception for `patch_propose` when the requesting muse is
+  `:coding`. This tool records a patch proposal without applying it, so it
+  is side-effect free and safe for Coding Muse after plan approval.
   """
   @spec authorize_tool(Spec.t(), map()) :: tool_decision()
   def authorize_tool(%Spec{} = spec, context) when is_map(context) do
     cond do
       safe_without_approval?(spec) ->
+        :ok
+
+      patch_propose_allowed?(spec, context) ->
         :ok
 
       spec.requires_approval ->
@@ -924,6 +931,19 @@ defmodule Muse.ApprovalGate do
 
   # -- Tool internals -----------------------------------------------------------
 
+  # patch_propose is allowed for Coding Muse — it records a proposal
+  # without applying it (side-effect free). This is the PR17 exception
+  # that enables the Coding Muse routing after plan approval.
+  defp patch_propose_allowed?(%Spec{permission: :patch_propose}, %{muse_id: :coding}) do
+    true
+  end
+
+  defp patch_propose_allowed?(%Spec{name: "patch_propose"}, %{muse_id: :coding}) do
+    true
+  end
+
+  defp patch_propose_allowed?(_, _), do: false
+
   defp safe_without_approval?(%Spec{requires_approval: false} = spec) do
     MapSet.member?(@safe_tool_permissions, tool_scope(spec))
   end
@@ -1079,6 +1099,7 @@ defmodule Muse.ApprovalGate do
   defp normalize_scope(scope) when is_atom(scope) do
     cond do
       scope == @plan_scope -> :plan
+      scope == :patch_propose -> :patch_propose
       scope in [:read, :interactive] -> scope
       scope == :shell_command -> :shell
       MapSet.member?(@denied_scopes, scope) -> scope
@@ -1091,7 +1112,7 @@ defmodule Muse.ApprovalGate do
       "plan" -> :plan
       "patch" -> :patch
       "patch_apply" -> :patch
-      "patch_propose" -> :patch
+      "patch_propose" -> :patch_propose
       "write" -> :write
       "write_file" -> :write
       "shell" -> :shell

@@ -120,7 +120,8 @@ defmodule Muse.Conductor.ToolLoop do
       total_tool_calls: 0,
       iterations: 0,
       limit_reached: false,
-      cancelled: false
+      cancelled: false,
+      patch_proposals: []
     }
 
     # Process the initial response (which has tool calls)
@@ -141,13 +142,14 @@ defmodule Muse.Conductor.ToolLoop do
       {:cancelled, build_result(%{state | cancelled: true}, "Turn cancelled during tool loop.")}
     else
       # Execute tool calls from this response
-      {tool_results, tool_event_specs, new_total, hit_limit?} =
+      {tool_results, tool_event_specs, new_total, hit_limit?, new_proposals} =
         execute_tool_calls(state, response.tool_calls)
 
       state = %{
         state
         | event_specs: state.event_specs ++ tool_event_specs,
-          total_tool_calls: new_total
+          total_tool_calls: new_total,
+          patch_proposals: state.patch_proposals ++ new_proposals
       }
 
       state = if hit_limit?, do: mark_limit_reached(state), else: state
@@ -326,6 +328,19 @@ defmodule Muse.Conductor.ToolLoop do
         end
       end)
 
+    # Collect patch proposals from successful patch_propose calls
+    proposals =
+      executable
+      |> Enum.zip(results)
+      |> Enum.flat_map(fn {tc, result} ->
+        if tc.name == "patch_propose" and result.success do
+          [extract_patch_proposal("patch_propose", normalize_tool_args(tc.arguments), result)]
+        else
+          []
+        end
+      end)
+      |> Enum.reject(&is_nil/1)
+
     # Deferred tool calls become synthetic "limit reached" results
     deferred_results =
       Enum.map(deferred, fn tc ->
@@ -350,7 +365,7 @@ defmodule Muse.Conductor.ToolLoop do
     all_specs = specs ++ deferred_specs
     hit_limit? = length(deferred) > 0 or final_total >= max_total
 
-    {all_results, all_specs, final_total, hit_limit?}
+    {all_results, all_specs, final_total, hit_limit?, proposals}
   end
 
   defp execute_single_tool(tc, tool_runner, session, turn, muse, opts) do
@@ -429,6 +444,26 @@ defmodule Muse.Conductor.ToolLoop do
 
     {result, specs, new_total}
   end
+
+  # Extract a patch proposal from a successful patch_propose tool call.
+  # The PatchPropose handler stores the proposal in result.metadata.patch_proposal.
+  # Falls back to constructing one from the tool call args if metadata is absent.
+  defp extract_patch_proposal("patch_propose", args, %Tool.Result{success: true} = result) do
+    from_metadata = Map.get(result.metadata, :patch_proposal)
+
+    if from_metadata do
+      Map.merge(from_metadata, %{tool_call_id: Map.get(result.metadata, :tool_call_id)})
+    else
+      %{
+        patch_content: Map.get(args, "patch_content") || Map.get(args, :patch_content),
+        target_files: Map.get(args, "target_files") || Map.get(args, :target_files) || [],
+        description: Map.get(args, "description") || Map.get(args, :description) || "",
+        tool_call_id: Map.get(result.metadata, :tool_call_id)
+      }
+    end
+  end
+
+  defp extract_patch_proposal(_tool_name, _args, _result), do: nil
 
   # -- Build tool messages for provider -----------------------------------------
 
@@ -527,7 +562,8 @@ defmodule Muse.Conductor.ToolLoop do
       iterations: state.iterations,
       total_tool_calls: state.total_tool_calls,
       limit_reached?: state.limit_reached,
-      provider_state: state.provider_state
+      provider_state: state.provider_state,
+      patch_proposals: state.patch_proposals
     }
   end
 

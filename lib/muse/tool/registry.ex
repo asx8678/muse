@@ -23,13 +23,20 @@ defmodule Muse.Tool.Registry do
     * `list_muses` — list available Muse profiles
     * `list_skills` — list available skills
 
+  ## Registered proposal tools
+
+    * `patch_propose` — propose a patch without applying (Coding Muse only)
+
   ## Blocked tool names
 
   These tool names are explicitly recognized as dangerous. The runner blocks
   them instead of accidentally treating them as executable:
 
-    * `write_file`, `replace_in_file`, `delete_file`, `patch_apply`, `patch_propose`
+    * `write_file`, `replace_in_file`, `delete_file`, `patch_apply`
     * `shell_command`, `network_call`, `remote_execution`
+
+  `patch_propose` is **not** blocked — it is a registered tool available
+  to Coding Muse for recording patch proposals without applying them.
 
   Destructive-looking unknown tool names (for example `apply_patch` or
   `run_shell`) are also treated as blocked so a provider cannot bypass the
@@ -48,7 +55,6 @@ defmodule Muse.Tool.Registry do
     "replace_in_file",
     "delete_file",
     "patch_apply",
-    "patch_propose",
     "shell_command",
     "network_call",
     "remote_execution"
@@ -282,6 +288,39 @@ defmodule Muse.Tool.Registry do
                       output_limit: 2_000
                     )
 
+  @patch_propose_spec Spec.new!(
+                        name: "patch_propose",
+                        description:
+                          "Propose a patch (diff) for the user to review. Records the proposal without applying it. Requires an approved plan. Use /approve patch to apply.",
+                        handler: Muse.Tools.PatchPropose,
+                        input_schema: %{
+                          type: "object",
+                          properties: %{
+                            patch_content: %{
+                              type: "string",
+                              description: "The diff/patch text to propose (required)"
+                            },
+                            target_files: %{
+                              type: "array",
+                              items: %{type: "string"},
+                              description: "List of file paths the patch targets"
+                            },
+                            description: %{
+                              type: "string",
+                              description: "Short summary of the change"
+                            }
+                          },
+                          required: ["patch_content"]
+                        },
+                        kind: :write,
+                        risk: :medium,
+                        permission: :patch_propose,
+                        allowed_roles: [:coding],
+                        allowed_muses: [:coding],
+                        requires_approval: false,
+                        output_limit: 100_000
+                      )
+
   # -- Internal index -----------------------------------------------------------
 
   @ordered_names [
@@ -292,7 +331,8 @@ defmodule Muse.Tool.Registry do
     "git_diff_readonly",
     "ask_user_question",
     "list_muses",
-    "list_skills"
+    "list_skills",
+    "patch_propose"
   ]
 
   @specs_by_name %{
@@ -303,7 +343,8 @@ defmodule Muse.Tool.Registry do
     "git_diff_readonly" => @git_diff_readonly_spec,
     "ask_user_question" => @ask_user_question_spec,
     "list_muses" => @list_muses_spec,
-    "list_skills" => @list_skills_spec
+    "list_skills" => @list_skills_spec,
+    "patch_propose" => @patch_propose_spec
   }
 
   # -- Public API ---------------------------------------------------------------
@@ -381,6 +422,11 @@ defmodule Muse.Tool.Registry do
       ["list_files", "read_file", "repo_search", "git_status",
        "git_diff_readonly", "ask_user_question", "list_muses", "list_skills"]
 
+      iex> specs = Muse.Tool.Registry.specs_for_muse(:coding)
+      iex> Enum.map(specs, & &1.name)
+      ["list_files", "read_file", "repo_search", "git_status",
+       "git_diff_readonly", "patch_propose"]
+
   """
   @spec specs_for_muse(atom()) :: [Spec.t()]
   def specs_for_muse(muse_id) when is_atom(muse_id) do
@@ -406,6 +452,13 @@ defmodule Muse.Tool.Registry do
       8
       iex> hd(schemas)[:name]
       "list_files"
+
+      iex> schemas = Muse.Tool.Registry.provider_schemas(:coding)
+      iex> length(schemas)
+      6
+      iex> Enum.map(schemas, & &1[:name])
+      ["list_files", "read_file", "repo_search", "git_status",
+       "git_diff_readonly", "patch_propose"]
 
   """
   @spec provider_schemas(atom()) :: [map()]
@@ -479,7 +532,11 @@ defmodule Muse.Tool.Registry do
   """
   @spec blocked_tool?(String.t()) :: boolean()
   def blocked_tool?(name) when is_binary(name) do
-    name in @blocked_tool_names or destructive_tool_shape?(name)
+    # Registered tools are never blocked, even if their name tokens
+    # match the destructive shape heuristic. This allows `patch_propose`
+    # (tokens include "patch") to be a registered tool that is not blocked.
+    name not in @ordered_names and
+      (name in @blocked_tool_names or destructive_tool_shape?(name))
   end
 
   defp destructive_tool_shape?(name) do

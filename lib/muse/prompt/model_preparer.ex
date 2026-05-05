@@ -144,6 +144,27 @@ defmodule Muse.Prompt.ModelPreparer do
     {read_only_tools, plan_response_format}
   end
 
+  # When the active muse has response_mode: :patch (Coding Muse), filter
+  # tools to read-only plus patch_propose only. patch_apply and test_runner
+  # are excluded — Coding Muse can propose patches but not apply them.
+  # No PlanSchema response_format for Coding Muse.
+  defp planning_muse_request_overrides(:patch, _output_schema, bundle, opts, provider_map) do
+    coding_tools =
+      bundle.tools
+      |> Enum.filter(fn tool_spec ->
+        name = tool_spec[:name] || tool_spec["function"]["name"]
+
+        is_binary(name) and
+          not ToolRegistry.blocked_tool?(name) and
+          (ToolRegistry.known_tool?(name) or name == "patch_propose")
+      end)
+
+    response_format =
+      bundle.response_format || option_or_config(opts, provider_map, :response_format)
+
+    {coding_tools, response_format}
+  end
+
   # For all other muse profiles, use bundle tools and standard response_format
   defp planning_muse_request_overrides(_response_mode, _output_schema, bundle, opts, provider_map) do
     response_format =
