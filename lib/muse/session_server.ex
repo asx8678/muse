@@ -42,7 +42,7 @@ defmodule Muse.SessionServer do
 
   use GenServer, restart: :temporary
 
-  alias Muse.{Event, Prompt.Redactor, Session, State, Turn, Plan, SessionStore}
+  alias Muse.{ApprovalGate, Event, Prompt.Redactor, Session, State, Turn, Plan, SessionStore}
   alias Muse.Conductor.TurnRunner
 
   # -- Public API ---------------------------------------------------------------
@@ -138,6 +138,9 @@ defmodule Muse.SessionServer do
       active_plan_id: nil,
       plan: nil,
       plans: %{},
+      approvals: [],
+      approval_binding: nil,
+      active_approval: nil,
       # TurnRunner state
       active_turn_id: nil,
       runner_pid: nil,
@@ -172,6 +175,9 @@ defmodule Muse.SessionServer do
       active_plan_id: state.active_plan_id,
       plan: state.plan,
       plans: state.plans,
+      approvals: state.approvals,
+      approval_binding: state.approval_binding,
+      active_approval: state.active_approval,
       seq: state.seq,
       event_count: length(state.events),
       active_turn_id: state.active_turn_id,
@@ -313,7 +319,8 @@ defmodule Muse.SessionServer do
       )
       | active_muse: state.active_muse,
         active_plan_id: state.active_plan_id,
-        plans: turn_session_plans(state)
+        plans: turn_session_plans(state),
+        approvals: state.approvals || []
     }
   end
 
@@ -404,25 +411,12 @@ defmodule Muse.SessionServer do
         active_muse: Atom.to_string(result.selected_muse.id)
     }
 
-    # Store plan if present in the result
+    # Store plan if present in the result and create a content-bound pending
+    # approval record for plans awaiting approval. This approval is persisted in
+    # the session snapshot and embedded in the plan for audit display.
     state =
       if Map.has_key?(result, :plan) and not is_nil(result.plan) do
-        plan = result.plan
-        active_plan_id = plan.id || state.active_plan_id
-
-        plans =
-          if active_plan_id do
-            Map.put(state.plans || %{}, active_plan_id, plan)
-          else
-            state.plans || %{}
-          end
-
-        maybe_persist_snapshot(%{
-          state
-          | active_plan_id: active_plan_id,
-            plan: plan,
-            plans: plans
-        })
+        store_result_plan(state, result.plan, result.session)
       else
         state
       end

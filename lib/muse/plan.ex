@@ -332,6 +332,26 @@ defmodule Muse.Plan do
   @spec from_map(map()) :: t()
   def from_map(map) when is_map(map), do: new(map)
 
+  # -- Content binding ----------------------------------------------------------
+
+  @doc """
+  Compute a deterministic SHA-256 hash over the stable content of the plan.
+
+  Delegates to `Muse.PlanBinding.content_hash/1`. Volatile lifecycle fields,
+  timestamps, approval records, and metadata are excluded from the hash.
+  """
+  @spec content_hash(t()) :: String.t()
+  def content_hash(%__MODULE__{} = plan), do: Muse.PlanBinding.content_hash(plan)
+
+  @doc """
+  Return a binding map for plan approvals.
+
+  Delegates to `Muse.PlanBinding.approval_binding/2`.
+  """
+  @spec approval_binding(t(), keyword()) :: map()
+  def approval_binding(%__MODULE__{} = plan, opts \\ []),
+    do: Muse.PlanBinding.approval_binding(plan, opts)
+
   # -- Rendering ----------------------------------------------------------------
 
   @doc """
@@ -401,8 +421,13 @@ defmodule Muse.Plan do
     "Risks:\n" <> Enum.join(risk_lines, "\n")
   end
 
-  defp render_footer(%__MODULE__{status: :awaiting_approval}) do
-    "Approve this plan with: /approve plan\nReject this plan with: /reject plan"
+  defp render_footer(%__MODULE__{status: :awaiting_approval} = plan) do
+    [
+      Muse.PlanApprovalRequest.render_binding(plan),
+      "Approve this plan with: /approve plan\nReject this plan with: /reject plan"
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n\n")
   end
 
   defp render_footer(%__MODULE__{status: :approved}) do
