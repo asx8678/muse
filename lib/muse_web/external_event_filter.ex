@@ -13,6 +13,8 @@ defmodule MuseWeb.ExternalEventFilter do
       conservative safe-allowlist AND it is not a provider/auth/debug-ish event;
     * event data is redacted via `Muse.EventDisplay.safe_data/1`, then converted
       to JSON-safe data without dumping arbitrary structs or raw internals;
+    * patch events strip raw `diff`/`diff_text` payloads and expose only bounded
+      identifiers such as `diff_ref`/hash metadata;
     * no `String.to_atom/1` on client input;
     * session IDs are validated to prevent path traversal — they are never used
       as filesystem paths. Nil session IDs are rejected (no global topics in
@@ -288,13 +290,12 @@ defmodule MuseWeb.ExternalEventFilter do
   # -- Envelope builder ---------------------------------------------------------
 
   @patch_types [:patch_proposed, :patch_approval_requested, :patch_approved, :patch_rejected]
-  @external_diff_cap 2_000
 
   defp build_envelope(event) do
     payload =
       event.data
       |> EventDisplay.safe_data()
-      |> maybe_cap_patch_diff(event.type)
+      |> strip_external_patch_diff(event.type)
       |> external_json_safe()
 
     base = %{
@@ -316,23 +317,51 @@ defmodule MuseWeb.ExternalEventFilter do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, external_json_safe(value))
 
-  # -- Patch diff capping --------------------------------------------------------
+  # -- Patch diff stripping ------------------------------------------------------
 
   @diff_keys [:diff, "diff", :diff_text, "diff_text"]
 
-  defp maybe_cap_patch_diff(data, type) when type in @patch_types and is_map(data) do
-    Enum.reduce(@diff_keys, data, fn key, acc ->
-      case Map.get(acc, key) do
-        diff when is_binary(diff) and byte_size(diff) > @external_diff_cap ->
-          Map.put(acc, key, String.slice(diff, 0, @external_diff_cap) <> "…")
+  defp strip_external_patch_diff(data, type) when type in @patch_types and is_map(data) do
+    raw_diff? =
+      Enum.any?(@diff_keys, fn key ->
+        case Map.get(data, key) do
+          diff when is_binary(diff) -> String.trim(diff) != ""
+          _ -> false
+        end
+      end)
 
-        _ ->
-          acc
+    data = Map.drop(data, @diff_keys)
+
+    if raw_diff? do
+      data
+      |> put_diff_ref_from_hash()
+      |> Map.put_new(:diff_omitted, true)
+    else
+      data
+    end
+  end
+
+  defp strip_external_patch_diff(data, _type), do: data
+
+  defp put_diff_ref_from_hash(data) do
+    if Map.has_key?(data, :diff_ref) or Map.has_key?(data, "diff_ref") do
+      data
+    else
+      case first_present(data, [:hash, "hash", :patch_hash, "patch_hash"]) do
+        hash when is_binary(hash) and hash != "" -> Map.put(data, :diff_ref, hash)
+        _ -> data
+      end
+    end
+  end
+
+  defp first_present(data, keys) do
+    Enum.find_value(keys, fn key ->
+      case Map.get(data, key) do
+        value when value in [nil, ""] -> nil
+        value -> value
       end
     end)
   end
-
-  defp maybe_cap_patch_diff(data, _type), do: data
 
   # -- JSON safety --------------------------------------------------------------
 

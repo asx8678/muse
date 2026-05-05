@@ -186,6 +186,32 @@ defmodule MuseWeb.ExternalEventFilterTest do
       assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
     end
 
+    test "strips raw diff from external patch_proposed payloads" do
+      raw_diff = "diff --git a/lib/a.ex b/lib/a.ex\n@@ -1 +1 @@\n-old-secret-marker\n+new\n"
+
+      event =
+        make_event(
+          :patch_proposed,
+          %{
+            "diff_text" => raw_diff,
+            patch_id: "p1",
+            hash: "abc123",
+            affected_files: ["lib/a.ex"],
+            diff: raw_diff
+          },
+          visibility: :user
+        )
+
+      assert {:ok, envelope} = ExternalEventFilter.to_external_map(event, [])
+      payload = envelope["payload"]
+
+      refute Map.has_key?(payload, "diff")
+      refute Map.has_key?(payload, "diff_text")
+      assert payload["diff_ref"] == "abc123"
+      assert payload["diff_omitted"] == true
+      refute inspect(envelope) =~ "old-secret-marker"
+    end
+
     test "allows patch_approval_requested with nil visibility" do
       event = make_event(:patch_approval_requested, %{patch_id: "p1", hash: "abc"})
       assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
@@ -605,38 +631,42 @@ defmodule MuseWeb.ExternalEventFilterTest do
     end
   end
 
-  # -- Patch diff capping (PR17) -------------------------------------------------
+  # -- Patch diff stripping (PR17) ----------------------------------------------
 
-  describe "patch diff capping for external envelopes" do
-    test "patch_proposed event caps large diff to 2000 chars" do
-      huge_diff = String.duplicate("a", 5_000)
+  describe "patch diff stripping for external envelopes" do
+    test "patch_proposed event strips large raw diff and keeps a diff_ref" do
+      huge_diff = String.duplicate("raw-diff-marker", 500)
 
       event =
-        make_event(:patch_proposed, %{patch_id: "p1", diff: huge_diff},
+        make_event(:patch_proposed, %{patch_id: "p1", hash: "hash123", diff: huge_diff},
           visibility: :user,
           session_id: "s1"
         )
 
       {:ok, envelope} = ExternalEventFilter.to_external_map(event, session_id: "s1")
-      payload_diff = envelope["payload"]["diff"]
-      assert String.length(payload_diff) <= 2_002
-      assert String.ends_with?(payload_diff, "…")
+      payload = envelope["payload"]
+
+      refute Map.has_key?(payload, "diff")
+      assert payload["diff_ref"] == "hash123"
+      assert payload["diff_omitted"] == true
+      refute inspect(envelope) =~ "raw-diff-marker"
     end
 
-    test "patch_proposed event preserves short diff under cap" do
+    test "patch_proposed event strips short raw diff too" do
       short_diff = "--- a/foo.ex\n+++ b/foo.ex\n@@ -1 +1 @@\n-old\n+new"
 
       event =
-        make_event(:patch_proposed, %{patch_id: "p1", diff: short_diff},
+        make_event(:patch_proposed, %{patch_id: "p1", hash: "hash123", diff: short_diff},
           visibility: :user,
           session_id: "s1"
         )
 
       {:ok, envelope} = ExternalEventFilter.to_external_map(event, session_id: "s1")
-      assert envelope["payload"]["diff"] == short_diff
+      refute Map.has_key?(envelope["payload"], "diff")
+      assert envelope["payload"]["diff_ref"] == "hash123"
     end
 
-    test "non-patch event types are not capped by patch logic" do
+    test "non-patch event types are not stripped by patch logic" do
       long_text = String.duplicate("x", 5_000)
 
       event =
@@ -646,23 +676,25 @@ defmodule MuseWeb.ExternalEventFilterTest do
         )
 
       {:ok, envelope} = ExternalEventFilter.to_external_map(event, session_id: "s1")
-      # assistant_message text is capped by string truncation (2000 chars), not patch logic
+      # assistant_message text is capped by string truncation, not patch-specific diff stripping.
       assert envelope["payload"]["text"] != nil
     end
 
-    test "caps diff_text key as well as diff key" do
+    test "strips diff_text key as well as diff key" do
       huge_diff = String.duplicate("x", 3_000)
 
       event =
-        make_event(:patch_proposed, %{patch_id: "p1", diff_text: huge_diff},
+        make_event(:patch_proposed, %{patch_id: "p1", hash: "hash123", diff_text: huge_diff},
           visibility: :user,
           session_id: "s1"
         )
 
       {:ok, envelope} = ExternalEventFilter.to_external_map(event, session_id: "s1")
+      payload = envelope["payload"]
 
-      diff_text = envelope["payload"]["diff_text"]
-      assert String.ends_with?(diff_text, "…")
+      refute Map.has_key?(payload, "diff_text")
+      assert payload["diff_ref"] == "hash123"
+      assert payload["diff_omitted"] == true
     end
   end
 end
