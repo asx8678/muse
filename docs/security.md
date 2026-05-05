@@ -38,7 +38,7 @@ Every item must be verified before the Muse Runtime reaches MVP. No exceptions.
 - [ ] Network calls are approval-gated or disabled
 - [ ] Remote execution is disabled
 - [ ] Web server defaults to localhost
-- [ ] External WebSocket channel does not forward internal/sensitive events
+- [ ] External WebSocket/channel boundary uses `MuseWeb.ExternalEventFilter` and does not forward internal/sensitive/debug events
 - [ ] Prompt preview is redacted and does not show full hidden prompt
 - [ ] Tool outputs are capped
 - [ ] Provider errors do not leak secrets
@@ -190,7 +190,7 @@ Codex auth tokens     Tokens from ~/.codex/auth.json
 | Embedded credentials in URL | `https://REDACTED:REDACTED@host/path` |
 | Codex auth token | (token omitted entirely) |
 
-**Implementation note:** Prompt previews use `Muse.Prompt.Redactor`; event/log payloads and provider config debug strings use the shared redaction/sanitization helpers (`Muse.EventPayloadRedactor`, `Muse.MetadataSanitizer`, and `ProviderConfig.redacted_inspect/1`). PR12's `OpenAICompatibleProvider` redacts all error payloads through `EventPayloadRedactor` before returning them — provider HTTP bodies, response terms, and error messages never leak into `Muse.Event` structs, logs, or debug output. Downstream consumers (CLI, TUI, LiveView, WebSocket channels) never see raw secrets.
+**Implementation note:** Prompt previews use `Muse.Prompt.Redactor`; event/log payloads and provider config debug strings use the shared redaction/sanitization helpers (`Muse.EventPayloadRedactor`, `Muse.MetadataSanitizer`, and `ProviderConfig.redacted_inspect/1`). PR12's `OpenAICompatibleProvider` redacts all error payloads through `EventPayloadRedactor` before returning them — provider HTTP bodies, response terms, and error messages never leak into `Muse.Event` structs, logs, or debug output. External transports must pass events through `MuseWeb.ExternalEventFilter` before JSON encoding; the filter denies non-user visibility by default, redacts payloads, summarizes raw plan JSON through `Muse.EventDisplay`, omits nested/internal structs instead of inspecting them, and rejects path-like session IDs. Downstream consumers (CLI, TUI, LiveView, WebSocket channels) never see raw secrets.
 
 ---
 
