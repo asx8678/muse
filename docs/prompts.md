@@ -182,7 +182,7 @@ The additional Muse profiles and prompts below are roadmap references unless exp
 
 ### 1.8 Tool Muse (Note)
 
-Tool Muse does not need to be a chat persona in v0. It is a product-facing way to describe the **Tool Registry** and **Tool Runner** control plane. In PR08 there is no standalone `Muse.ApprovalGate` module yet; blocked-tool and role enforcement happen in `Muse.Tool.Runner`.
+Tool Muse does not need to be a chat persona in v0. It is a product-facing way to describe the **Tool Registry** and **Tool Runner** control plane. In PR09, `Muse.Tool.Runner` delegates tool-approval decisions to the minimal `Muse.ApprovalGate` facade while preserving deny-by-default behavior for write, shell, network, patch, delete, and future approval-scoped tools.
 
 ---
 

@@ -8,6 +8,14 @@ defmodule Muse.Tool.RegistryTest do
       assert length(Registry.all()) == 8
     end
 
+    test "keeps registered specs within the no-approval safe tool surface" do
+      for spec <- Registry.all() do
+        refute spec.requires_approval
+        assert spec.permission in [:read, :interactive]
+        refute spec.permission in [:write, :shell, :network, :patch, :delete]
+      end
+    end
+
     test "returns specs in deterministic order" do
       names = Enum.map(Registry.all(), & &1.name)
 

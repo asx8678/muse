@@ -32,6 +32,7 @@ defmodule Muse.Tool.Runner do
   metadata. No raw file contents or secrets in events.
   """
 
+  alias Muse.ApprovalGate
   alias Muse.Tool.{Registry, Result, Spec}
 
   # @default_output_limit available if needed later
@@ -84,7 +85,7 @@ defmodule Muse.Tool.Runner do
       with :ok <- check_blocked(tool_name),
            {:ok, spec} <- check_registered(tool_name),
            :ok <- check_muse_allowed(spec, muse_id),
-           :ok <- check_approval(spec),
+           :ok <- check_approval(spec, context),
            :ok <- check_required_args(spec, args),
            {:ok, context_with_workspace} <- ensure_workspace(context),
            {:ok, final_result} <- execute_handler(spec, args, context_with_workspace, call_id) do
@@ -175,12 +176,11 @@ defmodule Muse.Tool.Runner do
     end
   end
 
-  defp check_approval(%Spec{requires_approval: false}), do: :ok
-
-  defp check_approval(%Spec{requires_approval: true, name: name}) do
-    # In the current implementation, approval-gated tools are not yet
-    # executed. This will be extended when the ApprovalGate is implemented.
-    {:blocked, "#{name} requires approval which has not been granted"}
+  defp check_approval(%Spec{} = spec, context) do
+    case ApprovalGate.authorize_tool(spec, context) do
+      :ok -> :ok
+      {:blocked, reason} -> {:blocked, reason}
+    end
   end
 
   defp check_required_args(%Spec{input_schema: schema}, args) do

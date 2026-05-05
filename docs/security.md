@@ -196,8 +196,11 @@ Codex auth tokens     Tokens from ~/.codex/auth.json
 
 ## 5. Tool Permissions Matrix
 
-PR08 runtime enforcement is implemented by `Muse.Tool.Registry` + `Muse.Tool.Runner`.
-There is currently no standalone `Muse.ApprovalGate` module.
+Runtime enforcement is implemented by `Muse.Tool.Registry`, `Muse.Tool.Runner`,
+and the minimal `Muse.ApprovalGate` facade.
+
+In PR09, plan approval is a lifecycle state only. It does not authorize write,
+shell, network, patch, delete, or future approval-scoped tools.
 
 ### Registered runtime tools (available)
 
@@ -228,7 +231,7 @@ Runner behavior:
 
 - blocked tool name → `:tool_call_blocked`
 - unknown tool → error result
-- `requires_approval: true` tool spec → blocked (current PR08 behavior)
+- `requires_approval: true` tool spec → blocked through `Muse.ApprovalGate`
 
 ---
 

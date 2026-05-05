@@ -239,6 +239,70 @@ defmodule Muse.Conductor.ToolLoopTest do
       assert result.assistant_text =~ "I cannot write files"
     end
 
+    test "approved plan in session does not unlock blocked write tools" do
+      plan = %{
+        id: "approved_plan_1",
+        session_id: "toolloop-session",
+        version: 1,
+        plan_hash: "approved_hash_1"
+      }
+
+      session =
+        build_session(status: :executing, active_plan_id: "approved_plan_1")
+        |> Map.put(:plans, %{"approved_plan_1" => plan})
+        |> Map.put(:approvals, [
+          %{
+            scope: :plan,
+            status: :approved,
+            session_id: "toolloop-session",
+            plan_id: "approved_plan_1",
+            plan_version: 1,
+            plan_hash: "approved_hash_1"
+          }
+        ])
+
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+
+      fake_event_batches = [
+        [
+          {:tool_call, "write_file", %{"path" => "test.txt", "content" => "hello"},
+           "call_wf_approved_plan"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_delta, "I still cannot write files."},
+          {:assistant_completed, "I still cannot write files."},
+          {:response_completed, nil}
+        ]
+      ]
+
+      request = build_request(fake_event_batches, 0)
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [
+          ToolCall.new("write_file", %{"path" => "test.txt", "content" => "hello"},
+            id: "call_wf_approved_plan"
+          )
+        ],
+        finish_reason: "tool_calls"
+      }
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: FakeProvider
+        )
+
+      blocked_specs = filter_specs(result.event_specs, :tool_call_blocked)
+      assert length(blocked_specs) >= 1
+
+      {_source, _type, data, _opts} = hd(blocked_specs)
+      assert data.tool_name == "write_file"
+      assert result.assistant_text =~ "I still cannot write files"
+    end
+
     test "blocked and failed tool event specs redact provider-supplied secrets" do
       session = build_session()
       turn = build_turn()
