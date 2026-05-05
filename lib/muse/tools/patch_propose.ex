@@ -161,10 +161,13 @@ defmodule Muse.Tools.PatchPropose do
     workspace = Map.get(context, :workspace) || Map.get(context, "workspace")
 
     if is_binary(workspace) and workspace != "" do
-      Validator.validate_proposal(diff, workspace, %{})
+      Validator.validate_proposal(%{"diff" => diff}, %{workspace: workspace}, [])
     else
       # Without a workspace, do basic parse validation only
-      DiffParser.validate(diff)
+      case DiffParser.validate(diff) do
+        :ok -> {:ok, []}
+        {:error, _} = err -> err
+      end
     end
   end
 
