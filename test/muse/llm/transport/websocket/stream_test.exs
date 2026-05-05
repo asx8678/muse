@@ -217,6 +217,23 @@ defmodule Muse.LLM.Transport.WebSocket.StreamTest do
       refute summary =~ "token=top-secret"
     end
 
+    test "does not leak raw binary transport error bodies" do
+      ws_stream_fn = fn _url, _ws_options, _on_frame ->
+        {:error, {:transport_error, "HTTP 401 response body: quota exceeded for project"}}
+      end
+
+      assert {:error, {:transport_error, summary}} =
+               Stream.request(
+                 [url: @url, create_frame: "response.create", ws_stream_fn: ws_stream_fn],
+                 fn _frame -> :ok end
+               )
+
+      assert summary == "binary"
+      refute summary =~ "HTTP 401"
+      refute summary =~ "quota exceeded"
+      refute summary =~ "project"
+    end
+
     test "rejects lower-level websocket URL with query without leaking it" do
       assert {:error, {:transport_error, summary}} =
                Stream.request(

@@ -34,6 +34,7 @@ defmodule Muse.LLM.Transport.WebSocket.MintAdapter do
 
   alias Mint.HTTP
   alias Mint.WebSocket
+  alias Muse.LLM.Transport.WebSocket.SafeError
 
   @enforce_keys [:conn, :websocket, :ref]
   defstruct [:conn, :websocket, :ref, frame_buffer: []]
@@ -54,7 +55,8 @@ defmodule Muse.LLM.Transport.WebSocket.MintAdapter do
       request.
     * `:timeout_ms` — connect timeout (ms), also forwarded as
       `connect_options: [timeout: ...]`.
-    * `:connect_options` — forwarded to `Mint.HTTP.connect/4`.
+    * `:connect_options` — forwarded to `Mint.HTTP.connect/4`; `:mode`
+      and `:protocols` are reserved by this adapter.
 
   Returns `{:ok, %__MODULE__{}}` on success or `{:error, reason}` on failure.
   """
@@ -75,16 +77,19 @@ defmodule Muse.LLM.Transport.WebSocket.MintAdapter do
   """
   @spec send_frame(t(), iodata(), keyword()) :: {:ok, t()} | {:error, term()}
   def send_frame(%__MODULE__{} = state, data, _opts) do
-    with {:ok, websocket, encoded} <- WebSocket.encode(state.websocket, {:text, data}),
-         {:ok, conn} <- WebSocket.stream_request_body(state.conn, state.ref, encoded) do
-      {:ok, %{state | conn: conn, websocket: websocket}}
-    else
-      {:error, _ws, error} ->
-        {:error, error}
+    case WebSocket.encode(state.websocket, {:text, data}) do
+      {:ok, websocket, encoded} ->
+        case WebSocket.stream_request_body(state.conn, state.ref, encoded) do
+          {:ok, conn} ->
+            {:ok, %{state | conn: conn, websocket: websocket}}
 
-      {:error, conn, error, _responses} ->
-        _ = HTTP.close(conn)
-        {:error, error}
+          {:error, conn, reason} ->
+            _ = HTTP.close(conn)
+            {:error, reason}
+        end
+
+      {:error, _websocket, reason} ->
+        {:error, reason}
     end
   end
 
@@ -114,7 +119,7 @@ defmodule Muse.LLM.Transport.WebSocket.MintAdapter do
     case WebSocket.recv(state.conn, 0, timeout) do
       {:ok, conn, responses} ->
         state = %{state | conn: conn}
-        decode_responses(state, responses)
+        decode_responses(state, responses, opts)
 
       {:error, _conn, reason, _responses} ->
         {:error, reason}
@@ -127,16 +132,36 @@ defmodule Muse.LLM.Transport.WebSocket.MintAdapter do
 
   defp parse_ws_url(url) do
     case URI.parse(url) do
-      %URI{scheme: scheme, host: host, port: port, path: path}
+      %URI{scheme: scheme, host: host, port: port, path: path} = uri
       when scheme in ["ws", "wss"] and is_binary(host) and host != "" ->
-        path = if path in [nil, ""], do: "/", else: path
-        ws_scheme = String.to_atom(scheme)
-        {:ok, %{scheme: ws_scheme, host: host, port: port, path: path}}
+        validate_safe_url_components(uri, fn ->
+          ws_scheme = if scheme == "wss", do: :wss, else: :ws
+          path = if path in [nil, ""], do: "/", else: path
+
+          {:ok,
+           %{scheme: ws_scheme, host: host, port: port || default_port(ws_scheme), path: path}}
+        end)
 
       _uri ->
         {:error, :invalid_websocket_url}
     end
   end
+
+  defp validate_safe_url_components(uri, success_fun) do
+    cond do
+      has_component?(uri.userinfo) -> {:error, :websocket_url_contains_userinfo}
+      has_component?(uri.query) -> {:error, :websocket_url_contains_query}
+      has_component?(uri.fragment) -> {:error, :websocket_url_contains_fragment}
+      true -> success_fun.()
+    end
+  end
+
+  defp has_component?(nil), do: false
+  defp has_component?(""), do: false
+  defp has_component?(_component), do: true
+
+  defp default_port(:ws), do: 80
+  defp default_port(:wss), do: 443
 
   defp mint_connect(uri, opts) do
     http_scheme = if uri.scheme == :wss, do: :https, else: :http
@@ -164,6 +189,11 @@ defmodule Muse.LLM.Transport.WebSocket.MintAdapter do
       extra when is_list(extra) -> Keyword.merge(base, extra)
       _ -> base
     end
+    # This adapter drives Mint.WebSocket through passive HTTP/1 reads/writes.
+    # Keep these invariants even if caller-provided connect options include
+    # conflicting values.
+    |> Keyword.put(:mode, :passive)
+    |> Keyword.put(:protocols, [:http1])
   end
 
   defp mint_upgrade(uri, conn, opts) do
@@ -240,41 +270,82 @@ defmodule Muse.LLM.Transport.WebSocket.MintAdapter do
     end
   end
 
-  defp decode_responses(state, responses) do
-    {frames, websocket} =
-      Enum.reduce(responses, {[], state.websocket}, fn
-        {:data, _ref, data}, {acc_frames, ws} ->
-          case WebSocket.decode(ws, data) do
-            {:ok, new_ws, decoded} -> {acc_frames ++ decoded, new_ws}
-            {:error, new_ws, _reason} -> {acc_frames, new_ws}
-          end
+  defp decode_responses(state, responses, opts) do
+    with {:ok, decoded, websocket} <- decode_response_frames(responses, state.websocket),
+         {:ok, actionable_frames, state} <-
+           handle_control_frames(%{state | websocket: websocket}, decoded) do
+      case actionable_frames do
+        [] ->
+          # No actionable frames; try receiving again using the caller's timeout.
+          recv(state, opts)
 
-        _other, acc ->
-          acc
-      end)
-
-    # Filter out ping/pong control frames (handled by the transport layer)
-    frames =
-      Enum.reject(frames, fn
-        {:ping, _} -> true
-        {:pong, _} -> true
-        _ -> false
-      end)
-
-    case frames do
-      [] ->
-        # No actionable frames; try receiving again
-        recv(
-          %{state | websocket: websocket},
-          receive_timeout: resolve_receive_timeout(state)
-        )
-
-      [frame | rest] ->
-        {:ok, frame, %{state | websocket: websocket, frame_buffer: rest}}
+        [frame | rest] ->
+          {:ok, frame, %{state | frame_buffer: rest}}
+      end
     end
   end
 
-  defp resolve_receive_timeout(_state) do
-    30_000
+  defp decode_response_frames(responses, websocket) do
+    Enum.reduce_while(responses, {:ok, [], websocket}, fn
+      {:data, _ref, data}, {:ok, acc_frames, ws} ->
+        case WebSocket.decode(ws, data) do
+          {:ok, new_ws, decoded} ->
+            case decoded_error(decoded) do
+              nil -> {:cont, {:ok, acc_frames ++ decoded, new_ws}}
+              reason -> {:halt, {:error, reason}}
+            end
+
+          {:error, _new_ws, reason} ->
+            {:halt, {:error, reason}}
+        end
+
+      _other, acc ->
+        {:cont, acc}
+    end)
+  end
+
+  defp decoded_error(decoded_frames) do
+    Enum.find_value(decoded_frames, fn
+      {:error, reason} -> reason
+      _frame -> nil
+    end)
+  end
+
+  defp handle_control_frames(state, frames) do
+    frames
+    |> Enum.reduce_while({:ok, [], state}, fn
+      {:ping, payload}, {:ok, acc_frames, state} ->
+        case send_control_frame(state, {:pong, payload}) do
+          {:ok, state} -> {:cont, {:ok, acc_frames, state}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+
+      {:pong, _payload}, acc ->
+        {:cont, acc}
+
+      frame, {:ok, acc_frames, state} ->
+        {:cont, {:ok, [frame | acc_frames], state}}
+    end)
+    |> case do
+      {:ok, frames, state} -> {:ok, Enum.reverse(frames), state}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp send_control_frame(state, frame) do
+    case WebSocket.encode(state.websocket, frame) do
+      {:ok, websocket, encoded} ->
+        case WebSocket.stream_request_body(state.conn, state.ref, encoded) do
+          {:ok, conn} ->
+            {:ok, %{state | conn: conn, websocket: websocket}}
+
+          {:error, conn, reason} ->
+            _ = HTTP.close(conn)
+            {:error, {:control_frame_failed, reason}}
+        end
+
+      {:error, _websocket, reason} ->
+        {:error, {:control_frame_failed, SafeError.result_shape(reason)}}
+    end
   end
 end

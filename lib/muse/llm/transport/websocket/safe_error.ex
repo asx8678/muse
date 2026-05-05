@@ -2,6 +2,7 @@ defmodule Muse.LLM.Transport.WebSocket.SafeError do
   @moduledoc false
 
   @summary_limit 500
+  @safe_phase_prefixes ~w(connect_failed create_frame_failed send_failed receive_failed control_frame_failed)
 
   @doc false
   @spec phase_summary(atom(), term()) :: String.t()
@@ -21,9 +22,14 @@ defmodule Muse.LLM.Transport.WebSocket.SafeError do
   def normalize_reason(reason) when is_atom(reason), do: reason
 
   def normalize_reason(reason) when is_binary(reason) do
-    reason
-    |> String.slice(0, @summary_limit)
-    |> Muse.EventPayloadRedactor.redact_string()
+    raw = String.slice(reason, 0, @summary_limit)
+    redacted = Muse.EventPayloadRedactor.redact_string(raw)
+
+    cond do
+      safe_generated_summary?(redacted) -> redacted
+      raw != redacted -> "[REDACTED]"
+      true -> "binary"
+    end
   end
 
   def normalize_reason(reason), do: summary(reason)
@@ -53,6 +59,20 @@ defmodule Muse.LLM.Transport.WebSocket.SafeError do
   def result_shape(result) when is_boolean(result), do: :boolean
   def result_shape(nil), do: nil
   def result_shape(_result), do: :term
+
+  defp safe_generated_summary?(value) do
+    case String.split(value, ": ", parts: 2) do
+      [phase, tail] when phase in @safe_phase_prefixes -> safe_summary_tail?(tail)
+      _other -> false
+    end
+  end
+
+  defp safe_summary_tail?(tail) do
+    Regex.match?(
+      ~r/\A(?:[A-Za-z][A-Za-z0-9_.]*|[a-z_][a-z0-9_]*(?:: \[REDACTED\])?|\[REDACTED\]|binary|tuple|map|list|nil|true|false|-?\d+)\z/,
+      tail
+    )
+  end
 
   defp bounded_raw(reason) when is_binary(reason) do
     String.slice(reason, 0, @summary_limit)
