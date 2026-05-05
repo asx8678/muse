@@ -278,28 +278,34 @@ defmodule Muse.Checkpoint.Store do
               content_hash =
                 :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
 
-              # Write snapshot content
+              # Write snapshot content — use safe_snapshot_abs to validate
+              # the snapshot path has no symlink parent components
               snapshot_rel = snapshot_file_path(rel_path)
-              snapshot_abs = Path.join(snapshots_dir, snapshot_rel)
 
-              case safe_mkdir_p(Path.dirname(snapshot_abs)) do
-                {:ok, _} ->
-                  case safe_write_file(snapshot_abs, content) do
+              case safe_snapshot_abs(snapshot_rel, snapshots_dir) do
+                {:ok, snapshot_abs} ->
+                  case safe_mkdir_p(Path.dirname(snapshot_abs)) do
                     {:ok, _} ->
-                      {:ok,
-                       %{
-                         path: rel_path,
-                         existed: true,
-                         content_hash: content_hash,
-                         snapshot_path: snapshot_rel
-                       }}
+                      case safe_write_file(snapshot_abs, content) do
+                        {:ok, _} ->
+                          {:ok,
+                           %{
+                             path: rel_path,
+                             existed: true,
+                             content_hash: content_hash,
+                             snapshot_path: snapshot_rel
+                           }}
+
+                        {:error, reason} ->
+                          {:error, {:snapshot_write_failed, rel_path, reason}}
+                      end
 
                     {:error, reason} ->
-                      {:error, {:snapshot_write_failed, rel_path, reason}}
+                      {:error, {:snapshot_mkdir_failed, rel_path, reason}}
                   end
 
                 {:error, reason} ->
-                  {:error, {:snapshot_mkdir_failed, rel_path, reason}}
+                  {:error, {:snapshot_write_failed, rel_path, reason}}
               end
 
             {:error, reason} ->
@@ -413,14 +419,13 @@ defmodule Muse.Checkpoint.Store do
          %{existed: true, path: rel_path, snapshot_path: snap_rel, content_hash: expected_hash},
          workspace,
          snapshots_dir,
-         base_dir
+         _base_dir
        ) do
     with :ok <- validate_restore_path(rel_path, workspace),
          {:ok, safe_abs} <- safe_resolve_restore_path(rel_path, workspace),
-         :ok <- validate_snapshot_path_boundary(snap_rel, snapshots_dir, base_dir),
+         {:ok, snapshot_abs} <- safe_snapshot_abs(snap_rel, snapshots_dir),
+         :ok <- reject_snapshot_symlink(snapshot_abs, snap_rel),
          :ok <- require_valid_content_hash(expected_hash, rel_path) do
-      snapshot_abs = Path.join(snapshots_dir, snap_rel)
-
       case File.read(snapshot_abs) do
         {:ok, content} ->
           # Verify content hash
@@ -527,36 +532,88 @@ defmodule Muse.Checkpoint.Store do
     )
   end
 
-  # Ensure snapshot_path doesn't escape the checkpoint snapshots directory.
-  # Rejects nil, non-binary, empty, traversal, and boundary-escaping paths.
-  # Also rejects if final path equals the snapshots dir itself.
-  defp validate_snapshot_path_boundary(snap_rel, snapshots_dir, _base_dir) do
-    cond do
-      not is_binary(snap_rel) ->
-        {:error, {:invalid_snapshot_path, snap_rel}}
-
-      snap_rel == "" ->
-        {:error, {:invalid_snapshot_path, ""}}
-
-      true ->
-        snapshot_abs = Path.expand(Path.join(snapshots_dir, snap_rel))
-        snapshots_expanded = Path.expand(snapshots_dir)
-
-        cond do
-          snapshot_abs == snapshots_expanded ->
-            # Must be strictly UNDER, not equal to
-            {:error, {:snapshot_path_escape, snap_rel}}
-
-          not String.starts_with?(snapshot_abs, snapshots_expanded <> "/") ->
-            {:error, {:snapshot_path_escape, snap_rel}}
-
-          true ->
-            # Also check the snapshot file itself is not a symlink
-            reject_snapshot_symlink(snapshot_abs, snap_rel)
-        end
+  # Resolve a snapshot relative path to a safe absolute path under snapshots_dir.
+  # Returns {:ok, abs_path} or {:error, reason}. Never raises.
+  #
+  # Steps:
+  #   1. Require binary/non-empty snap_rel
+  #   2. Lexical boundary check: expanded path must be strictly under snapshots_dir
+  #   3. Walk each existing parent component from snapshots_dir to target parent,
+  #      rejecting any symlink component (prevents redirected reads/writes)
+  #   4. For read, reject final path symlink (caller checks separately)
+  @spec safe_snapshot_abs(term(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  defp safe_snapshot_abs(snap_rel, snapshots_dir) do
+    with :ok <- require_valid_snapshot_rel(snap_rel),
+         :ok <- check_lexical_boundary(snap_rel, snapshots_dir),
+         {:ok, abs_path} <- resolve_under_snapshots(snap_rel, snapshots_dir),
+         :ok <- walk_parent_components(abs_path, snapshots_dir) do
+      {:ok, abs_path}
     end
   end
 
+  defp require_valid_snapshot_rel(snap_rel) when is_binary(snap_rel) and snap_rel != "", do: :ok
+  defp require_valid_snapshot_rel(snap_rel), do: {:error, {:invalid_snapshot_path, snap_rel}}
+
+  defp check_lexical_boundary(snap_rel, snapshots_dir) do
+    snapshot_abs = Path.expand(Path.join(snapshots_dir, snap_rel))
+    snapshots_expanded = Path.expand(snapshots_dir)
+
+    cond do
+      snapshot_abs == snapshots_expanded ->
+        {:error, {:snapshot_path_escape, snap_rel}}
+
+      not String.starts_with?(snapshot_abs, snapshots_expanded <> "/") ->
+        {:error, {:snapshot_path_escape, snap_rel}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp resolve_under_snapshots(snap_rel, snapshots_dir) do
+    {:ok, Path.join(snapshots_dir, snap_rel)}
+  end
+
+  # Walk from snapshots_dir root to the parent of abs_path, checking each
+  # existing component via lstat. Rejects any symlink component.
+  # Returns :ok on success, {:error, reason} on failure.
+  defp walk_parent_components(abs_path, snapshots_dir) do
+    snapshots_expanded = Path.expand(snapshots_dir)
+    parent = Path.dirname(abs_path)
+    s_parts = Path.split(snapshots_expanded)
+    p_parts = Path.split(parent)
+
+    result =
+      Enum.reduce_while(
+        Enum.drop(p_parts, length(s_parts)),
+        {:ok, snapshots_expanded},
+        fn part, {:ok, acc} ->
+          candidate = Path.join(acc, part)
+
+          case File.lstat(candidate) do
+            {:ok, %{type: :symlink}} ->
+              {:halt, {:error, {:snapshot_symlink_component, candidate}}}
+
+            {:error, :enoent} ->
+              {:cont, {:ok, candidate}}
+
+            {:error, _reason} ->
+              {:halt, {:error, {:snapshot_component_stat_failed, candidate}}}
+
+            {:ok, _} ->
+              {:cont, {:ok, candidate}}
+          end
+        end
+      )
+
+    case result do
+      {:ok, _} -> :ok
+      {:error, _} = err -> err
+    end
+  end
+
+  # Also check the snapshot file itself is not a symlink (for read path).
   defp reject_snapshot_symlink(snapshot_abs, snap_rel) do
     case File.lstat(snapshot_abs) do
       {:ok, %{type: :symlink}} ->
@@ -566,7 +623,6 @@ defmodule Muse.Checkpoint.Store do
         :ok
     end
   rescue
-    # If lstat fails (e.g. enoent), that's fine — we'll catch it on File.read
     _ -> :ok
   end
 

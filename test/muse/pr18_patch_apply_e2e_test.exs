@@ -283,7 +283,7 @@ defmodule Muse.PR18PatchApplyE2ETest do
     end
 
     clean_sessions()
-    File.rm_rf!(".muse/sessions")
+    cleanup_pr18_session_dirs()
     :ok
   end
 
@@ -302,7 +302,22 @@ defmodule Muse.PR18PatchApplyE2ETest do
         end
     end
 
-    File.rm_rf!(".muse/sessions")
+    cleanup_pr18_session_dirs()
+  end
+
+  # Targeted cleanup: only remove session dirs matching the PR18 test prefix.
+  # Avoids broad File.rm_rf!(".muse/sessions") which can wipe unrelated sessions.
+  defp cleanup_pr18_session_dirs do
+    sessions_dir = ".muse/sessions"
+
+    if File.dir?(sessions_dir) do
+      sessions_dir
+      |> File.ls!()
+      |> Enum.filter(&String.starts_with?(&1, "pr18-"))
+      |> Enum.each(fn dir ->
+        File.rm_rf!(Path.join(sessions_dir, dir))
+      end)
+    end
   end
 
   defp clean_sessions do

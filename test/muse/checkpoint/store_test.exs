@@ -479,4 +479,91 @@ defmodule Muse.Checkpoint.StoreTest do
       end
     end
   end
+
+  describe "snapshot symlink component safety" do
+    test "blocks capture write through symlink parent in snapshots dir", %{
+      workspace: workspace,
+      base_dir: base_dir
+    } do
+      checkpoint = make_checkpoint(%{}, workspace)
+      {:ok, created} = Store.create(checkpoint, base_dir: base_dir)
+      {:ok, active} = Checkpoint.transition(created, :active)
+      {:ok, _} = Store.update_manifest(active, base_dir: base_dir)
+
+      # Find the snapshots directory
+      snap_dir =
+        Path.join([base_dir, checkpoint.session_id, "checkpoints", active.id, "snapshots"])
+
+      # Replace snapshots/lib with a symlink pointing outside
+      lib_dir = Path.join(snap_dir, "lib")
+      File.rm_rf!(lib_dir)
+
+      try do
+        :ok =
+          :file.make_symlink(
+            String.to_charlist(Path.join(base_dir, "outside_target")),
+            String.to_charlist(lib_dir)
+          )
+
+        # Attempt to read the snapshot file through the symlinked parent
+        # should fail with symlink component error
+        result = Store.rollback(active, base_dir: base_dir)
+
+        assert {:error, {:rollback_failed, errors}} = result
+
+        assert Enum.any?(errors, fn
+                 {:snapshot_symlink_component, _} -> true
+                 _ -> false
+               end)
+      rescue
+        # Skip on platforms without symlink support
+        _ -> :ok
+      end
+    end
+
+    test "blocks restore read through symlink parent in snapshots dir", %{
+      workspace: workspace,
+      base_dir: base_dir
+    } do
+      checkpoint = make_checkpoint(%{}, workspace)
+      {:ok, created} = Store.create(checkpoint, base_dir: base_dir)
+      {:ok, active} = Checkpoint.transition(created, :active)
+      {:ok, _} = Store.update_manifest(active, base_dir: base_dir)
+
+      # Modify file so rollback needs to restore
+      File.write!(Path.join([workspace, "lib", "example.ex"]), "MODIFIED")
+
+      # Replace snapshots/lib with a symlink after initial snapshot was created
+      snap_dir =
+        Path.join([base_dir, checkpoint.session_id, "checkpoints", active.id, "snapshots"])
+
+      lib_dir = Path.join(snap_dir, "lib")
+      # Save the original snapshot content
+      original_snap = File.read!(Path.join([snap_dir, "lib", "example.ex"]))
+      File.rm_rf!(lib_dir)
+
+      try do
+        # Create symlink to outside dir and put the snapshot content there
+        outside = Path.join(base_dir, "outside_snap")
+        File.mkdir_p!(Path.join(outside, "lib"))
+        File.write!(Path.join([outside, "lib", "example.ex"]), original_snap)
+
+        :ok =
+          :file.make_symlink(String.to_charlist(outside), String.to_charlist(lib_dir))
+
+        # Rollback should reject the symlink component in the snapshot path
+        result = Store.rollback(active, base_dir: base_dir)
+
+        assert {:error, {:rollback_failed, errors}} = result
+
+        assert Enum.any?(errors, fn
+                 {:snapshot_symlink_component, _} -> true
+                 _ -> false
+               end)
+      rescue
+        # Skip on platforms without symlink support
+        _ -> :ok
+      end
+    end
+  end
 end

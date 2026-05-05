@@ -63,11 +63,15 @@ defmodule Muse.Tools.PatchApplyTest do
     System.cmd("git", ["add", "."], cd: workspace)
     System.cmd("git", ["commit", "-m", "initial"], cd: workspace)
 
+    # Unique session id per test for targeted cleanup
+    session_id = "pa-test-#{:erlang.unique_integer([:positive, :monotonic])}"
+
     on_exit(fn ->
       File.rm_rf!(base_dir)
+      File.rm_rf!(Path.join(".muse/sessions", session_id))
     end)
 
-    %{workspace: workspace, base_dir: base_dir}
+    %{workspace: workspace, base_dir: base_dir, session_id: session_id}
   end
 
   defp approved_context(overrides \\ %{}) do
@@ -281,11 +285,12 @@ defmodule Muse.Tools.PatchApplyTest do
 
   describe "execute/2 — successful apply" do
     test "creates checkpoint, applies patch, and returns diff preview", %{
-      workspace: workspace
+      workspace: workspace,
+      session_id: session_id
     } do
       {:ok, patch} =
         Patch.new(%{
-          session_id: "s_apply_1",
+          session_id: session_id,
           plan_id: "plan-1",
           plan_version: 1,
           plan_hash: @plan_hash,
@@ -293,13 +298,13 @@ defmodule Muse.Tools.PatchApplyTest do
           status: :approved
         })
 
-      approval = make_approval(patch, %{session_id: "s_apply_1"})
+      approval = make_approval(patch, %{session_id: session_id})
 
-      :ok = Muse.SessionStore.append_patch("s_apply_1", Patch.to_map(patch))
+      :ok = Muse.SessionStore.append_patch(session_id, Patch.to_map(patch))
 
       ctx =
         approved_context(%{
-          session_id: "s_apply_1",
+          session_id: session_id,
           workspace: workspace,
           approvals: [approval]
         })
@@ -320,7 +325,7 @@ defmodule Muse.Tools.PatchApplyTest do
       assert is_binary(result.output.git_diff_preview)
 
       # Verify audit record persisted
-      {:ok, patches, _} = Muse.SessionStore.load_patches("s_apply_1")
+      {:ok, patches, _} = Muse.SessionStore.load_patches(session_id)
 
       assert Enum.any?(patches, fn p ->
                p["event"] == "patch_applied" or p[:event] == :patch_applied
