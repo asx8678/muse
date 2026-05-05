@@ -186,6 +186,31 @@ defmodule Muse.SessionServer do
     GenServer.call(pid, {:reject_patch, source})
   end
 
+  @doc """
+  Applies the latest approved patch, creating a checkpoint first.
+
+  PR18: If patch_id is given, applies that specific patch; otherwise
+  applies the most recently approved patch in the session.
+  """
+  @spec apply_patch(pid(), String.t() | nil) ::
+          {:ok, map()}
+          | {:error,
+             :turn_running | :no_approved_patch | :no_active_plan | :apply_failed | term()}
+  def apply_patch(pid, patch_id \\ nil) do
+    GenServer.call(pid, {:apply_patch, patch_id})
+  end
+
+  @doc """
+  Rolls back a checkpoint, restoring the workspace to pre-apply state.
+
+  PR18: Only checkpoints belonging to the current session may be rolled back.
+  """
+  @spec rollback_checkpoint(pid(), String.t()) ::
+          {:ok, map()} | {:error, :turn_running | term()}
+  def rollback_checkpoint(pid, checkpoint_id) do
+    GenServer.call(pid, {:rollback_checkpoint, checkpoint_id})
+  end
+
   # -- GenServer callbacks -----------------------------------------------------
 
   @impl true
@@ -297,6 +322,20 @@ defmodule Muse.SessionServer do
   @impl true
   def handle_call({:reject_patch, source}, _from, state) do
     {reply, state} = handle_patch_lifecycle_command(state, source, :rejected)
+    {:reply, reply, state}
+  end
+
+  # PR18: Apply an approved patch with checkpoint protection
+  @impl true
+  def handle_call({:apply_patch, patch_id}, _from, state) do
+    {reply, state} = handle_apply_patch(state, patch_id)
+    {:reply, reply, state}
+  end
+
+  # PR18: Rollback a checkpoint
+  @impl true
+  def handle_call({:rollback_checkpoint, checkpoint_id}, _from, state) do
+    {reply, state} = handle_rollback_checkpoint(state, checkpoint_id)
     {:reply, reply, state}
   end
 
@@ -1155,7 +1194,7 @@ defmodule Muse.SessionServer do
       approvals = approvals ++ [approval_record]
 
       # Reset patch state and transition session back to idle
-      # PR17: no file modifications, no checkpoint, no patch_apply
+      # PR18: approved patches can now be applied via /apply patch or patch_apply tool
       state =
         state
         |> Map.put(:pending_patch, nil)
@@ -1267,6 +1306,262 @@ defmodule Muse.SessionServer do
       true ->
         nil
     end
+  end
+
+  # -- PR18: Apply patch with checkpoint ------------------------------------------
+
+  defp handle_apply_patch(state, patch_id) do
+    cond do
+      turn_running?(state) ->
+        {{:error, :turn_running}, state}
+
+      true ->
+        do_apply_patch(state, patch_id)
+    end
+  end
+
+  defp do_apply_patch(state, patch_id) do
+    workspace = plan_workspace(state.plan) || current_workspace()
+
+    with {:ok, plan} <- resolve_active_plan_for_apply(state),
+         {:ok, patch} <- resolve_approved_patch(state, patch_id) do
+      context = build_patch_apply_context(state, plan, patch, workspace)
+
+      result =
+        Muse.Tools.PatchApply.execute(
+          %{"patch_id" => patch.id, "patch_hash" => patch.hash},
+          context
+        )
+
+      {reply, state} =
+        if result.success do
+          # Emit success events
+          state = emit_apply_success_events(state, result)
+          # Update session state
+          state = %{state | status: :idle}
+          {{:ok, result.output}, state}
+        else
+          # Emit failure event
+          state = emit_apply_failure_event(state, result)
+          {{:error, :apply_failed}, state}
+        end
+
+      {reply, state}
+    else
+      {:error, :no_active_plan} ->
+        {{:error, :no_active_plan}, state}
+
+      {:error, :no_approved_patch} ->
+        {{:error, :no_approved_patch}, state}
+    end
+  end
+
+  defp resolve_active_plan_for_apply(state) do
+    case resolve_active_plan_state(state) do
+      {%Plan{status: :approved} = plan, _id} -> {:ok, plan}
+      # Accept any active plan for apply
+      {%Plan{} = plan, _id} -> {:ok, plan}
+      nil -> {:error, :no_active_plan}
+    end
+  end
+
+  defp resolve_approved_patch(state, nil) do
+    # Find most recently approved patch from approvals
+    approved_patch_approval =
+      (state.approvals || [])
+      |> Approval.normalize_list()
+      |> Enum.filter(&(&1.kind == :patch and &1.status == :approved))
+      |> List.last()
+
+    case approved_patch_approval do
+      nil -> {:error, :no_approved_patch}
+      approval -> find_patch_by_approval(state, approval)
+    end
+  end
+
+  defp resolve_approved_patch(state, patch_id) do
+    # Try in-memory first, then persisted
+    case find_patch_in_state(state, patch_id) do
+      {:ok, patch} -> {:ok, patch}
+      :not_found -> find_patch_in_store(state.session_id, patch_id)
+    end
+  end
+
+  defp find_patch_by_approval(state, approval) do
+    # Try to find the patch by approval's patch_id
+    patch_id = approval.patch_id
+
+    case find_patch_in_state(state, patch_id) do
+      {:ok, patch} -> {:ok, patch}
+      :not_found -> find_patch_in_store(state.session_id, patch_id)
+    end
+  end
+
+  defp find_patch_in_state(state, patch_id) do
+    # Check pending_patch if it matches and is approved
+    case state.pending_patch do
+      %Patch{id: ^patch_id, status: :approved} = patch -> {:ok, patch}
+      %Patch{hash: hash, status: :approved} = patch when hash == patch_id -> {:ok, patch}
+      _ -> :not_found
+    end
+  end
+
+  defp find_patch_in_store(session_id, patch_id) do
+    case SessionStore.load_patches(session_id) do
+      {:ok, patches, _meta} ->
+        case Enum.find(patches, fn p ->
+               Map.get(p, "id") == patch_id or Map.get(p, "patch_id") == patch_id
+             end) do
+          nil ->
+            {:error, :no_approved_patch}
+
+          map ->
+            case Patch.from_map(map) do
+              {:ok, patch} -> {:ok, patch}
+              {:error, _} -> {:error, :no_approved_patch}
+            end
+        end
+
+      {:error, _} ->
+        {:error, :no_approved_patch}
+    end
+  end
+
+  defp build_patch_apply_context(state, plan, patch, workspace) do
+    %{
+      workspace: workspace,
+      session_id: state.session_id,
+      muse_id: :coding,
+      plan_id: plan.id,
+      plan_version: plan.version,
+      plan_hash: PlanBinding.content_hash(plan),
+      plan_status: plan.status,
+      approvals: state.approvals || [],
+      pending_patch: patch
+    }
+  end
+
+  defp emit_apply_success_events(state, result) do
+    checkpoint_id = get_in(result.output, [:checkpoint_id]) || "unknown"
+    patch_id = get_in(result.output, [:patch_id]) || "unknown"
+
+    {_event, state} =
+      emit_session_event(
+        state,
+        :conductor,
+        :patch_applied,
+        %{
+          patch_id: patch_id,
+          checkpoint_id: checkpoint_id,
+          status: :applied
+        },
+        visibility: :user
+      )
+
+    {_event, state} =
+      emit_session_event(
+        state,
+        :conductor,
+        :checkpoint_created,
+        %{
+          checkpoint_id: checkpoint_id,
+          patch_id: patch_id,
+          status: :active
+        },
+        visibility: :internal
+      )
+
+    state
+  end
+
+  defp emit_apply_failure_event(state, result) do
+    {_event, state} =
+      emit_session_event(
+        state,
+        :conductor,
+        :patch_apply_failed,
+        %{
+          error: result.error
+        },
+        visibility: :user
+      )
+
+    state
+  end
+
+  # -- PR18: Rollback checkpoint ---------------------------------------------------
+
+  defp handle_rollback_checkpoint(state, checkpoint_id) do
+    cond do
+      turn_running?(state) ->
+        {{:error, :turn_running}, state}
+
+      true ->
+        do_rollback_checkpoint(state, checkpoint_id)
+    end
+  end
+
+  defp do_rollback_checkpoint(state, checkpoint_id) do
+    workspace = plan_workspace(state.plan) || current_workspace()
+
+    context = %{
+      workspace: workspace,
+      session_id: state.session_id,
+      muse_id: :coding,
+      plan_id: state.active_plan_id
+    }
+
+    result =
+      Muse.Tools.RollbackCheckpoint.execute(
+        %{"checkpoint_id" => checkpoint_id},
+        context
+      )
+
+    {reply, state} =
+      if result.success do
+        # Emit rollback success events
+        state = emit_rollback_success_events(state, result)
+        {{:ok, result.output}, state}
+      else
+        # Emit rollback failure event
+        state = emit_rollback_failure_event(state, result)
+        {{:error, result.error}, state}
+      end
+
+    {reply, state}
+  end
+
+  defp emit_rollback_success_events(state, result) do
+    checkpoint_id =
+      get_in(result.output, [:checkpoint_id]) ||
+        get_in(result.output, ["checkpoint_id"]) || "unknown"
+
+    {_event, state} =
+      emit_session_event(
+        state,
+        :conductor,
+        :rollback_completed,
+        %{
+          checkpoint_id: checkpoint_id,
+          status: :rolled_back
+        },
+        visibility: :user
+      )
+
+    state
+  end
+
+  defp emit_rollback_failure_event(state, result) do
+    {_event, state} =
+      emit_session_event(
+        state,
+        :conductor,
+        :rollback_failed,
+        %{error: result.error},
+        visibility: :user
+      )
+
+    state
   end
 
   defp put_active_plan(state, plan, resolved_active_plan_id) do

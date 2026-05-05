@@ -1524,7 +1524,7 @@ defmodule MuseWeb.HomeLiveTest do
       Muse.State.append(proposed_event)
       html = render(view)
       assert html =~ "/approve patch"
-      assert html =~ "no apply"
+      assert html =~ "apply" or html =~ "checkpoint"
     end
   end
 end

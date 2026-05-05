@@ -119,6 +119,15 @@ defmodule Muse.CommandDispatcher do
     dispatch_patch_lifecycle_command(:reject_patch, args, context)
   end
 
+  # PR18: /apply patch and /rollback checkpoint
+  def dispatch(:apply_patch, args, context) do
+    dispatch_apply_patch_command(args, context)
+  end
+
+  def dispatch(:rollback_checkpoint, args, context) do
+    dispatch_rollback_checkpoint_command(args, context)
+  end
+
   # -- Events ------------------------------------------------------------------
 
   def dispatch(:events, _args, context) do
@@ -1140,7 +1149,7 @@ defmodule Muse.CommandDispatcher do
       "- Patch hash: #{patch_hash}",
       "- Plan id: #{plan_id}",
       "- Approval status: approved",
-      "- PR17: approval recorded the patch proposal only; no files were modified, no checkpoint was created, and no patch was applied. Patch application will be handled in a future PR."
+      "- PR18: approval recorded; use /apply patch to apply the approved patch with checkpoint protection."
     ]
     |> Enum.join("\n")
   end
@@ -1241,4 +1250,131 @@ defmodule Muse.CommandDispatcher do
   end
 
   defp map_get_any(_map, _keys), do: nil
+
+  # -- PR18: Apply patch command -------------------------------------------------
+
+  defp dispatch_apply_patch_command(args, context) do
+    session_id = context_session_id(context)
+
+    # Optional: extract patch_id from args
+    patch_id = parse_patch_id_arg(args)
+
+    case Muse.SessionRouter.apply_patch(session_id, patch_id) do
+      {:ok, result} ->
+        message = format_apply_patch_result(result)
+        {:ok, message, [{:refresh, :events}]}
+
+      {:error, reason} ->
+        {:error, format_apply_patch_error(reason), []}
+    end
+  end
+
+  defp parse_patch_id_arg(nil), do: nil
+  defp parse_patch_id_arg(""), do: nil
+
+  defp parse_patch_id_arg(args) when is_binary(args) do
+    String.trim(args)
+  end
+
+  defp parse_patch_id_arg(_), do: nil
+
+  defp format_apply_patch_result(result) do
+    checkpoint_id = Map.get(result, :checkpoint_id, "unknown")
+    patch_id = Map.get(result, :patch_id, Map.get(result, "patch_id", "unknown"))
+    patch_hash = Map.get(result, :patch_hash, Map.get(result, "patch_hash", "n/a"))
+    affected = Map.get(result, :affected_files, Map.get(result, "affected_files", []))
+    diff_preview = Map.get(result, :git_diff_preview, Map.get(result, "git_diff_preview", ""))
+
+    lines = [
+      "Patch applied successfully.",
+      "",
+      "- Checkpoint id: #{checkpoint_id}",
+      "- Patch id: #{patch_id}",
+      "- Patch hash: #{patch_hash}",
+      "- Affected files: #{Enum.join(affected, ", ")}",
+      "- Status: applied",
+      "- Use /rollback checkpoint #{checkpoint_id} to restore if needed"
+    ]
+
+    lines =
+      if is_binary(diff_preview) and diff_preview != "" do
+        lines ++ ["", "Post-apply diff stat:", diff_preview]
+      else
+        lines
+      end
+
+    Enum.join(lines, "\n")
+  end
+
+  defp format_apply_patch_error(:not_found), do: "Error: session not found"
+
+  defp format_apply_patch_error(:turn_running),
+    do: "Error: cannot apply patch while a turn is running"
+
+  defp format_apply_patch_error(:no_approved_patch),
+    do: "Error: no approved patch is available to apply"
+
+  defp format_apply_patch_error(:no_active_plan),
+    do: "Error: no active approved plan for this session"
+
+  defp format_apply_patch_error(:apply_failed),
+    do: "Error: patch apply failed; checkpoint preserved for rollback"
+
+  defp format_apply_patch_error(reason) when is_binary(reason), do: "Error: #{reason}"
+  defp format_apply_patch_error(reason), do: "Error: unable to apply patch (#{inspect(reason)})"
+
+  # -- PR18: Rollback checkpoint command ----------------------------------------
+
+  defp dispatch_rollback_checkpoint_command(args, context) do
+    session_id = context_session_id(context)
+
+    case parse_checkpoint_id_arg(args) do
+      {:ok, checkpoint_id} ->
+        case Muse.SessionRouter.rollback_checkpoint(session_id, checkpoint_id) do
+          {:ok, result} ->
+            message = format_rollback_result(result)
+            {:ok, message, [{:refresh, :events}]}
+
+          {:error, reason} ->
+            {:error, format_rollback_error(reason), []}
+        end
+
+      :missing ->
+        {:error, "Error: usage: /rollback checkpoint <checkpoint_id>", []}
+    end
+  end
+
+  defp parse_checkpoint_id_arg(nil), do: :missing
+  defp parse_checkpoint_id_arg(""), do: :missing
+
+  defp parse_checkpoint_id_arg(args) when is_binary(args) do
+    id = String.trim(args)
+    if id != "", do: {:ok, id}, else: :missing
+  end
+
+  defp parse_checkpoint_id_arg(_), do: :missing
+
+  defp format_rollback_result(result) do
+    checkpoint_id = Map.get(result, :checkpoint_id, Map.get(result, "checkpoint_id", "unknown"))
+    patch_id = Map.get(result, :patch_id, Map.get(result, "patch_id", "unknown"))
+    affected = Map.get(result, :affected_files, Map.get(result, "affected_files", []))
+    file_count = Map.get(result, :file_count, Map.get(result, "file_count", length(affected)))
+
+    [
+      "Checkpoint rolled back successfully.",
+      "",
+      "- Checkpoint id: #{checkpoint_id}",
+      "- Patch id: #{patch_id}",
+      "- Files restored: #{file_count}",
+      "- Status: rolled_back"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp format_rollback_error(:not_found), do: "Error: session not found"
+  defp format_rollback_error(:turn_running), do: "Error: cannot rollback while a turn is running"
+  defp format_rollback_error(reason) when is_binary(reason), do: "Error: #{reason}"
+
+  defp format_rollback_error(reason),
+    do: "Error: unable to rollback checkpoint (#{inspect(reason)})"
 end

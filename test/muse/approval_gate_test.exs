@@ -432,10 +432,12 @@ defmodule Muse.ApprovalGateTest do
       assert :ok = ApprovalGate.authorize_tool(interactive_spec, %{})
     end
 
-    test "plan approval context does not authorize future write shell network or patch tools" do
+    test "plan approval context does not authorize future write shell network or delete tools" do
       context = %{approval: %{scope: :plan, status: :approved}}
 
-      for permission <- [:write, :shell, :network, :patch, :delete, :restore] do
+      # :patch and :restore_checkpoint have dedicated authorization rules in PR18;
+      # they are no longer blanket-denied. Test remaining denied permissions.
+      for permission <- [:write, :shell, :network, :delete, :restore] do
         spec =
           tool_spec(name: "future_#{permission}", permission: permission, requires_approval: true)
 

@@ -16,17 +16,19 @@ defmodule Muse.ApprovalGate do
   @plan_scope :plan
 
   @denied_scopes MapSet.new([
-                   :patch,
                    :write,
                    :shell,
                    :shell_command,
                    :network,
                    :delete,
                    :restore,
-                   :restore_checkpoint,
                    :remote_execution,
                    :unknown
                  ])
+
+  # PR18: :patch and :restore_checkpoint scopes are now gated by
+  # patch_apply_allowed?/2 and rollback_checkpoint_allowed?/2 above,
+  # so they are removed from the blanket deny set.
 
   @safe_tool_permissions MapSet.new([:read, :interactive])
 
@@ -418,6 +420,12 @@ defmodule Muse.ApprovalGate do
       patch_propose_allowed?(spec, context) ->
         :ok
 
+      patch_apply_allowed?(spec, context) ->
+        :ok
+
+      rollback_checkpoint_allowed?(spec, context) ->
+        :ok
+
       spec.requires_approval ->
         {:blocked, requires_approval_reason(spec)}
 
@@ -432,7 +440,7 @@ defmodule Muse.ApprovalGate do
   def authorize_tool(%Spec{} = spec, _context), do: authorize_tool(spec, %{})
   def authorize_tool(_spec, _context), do: {:blocked, "invalid tool approval request"}
 
-  # -- Patch tool authorization (PR17) ------------------------------------------
+  # -- Patch tool authorization (PR17/PR18) --------------------------------------
 
   # patch_propose is allowed for Coding Muse ONLY when there is an approved
   # plan in the context. This prevents direct Runner calls from bypassing
@@ -443,12 +451,45 @@ defmodule Muse.ApprovalGate do
 
   defp patch_propose_allowed?(_, _), do: false
 
-  # Coding Muse may only call patch_propose when bound to an approved plan.
+  # PR18: patch_apply is allowed for Coding Muse when:
+  #   1. There is an approved plan in context
+  #   2. There is an approved patch approval in the context
+  #   3. The session_id is present
+  defp patch_apply_allowed?(%Spec{name: "patch_apply"}, %{muse_id: :coding} = context) do
+    approved_plan_context?(context) and approved_patch_context?(context)
+  end
+
+  defp patch_apply_allowed?(_, _), do: false
+
+  # PR18: rollback_checkpoint is allowed for Coding Muse when:
+  #   1. There is an approved plan in context
+  #   2. The session_id is present
+  defp rollback_checkpoint_allowed?(
+         %Spec{name: "rollback_checkpoint"},
+         %{muse_id: :coding} = context
+       ) do
+    approved_plan_context?(context) and
+      is_binary(Map.get(context, :session_id)) and Map.get(context, :session_id) != ""
+  end
+
+  defp rollback_checkpoint_allowed?(_, _), do: false
+
+  # Coding Muse may only call patch tools when bound to an approved plan.
   # This prevents direct Runner invocations without plan approval metadata.
   defp approved_plan_context?(context) when is_map(context) do
     Map.get(context, :plan_status) == :approved and
       is_binary(Map.get(context, :plan_id)) and Map.get(context, :plan_id) != "" and
       is_binary(Map.get(context, :plan_hash)) and Map.get(context, :plan_hash) != ""
+  end
+
+  # PR18: verify there is an approved patch approval in the context.
+  # The approvals list must contain a matching approved patch approval.
+  defp approved_patch_context?(context) when is_map(context) do
+    approvals = Approval.normalize_list(Map.get(context, :approvals, []))
+
+    Enum.any?(approvals, fn a ->
+      a.kind == :patch and a.status == :approved
+    end)
   end
 
   # -- Internal plan approval transitions --------------------------------------

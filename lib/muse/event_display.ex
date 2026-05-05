@@ -36,7 +36,13 @@ defmodule Muse.EventDisplay do
     :patch_proposed,
     :patch_approval_requested,
     :patch_approved,
-    :patch_rejected
+    :patch_rejected,
+    :patch_applied,
+    :patch_apply_failed,
+    :checkpoint_created,
+    :rollback_checkpoint_requested,
+    :rollback_completed,
+    :rollback_failed
   ]
 
   @max_diff_chars 4_000
@@ -204,6 +210,54 @@ defmodule Muse.EventDisplay do
       hash_sentence(data),
       "No changes applied"
     ]
+    |> compact_sentences()
+  end
+
+  defp patch_lifecycle_summary(data, :patch_applied) do
+    checkpoint = Map.get(data, :checkpoint_id, Map.get(data, "checkpoint_id", "unknown"))
+    patch_id = Map.get(data, :patch_id, Map.get(data, "patch_id", "unknown"))
+
+    [
+      "Patch applied: #{patch_id}",
+      "Checkpoint: #{checkpoint}",
+      "Use /rollback checkpoint #{checkpoint} to restore if needed"
+    ]
+    |> compact_sentences()
+  end
+
+  defp patch_lifecycle_summary(data, :patch_apply_failed) do
+    error = Map.get(data, :error, Map.get(data, "error", "unknown error"))
+
+    ["Patch apply failed: #{truncate(to_string(error), 200)}"]
+    |> compact_sentences()
+  end
+
+  defp patch_lifecycle_summary(data, :checkpoint_created) do
+    checkpoint = Map.get(data, :checkpoint_id, Map.get(data, "checkpoint_id", "unknown"))
+    patch_id = Map.get(data, :patch_id, Map.get(data, "patch_id", "unknown"))
+
+    ["Checkpoint created: #{checkpoint} for patch #{patch_id}"]
+    |> compact_sentences()
+  end
+
+  defp patch_lifecycle_summary(data, :rollback_checkpoint_requested) do
+    checkpoint = Map.get(data, :checkpoint_id, Map.get(data, "checkpoint_id", "unknown"))
+
+    ["Rollback requested for checkpoint: #{checkpoint}"]
+    |> compact_sentences()
+  end
+
+  defp patch_lifecycle_summary(data, :rollback_completed) do
+    checkpoint = Map.get(data, :checkpoint_id, Map.get(data, "checkpoint_id", "unknown"))
+
+    ["Checkpoint rolled back: #{checkpoint}. Workspace restored to pre-apply state."]
+    |> compact_sentences()
+  end
+
+  defp patch_lifecycle_summary(data, :rollback_failed) do
+    error = Map.get(data, :error, Map.get(data, "error", "unknown error"))
+
+    ["Rollback failed: #{truncate(to_string(error), 200)}"]
     |> compact_sentences()
   end
 

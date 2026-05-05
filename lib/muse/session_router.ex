@@ -104,7 +104,7 @@ defmodule Muse.SessionRouter do
   @doc """
   Approves the active pending patch proposal for an existing session.
 
-  PR17: approval records the decision only; no files are modified, no checkpoint
+  PR18: approval records the decision; use /apply patch to apply with checkpoint protection.
   is created, and no patch is applied. Patch application will be handled in a
   future PR.
   """
@@ -137,6 +137,49 @@ defmodule Muse.SessionRouter do
   def reject_patch(session_id \\ @default_session_id, source \\ :system) do
     case Registry.lookup(Muse.SessionRegistry, session_id) do
       [{pid, _}] -> Muse.SessionServer.reject_patch(pid, source)
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Applies the latest approved patch for an existing session.
+
+  PR18: creates a checkpoint, applies the approved patch diff via git apply,
+  and returns bounded post-apply diff output. If a specific patch_id is
+  given, applies that patch; otherwise applies the most recently approved.
+  """
+  @spec apply_patch(String.t(), String.t() | nil) ::
+          {:ok, map()}
+          | {:error,
+             :not_found
+             | :turn_running
+             | :no_approved_patch
+             | :no_active_plan
+             | :apply_failed
+             | term()}
+  def apply_patch(session_id \\ @default_session_id, patch_id \\ nil) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.apply_patch(pid, patch_id)
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Rolls back a checkpoint for an existing session.
+
+  PR18: restores the workspace to the state captured in the checkpoint.
+  Only checkpoints belonging to the current session and active plan
+  may be rolled back.
+  """
+  @spec rollback_checkpoint(String.t(), String.t()) ::
+          {:ok, map()}
+          | {:error,
+             :not_found
+             | :turn_running
+             | term()}
+  def rollback_checkpoint(session_id \\ @default_session_id, checkpoint_id) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.rollback_checkpoint(pid, checkpoint_id)
       [] -> {:error, :not_found}
     end
   end

@@ -42,9 +42,17 @@ defmodule Muse.Tool.Spec do
     output_limit: 50_000
   ]
 
-  @type kind :: :read | :write | :shell | :network | :delete | :interactive
+  @type kind :: :read | :write | :shell | :network | :delete | :interactive | :patch
   @type risk :: :low | :medium | :high | :critical
-  @type permission :: :read | :write | :shell | :network | :delete | :interactive
+  @type permission ::
+          :read
+          | :write
+          | :shell
+          | :network
+          | :delete
+          | :interactive
+          | :patch
+          | :restore_checkpoint
   @type visibility :: :user | :internal
 
   @type t :: %__MODULE__{

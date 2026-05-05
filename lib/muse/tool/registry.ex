@@ -27,16 +27,21 @@ defmodule Muse.Tool.Registry do
 
     * `patch_propose` — propose a patch without applying (Coding Muse only)
 
+  ## Registered apply/rollback tools
+
+    * `patch_apply` — apply an approved patch with checkpoint protection (Coding Muse only)
+    * `rollback_checkpoint` — rollback a checkpoint to restore workspace (Coding Muse only)
+
   ## Blocked tool names
 
   These tool names are explicitly recognized as dangerous. The runner blocks
   them instead of accidentally treating them as executable:
 
-    * `write_file`, `replace_in_file`, `delete_file`, `patch_apply`
+    * `write_file`, `replace_in_file`, `delete_file`
     * `shell_command`, `network_call`, `remote_execution`
 
-  `patch_propose` is **not** blocked — it is a registered tool available
-  to Coding Muse for recording patch proposals without applying them.
+  `patch_propose`, `patch_apply`, and `rollback_checkpoint` are **not** blocked —
+  they are registered tools with runtime authorization gating.
 
   Destructive-looking unknown tool names (for example `apply_patch` or
   `run_shell`) are also treated as blocked so a provider cannot bypass the
@@ -56,7 +61,6 @@ defmodule Muse.Tool.Registry do
     "write_file",
     "replace_in_file",
     "delete_file",
-    "patch_apply",
     "shell_command",
     "network_call",
     "remote_execution"
@@ -325,6 +329,59 @@ defmodule Muse.Tool.Registry do
                         output_limit: 20_000
                       )
 
+  @patch_apply_spec Spec.new!(
+                      name: "patch_apply",
+                      description:
+                        "Apply an approved patch to the workspace with checkpoint protection. Creates a checkpoint before applying, validates patch approval, and re-validates the diff. Only Coding Muse with an approved plan and matching patch approval may call this.",
+                      handler: Muse.Tools.PatchApply,
+                      input_schema: %{
+                        type: "object",
+                        properties: %{
+                          patch_id: %{
+                            type: "string",
+                            description:
+                              "The approved patch ID to apply (optional if patch_hash is provided)"
+                          },
+                          patch_hash: %{
+                            type: "string",
+                            description:
+                              "The approved patch content hash (optional if patch_id is provided)"
+                          }
+                        }
+                      },
+                      kind: :write,
+                      risk: :high,
+                      permission: :patch,
+                      allowed_roles: [:coding],
+                      allowed_muses: [:coding],
+                      requires_approval: true,
+                      output_limit: 20_000
+                    )
+
+  @rollback_checkpoint_spec Spec.new!(
+                              name: "rollback_checkpoint",
+                              description:
+                                "Rollback a checkpoint to restore the workspace to its pre-apply state. Only Coding Muse may rollback checkpoints belonging to the current session and active plan.",
+                              handler: Muse.Tools.RollbackCheckpoint,
+                              input_schema: %{
+                                type: "object",
+                                properties: %{
+                                  checkpoint_id: %{
+                                    type: "string",
+                                    description: "The checkpoint ID to rollback (required)"
+                                  }
+                                },
+                                required: ["checkpoint_id"]
+                              },
+                              kind: :write,
+                              risk: :high,
+                              permission: :restore_checkpoint,
+                              allowed_roles: [:coding],
+                              allowed_muses: [:coding],
+                              requires_approval: true,
+                              output_limit: 10_000
+                            )
+
   # -- Internal index -----------------------------------------------------------
 
   @ordered_names [
@@ -336,7 +393,9 @@ defmodule Muse.Tool.Registry do
     "ask_user_question",
     "list_muses",
     "list_skills",
-    "patch_propose"
+    "patch_propose",
+    "patch_apply",
+    "rollback_checkpoint"
   ]
 
   @specs_by_name %{
@@ -348,7 +407,9 @@ defmodule Muse.Tool.Registry do
     "ask_user_question" => @ask_user_question_spec,
     "list_muses" => @list_muses_spec,
     "list_skills" => @list_skills_spec,
-    "patch_propose" => @patch_propose_spec
+    "patch_propose" => @patch_propose_spec,
+    "patch_apply" => @patch_apply_spec,
+    "rollback_checkpoint" => @rollback_checkpoint_spec
   }
 
   # -- Public API ---------------------------------------------------------------
@@ -359,7 +420,7 @@ defmodule Muse.Tool.Registry do
   ## Examples
 
       iex> length(Muse.Tool.Registry.all())
-      9
+      11
 
       iex> hd(Muse.Tool.Registry.all()).name
       "list_files"
@@ -430,7 +491,7 @@ defmodule Muse.Tool.Registry do
       iex> Enum.map(specs, & &1.name)
       ["list_files", "read_file", "repo_search", "git_status",
        "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
-       "patch_propose"]
+       "patch_propose", "patch_apply", "rollback_checkpoint"]
 
   """
   @spec specs_for_muse(atom()) :: [Spec.t()]
@@ -460,6 +521,8 @@ defmodule Muse.Tool.Registry do
 
       iex> schemas = Muse.Tool.Registry.provider_schemas(:coding)
       iex> true = "patch_propose" in Enum.map(schemas, & &1[:name])
+      iex> true = "patch_apply" in Enum.map(schemas, & &1[:name])
+      iex> true = "rollback_checkpoint" in Enum.map(schemas, & &1[:name])
 
   """
   @spec provider_schemas(atom()) :: [map()]
@@ -534,7 +597,7 @@ defmodule Muse.Tool.Registry do
       false
 
       iex> Muse.Tool.Registry.blocked_tool?("patch_apply")
-      true
+      false
 
   """
   @spec blocked_tool?(String.t()) :: boolean()
@@ -573,7 +636,7 @@ defmodule Muse.Tool.Registry do
       iex> Muse.Tool.Registry.tool_names()
       ["list_files", "read_file", "repo_search", "git_status",
        "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
-       "patch_propose"]
+       "patch_propose", "patch_apply", "rollback_checkpoint"]
 
   """
   @spec tool_names() :: [String.t()]

@@ -1274,7 +1274,7 @@ defmodule MuseWeb.ConsoleComponents do
           <% end %>
           <div class="patch-proposal-guidance">
             <p>Approve with <code>/approve patch</code> or reject with <code>/reject patch</code></p>
-            <p class="patch-proposal-lifecycle">PR17 lifecycle only — no apply, no checkpoints, no file modifications</p>
+            <p class="patch-proposal-lifecycle">Approved patches can be applied with checkpoint protection via /apply patch</p>
           </div>
         </div>
       </aside>

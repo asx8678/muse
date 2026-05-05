@@ -4,15 +4,16 @@ defmodule Muse.Tool.RegistryTest do
   alias Muse.Tool.Registry
 
   describe "all/0" do
-    test "returns all 9 registered tool specs" do
-      assert length(Registry.all()) == 9
+    test "returns all 11 registered tool specs" do
+      assert length(Registry.all()) == 11
     end
 
     test "keeps registered specs within the no-approval safe tool surface" do
-      for spec <- Registry.all(), spec.name != "patch_propose" do
+      for spec <- Registry.all(),
+          spec.name not in ["patch_propose", "patch_apply", "rollback_checkpoint"] do
         refute spec.requires_approval
         assert spec.permission in [:read, :interactive]
-        refute spec.permission in [:write, :shell, :network, :patch, :delete]
+        refute spec.permission in [:write, :shell, :network, :patch, :delete, :restore_checkpoint]
       end
     end
 
@@ -28,7 +29,9 @@ defmodule Muse.Tool.RegistryTest do
                "ask_user_question",
                "list_muses",
                "list_skills",
-               "patch_propose"
+               "patch_propose",
+               "patch_apply",
+               "rollback_checkpoint"
              ]
     end
   end
@@ -87,6 +90,7 @@ defmodule Muse.Tool.RegistryTest do
       refute "write_file" in names
       refute "shell_command" in names
       refute "patch_apply" in names
+      refute "rollback_checkpoint" in names
     end
   end
 
@@ -154,9 +158,12 @@ defmodule Muse.Tool.RegistryTest do
       assert Registry.blocked_tool?("write_file")
       assert Registry.blocked_tool?("replace_in_file")
       assert Registry.blocked_tool?("delete_file")
-      assert Registry.blocked_tool?("patch_apply")
+      # patch_apply is now a registered tool, not blocked
+      refute Registry.blocked_tool?("patch_apply")
       # patch_propose is now a registered tool, not blocked
       refute Registry.blocked_tool?("patch_propose")
+      # rollback_checkpoint is now a registered tool, not blocked
+      refute Registry.blocked_tool?("rollback_checkpoint")
       assert Registry.blocked_tool?("shell_command")
       assert Registry.blocked_tool?("network_call")
       assert Registry.blocked_tool?("remote_execution")
@@ -185,7 +192,8 @@ defmodule Muse.Tool.RegistryTest do
       assert "write_file" in names
       # patch_propose was removed from blocked list (now a registered tool)
       refute "patch_propose" in names
-      assert "patch_apply" in names
+      # patch_apply was removed from blocked list (now a registered tool with auth gating)
+      refute "patch_apply" in names
       assert "shell_command" in names
       assert "network_call" in names
     end
@@ -194,8 +202,10 @@ defmodule Muse.Tool.RegistryTest do
   describe "tool_names/0" do
     test "returns all registered tool names" do
       names = Registry.tool_names()
-      assert length(names) == 9
+      assert length(names) == 11
       assert "read_file" in names
+      assert "patch_apply" in names
+      assert "rollback_checkpoint" in names
     end
   end
 

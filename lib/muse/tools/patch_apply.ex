@@ -1,0 +1,318 @@
+defmodule Muse.Tools.PatchApply do
+  @moduledoc """
+  Safe tool: apply an approved patch to the workspace with checkpoint protection.
+
+  This tool applies a previously approved patch diff to the workspace. It:
+
+    1. Validates the caller is Coding Muse with an approved plan context.
+    2. Validates an approved `%Muse.Approval{kind: :patch, status: :approved}`
+       exists for the patch.
+    3. Loads the approved patch from persisted patches (never trusts model-supplied
+       raw diff for apply).
+    4. Re-validates the patch with `Muse.Patch.Validator`.
+    5. Creates a `Muse.Checkpoint` BEFORE any write.
+    6. Applies via `git apply --check` then `git apply`.
+    7. On failure, leaves checkpoint with failure metadata; no partial writes.
+    8. On success, marks patch `:applied` and returns bounded git diff preview.
+
+  ## Authorization (runtime-enforced)
+
+    * Must be called by Coding Muse (`muse_id: :coding`).
+    * Must have an active approved plan in context.
+    * Must have a matching `%Muse.Approval{kind: :patch, status: :approved}`.
+    * The patch must belong to the current session and active plan.
+
+  ## Input
+
+    * `"patch_id"` (optional) — the patch to apply
+    * `"patch_hash"` (optional) — alternative lookup by content hash
+
+  At least one of `patch_id` or `patch_hash` must be provided.
+
+  ## Safety
+
+    * Binary patches, unsafe paths, secret paths, absolute paths, traversal,
+      and delete operations without explicit approval are blocked.
+    * `git apply --check` is run before actual apply.
+    * Checkpoint is created BEFORE any write; if checkpoint creation fails,
+      apply is aborted.
+    * On apply failure, the checkpoint persists with failure metadata and
+      the workspace is left in a recoverable state.
+  """
+
+  alias Muse.{Approval, Checkpoint, Checkpoint.Store, Patch, Patch.Validator}
+  alias Muse.Tool.Result
+
+  @max_git_diff_output 20_000
+
+  @doc """
+  Execute the patch_apply tool.
+
+  ## Context
+
+    * `:workspace` — workspace root path (required)
+    * `:session_id` — session identifier (required)
+    * `:muse_id` — must be `:coding`
+    * `:plan_id` — active plan ID
+    * `:plan_version` — active plan version
+    * `:plan_hash` — active plan content hash
+    * `:plan_status` — must be `:approved`
+    * `:approvals` — list of approval records for this session
+    * `:pending_patch` — the current pending patch (if in-memory)
+    * `:patches` — loaded persisted patches for the session
+  """
+  @spec execute(map(), map()) :: Result.t()
+  def execute(args, context) do
+    workspace = to_string(Map.get(context, :workspace, ""))
+
+    with {:ok, patch_id, patch_hash} <- resolve_patch_identity(args),
+         {:ok, patch} <- load_approved_patch(patch_id, patch_hash, context),
+         :ok <- verify_approval(patch, context),
+         :ok <- revalidate_patch(patch, workspace),
+         :ok <- reject_deletes(patch),
+         {:ok, checkpoint} <- create_checkpoint(patch, context, workspace),
+         :ok <- apply_via_git(patch, workspace, checkpoint) do
+      # Mark patch as applied
+      {:ok, applied_patch} = Patch.transition(patch, :applied)
+
+      # Mark checkpoint as active
+      {:ok, checkpoint} = Checkpoint.transition(checkpoint, :active)
+      :ok = Store.update_manifest(checkpoint)
+
+      # Get bounded post-apply diff preview
+      diff_preview = bounded_git_diff(workspace)
+
+      Result.ok(
+        "patch_apply",
+        %{
+          checkpoint_id: checkpoint.id,
+          patch_id: applied_patch.id,
+          patch_hash: applied_patch.hash,
+          affected_files: applied_patch.affected_files,
+          status: :applied,
+          git_diff_preview: diff_preview,
+          message:
+            "Patch #{applied_patch.id} applied successfully. Checkpoint #{checkpoint.id} created."
+        },
+        %{
+          checkpoint: Checkpoint.event_summary(checkpoint),
+          patch: %{id: applied_patch.id, hash: applied_patch.hash, status: :applied}
+        }
+      )
+    else
+      {:error, %Result{} = r} ->
+        r
+
+      {:error, {:checkpoint_failed, reason}} ->
+        Result.error(
+          "patch_apply",
+          "checkpoint creation failed: #{inspect(reason)}; patch was NOT applied"
+        )
+
+      {:error, {:apply_check_failed, reason}} ->
+        Result.error("patch_apply", "git apply --check failed: #{reason}; patch was NOT applied")
+
+      {:error, {:apply_failed, reason, checkpoint}} ->
+        # Mark checkpoint as failed
+        {:ok, failed} = Checkpoint.transition(checkpoint, :failed, failure_reason: reason)
+        :ok = Store.update_manifest(failed)
+
+        Result.error(
+          "patch_apply",
+          "git apply failed: #{reason}; checkpoint #{failed.id} preserved for rollback"
+        )
+
+      {:error, reason} ->
+        Result.error("patch_apply", format_error(reason))
+    end
+  end
+
+  # -- Patch identity resolution ------------------------------------------------
+
+  defp resolve_patch_identity(args) do
+    patch_id = Map.get(args, "patch_id")
+    patch_hash = Map.get(args, "patch_hash")
+
+    cond do
+      is_binary(patch_id) and patch_id != "" -> {:ok, patch_id, patch_hash}
+      is_binary(patch_hash) and patch_hash != "" -> {:ok, nil, patch_hash}
+      true -> {:error, "patch_id or patch_hash is required"}
+    end
+  end
+
+  # -- Load approved patch ------------------------------------------------------
+
+  defp load_approved_patch(patch_id, patch_hash, context) do
+    # Try in-memory pending patch first
+    pending = Map.get(context, :pending_patch)
+
+    cond do
+      pending != nil and patch_matches?(pending, patch_id, patch_hash) ->
+        {:ok, pending}
+
+      true ->
+        # Try persisted patches (status may still be :proposed if persisted before approval)
+        load_persisted_patch(patch_id, patch_hash, context)
+    end
+  end
+
+  defp patch_matches?(%Patch{} = patch, patch_id, patch_hash) do
+    (is_nil(patch_id) or patch.id == patch_id) and
+      (is_nil(patch_hash) or patch.hash == patch_hash)
+  end
+
+  defp load_persisted_patch(patch_id, patch_hash, context) do
+    session_id = to_string(Map.get(context, :session_id, ""))
+
+    if session_id == "" do
+      {:error, "session_id is required to locate the approved patch"}
+    else
+      case Muse.SessionStore.load_patches(session_id) do
+        {:ok, patches, _meta} ->
+          # Patches may be persisted at propose time (status: proposed)
+          # and updated later; accept any status since approval is verified separately.
+          found =
+            patches
+            |> Enum.find(fn p ->
+              (is_nil(patch_id) or Map.get(p, "id") == patch_id or
+                 Map.get(p, "patch_id") == patch_id) and
+                (is_nil(patch_hash) or Map.get(p, "hash") == patch_hash)
+            end)
+
+          case found do
+            nil -> {:error, "no approved patch found matching the given id/hash"}
+            map -> Patch.from_map(map)
+          end
+
+        {:error, reason} ->
+          {:error, "failed to load persisted patches: #{inspect(reason)}"}
+      end
+    end
+  end
+
+  # -- Approval verification ----------------------------------------------------
+
+  defp verify_approval(%Patch{} = patch, context) do
+    session_id = to_string(Map.get(context, :session_id, ""))
+    approvals = Map.get(context, :approvals, [])
+
+    matching =
+      approvals
+      |> Approval.normalize_list()
+      |> Enum.any?(fn a ->
+        a.kind == :patch and
+          a.status == :approved and
+          (a.session_id == session_id or is_nil(a.session_id)) and
+          a.patch_id == patch.id and
+          (a.patch_hash == patch.hash or is_nil(a.patch_hash))
+      end)
+
+    if matching do
+      :ok
+    else
+      {:error, "no matching approved patch approval found for patch #{patch.id}"}
+    end
+  end
+
+  # -- Re-validation ------------------------------------------------------------
+
+  defp revalidate_patch(%Patch{} = patch, workspace) do
+    case Validator.validate(patch.diff, workspace) do
+      {:ok, _} ->
+        :ok
+
+      {:error, %{reason: reason, message: msg}} ->
+        {:error, "patch re-validation failed (#{reason}): #{msg}"}
+
+      {:error, reason} ->
+        {:error, "patch re-validation failed: #{inspect(reason)}"}
+    end
+  end
+
+  # -- Delete rejection ---------------------------------------------------------
+
+  # MVP: block patches that delete files (no /dev/null new file)
+  defp reject_deletes(%Patch{} = patch) do
+    has_deletes = String.contains?(patch.diff, "/dev/null")
+
+    if has_deletes do
+      {:error,
+       "patch contains file deletion diffs; delete operations require explicit approval (not implemented in MVP)"}
+    else
+      :ok
+    end
+  end
+
+  # -- Checkpoint creation ------------------------------------------------------
+
+  defp create_checkpoint(%Patch{} = patch, context, workspace) do
+    session_id = to_string(Map.get(context, :session_id, ""))
+
+    checkpoint =
+      Checkpoint.new(%{
+        session_id: session_id,
+        plan_id: Map.get(context, :plan_id) || patch.plan_id,
+        plan_version: Map.get(context, :plan_version) || patch.plan_version,
+        plan_hash: Map.get(context, :plan_hash) || patch.plan_hash,
+        patch_id: patch.id,
+        patch_hash: patch.hash,
+        workspace: workspace,
+        strategy: :git_apply,
+        affected_files: patch.affected_files,
+        metadata: %{diff: patch.diff}
+      })
+
+    case Store.create(checkpoint) do
+      {:ok, created} -> {:ok, created}
+      {:error, reason} -> {:error, {:checkpoint_failed, reason}}
+    end
+  end
+
+  # -- Git apply ----------------------------------------------------------------
+
+  defp apply_via_git(%Patch{} = _patch, workspace, checkpoint) do
+    chk_dir = Store.checkpoint_dir(".muse/sessions", checkpoint.session_id, checkpoint.id)
+    diff_file = Path.join(chk_dir, "patch.diff")
+
+    # Resolve to absolute path so git apply works regardless of workspace CWD
+    diff_file_abs = Path.expand(diff_file)
+
+    # Step 1: git apply --check (dry run)
+    case System.cmd("git", ["apply", "--check", diff_file_abs],
+           cd: workspace,
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} ->
+        # Step 2: git apply (actual)
+        case System.cmd("git", ["apply", diff_file_abs], cd: workspace, stderr_to_stdout: true) do
+          {_output, 0} ->
+            :ok
+
+          {error_output, _} ->
+            {:error, {:apply_failed, String.slice(error_output, 0, 500), checkpoint}}
+        end
+
+      {error_output, _} ->
+        {:error, {:apply_check_failed, String.slice(error_output, 0, 500)}}
+    end
+  rescue
+    e ->
+      {:error, {:apply_failed, Exception.message(e), checkpoint}}
+  end
+
+  # -- Post-apply diff ----------------------------------------------------------
+
+  defp bounded_git_diff(workspace) do
+    case System.cmd("git", ["diff", "--stat"], cd: workspace, stderr_to_stdout: true) do
+      {output, 0} when is_binary(output) -> String.slice(output, 0, @max_git_diff_output)
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  # -- Error formatting ---------------------------------------------------------
+
+  defp format_error(reason) when is_binary(reason), do: reason
+  defp format_error(reason), do: "patch apply failed: #{inspect(reason)}"
+end
