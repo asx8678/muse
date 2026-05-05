@@ -369,3 +369,93 @@ end
 ```
 
 These restrictions apply regardless of the user's intent. Even in `--debug` mode, the full internal prompt is never dumped verbatim — only the redacted layer summary is shown. This prevents accidental credential exposure during debugging or support interactions.
+
+---
+
+## 9. External WebSocket Channel Security (PR16)
+
+The optional external Phoenix WebSocket channel (documented in [`architecture.md` §8.5](architecture.md#85-optional-external-phoenix-websocket-channel-pr16)) exposes session events to non-LiveView clients. The following security rules are **mandatory** — no exceptions.
+
+### 9.1 Network Binding
+
+```text
+✓ Server binds to 127.0.0.1 (localhost) by default.
+✓ Do NOT expose the WebSocket endpoint externally without authentication.
+✓ Production deployments MUST use a reverse proxy (nginx, caddy, etc.) with TLS termination.
+✓ Do NOT bind to 0.0.0.0 without explicit authentication and transport encryption.
+```
+
+### 9.2 Visibility Filtering
+
+The channel enforces strict visibility-based filtering before forwarding any event:
+
+| Visibility | Forwarding | Rationale |
+|---|---|---|
+| `:user` | **Allowed** — payload redacted before forwarding | Safe for external consumption after redaction |
+| `:internal` | **DENIED** — never forwarded | Internal runtime events (approval state changes, provider debug, session internals) |
+| `:sensitive` | **DENIED** — never forwarded | Secrets, credentials, auth tokens, provider config |
+| `nil` | **DENIED by default** — only allowlisted event types forwarded | Events without explicit visibility must be reviewed before exposure |
+
+**Allowlist for nil-visibility events** (safe types only):
+
+```text
+assistant_delta, assistant_completed,
+tool_call_started, tool_call_completed, tool_call_failed,
+plan_created, plan_approved, plan_rejected,
+turn_started, turn_completed, turn_cancelled,
+session_status_changed
+```
+
+Any event type **not** on this allowlist and without `:user` visibility is silently dropped by the channel.
+
+### 9.3 Payload Redaction
+
+Even for allowed events, payloads are redacted or summarized before forwarding:
+
+```text
+✓ Tool call arguments/results → summarized (path + status only, no file contents).
+✓ Plan payloads → metadata only (id, version, hash). No raw plan JSON or objectives.
+✓ Error messages → redacted through Muse.EventPayloadRedactor.
+✓ No auth tokens, API keys, provider secrets, or credential values in any field.
+✓ No session secrets or internal state identifiers beyond session_id/turn_id.
+```
+
+### 9.4 No Secrets Exposed
+
+The external channel must **never** expose:
+
+```text
+✗ Auth tokens (Bearer tokens, API keys, session tokens)
+✗ Provider secrets (API keys, base URLs with embedded credentials)
+✗ Session secrets (internal state tokens, approval bindings with raw hashes)
+✗ Credential values (from Muse.Auth.Credential or ~/.codex/auth.json)
+✗ Internal event types (approval_state_change, secret_read_attempt, etc.)
+```
+
+### 9.5 Read-Only Channel
+
+The external WebSocket channel is **read-only**. It does **not** grant:
+
+```text
+✗ Tool execution permissions
+✗ File write/patch/delete permissions
+✗ Shell command execution permissions
+✗ Network call permissions
+✗ Ability to invoke Muse.submit/2 or any mutation API
+```
+
+Subscribing to the channel allows observing filtered session events only. No user action through the WebSocket can trigger runtime mutations.
+
+### 9.6 Session Isolation
+
+- A client must join topic `session:<session_id>` explicitly.
+- Only events matching the joined `session_id` are forwarded.
+- Cross-session events are never forwarded — even if both sessions are active.
+- A client cannot subscribe to a wildcard or multi-session topic.
+
+### 9.7 Authentication
+
+- Channel join requires authentication via `connect/3` (params or token).
+- Unauthenticated connections are rejected at the socket level.
+- In localhost-only deployments, authentication may be simplified, but must not be disabled entirely.
+- Production deployments with external exposure MUST enforce token-based authentication.

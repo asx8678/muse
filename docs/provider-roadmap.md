@@ -656,7 +656,7 @@ When WebSocket setup fails **before any inbound provider frame**, callers can en
 ### Limitations (PR16 scope)
 
 - No built-in low-level WebSocket client dependency — callers must provide `ws_stream_fn` or configure a `:websocket_client`. The `default_stream/3` returns `{:error, {:transport_error, :websocket_client_not_configured}}` without one.
-- External Phoenix WebSocket channel remains **future/PR16** scope.
+- External Phoenix WebSocket channel is **PR16 — documented**. Runtime implementation is PR16 scope; the channel contract, filtering rules, and security properties are specified in [`docs/architecture.md` §8.5](architecture.md#85-optional-external-phoenix-websocket-channel-pr16) and [`docs/security.md` §9](security.md#9-external-websocket-channel-security-pr16).
 - No automatic reconnection or subscription-style persistent connections.
 
 ### Responsibilities
@@ -770,7 +770,32 @@ Reconnection:
 
 ---
 
-## 10. Auth Layer
+## 10. PR16 — External Phoenix WebSocket Channel
+
+PR16 specifies the optional external Phoenix WebSocket channel for non-LiveView clients.
+
+### Status
+
+| Item | Status |
+|---|---|
+| Channel contract (topic, envelope, filtering) | **Documented** — see [`architecture.md` §8.5](architecture.md#85-optional-external-phoenix-websocket-channel-pr16) |
+| Security rules (visibility, redaction, localhost bind) | **Documented** — see [`security.md` §9](security.md#9-external-websocket-channel-security-pr16) |
+| Testing checklist | **Documented** — see [`testing.md` §10](testing.md#10-pr16-external-websocket-channel-testing) |
+| Runtime implementation (`session_channel.ex`, `user_socket.ex`) | **Not implemented** — runtime code is out of scope for this docs-only PR |
+| Low-level WS client dependency | **Not implemented** — see §9 limitations above |
+
+### Key contract points
+
+- **Topic:** `session:<session_id>` — only events for the joined session are forwarded.
+- **Envelope:** `type` / `session_id` / `turn_id` / `seq` / `source` / `visibility` / `timestamp` / `payload`.
+- **Filtering:** `:internal` and `:sensitive` denied; `nil` visibility denied unless allowlisted; `:user` allowed with redaction.
+- **Read-only:** Channel does not grant tool, write, shell, or network permissions.
+- **Bind:** Server defaults to `127.0.0.1`; external exposure requires auth + reverse-proxy.
+- **No secrets:** Auth tokens, provider secrets, API keys, session secrets, and credential values are never exposed.
+
+---
+
+## 11. Auth Layer
 
 **PR13 (implemented).** The auth layer (`Muse.Auth`) provides credential resolution
 via API key (`ApiKey`), bearer command (`BearerCommand`), Codex cache bridge
@@ -991,7 +1016,7 @@ in the current implementation.
 
 ---
 
-## 11. External API References to Verify
+## 12. External API References to Verify
 
 All provider PRs must re-check official documentation immediately before implementation. The source plans referenced OpenAI Responses streaming, Responses WebSocket mode, function/tool calling, Codex auth, and Codex device auth. **Treat docs as the source of truth for wire formats.** The items below are the topics that must be verified against current official docs before each provider PR is coded:
 

@@ -256,6 +256,12 @@ Every safety boundary must have a dedicated test. No exceptions.
 
 - [ ] Provider request debug snapshots redact `Authorization` headers (show `Bearer sk-...****`)
 - [ ] External WebSocket channel does **not** forward internal/sensitive events (e.g., `secret_read_attempt`, `approval_state_change`)
+- [ ] External WebSocket channel does not forward events with `nil` visibility unless event type is on the explicit allowlist
+- [ ] External WebSocket channel redacts payloads (no file contents in tool results, no raw plan JSON, no error details with secrets)
+- [ ] External WebSocket channel does not expose auth tokens, provider secrets, API keys, or credential values in any envelope field
+- [ ] External WebSocket channel does not grant tool, write, shell, or network permissions
+- [ ] External WebSocket channel only forwards events matching the joined `session:<session_id>` topic
+- [ ] Server binds to localhost by default; external exposure requires auth + reverse-proxy
 
 ---
 
@@ -404,3 +410,54 @@ The integration test asserts:
 4. The session entered `awaiting_plan_approval` state.
 5. The rendered output matches the expected CLI display above (exact or normalized whitespace).
 6. No write operations were performed — files are unchanged on disk.
+
+---
+
+## 10. PR16 External WebSocket Channel Testing
+
+This checklist covers the optional external Phoenix WebSocket channel (see [`architecture.md` §8.5](architecture.md#85-optional-external-phoenix-websocket-channel-pr16) and [`security.md` §9](security.md#9-external-websocket-channel-security-pr16)).
+
+### Channel Contract
+
+- [ ] Client can connect to `/socket` and authenticate via `connect/3`
+- [ ] Client can join topic `session:<session_id>` for an active session
+- [ ] Client receives events only for the joined session
+- [ ] Client does not receive events for other sessions
+- [ ] Unauthenticated connections are rejected at the socket level
+- [ ] Events arrive with correct envelope fields: `type`, `session_id`, `turn_id`, `seq`, `source`, `visibility`, `timestamp`, `payload`
+- [ ] `seq` values are monotonically increasing within a session
+
+### Visibility Filtering
+
+- [ ] Events with `visibility: :user` are forwarded (payload redacted)
+- [ ] Events with `visibility: :internal` are **not** forwarded
+- [ ] Events with `visibility: :sensitive` are **not** forwarded
+- [ ] Events with `nil` visibility and type on allowlist are forwarded
+- [ ] Events with `nil` visibility and type **not** on allowlist are **not** forwarded
+- [ ] Internal events (e.g., `secret_read_attempt`, `approval_state_change`, `provider_debug`) are never forwarded
+
+### Payload Redaction
+
+- [ ] Tool call results are summarized (path + status only, no file contents)
+- [ ] Plan payloads contain metadata only (id, version, hash) — no raw plan JSON
+- [ ] Error messages are redacted through `Muse.EventPayloadRedactor`
+- [ ] No auth tokens, API keys, provider secrets, or credential values appear in any payload
+- [ ] No session secrets or internal state identifiers beyond session_id/turn_id
+
+### Security Boundaries
+
+- [ ] Channel does not grant tool execution permissions
+- [ ] Channel does not grant file write/patch/delete permissions
+- [ ] Channel does not grant shell command execution permissions
+- [ ] Channel does not grant network call permissions
+- [ ] Channel does not allow invoking `Muse.submit/2` or any mutation API
+- [ ] Server binds to `127.0.0.1` by default
+- [ ] External exposure requires authentication and reverse-proxy controls
+
+### Session Isolation
+
+- [ ] Client cannot subscribe to wildcard or multi-session topics
+- [ ] Cross-session events are never forwarded even if both sessions are active
+- [ ] Joining a non-existent session topic returns an error
+
+All default tests remain offline (`mix test`) and no-network by default. External WebSocket channel tests use a channel test helper (Phoenix.ChannelTest) and do not require a running server.

@@ -2077,43 +2077,106 @@ Provider/model status
 
 Do not expose raw internal prompt in normal UI.
 
-### 8.5 Optional External Phoenix WebSocket Channel
+### 8.5 Optional External Phoenix WebSocket Channel (PR16)
 
-For non-LiveView clients only. LiveView already streams through Phoenix.
+The external Phoenix WebSocket channel is **optional** and intended **only for non-LiveView clients** (CLI bridges, bot integrations, custom front-ends). LiveView clients already stream events through the Phoenix LiveView socket at `/live` — they do **not** use this channel.
 
-Create later:
+> **Important:** This channel is read-only. It does **not** grant tool, write, shell, or network permissions. Subscribing to the channel cannot invoke `Muse.submit/2`, execute tool calls, write files, run shell commands, or make network requests.
+
+#### Socket and Channel Setup
 
 ```text
 lib/muse_web/channels/user_socket.ex
 lib/muse_web/channels/session_channel.ex
 ```
 
-#### Socket and Channel Setup
+- Connect to `ws://host:port/socket` (or `wss://` behind a reverse proxy).
+- Authenticate via `connect/3` (params or token — see §7 in security.md).
+- Join topic `session:<session_id>` — only events for the joined session are forwarded.
+- The channel process subscribes to `Muse.PubSub` for the session topic.
+- Server binds to `127.0.0.1` by default. **Do not expose externally without authentication and reverse-proxy controls.**
+
+#### Topic
 
 ```text
-- Add socket "/socket", MuseWeb.UserSocket.
-- Allow topic session:<session_id>.
-- Subscribe channel process to Muse.State and forward matching events.
-- Bind web server to 127.0.0.1 by default.
-- Do not expose externally without auth.
+session:<session_id>
 ```
 
+A client must join the specific session topic. Cross-session events are never forwarded — only events matching the joined `session_id` are pushed.
+
 #### Message Envelope Format
+
+Every event pushed to the WebSocket client uses this envelope:
 
 ```json
 {
   "type": "assistant_delta",
-  "session_id": "s_...",
-  "turn_id": "t_...",
+  "session_id": "s_abc123",
+  "turn_id": "t_def456",
   "seq": 17,
   "source": "Planning Muse",
-  "payload": {"text": "..."}
+  "visibility": "user",
+  "timestamp": "2025-05-17T12:34:56.789Z",
+  "payload": { "text": "..." }
 }
 ```
 
+| Field | Type | Description |
+|---|---|---|
+| `type` | string | Canonical event type (e.g., `assistant_delta`, `tool_call_completed`, `plan_created`) |
+| `session_id` | string | Session this event belongs to — always matches the joined topic |
+| `turn_id` | string \| null | Turn identifier, `null` for session-level events |
+| `seq` | integer | Monotonic sequence number within the session for ordering |
+| `source` | string | Origin (e.g., `Planning Muse`, `Conductor`, `ToolRunner`) |
+| `visibility` | string \| null | `"user"`, `"internal"`, `"sensitive"`, or `null` |
+| `timestamp` | string | ISO 8601 UTC timestamp |
+| `payload` | object | Event-specific data (redacted — see filtering rules) |
+
 #### Filtering Rules
 
-Sensitive/internal events are **not forwarded** by default. Only events with `visibility: :user` or that are explicitly safe are forwarded to WebSocket clients.
+The external channel applies strict filtering before forwarding any event:
+
+```text
+1. Session match  — only events for the joined session:<session_id> are forwarded.
+2. :internal      — DENIED.  Events with visibility :internal are never forwarded.
+3. :sensitive     — DENIED.  Events with visibility :sensitive are never forwarded.
+4. nil visibility — DENIED by default.  Only forwarded if the event type is on an explicit allowlist.
+5. :user          — ALLOWED.  Forwarded after payload redaction.
+```
+
+**Allowlist for nil-visibility events** (events without an explicit visibility that are safe to forward):
+
+```text
+assistant_delta
+assistant_completed
+tool_call_started
+tool_call_completed
+tool_call_failed
+plan_created
+plan_approved
+plan_rejected
+turn_started
+turn_completed
+turn_cancelled
+session_status_changed
+```
+
+**Payload redaction:** Even for `:user` and allowlisted events, the channel redacts or summarizes payload fields:
+
+- Tool call arguments and results are summarized (path and status only, not file contents).
+- Plan payloads include metadata only (id, version, hash) — not raw plan JSON or objectives.
+- Error messages are redacted through `Muse.EventPayloadRedactor` before forwarding.
+- No auth tokens, provider secrets, API keys, session secrets, or credential values are ever exposed in any envelope field or payload.
+
+#### Security Properties
+
+- The channel does **not** grant tool, write, shell, or network permissions.
+- No auth/provider/session secrets are exposed in any event envelope.
+- Server binds to `127.0.0.1` by default — external exposure requires explicit authentication and reverse-proxy controls.
+- Events with `:internal` or `:sensitive` visibility are never forwarded.
+- Events with `nil` visibility are denied unless explicitly allowlisted.
+- All payloads are redacted/summarized before forwarding.
+- See [`docs/security.md`](security.md#9-external-websocket-channel-security-pr16) for the full security rules.
 
 ---
 

@@ -314,10 +314,20 @@ cd ~/projects/muse
              │
        Muse.PubSub         ← broadcasts every event to subscribers
              │
-    ┌────────┴────────┐
-    ▼                 ▼
-  CLI output      LiveView re-render
+    ┌────────┴────────────────┐
+    ▼                 ▼         ▼
+  CLI output      LiveView    Ext WS
+                  re-render  (optional)
 ```
+
+#### External WebSocket channel
+
+For non-LiveView clients (bot integrations, custom front-ends), Muse exposes an
+optional Phoenix WebSocket channel on `session:<session_id>`. LiveView clients
+continue to use `/live` — they do not need this channel. The external channel is
+read-only: it does not grant tool, write, shell, or network permissions. Server
+binds to localhost by default; external exposure requires authentication and
+reverse-proxy controls. See [`docs/architecture.md`](docs/architecture.md#85-optional-external-phoenix-websocket-channel-pr16) for the full channel contract.
 
 ### Key modules
 
