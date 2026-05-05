@@ -236,16 +236,18 @@ If `event.session_id` is `nil` (legacy event created with `Event.new/3`), it is 
 | Visibility | Forward? | Notes |
 |---|---|---|
 | `:user` | ✅ Yes | Always forwarded (if session matches) |
-| `:debug` | ✅ Yes | Always forwarded (if session matches) |
-| `:internal` | ❌ No | Rejected — persisted but not normally shown |
-| `:sensitive` | ❌ No | Rejected — should not be stored unless redacted |
-| `nil` (unset) | ❌ No | Rejected — legacy event, no visibility declared |
+| `:debug` | ❌ No | Rejected by default. Not forwarded as ordinary event. A lifecycle event with `:debug` visibility may pass only if its type is in the explicit safe lifecycle allowlist (§8.3) AND its data passes redaction. |
+| `:internal` | ❌ No | Rejected — always rejected, even for allowlisted types. |
+| `:sensitive` | ❌ No | Rejected — always rejected, even for allowlisted types. |
+| `nil` (unset) | ❌ No | Rejected by default. May pass only if the event type is in the explicit safe lifecycle allowlist (§8.3) AND its data passes redaction. |
 
-**Why forward `:debug` but not `:internal`?** `:debug` is defined as "safe for event/debug log only" — external clients can choose to display or ignore it. `:internal` is "persisted but not normally shown" — forwarding it risks leaking implementation details. `:sensitive` is a hard reject.
+**Rationale — why ordinary `:debug` events are not forwarded in PR16:** The `session:<session_id>` topic is intended for non-LiveView clients who need structured, safe, application-level event data. Ordinary `:debug` events (trace-level internal diagnostics, ad-hoc instrumentation) are not designed for external consumption. A dev-only `debug:events` topic (with the same `safe_data` redaction) is deferred to a future PR behind an explicit local/dev config guard. Lifecycle events carrying `:debug` or `nil` visibility that are proven safe and pass redaction may still be forwarded via the allowlist (§8.3).
 
 ### 8.3 Type-based lifecycle allowlist
 
-In addition to visibility filtering, the following lifecycle event types are **explicitly allowlisted** for forwarding even though some may carry `:user` visibility (forwarded anyway) or `nil` visibility (rejected by §8.2):
+The allowlist is the **only exception** to the `:user`-only forwarding rule. An event with `:debug`, `nil`, or unknown visibility may still be forwarded if (a) its type is in the explicit safe lifecycle allowlist below, (b) its visibility is NOT `:internal` or `:sensitive` (those are always rejected regardless of type), and (c) its data passes `Muse.EventDisplay.safe_data/1` redaction.
+
+Events with `:user` visibility are always forwarded when session matches — they do not need to be in this allowlist.
 
 | Type | Notes |
 |---|---|
@@ -289,12 +291,16 @@ def handle_info({:muse_event, %Event{} = event}, socket) do
 end
 
 defp visible_to_external?(%Event{visibility: visibility, type: type}) do
+  # :internal and :sensitive are ALWAYS rejected, even for allowlisted types
+  if visibility in [:internal, :sensitive], do: return false
+
   case visibility do
     :user -> true
-    :debug -> true
-    :internal -> false
-    :sensitive -> false
+    # :debug and nil/unknown pass ONLY if the type is explicitly allowlisted
+    :debug -> type in @allowlisted_lifecycle_types
     nil -> type in @allowlisted_lifecycle_types
+    # Unknown visibility values: reject unless allowlisted
+    _ -> type in @allowlisted_lifecycle_types
   end
 end
 ```
@@ -393,9 +399,9 @@ The following categories of data are **never** forwarded to external WebSocket c
 | Test file | Scope | Key assertions |
 |---|---|---|
 | `test/muse_web/channels/user_socket_test.exs` | Socket connect | Connect succeeds when enabled; `:error` when disabled; socket params correct |
-| `test/muse_web/channels/session_channel_test.exs` | Channel join & handle_info | Join `session:<id>` OK; join mismatched topic returns `{:error, ...}`; `handle_info({:muse_event, ...})` forwards matching session events; drops non-matching session; drops `:internal`; drops `:sensitive`; forwards `:user`; forwards `:debug`; forwards allowlisted lifecycle types; drops nil-visibility non-allowlisted; respects allowlist |
+| `test/muse_web/channels/session_channel_test.exs` | Channel join & handle_info | Join `session:<id>` OK; join mismatched topic returns `{:error, ...}`; `handle_info({:muse_event, ...})` forwards matching session events; drops non-matching session; drops `:internal`; drops `:sensitive`; forwards `:user`; drops ordinary `:debug` event (not allowlisted); forwards allowlisted lifecycle type with `:debug`/nil visibility; drops nil-visibility non-allowlisted; respects allowlist |
 | `test/muse_web/external_event_serializer_test.exs` | Serialization | All fields present; nil fields omitted; atoms→strings; timestamp ISO8601; summary field present; `data` passes through `safe_data` + `json_safe`; plan data replaced by summary map |
-| `test/muse_web/external_event_filter_test.exs` | Filtering | `:user` → true; `:debug` → true; `:internal` → false; `:sensitive` → false; `nil` → check allowlist; each allowlisted type returns true; non-allowlisted types return false for nil visibility |
+| `test/muse_web/external_event_filter_test.exs` | Filtering | `:user` → true; `:debug` with non-allowlisted type → false; `:debug` with allowlisted lifecycle type → true; `:internal` → false (even if allowlisted); `:sensitive` → false (even if allowlisted); `nil` → false for ordinary types, true for allowlisted lifecycle types; each allowlisted type returns true for `:user`, and also for `:debug`/nil only when data proven safe |
 
 ## 12. Docs Matrix
 
@@ -474,8 +480,8 @@ Lane 02 (socket wiring) ──► Lane 04 (serializer/filter) ──► Lane 03 
 | 3 | `session:<session_id>` topic joinable | ☐ |
 | 4 | Channel subscribes to `Muse.State` and receives events | ☐ |
 | 5 | Session matching: only events with matching `session_id` forwarded | ☐ |
-| 6 | Visibility filtering: `:user` and `:debug` forwarded; `:internal` and `:sensitive` dropped | ☐ |
-| 7 | `nil` visibility: only allowlisted lifecycle types forwarded | ☐ |
+| 6 | Visibility filtering: `:user` forwarded; `:debug` ordinary events dropped (lifecycle allowlist types with `:debug` may pass); `:internal` and `:sensitive` always dropped | ☐ |
+| 7 | `nil`/unknown visibility: dropped by default; forwarded only if type is in explicit safe lifecycle allowlist AND data passes redaction | ☐ |
 | 8 | Allowlist includes plan/approval lifecycle types (6 types minimum) | ☐ |
 | 9 | All event data passes through `Muse.EventDisplay.safe_data/1` | ☐ |
 | 10 | JSON serialization matches envelope contract (§7) | ☐ |
