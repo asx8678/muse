@@ -711,4 +711,113 @@ defmodule Muse.EventStreamTest do
       assert EventStream.external_envelope(event, session_id: "s1") == nil
     end
   end
+
+  # -- Patch lifecycle event tests ---------------------------------------------
+
+  describe "chat_messages/1 — patch lifecycle events" do
+    test "renders patch_proposed as system message with guidance" do
+      events = [
+        make_event(
+          :patch_proposed,
+          %{patch_id: "p1", files: ["lib/a.ex"], hash: "abc", diff: "short"},
+          id: 1,
+          turn_id: "t1",
+          seq: 1,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      assert length(messages) == 1
+
+      msg = hd(messages)
+      assert msg.role == :system
+      assert msg.text =~ "Patch proposed: p1"
+    end
+
+    test "renders patch_approval_requested as system message with /approve patch guidance" do
+      events = [
+        make_event(:patch_approval_requested, %{patch_id: "p1", hash: "abc"},
+          id: 1,
+          turn_id: "t1",
+          seq: 1,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      assert length(messages) == 1
+
+      msg = hd(messages)
+      assert msg.role == :system
+      assert msg.text =~ "/approve patch"
+    end
+
+    test "renders patch_approved as concise system status" do
+      events = [
+        make_event(:patch_approved, %{patch_id: "p1", hash: "abc"},
+          id: 1,
+          turn_id: "t1",
+          seq: 1,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      assert length(messages) == 1
+
+      msg = hd(messages)
+      assert msg.role == :system
+      assert msg.text =~ "Patch approved: p1"
+    end
+
+    test "renders patch_rejected as concise system status" do
+      events = [
+        make_event(:patch_rejected, %{patch_id: "p1", hash: "abc"},
+          id: 1,
+          turn_id: "t1",
+          seq: 1,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      assert length(messages) == 1
+
+      msg = hd(messages)
+      assert msg.role == :system
+      assert msg.text =~ "Patch rejected: p1"
+    end
+
+    test "patch events coexist with user/assistant messages in a turn" do
+      events = [
+        make_event(:user_message, %{text: "please fix foo"},
+          id: 1,
+          turn_id: "t1",
+          seq: 1,
+          timestamp: now()
+        ),
+        make_event(
+          :patch_proposed,
+          %{patch_id: "p1", files: ["lib/foo.ex"], hash: "h1", diff: "d"},
+          id: 2,
+          turn_id: "t1",
+          seq: 2,
+          timestamp: now()
+        ),
+        make_event(:patch_approval_requested, %{patch_id: "p1", hash: "h1"},
+          id: 3,
+          turn_id: "t1",
+          seq: 3,
+          timestamp: now()
+        )
+      ]
+
+      messages = EventStream.chat_messages(events)
+      assert length(messages) == 3
+
+      roles = Enum.map(messages, & &1.role)
+      assert roles == [:user, :system, :system]
+    end
+  end
 end

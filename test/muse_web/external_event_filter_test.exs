@@ -649,5 +649,20 @@ defmodule MuseWeb.ExternalEventFilterTest do
       # assistant_message text is capped by string truncation (2000 chars), not patch logic
       assert envelope["payload"]["text"] != nil
     end
+
+    test "caps diff_text key as well as diff key" do
+      huge_diff = String.duplicate("x", 3_000)
+
+      event =
+        make_event(:patch_proposed, %{patch_id: "p1", diff_text: huge_diff},
+          visibility: :user,
+          session_id: "s1"
+        )
+
+      {:ok, envelope} = ExternalEventFilter.to_external_map(event, session_id: "s1")
+
+      diff_text = envelope["payload"]["diff_text"]
+      assert String.ends_with?(diff_text, "…")
+    end
   end
 end
