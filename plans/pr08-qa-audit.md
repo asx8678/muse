@@ -5,6 +5,8 @@ Branch: `pr08/lane10-qa-contract-audit`
 Coordinator: `planning-agent-1a6824`
 Reviewer: `elixir-code-critic-d38bd6`
 
+> **Post-integration note:** This PR08 QA audit is retained as historical contract evidence. Its ApprovalGate residual blocker described PR08, when content-bound approval policy was future work; after PR09 integration, use the current PR09 docs/code for ApprovalGate status while preserving PR08's no-implementation-handoff safety boundary.
+
 ## Scope audited
 
 Reviewed the current PR08 state on `origin/main` for the Planning Muse MVP contract:

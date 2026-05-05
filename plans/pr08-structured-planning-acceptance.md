@@ -6,6 +6,8 @@ Coordinator: `planning-agent-1a6824`
 Scout: `code-puppy-59af78`
 Scope: acceptance and gap analysis for `muse-1ki.1.12` / PR08 only; code changes are intentionally out of scope.
 
+> **Post-integration note:** This scout captures the PR08 lane01 baseline and acceptance map before PR08 final integration. The gap/blocker sections are retained as historical evidence; do not read the `origin/main` observations below as the current post-PR09 runtime state.
+
 ## 1. Bead and branch status
 
 | Item | Observed state |
@@ -61,7 +63,7 @@ For integration, treat that as the following concrete contract.
 | Model request | `ModelPreparer` can pass `response_format`, but the assembled bundle currently leaves it unset by default. | `lib/muse/prompt/model_preparer.ex`, `lib/muse/prompt/assembler.ex` |
 | Conductor plan finalization | Planning Muse output is parsed as strict JSON; valid plan output is rendered, `:plan_created` is emitted, session becomes `:awaiting_plan_approval`; invalid plan-like output attempts repair. | `lib/muse/conductor.ex`, `test/muse/conductor_planning_test.exs` |
 | Session persistence | SessionServer stores `plan`, `plans`, `active_plan_id` and persists a session snapshot when a plan exists; restore path rebuilds plans. | `lib/muse/session_server.ex`, `lib/muse/session_store.ex`, `test/muse/session_server_test.exs` |
-| Slash commands | `/plan`, `/plans`, `/plan history`, `/plan status`, `/plan show`, `/approve plan`, and `/reject plan` parse/dispatch paths exist. | `lib/muse/commands.ex`, `lib/muse/command_dispatcher.ex`, `test/muse/command_dispatcher_test.exs` |
+| Slash commands | `/plan`, `/plans`, `/plan history`, `/plan status`, `/plan show`, `/approve plan`, and `/reject plan` lifecycle paths exist. | Command parser, lifecycle router, and command-routing tests. |
 | Read-only tools | Registry exposes read-only tools for Planning Muse and blocks several dangerous names; ToolRunner enforces registered/allowed/approval checks. | `lib/muse/tool/registry.ex`, `lib/muse/tool/runner.ex` |
 | M1 E2E coverage | Inline fake provider batches cover read-only planning, persistence, `/plan` family, approval/rejection lifecycle-only behavior, and workspace unchanged assertions. | `test/muse/m1_read_only_planning_test.exs` |
 | Fixture coverage | Provider fixture docs mention fake-provider planning fixtures, but `origin/main` has only OpenAI/Chat Completions fixtures. | `docs/testing.md`, `test/fixtures/` |

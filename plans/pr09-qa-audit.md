@@ -13,7 +13,8 @@ Issue source: `muse-1ki.1.13` from tracked `issues.jsonl`
 
 **Historical verdict:** changes were requested for the full PR09 ApprovalGate contract.
 
-The pre-integration `origin/main` baseline had a useful **plan lifecycle command slice**: `/approve plan` and `/reject plan` were parsed, routed to the active `SessionServer`, transitioned only an awaiting active plan, persisted the updated session snapshot, emitted lifecycle events, and did not start tools, turns, shell commands, patches, or Coding Muse handoff.
+The pre-integration `origin/main` baseline had a useful **plan lifecycle command slice**: `/approve plan` and `/reject plan` were parsed, routed to the active `SessionServer`, transitioned only an awaiting active plan, persisted the updated session snapshot, and emitted lifecycle events.
+It did not start tools, turns, shell commands, patches, or Coding Muse handoff.
 
 Final integration hardens that slice into the PR09 ApprovalGate MVP:
 
@@ -24,7 +25,7 @@ Final integration hardens that slice into the PR09 ApprovalGate MVP:
 
 ## Scope audited
 
-Reviewed current PR09-relevant baseline code and docs on `origin/main`:
+Reviewed the PR09 pre-integration baseline code and docs on `origin/main`:
 
 - Slash-command registration and dispatcher flow:
   - `lib/muse/commands.ex`
@@ -57,7 +58,7 @@ Reviewed current PR09-relevant baseline code and docs on `origin/main`:
 
 This lane was **doc-only** before final integration. The final integration adds the missing stale-approval/content-hash regression tests and runtime model.
 
-## Current baseline positives
+## Historical pre-integration baseline positives
 
 ### PASS — explicit slash-command entry points exist
 
@@ -82,7 +83,8 @@ Evidence:
 - `lib/muse/session_server.ex:95-100` documents approval as a lifecycle transition only, explicitly not starting turn execution, shell commands, file writes, or patch application.
 - `lib/muse/session_server.ex:640-653` handles lifecycle commands without starting a `TurnRunner`.
 - `lib/muse/session_server.ex:660-687` transitions the plan, emits events, appends to in-memory session events, and persists a session snapshot; it does not call conductor/tool/shell/patch code.
-- `test/muse/m1_read_only_planning_test.exs` completion-gate coverage asserts `/approve plan` and `/reject plan` do not start turns, tools, patches, shell, or Coding Muse handoff.
+- `test/muse/m1_read_only_planning_test.exs` completion-gate coverage exercises `/approve plan` and `/reject plan`.
+  It asserts no turns, tools, patches, shell, or Coding Muse handoff start from the lifecycle commands.
 
 Why it matters:
 
@@ -138,7 +140,7 @@ Legend: `PASS` = final integration satisfies the lane-level expectation; `PARTIA
 
 | Status | Acceptance item | Current evidence / required action |
 |---|---|---|
-| PASS | `/approve plan` and `/reject plan` are explicit commands | Registered in `lib/muse/commands.ex:16-17`; dispatched in `lib/muse/command_dispatcher.ex:106-111`. |
+| PASS | `/approve plan` and `/reject plan` are explicit commands | Registered in `lib/muse/commands.ex:16-17`; routed through the lifecycle command handler. |
 | PASS | Extra args are rejected for current bare commands | `lib/muse/command_dispatcher.ex:967-970`; tests cover usage errors. |
 | PASS | Missing session / no active plan fails safely | `SessionRouter` returns `:not_found`; dispatcher maps it to “no Muse Plan is awaiting approval.” |
 | PASS | Already approved/rejected plans cannot be approved/rejected again | `lib/muse/session_server.ex:658-660`; tests cover non-awaiting plans. |
@@ -203,7 +205,7 @@ Evidence:
 
 Why it matters:
 
-PR09’s bead explicitly names “Approval struct, ApprovalGate, `/approve plan`, `/reject plan`, and stale approval prevention.” Final integration implements the command transition slice and the gate abstraction. Later lanes that add `patch_propose`, `patch_apply`, shell/test, network, or remote tools must add explicit non-plan approval categories instead of relying on plan approval.
+PR09’s bead explicitly names “Approval struct, ApprovalGate, `/approve plan`, `/reject plan`, and stale approval prevention.” Final integration implements the command transition slice and the gate abstraction. Later lanes adding proposal/apply, shell/test, network, or remote tools must add explicit non-plan approval categories instead of relying on plan approval.
 
 Suggested fix:
 
@@ -325,7 +327,7 @@ High-priority stale regression tests:
    - ApprovalGate integration will likely touch `handle_plan_lifecycle_command/3`, `transition_active_plan/5`, event data, and snapshot persistence.
 
 2. `lib/muse/command_dispatcher.ex` and `lib/muse/commands.ex`
-   - Any move from bare `/approve plan` to token/id/version-bound approval will touch parsing, usage errors, help text, autocomplete, and dispatcher tests.
+   - Any move from bare `/approve plan` to token/id/version-bound approval will touch parsing, usage errors, help text, autocomplete, and command-router tests.
 
 3. `lib/muse/conductor.ex`
    - Plan id/version generation and future Coding Muse selection/handoff logic are here.
@@ -389,9 +391,9 @@ Do not implement or silently enable these in PR09:
 
 PR09 should leave the runtime in a state where an approved plan is an auditable prerequisite for future implementation, not a grant to mutate the workspace.
 
-## Recommendation
+## Historical recommendation
 
-Accept the existing lifecycle command slice as a useful foundation, but do **not** mark the full ApprovalGate contract complete until the project has:
+At the pre-integration baseline, this audit recommended accepting the lifecycle command slice as a useful foundation, but not marking the full ApprovalGate contract complete until the project had:
 
 1. A real `Muse.Approval` model.
 2. A `Muse.ApprovalGate` facade in the tool/lifecycle path.
@@ -399,3 +401,5 @@ Accept the existing lifecycle command slice as a useful foundation, but do **not
 4. Durable approval audit records.
 5. Redacted plan/approval persistence.
 6. Regression tests covering stale, redaction, restart, concurrency, and no-execution guarantees.
+
+Post-integration, those items are represented in the current runtime/docs as the PR09 ApprovalGate MVP. The detailed findings remain useful as regression context and as guardrails for future write/shell/network lanes.

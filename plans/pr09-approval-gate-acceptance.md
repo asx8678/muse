@@ -6,6 +6,8 @@
 - Workspace: `/Users/adam2/projects/muse`
 - Date: 2026-05-05
 
+> **Post-integration note:** This lane01 scout records the PR09 pre-integration acceptance target and gap map. After PR09 final integration on `origin/main`, `%Muse.Approval{}`, `Muse.PlanBinding`, `Muse.ApprovalGate`, approval records, stale binding checks, and deny-by-default tool authorization exist. Treat the "Current state" and "Blockers" sections below as historical baseline evidence, not as the current final status.
+
 ## 1) Goal of this scout
 
 Define **exact acceptance criteria** for a **full PR09 ApprovalGate MVP** (beyond lifecycle-only `/approve plan` and `/reject plan`), document current behavior on `origin/main`, identify gaps/blockers, and provide a 15-lane execution map + integration checklist.
