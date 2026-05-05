@@ -373,7 +373,10 @@ defmodule Muse.Conductor.ToolLoop do
       muse_id: muse.id,
       session_id: session.id,
       turn_id: turn.id,
-      emit_events?: false
+      emit_events?: false,
+      active_plan_id: session.active_plan_id,
+      plans: session.plans,
+      approvals: session.approvals
     }
 
     result = tool_runner.run(tool_name, args, context)

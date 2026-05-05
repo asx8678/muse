@@ -4,15 +4,24 @@ defmodule Muse.Tool.RegistryTest do
   alias Muse.Tool.Registry
 
   describe "all/0" do
-    test "returns all 8 registered tool specs" do
-      assert length(Registry.all()) == 8
+    test "returns all 9 registered tool specs" do
+      assert length(Registry.all()) == 9
     end
 
-    test "keeps registered specs within the no-approval safe tool surface" do
+    test "keeps registered specs within expected tool surface" do
       for spec <- Registry.all() do
-        refute spec.requires_approval
-        assert spec.permission in [:read, :interactive]
-        refute spec.permission in [:write, :shell, :network, :patch, :delete]
+        case spec.name do
+          "patch_propose" ->
+            assert spec.requires_approval
+            assert spec.permission == :patch
+            assert spec.kind == :patch
+            assert spec.allowed_muses == [:coding]
+
+          _ ->
+            refute spec.requires_approval
+            assert spec.permission in [:read, :interactive]
+            refute spec.permission in [:write, :shell, :network, :patch, :delete]
+        end
       end
     end
 
@@ -27,7 +36,8 @@ defmodule Muse.Tool.RegistryTest do
                "git_diff_readonly",
                "ask_user_question",
                "list_muses",
-               "list_skills"
+               "list_skills",
+               "patch_propose"
              ]
     end
   end
@@ -77,6 +87,7 @@ defmodule Muse.Tool.RegistryTest do
       assert "ask_user_question" in names
       assert "list_muses" in names
       assert "list_skills" in names
+      refute "patch_propose" in names
     end
 
     test "does not include write tools for planning muse" do
@@ -86,6 +97,16 @@ defmodule Muse.Tool.RegistryTest do
       refute "write_file" in names
       refute "shell_command" in names
       refute "patch_apply" in names
+      refute "patch_propose" in names
+    end
+
+    test "includes patch_propose for coding muse" do
+      specs = Registry.specs_for_muse(:coding)
+      names = Enum.map(specs, & &1.name)
+
+      assert "patch_propose" in names
+      assert "list_files" in names
+      assert "read_file" in names
     end
   end
 
@@ -103,6 +124,16 @@ defmodule Muse.Tool.RegistryTest do
         assert is_map(schema["function"]["parameters"])
         assert schema[:name] != nil
       end
+    end
+
+    test "includes patch_propose in coding muse schemas" do
+      schemas = Registry.provider_schemas(:coding)
+
+      # Coding muse has: list_files, read_file, repo_search, git_status,
+      # git_diff_readonly, patch_propose = 6 registered tools
+      names = Enum.map(schemas, & &1[:name])
+      assert "patch_propose" in names
+      assert length(schemas) == 6
     end
   end
 
@@ -154,7 +185,6 @@ defmodule Muse.Tool.RegistryTest do
       assert Registry.blocked_tool?("replace_in_file")
       assert Registry.blocked_tool?("delete_file")
       assert Registry.blocked_tool?("patch_apply")
-      assert Registry.blocked_tool?("patch_propose")
       assert Registry.blocked_tool?("shell_command")
       assert Registry.blocked_tool?("network_call")
       assert Registry.blocked_tool?("remote_execution")
@@ -163,6 +193,10 @@ defmodule Muse.Tool.RegistryTest do
     test "returns false for read-only tools" do
       refute Registry.blocked_tool?("read_file")
       refute Registry.blocked_tool?("list_files")
+    end
+
+    test "returns false for registered patch_propose (no longer blocked)" do
+      refute Registry.blocked_tool?("patch_propose")
     end
 
     test "returns true for destructive-looking unknown tool shapes" do
@@ -181,7 +215,7 @@ defmodule Muse.Tool.RegistryTest do
     test "returns all blocked tool names" do
       names = Registry.blocked_tool_names()
       assert "write_file" in names
-      assert "patch_propose" in names
+      refute "patch_propose" in names
       assert "shell_command" in names
       assert "network_call" in names
     end
@@ -190,8 +224,9 @@ defmodule Muse.Tool.RegistryTest do
   describe "tool_names/0" do
     test "returns all registered tool names" do
       names = Registry.tool_names()
-      assert length(names) == 8
+      assert length(names) == 9
       assert "read_file" in names
+      assert "patch_propose" in names
     end
   end
 

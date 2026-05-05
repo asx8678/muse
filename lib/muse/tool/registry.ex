@@ -22,18 +22,21 @@ defmodule Muse.Tool.Registry do
     * `ask_user_question` — ask the user a question
     * `list_muses` — list available Muse profiles
     * `list_skills` — list available skills
+    * `patch_propose` — propose a patch without applying it
 
   ## Blocked tool names
 
   These tool names are explicitly recognized as dangerous. The runner blocks
   them instead of accidentally treating them as executable:
 
-    * `write_file`, `replace_in_file`, `delete_file`, `patch_apply`, `patch_propose`
+    * `write_file`, `replace_in_file`, `delete_file`, `patch_apply`
     * `shell_command`, `network_call`, `remote_execution`
 
   Destructive-looking unknown tool names (for example `apply_patch` or
   `run_shell`) are also treated as blocked so a provider cannot bypass the
   read-only surface by inventing a new write/shell/network-shaped name.
+  Registered tools are never blocked, even if their name matches a
+  destructive shape token.
 
   No dynamic atom creation from model input — all tool names are
   compile-time strings.
@@ -48,7 +51,6 @@ defmodule Muse.Tool.Registry do
     "replace_in_file",
     "delete_file",
     "patch_apply",
-    "patch_propose",
     "shell_command",
     "network_call",
     "remote_execution"
@@ -282,6 +284,41 @@ defmodule Muse.Tool.Registry do
                       output_limit: 2_000
                     )
 
+  @patch_propose_spec Spec.new!(
+                        name: "patch_propose",
+                        description:
+                          "Propose a patch by providing a unified diff. The patch is validated, hashed, and stored as a proposal. No files are written or modified. Requires an approved plan before use.",
+                        handler: Muse.Tools.PatchPropose,
+                        input_schema: %{
+                          type: "object",
+                          properties: %{
+                            diff: %{
+                              type: "string",
+                              description: "Unified diff content to propose (required)"
+                            },
+                            summary: %{
+                              type: "string",
+                              description:
+                                "Human-readable summary of the proposed changes (optional)"
+                            },
+                            affected_files: %{
+                              type: "array",
+                              items: %{type: "string"},
+                              description:
+                                "List of affected file paths (optional; parsed from diff if absent)"
+                            }
+                          },
+                          required: ["diff"]
+                        },
+                        kind: :patch,
+                        risk: :medium,
+                        permission: :patch,
+                        allowed_roles: [:coding],
+                        allowed_muses: [:coding],
+                        requires_approval: true,
+                        output_limit: 20_000
+                      )
+
   # -- Internal index -----------------------------------------------------------
 
   @ordered_names [
@@ -292,7 +329,8 @@ defmodule Muse.Tool.Registry do
     "git_diff_readonly",
     "ask_user_question",
     "list_muses",
-    "list_skills"
+    "list_skills",
+    "patch_propose"
   ]
 
   @specs_by_name %{
@@ -303,7 +341,8 @@ defmodule Muse.Tool.Registry do
     "git_diff_readonly" => @git_diff_readonly_spec,
     "ask_user_question" => @ask_user_question_spec,
     "list_muses" => @list_muses_spec,
-    "list_skills" => @list_skills_spec
+    "list_skills" => @list_skills_spec,
+    "patch_propose" => @patch_propose_spec
   }
 
   # -- Public API ---------------------------------------------------------------
@@ -314,7 +353,7 @@ defmodule Muse.Tool.Registry do
   ## Examples
 
       iex> length(Muse.Tool.Registry.all())
-      8
+      9
 
       iex> hd(Muse.Tool.Registry.all()).name
       "list_files"
@@ -381,6 +420,12 @@ defmodule Muse.Tool.Registry do
       ["list_files", "read_file", "repo_search", "git_status",
        "git_diff_readonly", "ask_user_question", "list_muses", "list_skills"]
 
+      iex> specs = Muse.Tool.Registry.specs_for_muse(:coding)
+      iex> Enum.map(specs, & &1.name)
+      ["list_files", "read_file", "repo_search", "git_status",
+       "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
+       "patch_propose"]
+
   """
   @spec specs_for_muse(atom()) :: [Spec.t()]
   def specs_for_muse(muse_id) when is_atom(muse_id) do
@@ -404,6 +449,9 @@ defmodule Muse.Tool.Registry do
       iex> schemas = Muse.Tool.Registry.provider_schemas(:planning)
       iex> length(schemas)
       8
+
+      iex> schemas = Muse.Tool.Registry.provider_schemas(:coding)
+      iex> true = "patch_propose" in Enum.map(schemas, & &1[:name])
       iex> hd(schemas)[:name]
       "list_files"
 
@@ -463,7 +511,8 @@ defmodule Muse.Tool.Registry do
   Check if a name is a known dangerous/blocked tool.
 
   Blocked tools are write/shell/network/delete/remote tools that must
-  never be accidentally treated as executable.
+  never be accidentally treated as executable. Registered tools are
+  never blocked, even if their name matches a destructive shape pattern.
 
   ## Examples
 
@@ -476,10 +525,17 @@ defmodule Muse.Tool.Registry do
       iex> Muse.Tool.Registry.blocked_tool?("read_file")
       false
 
+      iex> Muse.Tool.Registry.blocked_tool?("patch_propose")
+      false
+
+      iex> Muse.Tool.Registry.blocked_tool?("patch_apply")
+      true
+
   """
   @spec blocked_tool?(String.t()) :: boolean()
   def blocked_tool?(name) when is_binary(name) do
-    name in @blocked_tool_names or destructive_tool_shape?(name)
+    name in @blocked_tool_names or
+      (not Map.has_key?(@specs_by_name, name) and destructive_tool_shape?(name))
   end
 
   defp destructive_tool_shape?(name) do
@@ -508,7 +564,8 @@ defmodule Muse.Tool.Registry do
 
       iex> Muse.Tool.Registry.tool_names()
       ["list_files", "read_file", "repo_search", "git_status",
-       "git_diff_readonly", "ask_user_question", "list_muses", "list_skills"]
+       "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
+       "patch_propose"]
 
   """
   @spec tool_names() :: [String.t()]

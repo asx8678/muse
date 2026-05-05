@@ -69,12 +69,6 @@ defmodule Muse.Tool.RunnerTest do
       assert result.error =~ "blocked"
     end
 
-    test "blocks patch_propose", %{context: context} do
-      result = Runner.run("patch_propose", %{"patch" => "xxx"}, context)
-      refute result.success
-      assert result.error =~ "blocked"
-    end
-
     test "blocks destructive-looking unknown tool shapes", %{context: context} do
       for tool_name <- ["apply_patch", "run_shell", "http_request", "remote_exec"] do
         State.clear()
@@ -499,6 +493,259 @@ defmodule Muse.Tool.RunnerTest do
 
       # list_files output_limit is 50_000; allow small marker overhead
       assert full_size <= 50_000 + 500
+    end
+  end
+
+  # -- Patch propose permission gating -----------------------------------------
+
+  describe "run/3 — patch_propose permission gating" do
+    @valid_diff "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n"
+
+    defp approved_plan_and_hash do
+      plan =
+        Muse.Plan.new(
+          id: "plan_1",
+          session_id: "sess_test",
+          version: 1,
+          status: :approved,
+          objective: "Test objective"
+        )
+
+      hash = Muse.PlanBinding.content_hash(plan)
+      {plan, hash}
+    end
+
+    defp approved_context(context_overrides \\ []) do
+      {_plan, hash} = approved_plan_and_hash()
+
+      base = %{
+        workspace: "/tmp",
+        muse_id: :coding,
+        session_id: "sess_test",
+        turn_id: "turn_1",
+        active_plan_id: "plan_1",
+        approvals: [
+          %{
+            id: "ap_1",
+            kind: :plan,
+            status: :approved,
+            plan_id: "plan_1",
+            scope: :plan,
+            plan_version: 1,
+            plan_hash: hash,
+            content_hash: hash,
+            session_id: "sess_test"
+          }
+        ],
+        plans: %{
+          "plan_1" => %{
+            id: "plan_1",
+            session_id: "sess_test",
+            status: :approved,
+            version: 1,
+            objective: "Test objective"
+          }
+        }
+      }
+
+      Map.merge(base, Map.new(context_overrides))
+    end
+
+    test "blocks patch_propose for planning muse (not in allowed_muses)", %{context: context} do
+      result = Runner.run("patch_propose", %{"diff" => @valid_diff}, context)
+      refute result.success
+      assert result.error =~ "not allowed" or result.error =~ "blocked"
+    end
+
+    test "blocks patch_propose for coding muse without approved plan" do
+      context = %{
+        workspace: "/tmp",
+        muse_id: :coding,
+        session_id: "sess_test",
+        turn_id: "turn_1"
+      }
+
+      result = Runner.run("patch_propose", %{"diff" => @valid_diff}, context)
+      refute result.success
+      assert result.error =~ "requires explicit" or result.error =~ "approval"
+    end
+
+    test "blocks patch_propose for coding muse with unapproved plan" do
+      context = %{
+        workspace: "/tmp",
+        muse_id: :coding,
+        session_id: "sess_test",
+        turn_id: "turn_1",
+        active_plan_id: "plan_1",
+        approvals: [
+          %{
+            id: "ap_1",
+            kind: :plan,
+            status: :pending,
+            plan_id: "plan_1",
+            scope: :plan,
+            session_id: "sess_test"
+          }
+        ],
+        plans: %{
+          "plan_1" => %{
+            id: "plan_1",
+            session_id: "sess_test",
+            status: :awaiting_approval,
+            objective: "Test"
+          }
+        }
+      }
+
+      result = Runner.run("patch_propose", %{"diff" => @valid_diff}, context)
+      refute result.success
+      assert result.error =~ "requires an approved plan" or result.error =~ "approval"
+    end
+
+    test "blocks patch_propose for coding muse with rejected plan" do
+      context = %{
+        workspace: "/tmp",
+        muse_id: :coding,
+        session_id: "sess_test",
+        turn_id: "turn_1",
+        active_plan_id: "plan_1",
+        approvals: [
+          %{
+            id: "ap_1",
+            kind: :plan,
+            status: :rejected,
+            plan_id: "plan_1",
+            scope: :plan,
+            session_id: "sess_test"
+          }
+        ],
+        plans: %{
+          "plan_1" => %{
+            id: "plan_1",
+            session_id: "sess_test",
+            status: :rejected,
+            objective: "Test"
+          }
+        }
+      }
+
+      result = Runner.run("patch_propose", %{"diff" => @valid_diff}, context)
+      refute result.success
+      assert result.error =~ "requires an approved plan" or result.error =~ "approval"
+    end
+
+    test "allows patch_propose for coding muse with approved plan" do
+      result = Runner.run("patch_propose", %{"diff" => @valid_diff}, approved_context())
+      assert result.success
+      assert result.output.patch_id =~ "patch_"
+      assert result.output.approval_required == true
+    end
+
+    test "blocks patch_propose with malformed diff even with approved plan" do
+      result = Runner.run("patch_propose", %{"diff" => "not a diff"}, approved_context())
+      refute result.success
+      assert result.error =~ "does not appear"
+    end
+
+    test "blocks patch_propose with dangerous diff even with approved plan" do
+      result =
+        Runner.run(
+          "patch_propose",
+          %{"diff" => "--- a/x\n+++ b/x\n+sudo rm -rf /"},
+          approved_context()
+        )
+
+      refute result.success
+      assert result.error =~ "dangerous"
+    end
+
+    test "approved plan context does not unlock other write tools", %{context: context} do
+      {_plan, hash} = approved_plan_and_hash()
+
+      approved_context =
+        Map.merge(context, %{
+          muse_id: :coding,
+          active_plan_id: "plan_1",
+          approvals: [
+            %{
+              id: "ap_1",
+              kind: :plan,
+              status: :approved,
+              plan_id: "plan_1",
+              scope: :plan,
+              session_id: "sess_test",
+              plan_version: 1,
+              plan_hash: hash,
+              content_hash: hash
+            }
+          ],
+          plans: %{
+            "plan_1" => %{
+              id: "plan_1",
+              session_id: "sess_test",
+              status: :approved,
+              version: 1,
+              objective: "Test objective"
+            }
+          }
+        })
+
+      for tool_name <- [
+            "write_file",
+            "shell_command",
+            "network_call",
+            "patch_apply",
+            "delete_file"
+          ] do
+        result = Runner.run(tool_name, %{"payload" => "x"}, approved_context)
+        refute result.success, "expected #{tool_name} to be blocked even with approved plan"
+        assert result.error =~ "blocked"
+      end
+    end
+
+    test "events for patch_propose include safe summaries only", %{context: context} do
+      {_plan, hash} = approved_plan_and_hash()
+
+      approved_context =
+        Map.merge(context, %{
+          muse_id: :coding,
+          active_plan_id: "plan_1",
+          approvals: [
+            %{
+              id: "ap_1",
+              kind: :plan,
+              status: :approved,
+              plan_id: "plan_1",
+              scope: :plan,
+              session_id: "sess_test",
+              plan_version: 1,
+              plan_hash: hash,
+              content_hash: hash
+            }
+          ],
+          plans: %{
+            "plan_1" => %{
+              id: "plan_1",
+              session_id: "sess_test",
+              status: :approved,
+              version: 1,
+              objective: "Test objective"
+            }
+          }
+        })
+
+      State.clear()
+      _result = Runner.run("patch_propose", %{"diff" => @valid_diff}, approved_context)
+
+      events = State.events()
+      started = Enum.find(events, &(&1.type == :tool_call_started))
+      assert started != nil
+      assert started.data.tool_name == "patch_propose"
+      refute started.data.args_summary =~ @valid_diff
+
+      completed = Enum.find(events, &(&1.type == :tool_call_completed))
+      assert completed != nil
+      assert completed.data.success == true
     end
   end
 

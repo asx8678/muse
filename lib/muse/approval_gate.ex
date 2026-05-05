@@ -403,12 +403,19 @@ defmodule Muse.ApprovalGate do
   In PR09, only specs that do **not** require approval and use a safe permission
   category (`:read` or `:interactive`) are allowed. Plan approval or any other
   current context field is deliberately not treated as a tool grant.
+
+  In PR17, tools with permission `:patch` and `requires_approval: true` (e.g.
+  `patch_propose`) are authorized when the context contains an active plan with
+  an approved, non-expired plan approval.
   """
   @spec authorize_tool(Spec.t(), map()) :: tool_decision()
   def authorize_tool(%Spec{} = spec, context) when is_map(context) do
     cond do
       safe_without_approval?(spec) ->
         :ok
+
+      spec.requires_approval and tool_scope(spec) == :patch and session_like?(context) ->
+        authorize_patch_tool(context)
 
       spec.requires_approval ->
         {:blocked, requires_approval_reason(spec)}
@@ -423,6 +430,63 @@ defmodule Muse.ApprovalGate do
 
   def authorize_tool(%Spec{} = spec, _context), do: authorize_tool(spec, %{})
   def authorize_tool(_spec, _context), do: {:blocked, "invalid tool approval request"}
+
+  # -- Patch tool authorization via plan approval -----------------------------
+
+  defp authorize_patch_tool(context) do
+    case allowed_for_plan_scope(context) do
+      :ok -> :ok
+      {:error, reason} -> {:blocked, patch_blocked_reason(reason)}
+    end
+  end
+
+  defp patch_blocked_reason(:no_active_plan),
+    do: "patch_propose requires an approved plan: no active plan in session"
+
+  defp patch_blocked_reason(:missing_plan_approval),
+    do: "patch_propose requires an approved plan: no approved plan approval found"
+
+  defp patch_blocked_reason({:scope_denied, _scope}),
+    do: "patch_propose requires an approved plan: scope denied"
+
+  defp patch_blocked_reason(:approval_not_approved),
+    do: "patch_propose requires an approved plan: approval is not in approved state"
+
+  defp patch_blocked_reason(:approval_rejected),
+    do: "patch_propose requires an approved plan: approval was rejected"
+
+  defp patch_blocked_reason(:approval_expired),
+    do: "patch_propose requires an approved plan: plan approval has expired"
+
+  defp patch_blocked_reason(:session_mismatch),
+    do: "patch_propose requires an approved plan: session mismatch"
+
+  defp patch_blocked_reason(:active_plan_mismatch),
+    do: "patch_propose requires an approved plan: active plan mismatch"
+
+  defp patch_blocked_reason(:plan_id_mismatch),
+    do: "patch_propose requires an approved plan: plan id mismatch"
+
+  defp patch_blocked_reason(:plan_version_mismatch),
+    do: "patch_propose requires an approved plan: plan version mismatch"
+
+  defp patch_blocked_reason(:plan_hash_mismatch),
+    do: "patch_propose requires an approved plan: plan hash mismatch (plan content changed)"
+
+  defp patch_blocked_reason(:workspace_mismatch),
+    do: "patch_propose requires an approved plan: workspace mismatch"
+
+  defp patch_blocked_reason({:stale_content, _meta}),
+    do: "patch_propose requires an approved plan: plan content has changed since approval"
+
+  defp patch_blocked_reason({:stale_approval, _meta}),
+    do: "patch_propose requires an approved plan: stale approval binding"
+
+  defp patch_blocked_reason({:expired, meta}) when is_map(meta),
+    do: "patch_propose requires an approved plan: plan approval binding has expired"
+
+  defp patch_blocked_reason(other),
+    do: "patch_propose requires an approved plan: #{inspect(other)}"
 
   # -- Internal plan approval transitions --------------------------------------
 
