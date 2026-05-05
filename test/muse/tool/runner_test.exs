@@ -75,6 +75,12 @@ defmodule Muse.Tool.RunnerTest do
       assert result.error =~ "blocked"
     end
 
+    test "blocks test_runner for planning muse", %{context: context} do
+      result = Runner.run("test_runner", %{"command" => "mix_test"}, context)
+      refute result.success
+      assert result.error =~ "blocked"
+    end
+
     test "blocks destructive-looking unknown tool shapes", %{context: context} do
       for tool_name <- ["apply_patch", "run_shell", "http_request", "remote_exec"] do
         State.clear()
@@ -242,7 +248,7 @@ defmodule Muse.Tool.RunnerTest do
     test "list_muses returns muses", %{context: context} do
       result = Runner.run("list_muses", %{}, context)
       assert result.success
-      assert result.output.count == 2
+      assert result.output.count == 4
     end
 
     test "list_skills returns empty list", %{context: context} do

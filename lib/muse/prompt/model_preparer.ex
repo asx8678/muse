@@ -146,9 +146,13 @@ defmodule Muse.Prompt.ModelPreparer do
 
   # For all other muse profiles, use bundle tools and standard response_format
   # When the active muse has response_mode: :patch (Coding Muse), filter
-  # tools to read-only plus patch_propose only. patch_apply and test_runner
-  # are excluded — Coding Muse can propose patches but not apply them.
+  # tools to read-only plus patch_propose only. patch_apply, rollback_checkpoint,
+  # and test_runner are excluded — Coding Muse can propose patches but must not
+  # autonomously apply them, roll back, or run test commands during patch
+  # proposal mode. These tools require separate post-approval paths.
   # No PlanSchema response_format for Coding Muse.
+  @coding_excluded_tools MapSet.new(["patch_apply", "rollback_checkpoint", "test_runner"])
+
   defp planning_muse_request_overrides(:patch, _output_schema, bundle, opts, provider_map) do
     coding_tools =
       bundle.tools
@@ -157,6 +161,7 @@ defmodule Muse.Prompt.ModelPreparer do
 
         is_binary(name) and
           not ToolRegistry.blocked_tool?(name) and
+          not MapSet.member?(@coding_excluded_tools, name) and
           (ToolRegistry.known_tool?(name) or name == "patch_propose")
       end)
 

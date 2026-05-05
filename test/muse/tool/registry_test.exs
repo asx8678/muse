@@ -4,13 +4,13 @@ defmodule Muse.Tool.RegistryTest do
   alias Muse.Tool.Registry
 
   describe "all/0" do
-    test "returns all 11 registered tool specs" do
-      assert length(Registry.all()) == 11
+    test "returns all 12 registered tool specs" do
+      assert length(Registry.all()) == 12
     end
 
     test "keeps registered specs within the no-approval safe tool surface" do
       for spec <- Registry.all(),
-          spec.name not in ["patch_propose", "patch_apply", "rollback_checkpoint"] do
+          spec.name not in ["patch_propose", "patch_apply", "rollback_checkpoint", "test_runner"] do
         refute spec.requires_approval
         assert spec.permission in [:read, :interactive]
         refute spec.permission in [:write, :shell, :network, :patch, :delete, :restore_checkpoint]
@@ -31,7 +31,8 @@ defmodule Muse.Tool.RegistryTest do
                "list_skills",
                "patch_propose",
                "patch_apply",
-               "rollback_checkpoint"
+               "rollback_checkpoint",
+               "test_runner"
              ]
     end
   end
@@ -202,10 +203,11 @@ defmodule Muse.Tool.RegistryTest do
   describe "tool_names/0" do
     test "returns all registered tool names" do
       names = Registry.tool_names()
-      assert length(names) == 11
+      assert length(names) == 12
       assert "read_file" in names
       assert "patch_apply" in names
       assert "rollback_checkpoint" in names
+      assert "test_runner" in names
     end
   end
 
@@ -219,6 +221,49 @@ defmodule Muse.Tool.RegistryTest do
     rescue
       # Expected: atom doesn't exist
       ArgumentError -> :ok
+    end
+  end
+
+  describe "test_runner registration (PR19)" do
+    test "test_runner is a registered tool" do
+      assert Registry.known_tool?("test_runner")
+      spec = Registry.get("test_runner")
+      assert spec.name == "test_runner"
+      assert spec.handler == Muse.Tools.TestRunner
+      assert spec.kind == :shell
+      assert spec.risk == :medium
+      assert spec.permission == :test
+      assert spec.allowed_muses == [:testing]
+      assert spec.requires_approval == false
+    end
+
+    test "test_runner is not blocked" do
+      refute Registry.blocked_tool?("test_runner")
+    end
+
+    test "planning muse cannot use test_runner" do
+      specs = Registry.specs_for_muse(:planning)
+      names = Enum.map(specs, & &1.name)
+      refute "test_runner" in names
+    end
+
+    test "coding muse cannot use test_runner via specs_for_muse" do
+      specs = Registry.specs_for_muse(:coding)
+      names = Enum.map(specs, & &1.name)
+      # coding muse has test_runner in profile tools list, but allowed_muses is [:testing]
+      refute "test_runner" in names
+    end
+
+    test "testing muse can use test_runner" do
+      specs = Registry.specs_for_muse(:testing)
+      names = Enum.map(specs, & &1.name)
+      assert "test_runner" in names
+    end
+
+    test "reviewing muse cannot use test_runner" do
+      specs = Registry.specs_for_muse(:reviewing)
+      names = Enum.map(specs, & &1.name)
+      refute "test_runner" in names
     end
   end
 end

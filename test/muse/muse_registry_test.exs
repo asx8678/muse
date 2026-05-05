@@ -8,14 +8,14 @@ defmodule Muse.MuseRegistryTest do
     test "returns all registered profiles" do
       profiles = MuseRegistry.all()
 
-      assert length(profiles) == 2
+      assert length(profiles) == 4
       assert Enum.all?(profiles, &(%MuseProfile{} = &1))
     end
 
     test "returns profiles in deterministic order" do
       ids = MuseRegistry.all() |> Enum.map(& &1.id)
 
-      assert ids == [:planning, :coding]
+      assert ids == [:planning, :coding, :reviewing, :testing]
     end
 
     test "calling all/0 multiple times returns same order" do
@@ -28,7 +28,7 @@ defmodule Muse.MuseRegistryTest do
 
   describe "ids/0" do
     test "returns profile id atoms in deterministic order" do
-      assert MuseRegistry.ids() == [:planning, :coding]
+      assert MuseRegistry.ids() == [:planning, :coding, :reviewing, :testing]
     end
   end
 
@@ -94,14 +94,14 @@ defmodule Muse.MuseRegistryTest do
       summaries = MuseRegistry.summaries()
 
       assert is_list(summaries)
-      assert length(summaries) == 2
+      assert length(summaries) == 4
       assert Enum.all?(summaries, &is_map/1)
     end
 
     test "summaries are in deterministic order" do
       ids = MuseRegistry.summaries() |> Enum.map(& &1.id)
 
-      assert ids == [:planning, :coding]
+      assert ids == [:planning, :coding, :reviewing, :testing]
     end
 
     test "summaries contain expected keys" do
@@ -309,6 +309,133 @@ defmodule Muse.MuseRegistryTest do
 
     test "has no :name field", %{coding: coding} do
       refute Map.has_key?(coding, :name)
+    end
+  end
+
+  describe "Reviewing Muse profile (PR19)" do
+    setup do
+      {:ok, reviewing: MuseRegistry.get(:reviewing)}
+    end
+
+    test "has correct identity fields", %{reviewing: reviewing} do
+      assert reviewing.id == :reviewing
+      assert reviewing.display_name == "Reviewing Muse"
+      assert reviewing.role == :review
+      assert reviewing.description =~ "findings"
+    end
+
+    test "has read-only tools only", %{reviewing: reviewing} do
+      assert "read_file" in reviewing.tools
+      assert "repo_search" in reviewing.tools
+      assert "git_status" in reviewing.tools
+      assert "git_diff_readonly" in reviewing.tools
+    end
+
+    test "has no write/shell/test tools", %{reviewing: reviewing} do
+      refute "patch_propose" in reviewing.tools
+      refute "patch_apply" in reviewing.tools
+      refute "test_runner" in reviewing.tools
+      refute "write_file" in reviewing.tools
+      refute "shell_command" in reviewing.tools
+    end
+
+    test "has no write/shell/network permissions", %{reviewing: reviewing} do
+      assert reviewing.permissions.read == true
+      assert reviewing.permissions.write == false
+      assert reviewing.permissions.shell == false
+      assert reviewing.permissions.network == false
+    end
+
+    test "cannot write", %{reviewing: reviewing} do
+      assert reviewing.can_write? == false
+    end
+
+    test "response mode is :text", %{reviewing: reviewing} do
+      assert reviewing.response_mode == :text
+    end
+
+    test "has no :name field", %{reviewing: reviewing} do
+      refute Map.has_key?(reviewing, :name)
+    end
+
+    test "prompt mentions review/findings", %{reviewing: reviewing} do
+      assert reviewing.prompt =~ ~r/review/i
+      assert reviewing.prompt =~ ~r/findings/i or reviewing.prompt =~ ~r/finding/i
+    end
+
+    test "display name uses Muse-first language", %{reviewing: reviewing} do
+      assert reviewing.display_name =~ "Muse"
+      refute reviewing.display_name =~ ~r/\bAgent\b/i
+      refute reviewing.display_name =~ ~r/\bBot\b/i
+    end
+
+    test "handoff targets are valid muse ids", %{reviewing: reviewing} do
+      for target <- reviewing.handoff_targets do
+        assert MuseRegistry.get(target) != nil
+      end
+    end
+  end
+
+  describe "Testing Muse profile (PR19)" do
+    setup do
+      {:ok, testing: MuseRegistry.get(:testing)}
+    end
+
+    test "has correct identity fields", %{testing: testing} do
+      assert testing.id == :testing
+      assert testing.display_name == "Testing Muse"
+      assert testing.role == :testing
+      assert testing.description =~ "verification"
+    end
+
+    test "has read tools plus test_runner", %{testing: testing} do
+      assert "read_file" in testing.tools
+      assert "repo_search" in testing.tools
+      assert "git_status" in testing.tools
+      assert "test_runner" in testing.tools
+    end
+
+    test "has no write/patch tools", %{testing: testing} do
+      refute "patch_propose" in testing.tools
+      refute "patch_apply" in testing.tools
+      refute "list_files" in testing.tools
+      refute "write_file" in testing.tools
+    end
+
+    test "permissions are read + approval-required shell, no write/network", %{testing: testing} do
+      assert testing.permissions.read == true
+      assert testing.permissions.write == false
+      assert testing.permissions.shell == :approval_required
+      assert testing.permissions.network == false
+    end
+
+    test "cannot write", %{testing: testing} do
+      assert testing.can_write? == false
+    end
+
+    test "response mode is :text", %{testing: testing} do
+      assert testing.response_mode == :text
+    end
+
+    test "has no :name field", %{testing: testing} do
+      refute Map.has_key?(testing, :name)
+    end
+
+    test "prompt mentions verification/safe test commands", %{testing: testing} do
+      assert testing.prompt =~ ~r/verification/i or testing.prompt =~ ~r/verif/i
+      assert testing.prompt =~ ~r/safe/i or testing.prompt =~ ~r/predefined/i
+    end
+
+    test "display name uses Muse-first language", %{testing: testing} do
+      assert testing.display_name =~ "Muse"
+      refute testing.display_name =~ ~r/\bAgent\b/i
+      refute testing.display_name =~ ~r/\bBot\b/i
+    end
+
+    test "handoff targets are valid muse ids", %{testing: testing} do
+      for target <- testing.handoff_targets do
+        assert MuseRegistry.get(target) != nil
+      end
     end
   end
 

@@ -16,6 +16,8 @@ defmodule Muse.MuseRegistry do
 
     * **Planning Muse** (`:planning`) — read-only, creates approval-gated plans
     * **Coding Muse** (`:coding`)    — implements approved plans via patches
+    * **Reviewing Muse** (`:reviewing`) — inspects diffs and reports findings/recommendations
+    * **Testing Muse** (`:testing`)    — runs safe test commands and reports verification results
 
   """
 
@@ -84,17 +86,80 @@ defmodule Muse.MuseRegistry do
     response_mode: :patch,
     can_write?: true,
     requires_plan_approval?: true,
-    handoff_targets: [:planning],
+    handoff_targets: [:planning, :testing],
+    style: %{}
+  }
+
+  @reviewing %MuseProfile{
+    id: :reviewing,
+    display_name: "Reviewing Muse",
+    role: :review,
+    description: "Reviews proposed or applied changes and reports findings and recommendations.",
+    prompt:
+      "You are the Reviewing Muse, the quality and risk specialist inside Muse. " <>
+        "Your job is to review proposed or applied changes for correctness, maintainability, " <>
+        "safety, style, and architectural fit. You may inspect files, diffs, and project " <>
+        "conventions. You must not modify files. " <>
+        "Report your findings with severity, evidence, and recommendations. " <>
+        "Conclude with a decision: approve, revise, or reject.",
+    tools: [
+      "read_file",
+      "repo_search",
+      "git_status",
+      "git_diff_readonly"
+    ],
+    permissions: %{
+      read: true,
+      write: false,
+      shell: false,
+      network: false
+    },
+    response_mode: :text,
+    can_write?: false,
+    requires_plan_approval?: false,
+    handoff_targets: [:planning, :coding],
+    style: %{}
+  }
+
+  @testing %MuseProfile{
+    id: :testing,
+    display_name: "Testing Muse",
+    role: :testing,
+    description: "Runs predefined safe test commands and reports verification results.",
+    prompt:
+      "You are the Testing Muse, the verification specialist inside Muse. " <>
+        "Your job is to choose, run, and interpret validation steps for approved changes. " <>
+        "You may run predefined safe test commands when the runtime allows them. " <>
+        "Arbitrary shell commands require approval and are not executable via test_runner. " <>
+        "Report verification results with status, key output, failures, and next action.",
+    tools: [
+      "read_file",
+      "repo_search",
+      "git_status",
+      "test_runner"
+    ],
+    permissions: %{
+      read: true,
+      write: false,
+      shell: :approval_required,
+      network: false
+    },
+    response_mode: :text,
+    can_write?: false,
+    requires_plan_approval?: false,
+    handoff_targets: [:coding, :planning],
     style: %{}
   }
 
   # Ordered by id for deterministic listing.  Add new profiles here and
   # in @profiles_by_id below.
-  @ordered_ids [:planning, :coding]
+  @ordered_ids [:planning, :coding, :reviewing, :testing]
 
   @profiles_by_id %{
     planning: @planning,
-    coding: @coding
+    coding: @coding,
+    reviewing: @reviewing,
+    testing: @testing
   }
 
   # -- Public API ---------------------------------------------------------------
@@ -105,7 +170,7 @@ defmodule Muse.MuseRegistry do
   ## Examples
 
       iex> length(Muse.MuseRegistry.all())
-      2
+      4
 
       iex> hd(Muse.MuseRegistry.all()).id
       :planning
@@ -174,7 +239,7 @@ defmodule Muse.MuseRegistry do
   ## Examples
 
       iex> Muse.MuseRegistry.ids()
-      [:planning, :coding]
+      [:planning, :coding, :reviewing, :testing]
 
   """
   @spec ids() :: [MuseProfile.id()]

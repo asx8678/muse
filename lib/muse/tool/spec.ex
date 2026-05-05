@@ -52,6 +52,7 @@ defmodule Muse.Tool.Spec do
           | :delete
           | :interactive
           | :patch
+          | :test
           | :restore_checkpoint
   @type visibility :: :user | :internal
 

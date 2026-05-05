@@ -32,6 +32,10 @@ defmodule Muse.Tool.Registry do
     * `patch_apply` — apply an approved patch with checkpoint protection (Coding Muse only)
     * `rollback_checkpoint` — rollback a checkpoint to restore workspace (Coding Muse only)
 
+  ## Registered test tool
+
+    * `test_runner` — run predefined safe test command presets (Testing Muse only)
+
   ## Blocked tool names
 
   These tool names are explicitly recognized as dangerous. The runner blocks
@@ -382,6 +386,36 @@ defmodule Muse.Tool.Registry do
                               output_limit: 10_000
                             )
 
+  @test_runner_spec Spec.new!(
+                      name: "test_runner",
+                      description:
+                        "Run predefined safe test command presets (mix format --check-formatted, mix compile --warnings-as-errors, mix test, mix test <file>). Arbitrary shell commands are blocked. Only Testing Muse may use this tool.",
+                      handler: Muse.Tools.TestRunner,
+                      input_schema: %{
+                        type: "object",
+                        properties: %{
+                          command: %{
+                            type: "string",
+                            description:
+                              "Safe preset name: mix_format_check, mix_compile, mix_test, or mix_test_file (required)"
+                          },
+                          file_path: %{
+                            type: "string",
+                            description:
+                              "Workspace-relative test file path for mix_test_file (must end in _test.exs, must be under test/)"
+                          }
+                        },
+                        required: ["command"]
+                      },
+                      kind: :shell,
+                      risk: :medium,
+                      permission: :test,
+                      allowed_roles: [:testing],
+                      allowed_muses: [:testing],
+                      requires_approval: false,
+                      output_limit: 50_000
+                    )
+
   # -- Internal index -----------------------------------------------------------
 
   @ordered_names [
@@ -395,7 +429,8 @@ defmodule Muse.Tool.Registry do
     "list_skills",
     "patch_propose",
     "patch_apply",
-    "rollback_checkpoint"
+    "rollback_checkpoint",
+    "test_runner"
   ]
 
   @specs_by_name %{
@@ -409,7 +444,8 @@ defmodule Muse.Tool.Registry do
     "list_skills" => @list_skills_spec,
     "patch_propose" => @patch_propose_spec,
     "patch_apply" => @patch_apply_spec,
-    "rollback_checkpoint" => @rollback_checkpoint_spec
+    "rollback_checkpoint" => @rollback_checkpoint_spec,
+    "test_runner" => @test_runner_spec
   }
 
   # -- Public API ---------------------------------------------------------------
@@ -420,7 +456,7 @@ defmodule Muse.Tool.Registry do
   ## Examples
 
       iex> length(Muse.Tool.Registry.all())
-      11
+      12
 
       iex> hd(Muse.Tool.Registry.all()).name
       "list_files"
@@ -636,7 +672,7 @@ defmodule Muse.Tool.Registry do
       iex> Muse.Tool.Registry.tool_names()
       ["list_files", "read_file", "repo_search", "git_status",
        "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
-       "patch_propose", "patch_apply", "rollback_checkpoint"]
+       "patch_propose", "patch_apply", "rollback_checkpoint", "test_runner"]
 
   """
   @spec tool_names() :: [String.t()]

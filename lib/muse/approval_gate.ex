@@ -30,7 +30,7 @@ defmodule Muse.ApprovalGate do
   # patch_apply_allowed?/2 and rollback_checkpoint_allowed?/2 above,
   # so they are removed from the blanket deny set.
 
-  @safe_tool_permissions MapSet.new([:read, :interactive])
+  @safe_tool_permissions MapSet.new([:read, :interactive, :test])
 
   @approval_scoped_tool_permissions MapSet.new([
                                       :write,
@@ -43,6 +43,10 @@ defmodule Muse.ApprovalGate do
                                       :restore_checkpoint,
                                       :remote_execution
                                     ])
+
+  # :test is a safe permission (pre-approved presets only, no arbitrary shell),
+  # so it is NOT in the approval-scoped set. The test_runner handler enforces
+  # its own preset allowlist and bounds independently of the approval gate.
 
   @type approval :: Approval.t() | map()
   @type binding :: map()
@@ -1163,7 +1167,7 @@ defmodule Muse.ApprovalGate do
   defp normalize_scope(scope) when is_atom(scope) do
     cond do
       scope == @plan_scope -> :plan
-      scope in [:read, :interactive] -> scope
+      scope in [:read, :interactive, :test] -> scope
       scope == :shell_command -> :shell
       MapSet.member?(@denied_scopes, scope) -> scope
       true -> :unknown
@@ -1189,6 +1193,7 @@ defmodule Muse.ApprovalGate do
       "remote_execution" -> :remote_execution
       "read" -> :read
       "interactive" -> :interactive
+      "test" -> :test
       _other -> :unknown
     end
   end

@@ -455,5 +455,22 @@ defmodule Muse.Prompt.ModelPreparerTest do
       request = ModelPreparer.to_request(bundle, [])
       assert request.metadata.response_mode == :patch
     end
+
+    test "Coding Muse model-facing tools exclude test_runner, patch_apply, rollback_checkpoint",
+         %{
+           bundle: bundle
+         } do
+      request = ModelPreparer.to_request(bundle, [])
+      tool_names = Enum.map(request.tools, fn t -> t[:name] || t["function"]["name"] end)
+
+      # Coding Muse in patch proposal mode must NOT have autonomous
+      # access to these tools — they require separate post-approval paths
+      refute "test_runner" in tool_names
+      refute "patch_apply" in tool_names
+      refute "rollback_checkpoint" in tool_names
+
+      # But should still have read-only + patch_propose
+      assert "patch_propose" in tool_names or "list_files" in tool_names
+    end
   end
 end

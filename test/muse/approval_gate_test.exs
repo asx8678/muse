@@ -454,6 +454,23 @@ defmodule Muse.ApprovalGateTest do
       assert reason =~ "is denied by default"
       assert reason =~ "plan approval does not authorize tool execution"
     end
+
+    test "test permission is safe (pre-approved presets, no arbitrary shell)" do
+      # :test is in the safe_tool_permissions set, so tools with :test
+      # permission that don't require approval are allowed without gating.
+      # The test_runner handler enforces its own preset allowlist independently.
+      spec = tool_spec(name: "test_runner", permission: :test, requires_approval: false)
+
+      assert :ok = ApprovalGate.authorize_tool(spec, %{})
+    end
+
+    test "test permission does not authorize tools that require approval" do
+      spec =
+        tool_spec(name: "test_runner_with_approval", permission: :test, requires_approval: true)
+
+      assert {:blocked, reason} = ApprovalGate.authorize_tool(spec, %{})
+      assert reason =~ "requires explicit"
+    end
   end
 
   defp tool_spec(attrs) do
