@@ -565,5 +565,63 @@ defmodule Muse.Checkpoint.StoreTest do
         _ -> :ok
       end
     end
+
+    test "blocks restore through symlink parent with relative snapshots_dir", %{
+      workspace: workspace
+    } do
+      # Use the default relative base_dir (.muse/sessions) to exercise
+      # the Path.expand path in safe_snapshot_abs / walk_parent_components.
+      session_id = "rel-chk-#{:erlang.unique_integer([:positive, :monotonic])}"
+
+      checkpoint =
+        Checkpoint.new(%{
+          session_id: session_id,
+          plan_id: "plan-1",
+          plan_hash: String.duplicate("f", 64),
+          patch_id: "patch-1",
+          patch_hash: String.duplicate("a", 64),
+          workspace: workspace,
+          affected_files: ["lib/example.ex"],
+          metadata: %{diff: "test"}
+        })
+
+      # Create using default (relative) base_dir
+      {:ok, created} = Store.create(checkpoint)
+      {:ok, active} = Checkpoint.transition(created, :active)
+      {:ok, _} = Store.update_manifest(active)
+
+      # Modify file so rollback needs to restore
+      File.write!(Path.join([workspace, "lib", "example.ex"]), "MODIFIED")
+
+      # Tamper: replace snapshots/lib with a symlink
+      snap_dir = Path.join([".muse/sessions", session_id, "checkpoints", active.id, "snapshots"])
+      lib_dir = Path.join(snap_dir, "lib")
+      original_snap = File.read!(Path.join([snap_dir, "lib", "example.ex"]))
+      File.rm_rf!(lib_dir)
+
+      try do
+        outside = Path.join(workspace, "outside_snap")
+        File.mkdir_p!(Path.join(outside, "lib"))
+        File.write!(Path.join([outside, "lib", "example.ex"]), original_snap)
+
+        :ok =
+          :file.make_symlink(String.to_charlist(outside), String.to_charlist(lib_dir))
+
+        # Rollback using default (relative) base_dir should detect the symlink
+        result = Store.rollback(active)
+
+        assert {:error, {:rollback_failed, errors}} = result
+
+        assert Enum.any?(errors, fn
+                 {:snapshot_symlink_component, _} -> true
+                 _ -> false
+               end)
+      rescue
+        # Skip on platforms without symlink support
+        _ -> :ok
+      after
+        File.rm_rf!(Path.join(".muse/sessions", session_id))
+      end
+    end
   end
 end

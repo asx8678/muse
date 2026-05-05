@@ -545,9 +545,9 @@ defmodule Muse.Checkpoint.Store do
           {:ok, String.t()} | {:error, term()}
   defp safe_snapshot_abs(snap_rel, snapshots_dir) do
     with :ok <- require_valid_snapshot_rel(snap_rel),
-         :ok <- check_lexical_boundary(snap_rel, snapshots_dir),
-         {:ok, abs_path} <- resolve_under_snapshots(snap_rel, snapshots_dir),
-         :ok <- walk_parent_components(abs_path, snapshots_dir) do
+         {:ok, abs_path, snapshots_expanded} <-
+           resolve_and_check_boundary(snap_rel, snapshots_dir),
+         :ok <- walk_parent_components(abs_path, snapshots_expanded) do
       {:ok, abs_path}
     end
   end
@@ -555,9 +555,14 @@ defmodule Muse.Checkpoint.Store do
   defp require_valid_snapshot_rel(snap_rel) when is_binary(snap_rel) and snap_rel != "", do: :ok
   defp require_valid_snapshot_rel(snap_rel), do: {:error, {:invalid_snapshot_path, snap_rel}}
 
-  defp check_lexical_boundary(snap_rel, snapshots_dir) do
-    snapshot_abs = Path.expand(Path.join(snapshots_dir, snap_rel))
+  # Resolve snap_rel under snapshots_dir to an expanded absolute path,
+  # verify lexical boundary, and return both the expanded snapshot path
+  # and the expanded snapshots_dir for the component walk.
+  # Always returns expanded (absolute) paths so that relative snapshots_dir
+  # (the default ".muse/sessions/...") does not break component walks.
+  defp resolve_and_check_boundary(snap_rel, snapshots_dir) do
     snapshots_expanded = Path.expand(snapshots_dir)
+    snapshot_abs = Path.expand(Path.join(snapshots_dir, snap_rel))
 
     cond do
       snapshot_abs == snapshots_expanded ->
@@ -567,19 +572,15 @@ defmodule Muse.Checkpoint.Store do
         {:error, {:snapshot_path_escape, snap_rel}}
 
       true ->
-        :ok
+        {:ok, snapshot_abs, snapshots_expanded}
     end
   end
 
-  defp resolve_under_snapshots(snap_rel, snapshots_dir) do
-    {:ok, Path.join(snapshots_dir, snap_rel)}
-  end
-
-  # Walk from snapshots_dir root to the parent of abs_path, checking each
+  # Walk from snapshots_expanded root to the parent of abs_path, checking each
   # existing component via lstat. Rejects any symlink component.
   # Returns :ok on success, {:error, reason} on failure.
-  defp walk_parent_components(abs_path, snapshots_dir) do
-    snapshots_expanded = Path.expand(snapshots_dir)
+  # Both abs_path and snapshots_expanded MUST be absolute (expanded) paths.
+  defp walk_parent_components(abs_path, snapshots_expanded) do
     parent = Path.dirname(abs_path)
     s_parts = Path.split(snapshots_expanded)
     p_parts = Path.split(parent)
