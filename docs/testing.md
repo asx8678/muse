@@ -147,7 +147,7 @@ Complete checklist. Every item must have at least one passing test before merge.
 
 - [ ] `MuseProfile` loads all Muses from config
 - [ ] Planning Muse has no write tools in its tool set
-- [ ] Coding Muse requires plan approval before write access is granted
+- [ ] (PR17+) Coding Muse requires plan approval before write access is granted
 - [ ] Each Muse reports the correct `id`, `name`, and `description`
 
 ### Prompt Assembly

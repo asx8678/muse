@@ -73,12 +73,11 @@ The second product experience:
 muse> approve plan
 
 Muse Conductor:
-Plan approved. Coding Muse will prepare a patch.
+Plan approved. The plan decision is recorded; no implementation,
+patching, shell, network, or workspace writes will occur.
+A separate patch-proposal gate is required before Coding Muse begins.
 
-Coding Muse:
-I found the command handler and test files. Here is the proposed diff.
-
-Apply this patch? [y/N]
+Session status: idle  (ready for future patch-proposal command)
 ```
 
 ---

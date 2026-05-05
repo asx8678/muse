@@ -149,7 +149,7 @@ Muse.Application
 
 The `Muse.SessionServer` GenServer owns one active session and its state. It handles:
 
-- Synchronous calls: `submit`, `approve`, `reject`, `status`, `cancel`
+- Synchronous calls: `submit`, `approve_plan`, `reject_plan`, `status`, `cancel`
 - Session state persistence via `Muse.SessionStore`
 - Event broadcasting via `Muse.State` and `Phoenix.PubSub`
 - Spawning a `Muse.Conductor.TurnRunner` Task for each turn
@@ -1092,7 +1092,7 @@ The full high-level module map, organized by category:
 ### Public API
 
 ```text
-lib/muse.ex                  Public API. Delegates submit/resume/approve to SessionServer.
+lib/muse.ex                  Public API. Muse.submit/2 delegates to SessionRouter; plan approval/rejection routed via /approve plan and /reject plan slash commands through SessionRouter → SessionServer.
 ```
 
 ### Application
