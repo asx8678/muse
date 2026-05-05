@@ -119,16 +119,24 @@ Inside the `muse>` REPL:
 | `/plan` | Show the active Muse Plan |
 | `/plans` | List Muse Plan history for this session |
 | `/plan history` | List Muse Plan history for this session |
-| `/plan status` | Show active Muse Plan lifecycle status |
+| `/plan status` | Show active Muse Plan lifecycle and approval audit status |
 | `/plan show <id>` | Show a Muse Plan by id |
-| `/approve plan` | Approve the active Muse Plan |
-| `/reject plan` | Reject the active Muse Plan |
+| `/approve plan` | Approve the active Muse Plan; records approval only and does **not** start implementation |
+| `/reject plan` | Reject the active Muse Plan and request a revised plan |
 | `/events` | Print the event log |
 | `/workspace` | Print current workspace path |
 | `/reload` | Force a dev hot-reload |
 | `/rollback` | Roll back to last good code generation |
 | `/reload-status` | Show reload generation and last error |
 | `/quit` | Stop Muse (`:quit` also works) |
+
+Approval commands are lifecycle-only. `/approve plan` prints the plan id,
+version, any available approval id/hash, and an explicit "no implementation
+started" line. `/reject plan` prints the plan id/version, any available rejection
+record, and tells you to ask Planning Muse for a revised plan. `/plan status`
+includes approval/rejection audit status and id/hash details when the active plan
+has them. Approval of a plan does not start Coding Muse, shell commands, file
+writes, patch application, or network execution.
 
 ---
 

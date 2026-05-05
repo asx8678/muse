@@ -755,16 +755,14 @@ defmodule Muse.CommandDispatcher do
       Atom.to_string(event.source),
       Atom.to_string(event.type),
       event_display_text(event),
-      inspect(event.data)
+      inspect(Muse.EventDisplay.safe_data(event.data))
     ]
 
     searchable = searchable_parts |> Enum.join(" ") |> String.downcase()
     String.contains?(searchable, query)
   end
 
-  defp event_display_text(%Muse.Event{data: %{text: text}}), do: text
-  defp event_display_text(%Muse.Event{data: %{file: file}}), do: file
-  defp event_display_text(%Muse.Event{data: data}), do: inspect(data)
+  defp event_display_text(%Muse.Event{} = event), do: Muse.EventDisplay.summary(event)
 
   defp event_to_map(%Muse.Event{} = event) do
     %{
@@ -772,7 +770,7 @@ defmodule Muse.CommandDispatcher do
       "timestamp" => DateTime.to_iso8601(event.timestamp),
       "source" => Atom.to_string(event.source),
       "type" => Atom.to_string(event.type),
-      "data" => json_safe(event.data)
+      "data" => event.data |> Muse.EventDisplay.safe_data() |> json_safe()
     }
   end
 
@@ -966,7 +964,7 @@ defmodule Muse.CommandDispatcher do
 
   defp dispatch_plan_lifecycle_command(action, args, context) do
     if present_args?(args) do
-      {:error, "Error: usage: #{plan_lifecycle_usage(action)}", []}
+      {:error, no_args_usage_error(plan_lifecycle_usage(action), args), []}
     else
       session_id = context_session_id(context)
       source = context_source(context)
@@ -986,15 +984,11 @@ defmodule Muse.CommandDispatcher do
   end
 
   defp format_plan_lifecycle_result({:ok, %Muse.Plan{} = plan}, :approve_plan) do
-    {:ok,
-     "Plan approved.\n\nThe approved plan is ready for implementation.\n#{plan_identity_line(plan)}",
-     [{:refresh, :events}]}
+    {:ok, Muse.ApprovalAudit.approval_message(plan), [{:refresh, :events}]}
   end
 
   defp format_plan_lifecycle_result({:ok, %Muse.Plan{} = plan}, :reject_plan) do
-    {:ok,
-     "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\n#{plan_identity_line(plan)}",
-     [{:refresh, :events}]}
+    {:ok, Muse.ApprovalAudit.rejection_message(plan), [{:refresh, :events}]}
   end
 
   defp format_plan_lifecycle_result({:error, :turn_running}, action) do
@@ -1016,7 +1010,7 @@ defmodule Muse.CommandDispatcher do
   end
 
   defp format_plan_lifecycle_result({:error, reason}, _action) do
-    {:error, "Error: unable to update Muse Plan (#{inspect(reason)}).", []}
+    {:error, "Error: unable to update Muse Plan (#{safe_plan_lifecycle_reason(reason)}).", []}
   end
 
   defp present_args?(nil), do: false
@@ -1028,6 +1022,53 @@ defmodule Muse.CommandDispatcher do
 
   defp plan_lifecycle_verb(:approve_plan), do: "approve"
   defp plan_lifecycle_verb(:reject_plan), do: "reject"
+
+  defp no_args_usage_error(usage, args) do
+    unexpected =
+      args
+      |> safe_to_string()
+      |> String.trim()
+
+    if unexpected == "" do
+      "Error: usage: #{usage}"
+    else
+      "Error: usage: #{usage} (no arguments). Unexpected arguments: #{unexpected}"
+    end
+  end
+
+  defp safe_plan_lifecycle_reason(%Muse.Plan{} = plan) do
+    "plan #{Muse.PlanHistory.display_plan_id(plan)} status #{plan.status}"
+  end
+
+  defp safe_plan_lifecycle_reason({tag, %Muse.Plan{} = plan}) when is_atom(tag) do
+    "#{tag}: plan #{Muse.PlanHistory.display_plan_id(plan)} status #{plan.status}"
+  end
+
+  defp safe_plan_lifecycle_reason({tag, status}) when is_atom(tag) and is_atom(status) do
+    "#{tag}: #{status}"
+  end
+
+  defp safe_plan_lifecycle_reason({:stale_approval, details}) when is_map(details) do
+    approval_id = Map.get(details, :approval_id) || Map.get(details, "approval_id") || "unknown"
+    "stale approval #{approval_id}: plan binding changed"
+  end
+
+  defp safe_plan_lifecycle_reason({:stale_content, _details}),
+    do: "stale approval: plan content changed"
+
+  defp safe_plan_lifecycle_reason({:expired, _details}), do: "expired approval binding"
+  defp safe_plan_lifecycle_reason({:wrong_session, _details}), do: "wrong approval session"
+  defp safe_plan_lifecycle_reason({:wrong_workspace, _details}), do: "wrong approval workspace"
+  defp safe_plan_lifecycle_reason(:approval_expired), do: "expired approval"
+  defp safe_plan_lifecycle_reason(:no_approval_binding), do: "missing approval binding"
+
+  defp safe_plan_lifecycle_reason(atom) when is_atom(atom), do: Atom.to_string(atom)
+
+  defp safe_plan_lifecycle_reason(binary) when is_binary(binary) do
+    Muse.Prompt.Redactor.preview_text(binary, max_length: 120)
+  end
+
+  defp safe_plan_lifecycle_reason(_reason), do: "unexpected approval error"
 
   defp context_session_id(context) do
     case map_get_any(context, [:session_id, "session_id"]) do
@@ -1049,10 +1090,6 @@ defmodule Muse.CommandDispatcher do
 
   defp plan_show_heading(%Muse.Plan{} = plan) do
     "Muse Plan #{Muse.PlanHistory.display_plan_id(plan)} (version #{plan.version})"
-  end
-
-  defp plan_identity_line(%Muse.Plan{} = plan) do
-    "Active plan: #{Muse.PlanHistory.display_plan_id(plan)} (version #{plan.version})."
   end
 
   # -- Read-only plan command helpers -----------------------------------------

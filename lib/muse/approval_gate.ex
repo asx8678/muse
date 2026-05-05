@@ -128,6 +128,7 @@ defmodule Muse.ApprovalGate do
   def validate_rejection(%Plan{} = plan, binding, opts) when is_map(binding) do
     with :ok <- check_content_hash(plan, binding),
          :ok <- check_session(binding, opts),
+         :ok <- check_workspace(binding, opts),
          :ok <- check_expiry(binding, opts) do
       :ok
     end
@@ -316,14 +317,21 @@ defmodule Muse.ApprovalGate do
     approvals = merge_approvals(approvals, plan.approvals)
     binding = plan_binding(session_id, plan, opts)
 
-    approval =
+    {approval, approvals} =
       case find_pending_plan_approval(approvals, binding) do
-        {:ok, %Approval{} = existing} -> existing
-        {:stale, %Approval{} = stale} -> stale
-        :none -> new_pending_plan_approval(binding, opts)
+        {:ok, %Approval{} = existing} ->
+          {existing, approvals}
+
+        {:stale, %Approval{} = stale} ->
+          stale = mark_stale_plan_approval(stale, binding, opts)
+          approval = new_pending_plan_approval(binding, opts)
+          {approval, approvals |> upsert_approval(stale) |> upsert_approval(approval)}
+
+        :none ->
+          approval = new_pending_plan_approval(binding, opts)
+          {approval, upsert_approval(approvals, approval)}
       end
 
-    approvals = upsert_approval(approvals, approval)
     plan = put_plan_approval(plan, approval)
 
     {:ok, approval, approvals, plan}
@@ -428,7 +436,8 @@ defmodule Muse.ApprovalGate do
     approvals = merge_approvals(approvals, plan.approvals)
     binding = plan_binding(session_id, plan, opts)
 
-    with {:ok, pending} <- pending_or_new_plan_approval(approvals, binding, opts),
+    with :ok <- validate_requested_plan_binding(plan, status, opts),
+         {:ok, pending} <- pending_or_new_plan_approval(approvals, binding, opts),
          {:ok, approval} <- transition_approval(pending, status, opts) do
       approvals = upsert_approval(approvals, approval)
       plan = put_plan_approval(plan, approval)
@@ -438,6 +447,32 @@ defmodule Muse.ApprovalGate do
 
   defp transition_plan_approval(_session_id, %Plan{status: status}, approvals, _status, _opts) do
     {:error, {:plan_not_awaiting_approval, status, normalize_approvals(approvals)}}
+  end
+
+  defp validate_requested_plan_binding(plan, status, opts) do
+    case Keyword.fetch(opts, :binding) do
+      :error ->
+        :ok
+
+      {:ok, nil} ->
+        {:error, :no_approval_binding}
+
+      {:ok, binding} when status == :approved ->
+        validate_approval(plan, binding,
+          session_id: Keyword.get(opts, :session_id),
+          workspace: Keyword.get(opts, :workspace),
+          now: Keyword.get(opts, :now),
+          expiry_seconds: Keyword.get(opts, :expiry_seconds, @default_expiry_seconds)
+        )
+
+      {:ok, binding} when status == :rejected ->
+        validate_rejection(plan, binding,
+          session_id: Keyword.get(opts, :session_id),
+          workspace: Keyword.get(opts, :workspace),
+          now: Keyword.get(opts, :now),
+          expiry_seconds: Keyword.get(opts, :expiry_seconds, @default_expiry_seconds)
+        )
+    end
   end
 
   defp pending_or_new_plan_approval(approvals, binding, opts) do
@@ -471,6 +506,8 @@ defmodule Muse.ApprovalGate do
   end
 
   defp new_pending_plan_approval(binding, opts) do
+    created_at = keyword_datetime(opts, :now, DateTime.utc_now())
+
     Approval.new(%{
       kind: :plan,
       type: :plan,
@@ -484,10 +521,38 @@ defmodule Muse.ApprovalGate do
       scope: :plan,
       requested_by: Keyword.get(opts, :requested_by, :planning),
       source: Keyword.get(opts, :source),
-      expires_at: Keyword.get(opts, :expires_at),
-      created_at: Keyword.get(opts, :now, DateTime.utc_now()),
+      expires_at: pending_expires_at(created_at, opts),
+      created_at: created_at,
       metadata: Map.merge(%{hash_algorithm: "sha256"}, Keyword.get(opts, :metadata, %{}))
     })
+  end
+
+  defp pending_expires_at(created_at, opts) do
+    cond do
+      match?(%DateTime{}, Keyword.get(opts, :expires_at)) ->
+        Keyword.get(opts, :expires_at)
+
+      is_integer(Keyword.get(opts, :ttl_seconds)) and Keyword.get(opts, :ttl_seconds) >= 0 ->
+        DateTime.add(created_at, Keyword.get(opts, :ttl_seconds), :second)
+
+      true ->
+        DateTime.add(created_at, @default_expiry_seconds, :second)
+    end
+  end
+
+  defp mark_stale_plan_approval(%Approval{} = stale, binding, opts) do
+    metadata = %{
+      superseded_by_plan_version: binding.plan_version,
+      superseded_by_plan_hash: binding.plan_hash
+    }
+
+    {:ok, approval} =
+      Approval.transition(stale, :stale,
+        source: Keyword.get(opts, :source),
+        metadata: metadata
+      )
+
+    approval
   end
 
   defp find_pending_plan_approval(approvals, binding) do
@@ -530,7 +595,7 @@ defmodule Muse.ApprovalGate do
     }
   end
 
-  defp plan_binding(session_id, %Plan{} = plan, opts \\ []) do
+  defp plan_binding(session_id, %Plan{} = plan, opts) do
     workspace = Keyword.get(opts, :workspace) || plan_workspace(plan)
 
     plan
@@ -584,7 +649,7 @@ defmodule Muse.ApprovalGate do
 
     cond do
       is_nil(bound_session) -> :ok
-      is_nil(request_session) -> :ok
+      is_nil(request_session) -> {:error, :missing_session_id}
       to_string(request_session) == to_string(bound_session) -> :ok
       true -> {:error, {:wrong_session, %{expected: bound_session, actual: request_session}}}
     end
@@ -595,9 +660,14 @@ defmodule Muse.ApprovalGate do
     bound_workspace = binding_workspace(binding)
 
     cond do
-      is_nil(bound_workspace) -> :ok
-      request_workspace == bound_workspace -> :ok
-      true -> {:error, {:wrong_workspace, %{expected: bound_workspace, actual: request_workspace}}}
+      is_nil(bound_workspace) ->
+        :ok
+
+      request_workspace == bound_workspace ->
+        :ok
+
+      true ->
+        {:error, {:wrong_workspace, %{expected: bound_workspace, actual: request_workspace}}}
     end
   end
 
@@ -649,10 +719,17 @@ defmodule Muse.ApprovalGate do
     approval_bound_session_id = approval_session_id(approval)
 
     cond do
-      resolved_session_id == nil -> {:error, :missing_session_id}
-      approval_bound_session_id == nil -> {:error, :session_mismatch}
-      to_string(approval_bound_session_id) != to_string(resolved_session_id) -> {:error, :session_mismatch}
-      true -> :ok
+      resolved_session_id == nil ->
+        {:error, :missing_session_id}
+
+      approval_bound_session_id == nil ->
+        {:error, :session_mismatch}
+
+      to_string(approval_bound_session_id) != to_string(resolved_session_id) ->
+        {:error, :session_mismatch}
+
+      true ->
+        :ok
     end
   end
 
@@ -665,7 +742,8 @@ defmodule Muse.ApprovalGate do
       resolved_plan_id == nil ->
         {:error, :missing_plan_id}
 
-      current_active_plan_id != nil and to_string(resolved_plan_id) != to_string(current_active_plan_id) ->
+      current_active_plan_id != nil and
+          to_string(resolved_plan_id) != to_string(current_active_plan_id) ->
         {:error, :active_plan_mismatch}
 
       approval_bound_plan_id == nil ->
@@ -684,10 +762,17 @@ defmodule Muse.ApprovalGate do
     approval_version = approval_plan_version(approval)
 
     cond do
-      not (is_integer(current_version) and current_version >= 0) -> {:error, :plan_version_mismatch}
-      not (is_integer(approval_version) and approval_version >= 0) -> {:error, :plan_version_mismatch}
-      approval_version != current_version -> {:error, :plan_version_mismatch}
-      true -> :ok
+      not (is_integer(current_version) and current_version >= 0) ->
+        {:error, :plan_version_mismatch}
+
+      not (is_integer(approval_version) and approval_version >= 0) ->
+        {:error, :plan_version_mismatch}
+
+      approval_version != current_version ->
+        {:error, :plan_version_mismatch}
+
+      true ->
+        :ok
     end
   end
 
@@ -774,8 +859,14 @@ defmodule Muse.ApprovalGate do
 
       session_like?(plan_or_session) ->
         case active_plan(plan_or_session) do
-          nil -> true
-          plan -> match?({:error, _}, validate_plan_approval_binding(plan_or_session, plan, approval, now))
+          nil ->
+            true
+
+          plan ->
+            match?(
+              {:error, _},
+              validate_plan_approval_binding(plan_or_session, plan, approval, now)
+            )
         end
 
       match?(%Plan{}, plan_or_session) ->
@@ -785,7 +876,10 @@ defmodule Muse.ApprovalGate do
           workspace: plan_workspace(plan_or_session)
         }
 
-        match?({:error, _}, validate_plan_approval_binding(pseudo_session, plan_or_session, approval, now))
+        match?(
+          {:error, _},
+          validate_plan_approval_binding(pseudo_session, plan_or_session, approval, now)
+        )
 
       true ->
         true
@@ -925,7 +1019,15 @@ defmodule Muse.ApprovalGate do
   defp approval_plan_hash(%Approval{} = approval), do: approval.plan_hash || approval.content_hash
 
   defp approval_plan_hash(approval),
-    do: map_get_any(approval, [:plan_hash, "plan_hash", :content_hash, "content_hash", :hash, "hash"])
+    do:
+      map_get_any(approval, [
+        :plan_hash,
+        "plan_hash",
+        :content_hash,
+        "content_hash",
+        :hash,
+        "hash"
+      ])
 
   defp approval_workspace(%Approval{workspace: workspace}), do: workspace
   defp approval_workspace(approval), do: map_get_any(approval, [:workspace, "workspace"])
@@ -944,13 +1046,17 @@ defmodule Muse.ApprovalGate do
 
   defp expired_approval?(approval, now) do
     case map_get_any(approval, [:expires_at, "expires_at"]) do
-      %DateTime{} = expires_at -> DateTime.compare(expires_at, now) != :gt
+      %DateTime{} = expires_at ->
+        DateTime.compare(expires_at, now) != :gt
+
       value when is_binary(value) ->
         case DateTime.from_iso8601(value) do
           {:ok, expires_at, _offset} -> DateTime.compare(expires_at, now) != :gt
           _ -> false
         end
-      _other -> false
+
+      _other ->
+        false
     end
   end
 
@@ -973,6 +1079,7 @@ defmodule Muse.ApprovalGate do
   defp normalize_scope(scope) when is_atom(scope) do
     cond do
       scope == @plan_scope -> :plan
+      scope in [:read, :interactive] -> scope
       scope == :shell_command -> :shell
       MapSet.member?(@denied_scopes, scope) -> scope
       true -> :unknown
@@ -1014,7 +1121,8 @@ defmodule Muse.ApprovalGate do
   defp active_plan_id(session_or_context),
     do: map_get_any(session_or_context, [:active_plan_id, "active_plan_id"])
 
-  defp session_workspace(session_or_context), do: map_get_any(session_or_context, [:workspace, "workspace"])
+  defp session_workspace(session_or_context),
+    do: map_get_any(session_or_context, [:workspace, "workspace"])
 
   defp plan_workspace(%Plan{metadata: metadata}) do
     map_get_any(metadata || %{}, [:workspace, "workspace"])
@@ -1038,11 +1146,17 @@ defmodule Muse.ApprovalGate do
   defp require_plan_version(version) when is_integer(version) and version >= 0, do: {:ok, version}
   defp require_plan_version(_), do: {:error, :missing_plan_version}
 
-  defp binding_hash(binding), do: map_get_any(binding, [:plan_hash, "plan_hash", :content_hash, "content_hash"])
+  defp binding_hash(binding),
+    do: map_get_any(binding, [:plan_hash, "plan_hash", :content_hash, "content_hash"])
+
   defp binding_session_id(binding), do: map_get_any(binding, [:session_id, "session_id"])
   defp binding_workspace(binding), do: map_get_any(binding, [:workspace, "workspace"])
-  defp binding_bound_at(binding), do: normalize_datetime(map_get_any(binding, [:bound_at, "bound_at"]))
-  defp binding_expires_at(binding), do: normalize_datetime(map_get_any(binding, [:expires_at, "expires_at"]))
+
+  defp binding_bound_at(binding),
+    do: normalize_datetime(map_get_any(binding, [:bound_at, "bound_at"]))
+
+  defp binding_expires_at(binding),
+    do: normalize_datetime(map_get_any(binding, [:expires_at, "expires_at"]))
 
   defp approval_hash(%Approval{} = approval), do: approval.plan_hash || approval.content_hash
 

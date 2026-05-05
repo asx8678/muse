@@ -28,8 +28,12 @@ defmodule Muse.CLI.CommandDispatcherTest do
 
       assert {:ok, approve_output, [{:refresh, :events}]} = run_command("/approve plan", context)
 
-      assert approve_output ==
-               "Plan approved.\n\nThe approved plan is ready for implementation.\nActive plan: #{plan.id} (version 4)."
+      assert approve_output =~ "Plan approved."
+      assert approve_output =~ "- Plan id: #{plan.id}"
+      assert approve_output =~ "- Version: 4"
+      assert approve_output =~ "- Approval status: approved"
+      assert approve_output =~ "- Approval record: id="
+      assert approve_output =~ "- No implementation started:"
 
       status = SessionServer.status(pid)
       assert status.status == :idle
@@ -40,9 +44,16 @@ defmodule Muse.CLI.CommandDispatcherTest do
       assert status.runner_pid == nil
 
       new_events = State.events() |> Enum.drop(event_count)
-      assert Enum.map(new_events, & &1.type) == [:plan_approved, :session_status_changed]
-      assert hd(new_events).data.plan_id == plan.id
-      assert hd(new_events).data.version == 4
+
+      assert Enum.map(new_events, & &1.type) == [
+               :approval_approved,
+               :plan_approved,
+               :session_status_changed
+             ]
+
+      plan_event = Enum.find(new_events, &(&1.type == :plan_approved))
+      assert plan_event.data.plan_id == plan.id
+      assert plan_event.data.version == 4
       assert_no_execution_events(new_events)
 
       assert {:ok, stored} = SessionStore.load_session(session_id)
@@ -62,8 +73,12 @@ defmodule Muse.CLI.CommandDispatcherTest do
 
       assert {:ok, reject_output, [{:refresh, :events}]} = run_command("/reject plan", context)
 
-      assert reject_output ==
-               "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\nActive plan: #{plan.id} (version 5)."
+      assert reject_output =~ "Plan rejected."
+      assert reject_output =~ "- Plan id: #{plan.id}"
+      assert reject_output =~ "- Version: 5"
+      assert reject_output =~ "- Rejection status: rejected"
+      assert reject_output =~ "- Rejection record: id="
+      assert reject_output =~ "- No implementation started:"
 
       status = SessionServer.status(pid)
       assert status.status == :idle
@@ -74,9 +89,16 @@ defmodule Muse.CLI.CommandDispatcherTest do
       assert status.runner_pid == nil
 
       new_events = State.events() |> Enum.drop(event_count)
-      assert Enum.map(new_events, & &1.type) == [:plan_rejected, :session_status_changed]
-      assert hd(new_events).data.plan_id == plan.id
-      assert hd(new_events).data.version == 5
+
+      assert Enum.map(new_events, & &1.type) == [
+               :approval_rejected,
+               :plan_rejected,
+               :session_status_changed
+             ]
+
+      plan_event = Enum.find(new_events, &(&1.type == :plan_rejected))
+      assert plan_event.data.plan_id == plan.id
+      assert plan_event.data.version == 5
       assert_no_execution_events(new_events)
     end
   end

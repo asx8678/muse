@@ -241,8 +241,12 @@ defmodule Muse.Approval do
     normalized = normalize_keys(attrs)
     now = DateTime.utc_now()
     kind = normalize_kind(normalized)
-    plan_hash = normalize_optional_string(first_present(normalized, [:plan_hash, :content_hash, :hash]))
-    content_hash = normalize_optional_string(first_present(normalized, [:content_hash, :plan_hash, :hash]))
+
+    plan_hash =
+      normalize_optional_string(first_present(normalized, [:plan_hash, :content_hash, :hash]))
+
+    content_hash =
+      normalize_optional_string(first_present(normalized, [:content_hash, :plan_hash, :hash]))
 
     %__MODULE__{
       id: normalize_id(Map.get(normalized, :id)) || generate_id(),
@@ -603,13 +607,21 @@ defmodule Muse.Approval do
         datetime_from_attrs(opts, :rejected_at) || DateTime.utc_now()
 
   defp transition_time(opts, _status),
-    do: datetime_from_attrs(opts, :at) || datetime_from_attrs(opts, :decided_at) || DateTime.utc_now()
+    do:
+      datetime_from_attrs(opts, :at) || datetime_from_attrs(opts, :decided_at) ||
+        DateTime.utc_now()
 
   defp canonicalize_aliases(%__MODULE__{} = approval) do
     kind = normalize_kind(%{kind: approval.kind, type: approval.type})
     hash = approval.plan_hash || approval.content_hash
 
-    %{approval | kind: kind, type: kind, plan_hash: hash, content_hash: approval.content_hash || hash}
+    %{
+      approval
+      | kind: kind,
+        type: kind,
+        plan_hash: hash,
+        content_hash: approval.content_hash || hash
+    }
   end
 
   defp apply_common_transition_fields(%__MODULE__{} = approval, opts) do
@@ -624,9 +636,8 @@ defmodule Muse.Approval do
       approval
       | approved_at: datetime_from_attrs(opts, :approved_at, now),
         approved_by:
-          normalize_optional_string(
-            first_present(opts, [:approved_by, :actor, :source])
-          ) || approval.approved_by,
+          normalize_optional_string(first_present(opts, [:approved_by, :actor, :source])) ||
+            approval.approved_by,
         rejected_by: nil,
         rejected_at: nil
     }
@@ -637,9 +648,8 @@ defmodule Muse.Approval do
       approval
       | rejected_at: datetime_from_attrs(opts, :rejected_at, now),
         rejected_by:
-          normalize_optional_string(
-            first_present(opts, [:rejected_by, :actor, :source])
-          ) || approval.rejected_by,
+          normalize_optional_string(first_present(opts, [:rejected_by, :actor, :source])) ||
+            approval.rejected_by,
         reason: normalize_optional_string(Map.get(opts, :reason)) || approval.reason
     }
   end
@@ -732,7 +742,8 @@ defmodule Muse.Approval do
   defp approval_hash(%__MODULE__{} = approval), do: approval.plan_hash || approval.content_hash
 
   defp current_plan_hash(current_plan, current) do
-    fetch_any(current, [:plan_hash, :content_hash, :hash]) || compute_current_plan_hash(current_plan)
+    fetch_any(current, [:plan_hash, :content_hash, :hash]) ||
+      compute_current_plan_hash(current_plan)
   end
 
   defp compute_current_plan_hash(%Muse.Plan{} = plan), do: Muse.PlanBinding.content_hash(plan)

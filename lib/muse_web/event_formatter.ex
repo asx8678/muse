@@ -46,7 +46,7 @@ defmodule MuseWeb.EventFormatter do
       Atom.to_string(event.source),
       Atom.to_string(event.type),
       event_display(event),
-      inspect(event.data)
+      inspect(Muse.EventDisplay.safe_data(event.data))
     ]
 
     searchable = searchable_parts |> Enum.join(" ") |> String.downcase()
@@ -76,28 +76,38 @@ defmodule MuseWeb.EventFormatter do
   def errorish?(_), do: false
 
   def successish?(term) when is_atom(term) do
-    term in [:success, :reloaded, :fixed, :info, :reload_success, :rollback_success]
+    term in [
+      :success,
+      :reloaded,
+      :fixed,
+      :info,
+      :reload_success,
+      :rollback_success,
+      :plan_approved,
+      :approval_approved
+    ]
   end
 
   def successish?(term) when is_binary(term) do
     down = String.downcase(term)
-    down in ["success", "reloaded", "fixed", "info", "reload_success", "rollback_success"]
+
+    down in [
+      "success",
+      "reloaded",
+      "fixed",
+      "info",
+      "reload_success",
+      "rollback_success",
+      "plan_approved",
+      "approval_approved"
+    ]
   end
 
   def successish?(_), do: false
 
   # -- Display helpers --------------------------------------------------------
 
-  def event_display(%Event{data: %{text: text}}), do: text
-  def event_display(%Event{data: %{file: file}}), do: file
-
-  def event_display(%Event{data: %{files: files}}) when is_list(files),
-    do: Enum.join(files, ", ")
-
-  def event_display(%Event{data: %{issues: issues}}) when is_list(issues),
-    do: "#{length(issues)} issue(s) attached"
-
-  def event_display(%Event{data: data}), do: inspect(data)
+  def event_display(%Event{} = event), do: Muse.EventDisplay.summary(event)
 
   def event_row_class(%Event{type: type, data: data}) do
     cond do
@@ -115,7 +125,17 @@ defmodule MuseWeb.EventFormatter do
       successish?(type) ->
         "event-badge event-badge-success"
 
-      type in [:user_message, :assistant_message, :queued_issues_attached] ->
+      type in [
+        :user_message,
+        :assistant_message,
+        :queued_issues_attached,
+        :plan_created,
+        :plan_approved,
+        :plan_rejected,
+        :approval_requested,
+        :approval_approved,
+        :approval_rejected
+      ] ->
         "event-badge event-badge-accent"
 
       true ->
@@ -189,7 +209,7 @@ defmodule MuseWeb.EventFormatter do
       timestamp: DateTime.to_iso8601(event.timestamp),
       source: event.source,
       type: event.type,
-      data: MuseWeb.ExportJSON.json_safe(event.data)
+      data: event.data |> Muse.EventDisplay.safe_data() |> MuseWeb.ExportJSON.json_safe()
     }
 
     # Add metadata fields when present

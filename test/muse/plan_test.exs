@@ -544,13 +544,14 @@ defmodule Muse.PlanTest do
       assert rendered =~ "/reject plan"
     end
 
-    test "approved footer shows ready for implementation" do
+    test "approved footer stays lifecycle-only" do
       plan = Plan.new(objective: "Test", status: :approved)
       rendered = Plan.render(plan)
 
       refute rendered =~ "/approve plan"
       refute rendered =~ "/reject plan"
-      assert rendered =~ "approved and is ready for implementation"
+      assert rendered =~ "has been approved"
+      assert rendered =~ "implementation still requires a later explicit gate"
     end
 
     test "rejected footer shows rejection message" do

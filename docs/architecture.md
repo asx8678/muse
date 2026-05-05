@@ -8,7 +8,7 @@
 
 ## Table of Contents
 
-0. [PR08 Planning Muse MVP — Implemented Contract](#0-pr08-planning-muse-mvp--implemented-contract)
+0. [PR09 ApprovalGate MVP — Implemented Contract](#0-pr09-approvalgate-mvp--implemented-contract)
 1. [Runtime Path](#1-runtime-path)
 2. [Process Architecture](#2-process-architecture)
 3. [Data Models](#3-data-models)
@@ -60,32 +60,44 @@
 
 ---
 
-## 0. PR08 Planning Muse MVP — Implemented Contract
+## 0. PR09 ApprovalGate MVP — Implemented Contract
 
-This section is the **source of truth for current implementation** on branch `pr08/lane09-docs-contract`.
+This section is the **source of truth for the PR09 approval contract**.
 
 ### Implemented now
 
-- `Muse.Conductor.select_muse/2` currently selects **Planning Muse** for active turn execution.
+- `Muse.Conductor.select_muse/2` still executes active turns with **Planning Muse**.
 - Structured plan output is parsed by `Muse.PlanParser` + `Muse.PlanSchema`.
 - On successful parse, Conductor:
   - stores `%Muse.Plan{}` in result/session flow,
   - emits `:plan_created`,
   - renders user-facing plan text via `Muse.Plan.render/1`,
   - transitions session status to `:awaiting_plan_approval`.
-- CLI lifecycle commands are wired:
+- Plan lifecycle commands are wired and auditable:
   - `/plan`, `/plans`, `/plan history`, `/plan status`, `/plan show <id>`
   - `/approve plan`, `/reject plan`
-- Plan approve/reject transitions are handled in `Muse.SessionServer` and return session status to `:idle`.
-- Planning flow tools are read-only in practice via `Muse.Tool.Registry` + `Muse.Tool.Runner`.
+  - lifecycle events are emitted (`:plan_approved`, `:plan_rejected`, and `:session_status_changed` when applicable).
+- Plan approval is content-bound and stale-safe via approval binding rules:
+  - `session_id`, `plan_id`, `plan_version`, `plan_hash`, `workspace`.
+- Runtime enforcement remains deny-by-default for risky tool categories via `Muse.Tool.Registry` + `Muse.Tool.Runner`.
 
-### Not implemented yet (roadmap)
+### Explicit PR09 boundaries (still out of scope)
 
-- ApprovalGate module and patch approval binding enforcement
-- Coding Muse write execution workflow (`patch_propose`/`patch_apply` end-to-end)
-- Automated handoff from plan approval to coding execution
+Plan approval in PR09 is **lifecycle-only**. It does **not**:
 
-Use the remaining sections in this document as architecture context; where they diverge, this PR08 section and code are authoritative.
+- apply patches,
+- write files,
+- run shell commands,
+- run arbitrary network calls,
+- or hand off automatically to Coding Muse execution.
+
+### Future scope (PR17/PR18/PR19)
+
+- Patch proposal/approval/apply workflow (`patch_propose`, `patch_apply`, checkpoint/rollback).
+- Shell/test/network explicit approval paths.
+- Coding Muse execution handoff after later approval gates exist.
+
+Use the remaining sections in this document as architecture context; where they diverge, this PR09 section and code are authoritative.
 
 ---
 
@@ -332,8 +344,8 @@ end
 | `:executing` | An approved plan is being executed |
 | `:awaiting_patch_approval` | A patch has been proposed and is waiting for approval |
 | `:awaiting_shell_approval` | A shell/test command is waiting for approval |
-| `:verifying` | Reserved status for future verification workflow (not active in PR08 turn loop) |
-| `:reviewing` | Reserved status for future review workflow (not active in PR08 turn loop) |
+| `:verifying` | Reserved status for future verification workflow (not active in PR09 turn loop) |
+| `:reviewing` | Reserved status for future review workflow (not active in PR09 turn loop) |
 | `:repairing` | Reserved status for future recovery workflow |
 | `:done` | Session has completed its objective |
 | `:failed` | Session has encountered an unrecoverable failure |
@@ -813,7 +825,7 @@ defmodule Muse.Task do
 end
 ```
 
-#### Structured Plan JSON Schema (PR08 current)
+#### Structured Plan JSON Schema (PR09 current)
 
 `Muse.PlanSchema.schema/0` defines a schema-map contract used for prompt guidance and validation behavior.
 
@@ -868,98 +880,85 @@ end
 
 ### 3.9 Approval Model
 
-> **Roadmap note:** this section describes the intended approval model. In PR08, there is no `Muse.ApprovalGate` module enforcing write/shell/network approvals yet; active runtime enforcement is currently read-only tool registry + blocked-tool checks.
+PR09 introduces explicit approval records and stale-approval checks for **plan lifecycle commands**.
 
-#### Muse.Approval Struct
+#### Muse.Approval Struct (PR09)
 
 ```elixir
 defmodule Muse.Approval do
-  @enforce_keys [:id, :session_id, :kind, :scope, :status, :created_at]
+  @enforce_keys [:id, :plan_id, :kind, :status, :source, :created_at]
   defstruct [
     :id,
-    :type,
+    :plan_id,
     :kind,
     :status,
-    :session_id,
-    :plan_id,
-    :plan_version,
-    :task_id,
-    :patch_id,
-    :patch_hash,
-    :tool_call_id,
-    :workspace,
-    :scope,
-    :requested_by,
-    :approved_by,
-    :created_at,
-    :approved_at,
-    :rejected_at,
+    :source,
     :reason,
-    :expires_at,
-    metadata: %{}
+    :metadata,
+    :created_at
   ]
 end
 ```
 
-#### Approval Kinds/Types
+#### Approval Kinds (PR09 MVP)
 
 ```text
 :plan
+:shell
 :patch
-:shell_command
-:network
-:delete
-:restore
-:restore_checkpoint
-:remote_execution
 ```
 
-#### Plan Approval Bindings
+#### Approval Statuses (PR09 MVP)
 
-Plan approvals bind to:
+```text
+:approved
+:rejected
+```
+
+#### Content-Bound Plan Approval Binding
+
+PR09 binds plan lifecycle approval to stable identity + content:
 
 ```text
 session_id
 plan_id
 plan_version
+plan_hash
 workspace
-approved_by
-approved_at
-approval_scope
 ```
 
-If a plan version changes, old approvals are **invalid**.
+`plan_hash` is a deterministic content hash (`Muse.PlanBinding.content_hash/1`) used to reject stale approvals when plan content changes.
 
-#### Patch Approval Bindings
+#### Stale Approval Rejection
 
-Patch approvals bind to:
+`Muse.ApprovalGate` rejects mismatched or expired lifecycle actions with explicit reasons such as:
 
 ```text
-session_id
-plan_id
-plan_version
-patch_id
-patch_hash
-affected files
-workspace
+:no_approval_binding
+:stale_content
+:wrong_session
+:wrong_workspace
+:expired
+:stale_approval
 ```
 
-If a patch hash changes, old patch approvals are **invalid**.
+This prevents approving or rejecting the wrong plan revision/content.
 
-#### Current PR08 Runtime Enforcement
+#### PR09 Runtime Enforcement Boundary
 
-There is no standalone `Muse.ApprovalGate` module yet.
+Plan lifecycle approval (`/approve plan`, `/reject plan`) is implemented and auditable, but remains **non-executing**:
 
-Current enforcement lives in `Muse.Tool.Runner` + `Muse.Tool.Registry`:
+- transitions only the active `%Muse.Plan{}` status,
+- emits lifecycle events,
+- returns session status to `:idle` when appropriate,
+- does not apply patches or run file/shell/network operations.
 
-- known dangerous tool names are blocked immediately,
-- unknown tools are rejected,
-- Muse role allowlists are enforced,
-- tools with `requires_approval: true` are currently blocked.
+`Muse.Tool.Runner` + `Muse.Tool.Registry` remain deny-by-default for dangerous categories:
 
-Plan lifecycle approval (`/approve plan`, `/reject plan`) is implemented in
-`Muse.SessionServer` and transitions the active `%Muse.Plan{}` status, but does
-not yet unlock write/shell/network execution paths.
+- known dangerous names are blocked,
+- destructive unknown tool-name shapes are blocked,
+- unknown non-dangerous tools are rejected,
+- `requires_approval: true` specs are still blocked until later gates.
 
 Prompt text is guidance, not a security boundary. Runtime safety is enforced in Elixir code.
 
@@ -1134,7 +1133,7 @@ lib/muse/conductor/tool_loop.ex      Iterative tool-call loop within a turn.
 ```text
 lib/muse/muse_profile.ex            MuseProfile struct definition.
 lib/muse/muse_registry.ex           Static registry of built-in profiles.
-                                    PR08 currently registers :planning and :coding.
+                                    PR09 currently registers :planning and :coding.
 ```
 
 ### Prompt System
@@ -1511,7 +1510,7 @@ rollback_checkpoint
 
 ### 6.3 Tool Permissions Matrix
 
-> PR08 scope: only the first eight read-only tools are registered in `Muse.Tool.Registry`. The write/shell rows below are roadmap intent and are currently blocked or unavailable.
+> PR09 scope: only the first eight read-only tools are registered in `Muse.Tool.Registry`. The write/shell rows below are roadmap intent and are currently blocked or unavailable.
 
 | Tool | Planning Muse (before approval) | Coding Muse (after plan approval) | Patch approval required | Notes |
 |---|:---:|:---:|:---:|---|
@@ -1832,7 +1831,7 @@ end
 
 ### 7.4 Muse Selection and Routing
 
-Current PR08 behavior is intentionally simple:
+Current PR09 behavior is intentionally simple:
 
 ```text
 Conductor.select_muse/2 returns Planning Muse for active turn execution.
@@ -1931,11 +1930,11 @@ The TurnRunner checks cancellation at these points:
 
 ### 8.1 Commands
 
-#### Canonical Command List (PR08 docs focus)
+#### Canonical Command List (PR09 docs focus)
 
 `lib/muse/commands.ex` is the source of truth for all currently parsed slash commands.
 
-For PR08 planning lifecycle, the key commands are:
+For PR09 planning + approval lifecycle, the key commands are:
 
 ```text
 /help
@@ -2281,9 +2280,9 @@ Stop after bounded repair attempts. Failures should produce a repair plan, not u
 
 ## 11. Approval Flows
 
-### Plan Approval
+### PR09 Implemented Flow: Plan Lifecycle Only
 
-**Commands:**
+**Lifecycle commands:**
 
 ```text
 /plan
@@ -2293,83 +2292,29 @@ Stop after bounded repair attempts. Failures should produce a repair plan, not u
 /plan show <id>
 /approve plan
 /reject plan
-/status
 ```
 
-**Natural language handling:** Natural language approval (e.g., "proceed", "go ahead") can map to plan approval **only when** session state is unambiguous:
+**PR09 behavior:**
 
-- Exactly one pending plan approval exists
-- No pending patch or command approval conflicts
-- The plan version matches the displayed plan
+1. Planning Muse creates a structured plan and session enters `:awaiting_plan_approval`.
+2. Runtime records an approval binding (`session_id`, `plan_id`, `plan_version`, `plan_hash`, `workspace`).
+3. User runs `/approve plan` or `/reject plan`.
+4. `Muse.ApprovalGate` validates binding freshness (rejecting stale/mismatched approvals).
+5. Session emits auditable lifecycle events and returns to `:idle` when applicable.
 
-If no plan is pending, `proceed` must **not** do anything destructive. If multiple approvals are pending, ask the user to choose.
+### PR09 Safety Guarantees
 
-### Patch Approval
+- Plan approval/rejection is explicit and auditable.
+- Stale approval attempts are rejected.
+- Lifecycle commands do not apply patches.
+- Lifecycle commands do not write files.
+- Lifecycle commands do not run shell/network actions.
+- Lifecycle commands do not trigger automatic Coding Muse handoff.
 
-**Commands:**
+### Future Approval Flows (PR17/PR18/PR19)
 
-```text
-/patch
-/approve patch
-/reject patch
-```
+The following remain future scope and are intentionally not active in PR09:
 
-**Patch proposal format:**
-
-```text
-PATCH SUMMARY
-What will change.
-
-FILES TO CHANGE
-- path: why
-
-DIFF
-Unified diff.
-
-APPROVAL REQUEST
-Apply this patch? [y/N]
-```
-
-### Shell/Test Approval
-
-**Commands:**
-
-```text
-/approve command
-/reject command
-/approve shell
-/reject shell
-```
-
-For v1 test runner, require explicit approval for every test command unless project safe-command config exists:
-
-```text
-Muse wants to run:
-  mix test test/muse/commands_test.exs
-
-Approve? /approve shell
-```
-
-### Restore Approval
-
-**Commands:**
-
-```text
-/checkpoints
-/restore <checkpoint_id>
-/rollback checkpoint <id>
-```
-
-**Rollback response example:**
-
-```text
-Restoration Muse:
-A checkpoint exists from before the last patch.
-
-Restore checkpoint chk_123?
-This will revert:
-- lib/muse/cli/repl.ex
-- test/muse/cli/repl_test.exs
-
-Approve restore? [y/N]
-```
+- Patch approval/apply (`/approve patch`, `patch_apply`, checkpoint/rollback orchestration).
+- Shell/test command approval (`/approve shell`, `/approve command`).
+- Restore/checkpoint approval workflows.

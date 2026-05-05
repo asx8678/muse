@@ -545,7 +545,7 @@ defmodule Muse.CLI.Tui do
         ts = format_ts(event.timestamp)
         source = event.source || :unknown
         type = event.type || :unknown
-        text = event_summary(event.data)
+        text = event_summary(event)
 
         Line.new([
           Span.new("[#{ts}] ", style: %Style{fg: :dark_gray}),
@@ -896,21 +896,8 @@ defmodule Muse.CLI.Tui do
 
   # -- Helpers -------------------------------------------------------------------
 
-  defp event_summary(%{text: text}) when is_binary(text), do: text
-
-  defp event_summary(%{issues: issues}) when is_list(issues),
-    do: "#{length(issues)} issue(s) attached"
-
-  defp event_summary(data) when is_map(data) do
-    data
-    |> Enum.map(fn
-      {k, v} when is_binary(v) -> "#{k}=#{v}"
-      {k, v} -> "#{k}=#{inspect(v)}"
-    end)
-    |> Enum.join(" ")
-  end
-
-  defp event_summary(other), do: inspect(other)
+  defp event_summary(%Muse.Event{} = event), do: Muse.EventDisplay.summary(event)
+  defp event_summary(other), do: Muse.EventDisplay.summary(other)
 
   defp level_fg(:error), do: :red
   defp level_fg(:warning), do: :yellow
@@ -996,8 +983,8 @@ defmodule Muse.CLI.Tui do
       [
         Atom.to_string(event.source || :unknown),
         Atom.to_string(event.type || :unknown),
-        event_summary(event.data),
-        inspect(event.data)
+        event_summary(event),
+        inspect(Muse.EventDisplay.safe_data(event.data))
       ]
       |> Enum.join(" ")
       |> String.downcase()

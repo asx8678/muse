@@ -4,7 +4,11 @@ defmodule Muse.CommandDispatcherTest do
   alias Muse.CommandDispatcher
   alias Muse.LLM.ProviderConfig
 
-  defp start_session_with_awaiting_plan(session_id, objective \\ "Approve dispatcher plan") do
+  defp start_session_with_awaiting_plan(
+         session_id,
+         objective \\ "Approve dispatcher plan",
+         extra \\ %{}
+       ) do
     plan =
       Muse.Plan.new(
         id: "#{session_id}-plan",
@@ -15,13 +19,18 @@ defmodule Muse.CommandDispatcherTest do
 
     {:ok, plan} = Muse.Plan.transition(plan, :awaiting_approval)
 
-    :ok =
-      Muse.SessionStore.save_session(session_id, %{
-        "status" => "awaiting_plan_approval",
-        "active_plan_id" => plan.id,
-        "plan" => Muse.Plan.to_map(plan),
-        "plans" => %{plan.id => Muse.Plan.to_map(plan)}
-      })
+    snapshot =
+      Map.merge(
+        %{
+          "status" => "awaiting_plan_approval",
+          "active_plan_id" => plan.id,
+          "plan" => Muse.Plan.to_map(plan),
+          "plans" => %{plan.id => Muse.Plan.to_map(plan)}
+        },
+        extra
+      )
+
+    :ok = Muse.SessionStore.save_session(session_id, snapshot)
 
     {:ok, pid} =
       DynamicSupervisor.start_child(
@@ -490,15 +499,54 @@ defmodule Muse.CommandDispatcherTest do
     test "approve with extra args returns usage error" do
       {:error, output, effects} = CommandDispatcher.dispatch(:approve_plan, "now", %{})
 
-      assert output == "Error: usage: /approve plan"
+      assert output =~ "Error: usage: /approve plan"
+      assert output =~ "Unexpected arguments: now"
       assert effects == []
     end
 
-    test "reject with extra args returns usage error" do
-      {:error, output, effects} = CommandDispatcher.dispatch(:reject_plan, "because", %{})
+    test "approve returns safe stale error for expired approval binding" do
+      session_id = "dispatcher-expired-#{:erlang.unique_integer([:positive])}"
 
-      assert output == "Error: usage: /reject plan"
-      assert effects == []
+      plan =
+        Muse.Plan.new(
+          id: "#{session_id}-plan",
+          session_id: session_id,
+          objective: "Expired dispatcher approval",
+          tasks: [Muse.Task.new(title: "Review", description: "Review the plan")]
+        )
+
+      {:ok, plan} = Muse.Plan.transition(plan, :awaiting_approval)
+      old_bound_at = DateTime.add(DateTime.utc_now(), -2 * 86_400, :second)
+      binding = Muse.ApprovalGate.capture_binding(plan, now: old_bound_at)
+
+      :ok =
+        Muse.SessionStore.save_session(session_id, %{
+          "status" => "awaiting_plan_approval",
+          "active_plan_id" => plan.id,
+          "plan" => Muse.Plan.to_map(plan),
+          "plans" => %{plan.id => Muse.Plan.to_map(plan)},
+          "approval_binding" => binding
+        })
+
+      {:ok, pid} =
+        DynamicSupervisor.start_child(
+          Muse.SessionSupervisor,
+          {Muse.SessionServer, session_id: session_id}
+        )
+
+      try do
+        {:error, output, effects} =
+          CommandDispatcher.dispatch(:approve_plan, nil, %{session_id: session_id, source: :cli})
+
+        assert output == "Error: unable to update Muse Plan (expired approval binding)."
+        assert effects == []
+
+        status = Muse.SessionServer.status(pid)
+        assert status.status == :awaiting_plan_approval
+        assert status.plan.status == :awaiting_approval
+      after
+        stop_session(pid)
+      end
     end
 
     test "approve transitions an awaiting restored plan without execution" do
@@ -509,8 +557,12 @@ defmodule Muse.CommandDispatcherTest do
         {:ok, output, effects} =
           CommandDispatcher.dispatch(:approve_plan, nil, %{session_id: session_id, source: :cli})
 
-        assert output ==
-                 "Plan approved.\n\nThe approved plan is ready for implementation.\nActive plan: #{session_id}-plan (version 1)."
+        assert output =~ "Plan approved."
+        assert output =~ "- Plan id: #{session_id}-plan"
+        assert output =~ "- Version: 1"
+        assert output =~ "- Approval status: approved"
+        assert output =~ "- Approval record: id="
+        assert output =~ "- No implementation started:"
 
         assert effects == [{:refresh, :events}]
 
@@ -532,8 +584,12 @@ defmodule Muse.CommandDispatcherTest do
         {:ok, output, effects} =
           CommandDispatcher.dispatch(:reject_plan, nil, %{session_id: session_id, source: :web})
 
-        assert output ==
-                 "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\nActive plan: #{session_id}-plan (version 1)."
+        assert output =~ "Plan rejected."
+        assert output =~ "- Plan id: #{session_id}-plan"
+        assert output =~ "- Version: 1"
+        assert output =~ "- Rejection status: rejected"
+        assert output =~ "- Rejection record: id="
+        assert output =~ "- No implementation started:"
 
         assert effects == [{:refresh, :events}]
 

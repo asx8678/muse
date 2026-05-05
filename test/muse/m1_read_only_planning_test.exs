@@ -437,8 +437,12 @@ defmodule Muse.M1ReadOnlyPlanningTest do
 
       {:ok, approve_output, approve_effects} = run_slash_command("/approve plan", context)
 
-      assert approve_output ==
-               "Plan approved.\n\nThe approved plan is ready for implementation.\nActive plan: #{approve_plan_id} (version 1)."
+      assert approve_output =~ "Plan approved."
+      assert approve_output =~ "- Plan id: #{approve_plan_id}"
+      assert approve_output =~ "- Version: 1"
+      assert approve_output =~ "- Approval status: approved"
+      assert approve_output =~ "- Approval record: id="
+      assert approve_output =~ "- No implementation started:"
 
       assert approve_effects == [{:refresh, :events}]
 
@@ -453,7 +457,13 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       assert approved_status.plan.rejected_at == nil
 
       new_approve_events = new_events_since(events_before_approve)
-      assert Enum.map(new_approve_events, & &1.type) == [:plan_approved, :session_status_changed]
+
+      assert Enum.map(new_approve_events, & &1.type) == [
+               :approval_approved,
+               :plan_approved,
+               :session_status_changed
+             ]
+
       assert_no_turn_execution_events(new_approve_events)
       assert_stored_plan_status(approve_session_id, approve_plan_id, "idle", "approved")
 
@@ -480,8 +490,12 @@ defmodule Muse.M1ReadOnlyPlanningTest do
 
       {:ok, reject_output, reject_effects} = run_slash_command("/reject plan", reject_context)
 
-      assert reject_output ==
-               "Plan rejected.\n\nYou can ask Planning Muse for a revised plan.\nActive plan: #{reject_plan_id} (version 1)."
+      assert reject_output =~ "Plan rejected."
+      assert reject_output =~ "- Plan id: #{reject_plan_id}"
+      assert reject_output =~ "- Version: 1"
+      assert reject_output =~ "- Rejection status: rejected"
+      assert reject_output =~ "- Rejection record: id="
+      assert reject_output =~ "- No implementation started:"
 
       assert reject_effects == [{:refresh, :events}]
 
@@ -496,7 +510,13 @@ defmodule Muse.M1ReadOnlyPlanningTest do
       assert rejected_status.plan.approved_at == nil
 
       new_reject_events = new_events_since(events_before_reject)
-      assert Enum.map(new_reject_events, & &1.type) == [:plan_rejected, :session_status_changed]
+
+      assert Enum.map(new_reject_events, & &1.type) == [
+               :approval_rejected,
+               :plan_rejected,
+               :session_status_changed
+             ]
+
       assert_no_turn_execution_events(new_reject_events)
       assert_stored_plan_status(reject_session_id, reject_plan_id, "idle", "rejected")
 

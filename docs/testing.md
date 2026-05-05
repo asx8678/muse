@@ -11,7 +11,7 @@
 1. [No-Network Default](#1-no-network-default)
 2. [Shared Provider Test Suite](#2-shared-provider-test-suite)
 3. [Fixture Types](#3-fixture-types)
-4. [PR08 Planning Contract Coverage](#4-pr08-planning-contract-coverage)
+4. [PR09 ApprovalGate Contract Coverage](#4-pr09-approvalgate-contract-coverage)
 5. [Unit Tests](#5-unit-tests)
 6. [Integration Tests](#6-integration-tests)
 7. [Safety Tests](#7-safety-tests)
@@ -108,28 +108,34 @@ Fixtures are version-controlled under `test/fixtures/` and `test/support/fixture
 
 ---
 
-## 4. PR08 Planning Contract Coverage
+## 4. PR09 ApprovalGate Contract Coverage
 
-Current implemented contract coverage lives primarily in:
+PR09 contract coverage focuses on explicit plan lifecycle approvals, stale rejection, and deny-by-default execution boundaries.
+
+Primary coverage areas:
 
 - `test/muse/conductor_planning_test.exs`
   - structured JSON plan parse path
   - rendered plan output (`Muse.Plan.render/1`)
   - `:plan_created` event assertions
   - session transition to `:awaiting_plan_approval`
-  - invalid-plan repair/fallback safety behavior
-- `test/muse/plan_schema_test.exs`
-  - required fields and type validation
-  - boolean/list normalization rules
-- `test/muse/session_server_plan_lifecycle_test.exs`
-  - `/approve plan` / `/reject plan` lifecycle behavior via SessionServer APIs
+- `test/muse/session_server_test.exs`
+  - `/approve plan` and `/reject plan` lifecycle transitions
   - active plan id handling and status transitions
+  - auditable lifecycle event assertions (`:approval_*`, `:plan_*`, status changes)
+  - non-executing boundary checks (no turn execution side-effects)
+- `test/muse/approval_test.exs`, `test/muse/approval_gate_test.exs`, `test/muse/plan_binding_test.exs`, and `test/muse/approval_persistence_test.exs`
+  - robust approval records, content-bound plan identity, persistence/restore, and redaction
+  - content-bound approval identity (`session_id`, `plan_id`, `plan_version`, `plan_hash`/`content_hash`, `workspace`)
+  - stale/mismatched approval rejection behavior
+- `test/muse/pr09_approval_gate_e2e_test.exs`
+  - fake-provider end-to-end planning flow, content binding, approve/reject commands, and no workspace writes after approval
 - `test/muse/tool/runner_test.exs` and `test/muse/tool/registry_test.exs`
   - read-only tool allowlists
-  - blocked tool-name enforcement
+  - dangerous tool-name blocking and deny-by-default behavior
 
-All default tests are offline (`mix test`) and do not require real API keys or network.
-Integration with live providers remains opt-in via env-gated tags.
+All default tests remain offline (`mix test`) and no-network by default.
+Live provider integration remains opt-in via env-gated `:external` tests.
 
 ---
 
@@ -162,13 +168,16 @@ Complete checklist. Every item must have at least one passing test before merge.
 - [ ] Model preparer injects the correct tool definitions for the active Muse
 - [ ] Model preparer omits tools that the active Muse does not have access to
 
-### Plan Lifecycle + Tool Safety (PR08)
+### Plan Lifecycle + Tool Safety (PR09)
 
 - [ ] `/approve plan` transitions active plan from `:awaiting_approval` to `:approved`
 - [ ] `/reject plan` transitions active plan from `:awaiting_approval` to `:rejected`
 - [ ] Session status returns from `:awaiting_plan_approval` to `:idle` after lifecycle command
+- [ ] Plan lifecycle emits auditable events (`:approval_requested`, `:approval_approved`/`:approval_rejected`, `:plan_approved`/`:plan_rejected` + status change when applicable)
+- [ ] Stale plan approval attempts are rejected via content-bound binding checks
+- [ ] Plan approval does not apply patches, write files, run shell, or perform network calls
 - [ ] `Tool.Runner` blocks known dangerous tool names (`write_file`, `patch_apply`, `shell_command`, etc.)
-- [ ] `Tool.Runner` rejects unknown tool names safely
+- [ ] `Tool.Runner` blocks destructive unknown tool-name shapes and rejects other unknown tools safely
 
 ### Workspace Path Safety
 
@@ -197,18 +206,18 @@ Complete checklist. Every item must have at least one passing test before merge.
 
 ## 6. Integration Tests
 
-Current PR08 integration happy path (fake provider only):
+Current PR09 integration happy path (fake provider only):
 
 | Step | Action | Expected State |
 |------|--------|----------------|
 | 1 | User asks for a code change (e.g., `"add a /version command"`) | Session starts, Planning Muse turn runs |
 | 2 | Planning Muse inspects files via read-only tools | Tool calls issued and results returned |
 | 3 | Planning Muse emits structured JSON plan | `PlanParser` + `PlanSchema` accept output |
-| 4 | Runtime renders plan and emits `:plan_created` | User sees `/approve plan` + `/reject plan` guidance |
-| 5 | Session enters `:awaiting_plan_approval` | Active plan id and plan state are set |
-| 6 | User runs `/approve plan` or `/reject plan` | Plan status updates; session returns to `:idle` |
+| 4 | Runtime renders plan and emits `:plan_created` + `:approval_requested` | User sees plan id/version/hash binding and `/approve plan` + `/reject plan` guidance |
+| 5 | Session enters `:awaiting_plan_approval` | Active plan id, pending approval record, and approval binding are set |
+| 6 | User runs `/approve plan` or `/reject plan` | Plan status updates; approval record is persisted; session returns to `:idle` |
 
-> Out of scope for current PR08 integration: coding write execution, patch proposal/apply, checkpoint orchestration, test-runner approval gates.
+> Out of scope for current PR09 integration: coding write execution, patch proposal/apply, checkpoint orchestration, and shell/test/network execution gates (PR17/PR18/PR19).
 
 ### Integration Test Principles
 
@@ -233,13 +242,15 @@ Every safety boundary must have a dedicated test. No exceptions.
 - [ ] Blocked: secret read — paths matching `**/.env`, `**/credentials.json`, `**/auth.json`, `**/.netrc`
 - [ ] Blocked: hidden file read — dotfiles unless explicitly in allowlist
 
-### Approval / Blocking Boundaries (PR08)
+### Approval / Blocking Boundaries (PR09)
 
 - [ ] Blocked: dangerous tool names (`write_file`, `patch_apply`, `shell_command`, etc.)
+- [ ] Blocked: destructive unknown tool-name shapes (write/patch/shell/network/remote-like)
 - [ ] Blocked: tool not available to active Muse role
 - [ ] Blocked: unknown tool name returns safe error result
 - [ ] Blocked: `requires_approval: true` tool specs cannot execute yet
 - [ ] Blocked: `/approve plan` or `/reject plan` when no active plan awaiting approval
+- [ ] Blocked: stale/mismatched plan approval binding
 
 ### Data Boundaries
 

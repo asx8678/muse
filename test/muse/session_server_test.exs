@@ -90,14 +90,24 @@ defmodule Muse.SessionServerTest do
     end
   end
 
-  defp persist_plan_snapshot(session_id, plan, session_status \\ "awaiting_plan_approval") do
-    :ok =
-      Muse.SessionStore.save_session(session_id, %{
-        "status" => session_status,
-        "active_plan_id" => plan.id,
-        "plan" => Muse.Plan.to_map(plan),
-        "plans" => %{plan.id => Muse.Plan.to_map(plan)}
-      })
+  defp persist_plan_snapshot(
+         session_id,
+         plan,
+         session_status \\ "awaiting_plan_approval",
+         extra \\ %{}
+       ) do
+    data =
+      Map.merge(
+        %{
+          "status" => session_status,
+          "active_plan_id" => plan.id,
+          "plan" => Muse.Plan.to_map(plan),
+          "plans" => %{plan.id => Muse.Plan.to_map(plan)}
+        },
+        extra
+      )
+
+    :ok = Muse.SessionStore.save_session(session_id, data)
 
     :ok
   end
@@ -990,31 +1000,45 @@ defmodule Muse.SessionServerTest do
       assert status.active_plan_id == plan.id
       assert status.active_turn_id == nil
       assert status.runner_pid == nil
-      assert status.event_count == 2
+      assert status.event_count == 3
+      assert length(status.approvals) == 1
+      assert hd(status.approvals).status == :approved
+      assert hd(status.approvals).plan_hash != nil
 
       events = State.events()
-      assert Enum.map(events, & &1.type) == [:plan_approved, :session_status_changed]
 
-      [plan_event, status_event] = events
+      assert Enum.map(events, & &1.type) == [
+               :approval_approved,
+               :plan_approved,
+               :session_status_changed
+             ]
+
+      [approval_event, plan_event, status_event] = events
+      assert approval_event.source == :cli
+      assert approval_event.visibility == :user
+      assert approval_event.data.status == :approved
+      assert approval_event.data.plan_id == plan.id
+      assert approval_event.data.plan_hash != nil
+
       assert plan_event.source == :cli
       assert plan_event.visibility == :user
       assert plan_event.session_id == session_id
       assert plan_event.turn_id == nil
-      assert plan_event.seq == 1
+      assert plan_event.seq == 2
 
-      assert plan_event.data == %{
-               plan_id: plan.id,
-               version: plan.version,
-               status: :approved,
-               objective: "Approve persisted plan",
-               task_count: 2
-             }
+      assert plan_event.data.plan_id == plan.id
+      assert plan_event.data.version == plan.version
+      assert plan_event.data.status == :approved
+      assert plan_event.data.task_count == 2
+      assert plan_event.data.approval_id == approval_event.data.approval_id
+      assert plan_event.data.plan_hash != nil
+      refute Map.has_key?(plan_event.data, :objective)
 
       assert status_event.source == :conductor
       assert status_event.visibility == :internal
       assert status_event.session_id == session_id
       assert status_event.turn_id == nil
-      assert status_event.seq == 2
+      assert status_event.seq == 3
       assert status_event.data == %{from: :awaiting_plan_approval, to: :idle}
 
       assert {:ok, stored} = Muse.SessionStore.load_session(session_id)
@@ -1023,6 +1047,9 @@ defmodule Muse.SessionServerTest do
       assert stored["plan"]["status"] == "approved"
       assert stored["plan"]["approved_at"] != nil
       assert stored["plans"][plan.id]["status"] == "approved"
+      assert [stored_approval] = stored["approvals"]
+      assert stored_approval["status"] == "approved"
+      assert stored_approval["plan_hash"] != nil
     end
 
     test "rejecting an awaiting plan transitions, persists, and emits lifecycle events" do
@@ -1042,25 +1069,39 @@ defmodule Muse.SessionServerTest do
       assert status.plan.status == :rejected
       assert status.plan.rejected_at == rejected_plan.rejected_at
       assert status.plans[plan.id].status == :rejected
-      assert status.event_count == 2
+      assert status.event_count == 3
+      assert length(status.approvals) == 1
+      assert hd(status.approvals).status == :rejected
+      assert hd(status.approvals).plan_hash != nil
 
       events = State.events()
-      assert Enum.map(events, & &1.type) == [:plan_rejected, :session_status_changed]
 
-      [plan_event, status_event] = events
+      assert Enum.map(events, & &1.type) == [
+               :approval_rejected,
+               :plan_rejected,
+               :session_status_changed
+             ]
+
+      [approval_event, plan_event, status_event] = events
+      assert approval_event.source == :web
+      assert approval_event.visibility == :user
+      assert approval_event.data.status == :rejected
+      assert approval_event.data.plan_id == plan.id
+      assert approval_event.data.plan_hash != nil
+
       assert plan_event.source == :web
       assert plan_event.visibility == :user
       assert plan_event.session_id == session_id
       assert plan_event.turn_id == nil
-      assert plan_event.seq == 1
+      assert plan_event.seq == 2
 
-      assert plan_event.data == %{
-               plan_id: plan.id,
-               version: plan.version,
-               status: :rejected,
-               objective: "Reject persisted plan",
-               task_count: 2
-             }
+      assert plan_event.data.plan_id == plan.id
+      assert plan_event.data.version == plan.version
+      assert plan_event.data.status == :rejected
+      assert plan_event.data.task_count == 2
+      assert plan_event.data.approval_id == approval_event.data.approval_id
+      assert plan_event.data.plan_hash != nil
+      refute Map.has_key?(plan_event.data, :objective)
 
       assert status_event.visibility == :internal
       assert status_event.data == %{from: :awaiting_plan_approval, to: :idle}
@@ -1070,6 +1111,61 @@ defmodule Muse.SessionServerTest do
       assert stored["plan"]["status"] == "rejected"
       assert stored["plan"]["rejected_at"] != nil
       assert stored["plans"][plan.id]["status"] == "rejected"
+      assert [stored_approval] = stored["approvals"]
+      assert stored_approval["status"] == "rejected"
+      assert stored_approval["plan_hash"] != nil
+    end
+
+    test "approval refuses an expired captured binding without mutating state" do
+      session_id = "expired-approval-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, objective: "Expired approval binding")
+      old_bound_at = DateTime.add(DateTime.utc_now(), -2 * 86_400, :second)
+      binding = Muse.ApprovalGate.capture_binding(plan, now: old_bound_at)
+
+      :ok =
+        persist_plan_snapshot(session_id, plan, "awaiting_plan_approval", %{
+          "approval_binding" => binding
+        })
+
+      pid = start_server(session_id)
+      before = Muse.SessionServer.status(pid)
+
+      assert {:error, {:expired, details}} = Muse.SessionServer.approve_plan(pid, :cli)
+      assert details.bound_at == old_bound_at
+
+      after_status = Muse.SessionServer.status(pid)
+      assert after_status.status == :awaiting_plan_approval
+      assert after_status.plan.status == :awaiting_approval
+      assert after_status.plan == before.plan
+      assert after_status.event_count == 0
+      assert State.events() == []
+    end
+
+    test "approval refuses stale plan content without mutating state" do
+      session_id = "stale-content-#{:erlang.unique_integer([:positive])}"
+      plan = awaiting_plan(session_id, objective: "Original objective")
+      :ok = persist_plan_snapshot(session_id, plan)
+
+      pid = start_server(session_id)
+
+      :sys.replace_state(pid, fn state ->
+        changed_plan = %{state.plan | objective: "Changed objective"}
+        changed_plans = Map.put(state.plans, changed_plan.id, changed_plan)
+        %{state | plan: changed_plan, plans: changed_plans}
+      end)
+
+      before = Muse.SessionServer.status(pid)
+
+      assert {:error, {:stale_content, details}} = Muse.SessionServer.approve_plan(pid, :cli)
+      assert details.plan_id == plan.id
+      assert details.expected != details.actual
+
+      after_status = Muse.SessionServer.status(pid)
+      assert after_status.status == :awaiting_plan_approval
+      assert after_status.plan.status == :awaiting_approval
+      assert after_status.plan == before.plan
+      assert after_status.event_count == 0
+      assert State.events() == []
     end
 
     test "approve and reject return no_active_plan when no plan is active" do

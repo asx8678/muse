@@ -38,7 +38,9 @@ defmodule Muse.SessionStore do
   Values at sensitive key names (tokens, passwords, API keys, etc.) are
   automatically replaced with `"**REDACTED**"` before persistence. Key detection
   follows `Muse.MetadataSanitizer.sensitive_key?/1` semantics (case-insensitive
-  substring match against known sensitive patterns).
+  substring match against known sensitive patterns). Secret-like string values
+  under otherwise non-sensitive keys (for example approval reasons containing
+  `Bearer ...`, `sk-...`, or `api_key=...`) are also redacted before disk writes.
 
   Session IDs are validated to block path-traversal characters (`/`, `\\`, NUL)
   and reserved names (`.`, `..`, empty string).
@@ -251,6 +253,21 @@ defmodule Muse.SessionStore do
 
   defp scrub_sensitive_keys(data) when is_map(data) do
     scrub_map(data)
+  end
+
+  defp scrub_sensitive_keys(data) when is_list(data) do
+    Enum.map(data, &scrub_sensitive_keys/1)
+  end
+
+  defp scrub_sensitive_keys(data) when is_tuple(data) do
+    data
+    |> Tuple.to_list()
+    |> Enum.map(&scrub_sensitive_keys/1)
+    |> List.to_tuple()
+  end
+
+  defp scrub_sensitive_keys(data) when is_binary(data) do
+    Muse.EventPayloadRedactor.redact_string(data)
   end
 
   defp scrub_sensitive_keys(data), do: data

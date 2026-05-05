@@ -95,9 +95,9 @@ defmodule Muse.SessionServer do
   @doc """
   Approves the active plan for later implementation.
 
-  Approval is a lifecycle transition only: it records that the active plan is
-  accepted and ready for a future implementation phase. It does not start turn
-  execution, shell commands, file writes, or patch application.
+  Approval is a lifecycle transition only: it records that the active plan was
+  accepted. It does not start turn execution, shell commands, file writes, patch
+  application, or any implementation handoff.
   """
   @spec approve_plan(pid(), atom()) ::
           {:ok, Plan.t()}
@@ -631,6 +631,72 @@ defmodule Muse.SessionServer do
     }
   end
 
+  defp store_result_plan(state, %Plan{} = raw_plan, result_session) do
+    workspace = result_workspace(result_session) || current_workspace()
+    plan = put_plan_workspace(raw_plan, workspace)
+    active_plan_id = plan.id || state.active_plan_id
+
+    {approval, approvals, plan} =
+      if plan.status == :awaiting_approval do
+        case ApprovalGate.ensure_pending_plan_approval(
+               state.session_id,
+               plan,
+               state.approvals || [],
+               workspace: workspace,
+               requested_by: :planning,
+               source: :conductor,
+               metadata: %{event: :plan_created}
+             ) do
+          {:ok, approval, approvals, plan} -> {approval, approvals, plan}
+        end
+      else
+        {nil, ApprovalGate.merge_approvals(state.approvals || [], plan.approvals), plan}
+      end
+
+    approval_binding =
+      if plan.status == :awaiting_approval do
+        ApprovalGate.capture_binding(plan, workspace: workspace)
+      else
+        nil
+      end
+
+    plans =
+      if active_plan_id do
+        Map.put(state.plans || %{}, active_plan_id, plan)
+      else
+        state.plans || %{}
+      end
+
+    %{
+      state
+      | active_plan_id: active_plan_id,
+        plan: plan,
+        plans: plans,
+        approvals: approvals,
+        approval_binding: approval_binding,
+        active_approval: approval
+    }
+    |> maybe_persist_snapshot()
+  end
+
+  defp result_workspace(%{workspace: workspace}) when is_binary(workspace), do: workspace
+  defp result_workspace(_), do: nil
+
+  defp current_workspace, do: get_workspace()
+
+  defp put_plan_workspace(%Plan{} = plan, nil), do: plan
+
+  defp put_plan_workspace(%Plan{} = plan, workspace) when is_binary(workspace) do
+    metadata = Map.put(plan.metadata || %{}, :workspace, workspace)
+    %{plan | metadata: metadata}
+  end
+
+  defp plan_workspace(%Plan{metadata: metadata}) when is_map(metadata) do
+    Map.get(metadata, :workspace) || Map.get(metadata, "workspace")
+  end
+
+  defp plan_workspace(_), do: nil
+
   # -- Plan lifecycle commands -------------------------------------------------
 
   defp handle_plan_lifecycle_command(state, source, target_status) do
@@ -653,34 +719,80 @@ defmodule Muse.SessionServer do
     if plan.status != :awaiting_approval do
       {{:error, {:plan_not_awaiting_approval, plan.status}}, state}
     else
-      {:ok, plan} = Plan.transition(plan, target_status)
-
       previous_status = state.status
+      actor = Atom.to_string(source || :system)
+      workspace = plan_workspace(plan) || current_workspace()
 
-      state =
-        state
-        |> put_active_plan(plan, active_plan_id)
-        |> Map.put(:status, :idle)
+      gate_result =
+        case target_status do
+          :approved ->
+            ApprovalGate.approve_plan(state.session_id, plan, state.approvals || [],
+              actor: actor,
+              approved_by: actor,
+              source: source,
+              session_id: state.session_id,
+              workspace: workspace,
+              binding: state.approval_binding
+            )
 
-      {plan_event, state} =
-        emit_session_event(
-          state,
-          source,
-          plan_lifecycle_event_type(target_status),
-          plan_lifecycle_event_data(plan),
-          visibility: :user
-        )
+          :rejected ->
+            ApprovalGate.reject_plan(state.session_id, plan, state.approvals || [],
+              actor: actor,
+              rejected_by: actor,
+              source: source,
+              session_id: state.session_id,
+              workspace: workspace,
+              binding: state.approval_binding,
+              reason: "rejected by #{actor}"
+            )
+        end
 
-      {status_event, state} = maybe_emit_plan_lifecycle_status_event(state, previous_status)
+      case gate_result do
+        {:ok, approval, approvals, gated_plan} ->
+          {:ok, transitioned_plan} = Plan.transition(gated_plan, target_status)
+          transitioned_plan = ApprovalGate.put_plan_approval(transitioned_plan, approval)
+          approvals = ApprovalGate.upsert_approval(approvals, approval)
 
-      events = [plan_event, status_event] |> Enum.reject(&is_nil/1)
+          state =
+            state
+            |> put_active_plan(transitioned_plan, active_plan_id)
+            |> Map.put(:approvals, approvals)
+            |> Map.put(:approval_binding, nil)
+            |> Map.put(:active_approval, nil)
+            |> Map.put(:status, :idle)
 
-      state =
-        state
-        |> append_session_events(events)
-        |> maybe_persist_snapshot()
+          {approval_event, state} =
+            emit_session_event(
+              state,
+              source,
+              approval_lifecycle_event_type(target_status),
+              ApprovalGate.approval_event_data(approval),
+              visibility: :user
+            )
 
-      {{:ok, plan}, state}
+          {plan_event, state} =
+            emit_session_event(
+              state,
+              source,
+              plan_lifecycle_event_type(target_status),
+              plan_lifecycle_event_data(transitioned_plan, approval),
+              visibility: :user
+            )
+
+          {status_event, state} = maybe_emit_plan_lifecycle_status_event(state, previous_status)
+
+          events = [approval_event, plan_event, status_event] |> Enum.reject(&is_nil/1)
+
+          state =
+            state
+            |> append_session_events(events)
+            |> maybe_persist_snapshot()
+
+          {{:ok, transitioned_plan}, state}
+
+        {:error, reason} ->
+          {{:error, reason}, state}
+      end
     end
   end
 
@@ -724,15 +836,20 @@ defmodule Muse.SessionServer do
 
   defp maybe_emit_plan_lifecycle_status_event(state, _previous_status), do: {nil, state}
 
+  defp approval_lifecycle_event_type(:approved), do: :approval_approved
+  defp approval_lifecycle_event_type(:rejected), do: :approval_rejected
+
   defp plan_lifecycle_event_type(:approved), do: :plan_approved
   defp plan_lifecycle_event_type(:rejected), do: :plan_rejected
 
-  defp plan_lifecycle_event_data(plan) do
+  defp plan_lifecycle_event_data(plan, approval) do
     %{
       plan_id: plan.id,
       version: plan.version,
       status: plan.status,
-      objective: plan.objective,
+      approval_id: approval.id,
+      plan_hash: approval.plan_hash,
+      content_hash: approval.content_hash,
       task_count: length(plan.tasks)
     }
   end
@@ -761,12 +878,33 @@ defmodule Muse.SessionServer do
         plans = put_restored_plan(plans, plan, active_id)
         status = safely_atom_status(status_str)
 
+        approvals =
+          ApprovalGate.merge_approvals(Map.get(data, "approvals", []), plan_approvals(plan))
+
+        active_approval = active_approval_for_plan(approvals, plan)
+        approval_binding = restore_approval_binding(Map.get(data, "approval_binding"))
+
+        {approvals, plan, plans, active_approval, approval_binding} =
+          ensure_restored_approval_state(
+            status,
+            state.session_id,
+            plan,
+            plans,
+            active_id,
+            approvals,
+            active_approval,
+            approval_binding
+          )
+
         %{
           state
           | status: status,
             plan: plan,
             plans: plans,
-            active_plan_id: active_id
+            active_plan_id: active_id,
+            approvals: approvals,
+            approval_binding: approval_binding,
+            active_approval: active_approval
         }
 
       _ ->
@@ -777,6 +915,66 @@ defmodule Muse.SessionServer do
   catch
     :exit, _ -> state
   end
+
+  defp restore_approval_binding(binding) when is_map(binding), do: binding
+  defp restore_approval_binding(_binding), do: nil
+
+  defp ensure_restored_approval_state(
+         :awaiting_plan_approval,
+         session_id,
+         %Plan{status: :awaiting_approval} = plan,
+         plans,
+         active_id,
+         approvals,
+         _active_approval,
+         approval_binding
+       ) do
+    workspace = plan_workspace(plan) || current_workspace()
+
+    case ApprovalGate.ensure_pending_plan_approval(session_id, plan, approvals,
+           workspace: workspace,
+           requested_by: :restore,
+           source: :system,
+           metadata: %{event: :restore}
+         ) do
+      {:ok, approval, approvals, plan} ->
+        plans = put_restored_plan(plans, plan, active_id)
+
+        approval_binding =
+          approval_binding || ApprovalGate.capture_binding(plan, workspace: workspace)
+
+        {approvals, plan, plans, approval, approval_binding}
+    end
+  end
+
+  defp ensure_restored_approval_state(
+         _status,
+         _session_id,
+         plan,
+         plans,
+         _active_id,
+         approvals,
+         active_approval,
+         approval_binding
+       ) do
+    {approvals, plan, plans, active_approval, approval_binding}
+  end
+
+  defp plan_approvals(%Plan{} = plan), do: plan.approvals || []
+  defp plan_approvals(_), do: []
+
+  defp active_approval_for_plan(approvals, %Plan{id: plan_id}) when is_binary(plan_id) do
+    approvals
+    |> ApprovalGate.normalize_approvals()
+    |> Enum.reverse()
+    |> Enum.find(&(&1.plan_id == plan_id and &1.status in [:pending, :approved, :rejected]))
+  end
+
+  defp active_approval_for_plan(_approvals, _plan), do: nil
+
+  defp approval_to_map(nil), do: nil
+  defp approval_to_map(%Muse.Approval{} = approval), do: Muse.Approval.to_map(approval)
+  defp approval_to_map(approval) when is_map(approval), do: approval
 
   defp restore_plan(nil), do: nil
 
@@ -824,6 +1022,9 @@ defmodule Muse.SessionServer do
         status: Atom.to_string(state.status),
         active_muse: state.active_muse,
         active_plan_id: state.active_plan_id,
+        approval_binding: state.approval_binding,
+        active_approval: approval_to_map(state.active_approval),
+        approvals: Enum.map(state.approvals || [], &approval_to_map/1),
         plan: Plan.to_map(state.plan),
         plans:
           state.plans

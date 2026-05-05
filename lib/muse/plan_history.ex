@@ -68,6 +68,7 @@ defmodule Muse.PlanHistory do
       "- Active plan id: #{display_plan_id(plan)}",
       "- Version: #{plan.version}",
       "- Plan status: #{format_status(plan.status)}",
+      Muse.ApprovalAudit.status_lines(plan),
       maybe_line(
         "- Session status: #{format_status(query.session_status)}",
         query.session_status
@@ -79,6 +80,7 @@ defmodule Muse.PlanHistory do
       timestamp_line("Approved at", plan.approved_at),
       timestamp_line("Rejected at", plan.rejected_at)
     ]
+    |> List.flatten()
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end

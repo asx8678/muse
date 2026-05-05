@@ -15,7 +15,7 @@
    - 3.1 [User Override Behavior](#31-user-override-behavior)
 4. [Redaction Rules](#4-redaction-rules)
 5. [Tool Permissions Matrix](#5-tool-permissions-matrix)
-6. [Plan Approval Lifecycle Security (PR08)](#6-plan-approval-lifecycle-security-pr08)
+6. [Plan Approval Lifecycle Security (PR09)](#6-plan-approval-lifecycle-security-pr09)
 7. [Auth Security Rules](#7-auth-security-rules)
 8. [Prompt Security](#8-prompt-security)
 
@@ -196,8 +196,7 @@ Codex auth tokens     Tokens from ~/.codex/auth.json
 
 ## 5. Tool Permissions Matrix
 
-PR08 runtime enforcement is implemented by `Muse.Tool.Registry` + `Muse.Tool.Runner`.
-There is currently no standalone `Muse.ApprovalGate` module.
+PR09 runtime enforcement uses both `Muse.Tool.Registry` + `Muse.Tool.Runner` and plan lifecycle checks in `Muse.ApprovalGate`.
 
 ### Registered runtime tools (available)
 
@@ -227,30 +226,53 @@ There is currently no standalone `Muse.ApprovalGate` module.
 Runner behavior:
 
 - blocked tool name → `:tool_call_blocked`
+- destructive unknown tool-name shapes (write/patch/shell/network/remote-like names) → blocked
 - unknown tool → error result
-- `requires_approval: true` tool spec → blocked (current PR08 behavior)
+- `requires_approval: true` tool spec → blocked (PR09 deny-by-default behavior until later approval categories are implemented)
 
 ---
 
-## 6. Plan Approval Lifecycle Security (PR08)
+## 6. Plan Approval Lifecycle Security (PR09)
 
-Plan lifecycle commands are implemented in `Muse.SessionServer`:
+PR09 secures plan lifecycle commands with content-bound approval validation.
 
-- `/approve plan` → transition active plan from `:awaiting_approval` to `:approved`
-- `/reject plan` → transition active plan from `:awaiting_approval` to `:rejected`
+### Implemented command lifecycle
+
+- `/approve plan` transitions active plan from `:awaiting_approval` to `:approved`
+- `/reject plan` transitions active plan from `:awaiting_approval` to `:rejected`
 - if session was `:awaiting_plan_approval`, it returns to `:idle`
 
-Security properties currently guaranteed:
+### Content-bound approval binding
+
+Plan lifecycle actions are validated against a binding that includes:
+
+```text
+session_id
+plan_id
+plan_version
+plan_hash
+workspace
+```
+
+The hash is deterministic over stable plan content, so stale approvals are rejected when plan identity/content changes.
+
+### Stale rejection behavior
+
+`Muse.ApprovalGate` rejects stale or mismatched requests (for example wrong session/workspace, content mismatch, missing binding, or expired binding). This prevents accidental approval of a superseded or modified plan.
+
+### Auditable security properties
 
 - lifecycle commands do not execute filesystem/shell/network tools
 - lifecycle commands operate only on the active session plan
-- lifecycle events are emitted (`:plan_approved` / `:plan_rejected`) with safe metadata
+- approval events are emitted (`:approval_requested`, `:approval_approved`, `:approval_rejected`) with id/version/hash metadata only
+- lifecycle events are emitted (`:plan_created`, `:plan_approved`, `:plan_rejected`) with safe metadata; raw plan JSON, objectives containing secrets, and raw file contents are not exposed in event/export summaries
+- session status transitions are recorded (`:session_status_changed`)
 
-Roadmap (not yet implemented in runtime):
+### Explicit PR09 boundary
 
-- content-hash-bound approval records
-- patch approval and apply gates
-- shell/network explicit approval gate subsystem
+Plan approval in PR09 is lifecycle-only. It does **not** apply patches, write files, run shell/network operations, or hand off execution to Coding Muse.
+
+Future scope (PR17/PR18/PR19): patch approval/apply, checkpoint restore approvals, shell/test/network approval categories.
 
 ---
 

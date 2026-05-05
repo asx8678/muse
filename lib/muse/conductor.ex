@@ -25,7 +25,17 @@ defmodule Muse.Conductor do
     * `[:muse, :provider, :start]` / `[:muse, :provider, :stop]` / `[:muse, :provider, :error]`
   """
 
-  alias Muse.{MetadataSanitizer, MuseRegistry, Plan, PlanApprovalRequest, PlanParser, Session, Telemetry, Turn}
+  alias Muse.{
+    MetadataSanitizer,
+    MuseRegistry,
+    Plan,
+    PlanApprovalRequest,
+    PlanParser,
+    Session,
+    Telemetry,
+    Turn
+  }
+
   alias Muse.Conductor.ToolLoop
   alias Muse.LLM.{FakeProvider, ProviderConfig, ProviderRouter, Message}
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
@@ -645,19 +655,68 @@ defmodule Muse.Conductor do
 
   defp prepare_plan_identity(%Plan{} = plan, %Session{} = session, %Turn{} = turn, muse) do
     plan
-    |> put_plan_session_id(session)
+    |> sanitize_provider_plan_control_fields(session, muse)
     |> put_plan_version(session)
     |> put_plan_id(turn)
-    |> put_plan_created_by(muse)
   end
 
-  defp put_plan_session_id(%Plan{} = plan, %Session{id: session_id}) do
-    put_plan_field_if_blank(plan, :session_id, session_id)
+  @provider_metadata_control_keys MapSet.new([
+                                    "approval",
+                                    "approval_record",
+                                    "approval_audit",
+                                    "approvals",
+                                    "active_approval",
+                                    "approval_binding",
+                                    "approval_request",
+                                    "rejection",
+                                    "rejection_record",
+                                    "rejection_audit",
+                                    "rejections"
+                                  ])
+
+  defp sanitize_provider_plan_control_fields(%Plan{} = plan, %Session{id: session_id}, muse) do
+    %{
+      plan
+      | session_id: session_id,
+        version: nil,
+        created_by: muse_id(muse),
+        approved_at: nil,
+        rejected_at: nil,
+        completed_at: nil,
+        approvals: [],
+        metadata: sanitize_provider_plan_metadata(plan.metadata)
+    }
   end
+
+  defp sanitize_provider_plan_metadata(metadata) when is_map(metadata) do
+    Map.reject(metadata, fn {key, _value} ->
+      key
+      |> normalize_provider_metadata_key()
+      |> then(&MapSet.member?(@provider_metadata_control_keys, &1))
+    end)
+  end
+
+  defp sanitize_provider_plan_metadata(_metadata), do: %{}
+
+  defp normalize_provider_metadata_key(key) when is_atom(key),
+    do: normalize_provider_metadata_key(Atom.to_string(key))
+
+  defp normalize_provider_metadata_key(key) when is_binary(key) do
+    key
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9]+/, "_")
+    |> String.trim("_")
+  end
+
+  defp normalize_provider_metadata_key(key),
+    do: key |> inspect() |> normalize_provider_metadata_key()
+
+  defp muse_id(%{id: muse_id}) when is_atom(muse_id), do: Atom.to_string(muse_id)
+  defp muse_id(%{id: muse_id}) when is_binary(muse_id), do: muse_id
+  defp muse_id(_muse), do: nil
 
   defp put_plan_version(%Plan{} = plan, %Session{} = session) do
-    version = max(plan_version(plan), next_plan_version(session))
-    %{plan | version: version}
+    %{plan | version: next_plan_version(session)}
   end
 
   defp next_plan_version(%Session{plans: plans}) when is_map(plans) and map_size(plans) > 0 do
@@ -676,18 +735,6 @@ defmodule Muse.Conductor do
   defp put_plan_id(%Plan{} = plan, %Turn{id: turn_id}) do
     put_plan_field_if_blank(plan, :id, generated_plan_id(turn_id))
   end
-
-  defp put_plan_created_by(%Plan{} = plan, %{id: muse_id}) when is_atom(muse_id) do
-    put_plan_field_if_blank(plan, :created_by, Atom.to_string(muse_id))
-  end
-
-  defp put_plan_created_by(%Plan{} = plan, %{id: muse_id}) when is_binary(muse_id) do
-    put_plan_field_if_blank(plan, :created_by, muse_id)
-  end
-
-  defp put_plan_created_by(%Plan{} = plan, _muse), do: plan
-
-  defp put_plan_field_if_blank(plan, _field, nil), do: plan
 
   defp put_plan_field_if_blank(plan, field, value) do
     if blank_plan_field?(Map.get(plan, field)) do

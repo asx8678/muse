@@ -17,7 +17,8 @@ defmodule Muse.EventPayloadRedactor do
 
     * `sk-...` (OpenAI-style API key prefixes)
     * `Bearer ...` / `Authorization: Bearer ...`
-    * `api_key=...` / `token=...` / `secret=...`
+    * `Authorization: ...` and common API-key/token headers
+    * `api_key=...` / `api-key: ...` / `token=...` / `secret=...`
 
   ## Usage
 
@@ -30,17 +31,23 @@ defmodule Muse.EventPayloadRedactor do
 
   @redacted "[REDACTED]"
 
-  # Regex patterns for secret strings. Each captures a prefix and the
-  # secret value; the replacement keeps the prefix and swaps the value.
+  # Regex patterns for secret strings. Each match is replaced wholesale with
+  # the redaction marker. Keep authorization/header patterns before generic
+  # Bearer matching so whole header-like fragments are removed together.
   @secret_patterns [
+    # Authorization header: Authorization: Bearer abc123
+    ~r/\bAuthorization\s*:\s*Bearer\s+[^\s"'`,;]+/i,
+    # Other authorization header/assignment forms: Authorization: Basic abc
+    ~r/\bAuthorization\s*[:=]\s*(?:[A-Za-z]+\s+)?[^\s"'`,;]+/i,
+    # Common API-key/token headers: X-Api-Key: abc123
+    ~r/\b(?:X-Api-Key|X-Auth-Token|X-Access-Token|X-Session-Token|X-Authorization)\s*:\s*[^\s"'`,;]+/i,
+    # Bearer tokens: Bearer abc123
+    ~r/\bBearer\s+[^\s"'`,;]+/i,
     # OpenAI-style keys: sk-test-12345, sk-proj-abc
     ~r/\bsk-[A-Za-z0-9_-]+/,
-    # Bearer tokens: Bearer abc123
-    ~r/\bBearer\s+\S+/,
-    # Authorization header: Authorization: Bearer abc123
-    ~r/\bAuthorization:\s*Bearer\s+\S+/i,
-    # Query-string/assignment secrets: api_key=..., token=..., secret=...
-    ~r/\b(?:api_key|token|secret)=\S+/i
+    # Query-string/assignment secrets: api_key=..., api-key: ..., token=...
+    ~r/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password)\s*=\s*["']?[^\s"'&,;)]+/i,
+    ~r/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|token|secret|password)\s*:\s*["']?[^\s"',;)]+/i
   ]
 
   @doc """

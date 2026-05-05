@@ -19,7 +19,14 @@ defmodule Muse.EventDisplay do
 
   @max_summary_chars 240
   @raw_plan_json_placeholder "[structured plan JSON omitted; use /plan or /plan show <id> for the rendered plan]"
-  @plan_lifecycle_types [:plan_created, :plan_approved, :plan_rejected]
+  @plan_lifecycle_types [
+    :plan_created,
+    :plan_approved,
+    :plan_rejected,
+    :approval_requested,
+    :approval_approved,
+    :approval_rejected
+  ]
 
   @doc "Return a concise, redacted summary for an event."
   @spec summary(Event.t() | term()) :: String.t()
@@ -76,6 +83,36 @@ defmodule Muse.EventDisplay do
       "Status: #{format_status(map_get_any(data, [:status, "status"]) || :rejected)}",
       task_count_sentence(data),
       "Ask Planning Muse for a revised plan before approving anything"
+    ]
+    |> compact_sentences()
+  end
+
+  defp plan_lifecycle_summary(data, :approval_requested) do
+    [
+      "Approval requested: #{plan_identity(data)}",
+      approval_identity(data),
+      hash_sentence(data),
+      "Approve with /approve plan or reject with /reject plan"
+    ]
+    |> compact_sentences()
+  end
+
+  defp plan_lifecycle_summary(data, :approval_approved) do
+    [
+      "Approval recorded: #{plan_identity(data)}",
+      approval_identity(data),
+      hash_sentence(data),
+      "No implementation started"
+    ]
+    |> compact_sentences()
+  end
+
+  defp plan_lifecycle_summary(data, :approval_rejected) do
+    [
+      "Approval rejected: #{plan_identity(data)}",
+      approval_identity(data),
+      hash_sentence(data),
+      "No implementation started"
     ]
     |> compact_sentences()
   end
@@ -215,6 +252,34 @@ defmodule Muse.EventDisplay do
   end
 
   defp task_count_sentence(_), do: nil
+
+  defp approval_identity(data) when is_map(data) do
+    case map_get_any(data, [:approval_id, "approval_id", :id, "id"]) |> present_string() do
+      nil -> nil
+      approval_id -> "Approval id: #{approval_id}"
+    end
+  end
+
+  defp approval_identity(_), do: nil
+
+  defp hash_sentence(data) when is_map(data) do
+    hash =
+      map_get_any(data, [
+        :content_hash_short,
+        "content_hash_short",
+        :content_hash,
+        "content_hash",
+        :plan_hash,
+        "plan_hash",
+        :hash,
+        "hash"
+      ])
+      |> present_string()
+
+    if hash, do: "Hash: #{String.slice(hash, 0, 12)}", else: nil
+  end
+
+  defp hash_sentence(_), do: nil
 
   defp task_count(map) when is_map(map) do
     case map_get_any(map, [:task_count, "task_count"]) do

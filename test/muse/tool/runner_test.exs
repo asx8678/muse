@@ -98,6 +98,28 @@ defmodule Muse.Tool.RunnerTest do
       refute result.success
       assert result.error =~ "blocked"
     end
+
+    test "plan approval context does not unlock destructive tool names", %{context: context} do
+      approved_plan_context =
+        Map.merge(context, %{
+          plan_status: :approved,
+          approval_scope: :plan,
+          approvals: [%{scope: :plan, status: :approved}]
+        })
+
+      for tool_name <- [
+            "write_file",
+            "shell_command",
+            "network_call",
+            "patch_apply",
+            "delete_file"
+          ] do
+        result = Runner.run(tool_name, %{"payload" => "x"}, approved_plan_context)
+
+        refute result.success
+        assert result.error =~ "blocked"
+      end
+    end
   end
 
   # -- Unknown tools -------------------------------------------------------------
@@ -203,6 +225,15 @@ defmodule Muse.Tool.RunnerTest do
 
     test "read_file returns content", %{root: _root, context: context} do
       result = Runner.run("read_file", %{"path" => "hello.ex"}, context)
+      assert result.success
+      assert result.output.content =~ "Hello"
+    end
+
+    test "read-only tools still run with approved plan context", %{root: _root, context: context} do
+      approved_plan_context = Map.put(context, :plan_status, :approved)
+
+      result = Runner.run("read_file", %{"path" => "hello.ex"}, approved_plan_context)
+
       assert result.success
       assert result.output.content =~ "Hello"
     end

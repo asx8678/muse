@@ -1,0 +1,73 @@
+{
+  "description": "PR09 approval-gate E2E fixture: Planning Muse uses read-only tools across a fake-provider tool loop, then returns a structured plan with a deterministic id.",
+  "batches": [
+    [
+      {
+        "event": "assistant_delta",
+        "text": "I will inspect the workspace structure, command routing, and git status before planning."
+      },
+      {
+        "event": "tool_call",
+        "name": "list_files",
+        "arguments": {"path": "."},
+        "id": "pr09_call_list"
+      },
+      {
+        "event": "tool_call",
+        "name": "read_file",
+        "arguments": {"path": "mix.exs"},
+        "id": "pr09_call_read_mix"
+      },
+      {
+        "event": "tool_call",
+        "name": "git_status",
+        "arguments": {},
+        "id": "pr09_call_git_status"
+      },
+      {
+        "event": "response_completed",
+        "usage": {"prompt_tokens": 180, "completion_tokens": 60, "total_tokens": 240}
+      }
+    ],
+    [
+      {
+        "event": "assistant_delta",
+        "text": "I will search for dispatch handling and inspect the read-only diff before finalizing the plan."
+      },
+      {
+        "event": "tool_call",
+        "name": "repo_search",
+        "arguments": {"pattern": "def dispatch"},
+        "id": "pr09_call_repo_search"
+      },
+      {
+        "event": "tool_call",
+        "name": "git_diff_readonly",
+        "arguments": {"path": "mix.exs"},
+        "id": "pr09_call_git_diff"
+      },
+      {
+        "event": "response_completed",
+        "usage": {"prompt_tokens": 220, "completion_tokens": 70, "total_tokens": 290}
+      }
+    ],
+    [
+      {
+        "event": "assistant_delta",
+        "text": "Based on the read-only inspection, here is the structured plan:\n\n"
+      },
+      {
+        "event": "assistant_delta",
+        "text": "{\"id\":\"pr09-approval-gate-plan\",\"title\":\"Add CLI version command\",\"objective\":\"Add a /version command to the CLI that displays the app version from mix.exs.\",\"summary\":\"Use read-only inspection results to plan a small command-dispatcher update and tests.\",\"tasks\":[{\"title\":\"Inspect existing command routing\",\"description\":\"Review the command dispatcher and command parser paths to identify where /version should be routed.\",\"target_files\":[\"lib/command_dispatcher.ex\",\"mix.exs\"],\"requires_write\":false,\"requires_shell\":false},{\"title\":\"Add version command handling\",\"description\":\"Add parser and dispatcher support for /version, reading the application version from mix metadata.\",\"target_files\":[\"lib/command_dispatcher.ex\"],\"requires_write\":true,\"requires_shell\":false},{\"title\":\"Cover the command with tests\",\"description\":\"Add CLI command tests proving /version returns the configured version string.\",\"target_files\":[\"test/my_app_test.exs\"],\"requires_write\":true,\"requires_shell\":false}],\"risks\":[\"Keep implementation gated until the plan is explicitly approved.\"],\"validation\":[\"Run the targeted command dispatcher tests after implementation.\"],\"inspected_files\":[\"mix.exs\",\"lib/command_dispatcher.ex\"],\"likely_changed_files\":[\"lib/command_dispatcher.ex\",\"test/my_app_test.exs\"],\"metadata\":{\"fixture\":\"pr09_approval_gate_flow_batches\"}}"
+      },
+      {
+        "event": "assistant_completed",
+        "text": "{\"id\":\"pr09-approval-gate-plan\",\"title\":\"Add CLI version command\",\"objective\":\"Add a /version command to the CLI that displays the app version from mix.exs.\",\"summary\":\"Use read-only inspection results to plan a small command-dispatcher update and tests.\",\"tasks\":[{\"title\":\"Inspect existing command routing\",\"description\":\"Review the command dispatcher and command parser paths to identify where /version should be routed.\",\"target_files\":[\"lib/command_dispatcher.ex\",\"mix.exs\"],\"requires_write\":false,\"requires_shell\":false},{\"title\":\"Add version command handling\",\"description\":\"Add parser and dispatcher support for /version, reading the application version from mix metadata.\",\"target_files\":[\"lib/command_dispatcher.ex\"],\"requires_write\":true,\"requires_shell\":false},{\"title\":\"Cover the command with tests\",\"description\":\"Add CLI command tests proving /version returns the configured version string.\",\"target_files\":[\"test/my_app_test.exs\"],\"requires_write\":true,\"requires_shell\":false}],\"risks\":[\"Keep implementation gated until the plan is explicitly approved.\"],\"validation\":[\"Run the targeted command dispatcher tests after implementation.\"],\"inspected_files\":[\"mix.exs\",\"lib/command_dispatcher.ex\"],\"likely_changed_files\":[\"lib/command_dispatcher.ex\",\"test/my_app_test.exs\"],\"metadata\":{\"fixture\":\"pr09_approval_gate_flow_batches\"}}"
+      },
+      {
+        "event": "response_completed",
+        "usage": {"prompt_tokens": 480, "completion_tokens": 320, "total_tokens": 800}
+      }
+    ]
+  ]
+}

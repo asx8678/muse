@@ -30,6 +30,27 @@ defmodule Muse.EventStream do
 
   alias Muse.Event
 
+  @chat_event_types [
+    :user_message,
+    :assistant_delta,
+    :assistant_message,
+    :plan_created,
+    :plan_approved,
+    :plan_rejected,
+    :approval_requested,
+    :approval_approved,
+    :approval_rejected
+  ]
+
+  @system_event_types [
+    :plan_created,
+    :plan_approved,
+    :plan_rejected,
+    :approval_requested,
+    :approval_approved,
+    :approval_rejected
+  ]
+
   @doc """
   Subscribe to real-time event broadcasts via `Muse.State.subscribe/0`.
 
@@ -70,13 +91,14 @@ defmodule Muse.EventStream do
     * `:user_message` events → user chat messages
     * `:assistant_delta` events → streaming assistant chunks
     * `:assistant_message` events → final assistant messages
+    * plan/approval lifecycle events → concise system status messages
     * Deduplication: if deltas were streamed (`streamed?: true` in data),
       the final `:assistant_message` is suppressed
 
   Each chat message is a map with keys:
 
     * `:id` — event ID
-    * `:role` — `:user` or `:assistant`
+    * `:role` — `:user`, `:assistant`, or `:system`
     * `:text` — message text (concatenated deltas or final text)
     * `:timestamp` — formatted timestamp string
     * `:source` — event source
@@ -90,7 +112,8 @@ defmodule Muse.EventStream do
   @spec chat_messages([Event.t()]) :: [map()]
   def chat_messages(events) when is_list(events) do
     events
-    |> Enum.filter(&(&1.type in [:user_message, :assistant_delta, :assistant_message]))
+    |> Enum.filter(&(&1.type in @chat_event_types))
+    |> Enum.reject(&internal_event?/1)
     |> group_by_turn_preserving_order()
     |> Enum.flat_map(&turn_to_messages/1)
   end
@@ -144,6 +167,7 @@ defmodule Muse.EventStream do
     user_events = Enum.filter(events, &(&1.type == :user_message))
     assistant_deltas = Enum.filter(events, &(&1.type == :assistant_delta))
     assistant_finals = Enum.filter(events, &(&1.type == :assistant_message))
+    system_events = Enum.filter(events, &(&1.type in @system_event_types))
 
     user_messages = Enum.map(user_events, &event_to_chat_message/1)
 
@@ -172,8 +196,12 @@ defmodule Muse.EventStream do
           [deltas_to_streaming_message(deltas)]
       end
 
-    user_messages ++ assistant_messages
+    system_messages = Enum.map(system_events, &event_to_system_message/1)
+
+    user_messages ++ assistant_messages ++ system_messages
   end
+
+  defp internal_event?(%Event{visibility: visibility}), do: visibility in [:internal, :sensitive]
 
   defp event_to_chat_message(%Event{} = event) do
     %{
@@ -186,11 +214,23 @@ defmodule Muse.EventStream do
     }
   end
 
+  defp event_to_system_message(%Event{} = event) do
+    %{
+      id: event.id,
+      role: :system,
+      text: Muse.EventDisplay.summary(event),
+      timestamp: format_timestamp(event.timestamp),
+      source: event.source,
+      streaming?: false
+    }
+  end
+
   defp deltas_to_message(deltas) do
     text =
       deltas
       |> Enum.sort_by(fn e -> e.seq || 0 end)
       |> Enum.map_join("", &delta_text/1)
+      |> Muse.EventDisplay.safe_text()
 
     first = hd(deltas)
 
@@ -209,6 +249,7 @@ defmodule Muse.EventStream do
       deltas
       |> Enum.sort_by(fn e -> e.seq || 0 end)
       |> Enum.map_join("", &delta_text/1)
+      |> Muse.EventDisplay.safe_text()
 
     first = hd(deltas)
 
@@ -236,12 +277,24 @@ defmodule Muse.EventStream do
   defp chat_role(:assistant_delta), do: :assistant
   defp chat_role(_), do: :system
 
-  defp chat_text(%Event{data: data}) when is_map(data),
-    do: Map.get(data, :text) || Map.get(data, "text") || ""
+  defp chat_text(%Event{data: data}) when is_map(data) do
+    data
+    |> Map.get(:text, Map.get(data, "text", ""))
+    |> safe_chat_text()
+  end
 
-  defp chat_text(%Event{data: data}) when is_binary(data), do: data
+  defp chat_text(%Event{data: data}) when is_binary(data), do: Muse.EventDisplay.safe_text(data)
   defp chat_text(%Event{data: nil}), do: ""
-  defp chat_text(%Event{data: data}), do: inspect(data)
+
+  defp chat_text(%Event{data: data}) do
+    data
+    |> Muse.EventDisplay.safe_data()
+    |> inspect()
+  end
+
+  defp safe_chat_text(text) when is_binary(text), do: Muse.EventDisplay.safe_text(text)
+  defp safe_chat_text(nil), do: ""
+  defp safe_chat_text(other), do: other |> Muse.EventDisplay.safe_data() |> inspect()
 
   defp streamed?(%Event{data: data}) when is_map(data) do
     Map.get(data, :streamed?) == true or Map.get(data, "streamed?") == true

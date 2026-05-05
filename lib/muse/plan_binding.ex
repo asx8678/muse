@@ -154,7 +154,10 @@ defmodule Muse.PlanBinding do
   end
 
   defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
-  defp stringify_keys(tuple) when is_tuple(tuple), do: tuple |> Tuple.to_list() |> stringify_keys()
+
+  defp stringify_keys(tuple) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> stringify_keys()
+
   defp stringify_keys(atom) when is_atom(atom), do: Atom.to_string(atom)
   defp stringify_keys(value), do: value
 

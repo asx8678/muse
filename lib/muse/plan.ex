@@ -4,8 +4,8 @@ defmodule Muse.Plan do
   plan produced by the Planning Muse.
 
   A plan captures the objective, tasks, risks, validation steps, and
-  approval lifecycle. The Planning Muse creates a plan, the user reviews
-  it, and the Coding Muse executes it after approval.
+  approval lifecycle. The Planning Muse creates a plan and the user records an
+  approval/rejection decision; execution still requires a later explicit gate.
 
   ## Status lifecycle
 
@@ -431,7 +431,7 @@ defmodule Muse.Plan do
   end
 
   defp render_footer(%__MODULE__{status: :approved}) do
-    "This Muse Plan has been approved and is ready for implementation."
+    "This Muse Plan has been approved. Approval records the plan decision only; implementation still requires a later explicit gate."
   end
 
   defp render_footer(%__MODULE__{status: :rejected}) do

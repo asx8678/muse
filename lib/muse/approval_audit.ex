@@ -85,14 +85,14 @@ defmodule Muse.ApprovalAudit do
   end
 
   defp find_record(%Plan{} = plan, decision) do
-    plan
-    |> candidate_records(decision)
-    |> Enum.reverse()
-    |> Enum.find(&record_matches?(&1, decision))
+    find_matching_record(records_from(plan.approvals), decision) ||
+      find_matching_record(metadata_records(plan.metadata, decision), decision)
   end
 
-  defp candidate_records(%Plan{} = plan, decision) do
-    records_from(plan.approvals) ++ metadata_records(plan.metadata, decision)
+  defp find_matching_record(records, decision) do
+    records
+    |> Enum.reverse()
+    |> Enum.find(&record_matches?(&1, decision))
   end
 
   defp metadata_records(metadata, :approval) do
