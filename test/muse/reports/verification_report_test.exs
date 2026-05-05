@@ -78,6 +78,19 @@ defmodule Muse.Reports.VerificationReportTest do
       # cap + "..."
       assert byte_size(report.key_output) <= 5_000 + 3
     end
+
+    test "redacts secrets from key output and failures" do
+      output = %{
+        command: "mix_test",
+        status: :failed,
+        output_preview: "1) failure leaked sk-test-secret123\nAPI_KEY=abc123456789"
+      }
+
+      report = VerificationReport.from_output(output)
+      assert report.key_output =~ "[REDACTED]"
+      refute report.key_output =~ "sk-test-secret123"
+      refute Enum.any?(report.failures, &String.contains?(&1, "sk-test-secret123"))
+    end
   end
 
   describe "from_blocked/2" do

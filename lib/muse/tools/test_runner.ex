@@ -13,8 +13,9 @@ defmodule Muse.Tools.TestRunner do
     * `mix_compile` — `mix compile --warnings-as-errors`
     * `mix_test` — `mix test`
     * `mix_test_file` — `mix test <workspace-relative test path>`
-      (strictly validated: must end in `_test.exs`, must be under `test/`,
-       no path traversal)
+      (strictly validated: must be an existing regular `_test.exs` file under
+       `test/`, with no absolute path, traversal, symlink, ignored, hidden, or
+       secret-path access)
 
   ## Safety invariants
 
@@ -35,6 +36,7 @@ defmodule Muse.Tools.TestRunner do
 
   alias Muse.Tool.Result
   alias Muse.Prompt.Redactor
+  alias Muse.Workspace
 
   @max_output_bytes 50_000
   @default_timeout_ms 120_000
@@ -138,7 +140,7 @@ defmodule Muse.Tools.TestRunner do
           {:error, "execution error: #{Exception.message(e)}"}
       catch
         :exit, :timeout ->
-          {:timed_out}
+          {:timed_out, ""}
       end
 
     duration_ms = System.monotonic_time(:millisecond) - start_time
@@ -158,15 +160,17 @@ defmodule Muse.Tools.TestRunner do
       :use_stdio,
       :stderr_to_stdout,
       :binary,
-      {:parallelism, true}
+      :exit_status
     ]
 
     port = Port.open({:spawn_executable, find_executable(executable)}, port_opts)
 
     try do
-      collect_port_output(port, timeout, "")
+      deadline = System.monotonic_time(:millisecond) + timeout
+      collect_port_output(port, deadline, "")
     after
-      # Ensure the port (and its OS process) is always closed
+      # Ensure the port (and its OS process) is always closed. On timeout this
+      # terminates the spawned executable instead of leaving an orphaned test run.
       if Port.info(port) != nil do
         Port.close(port)
       end
@@ -180,22 +184,35 @@ defmodule Muse.Tools.TestRunner do
     end
   end
 
-  defp collect_port_output(port, timeout, acc) do
-    receive do
-      {^port, {:data, data}} ->
-        new_acc = acc <> data
+  defp collect_port_output(port, deadline, acc) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
-        # Cap collection to avoid unbounded memory growth
-        if byte_size(new_acc) > @max_output_bytes * 2 do
-          String.slice(new_acc, 0, @max_output_bytes * 2)
-        else
-          collect_port_output(port, timeout, new_acc)
-        end
-    after
-      timeout ->
-        # Timeout: the OS process is still running. Port.close in the
-        # after block will send SIGTERM to the OS process on Unix.
-        {:timed_out, acc}
+    if remaining == 0 do
+      {:timed_out, acc}
+    else
+      receive do
+        {^port, {:data, data}} ->
+          collect_port_output(port, deadline, append_capped_output(acc, data))
+
+        {^port, {:exit_status, exit_status}} ->
+          {:ok, acc, exit_status}
+      after
+        remaining ->
+          # Timeout: the OS process is still running. Port.close in the
+          # after block will terminate the OS process on Unix.
+          {:timed_out, acc}
+      end
+    end
+  end
+
+  defp append_capped_output(acc, data) do
+    max_collected = @max_output_bytes * 2
+    combined = acc <> data
+
+    if byte_size(combined) > max_collected do
+      binary_part(combined, 0, max_collected)
+    else
+      combined
     end
   end
 
@@ -250,33 +267,84 @@ defmodule Muse.Tools.TestRunner do
     {:error, "file_path is too long (max 500 chars)"}
   end
 
-  defp validate_test_file_path(path, _workspace) do
+  defp validate_test_file_path(path, workspace) do
     cond do
       # Must end in _test.exs
       not String.ends_with?(path, "_test.exs") ->
         {:error, "file_path must end with _test.exs"}
 
       # No absolute paths (check before test/ check to give clear error)
-      String.starts_with?(path, "/") ->
+      Path.type(path) == :absolute ->
         {:error, "file_path must be workspace-relative, not absolute"}
 
-      # Must be under test/ directory (workspace-relative)
-      not (String.starts_with?(path, "test/") or path =~ ~r{^test\b}) ->
+      # Must be lexically under the test/ directory (workspace-relative)
+      not String.starts_with?(path, "test/") ->
         {:error, "file_path must be under the test/ directory"}
 
-      # No path traversal
+      # No path traversal, even when it would resolve back under test/
       path_contains_traversal?(path) ->
         {:error, "file_path contains path traversal sequences"}
 
+      # No NUL/control characters in the argv value
+      path_contains_control_chars?(path) ->
+        {:error, "file_path contains control characters"}
+
       true ->
-        {:ok, path}
+        resolve_and_validate_test_file(path, workspace)
     end
   end
 
   defp path_contains_traversal?(path) do
-    normalized = Path.expand(path, "/safe_root")
-    # If expanding the path under a safe root escapes it, there's traversal
-    not String.starts_with?(normalized, "/safe_root")
+    path
+    |> Path.split()
+    |> Enum.any?(&(&1 == ".."))
+  end
+
+  defp path_contains_control_chars?(path) do
+    String.match?(path, ~r/[[:cntrl:]]/)
+  end
+
+  defp resolve_and_validate_test_file(path, workspace) do
+    with {:ok, resolved} <- safe_resolve(path, workspace),
+         :ok <- ensure_under_test_dir(resolved, workspace),
+         :ok <- ensure_regular_non_symlink_file(resolved) do
+      {:ok, Path.relative_to(resolved, Path.expand(workspace))}
+    end
+  end
+
+  defp safe_resolve(path, workspace) do
+    {:ok, Workspace.safe_resolve!(path, workspace)}
+  rescue
+    e in ArgumentError -> {:error, Exception.message(e)}
+  end
+
+  defp ensure_under_test_dir(resolved, workspace) do
+    test_dir = Path.expand("test", workspace)
+
+    if resolved != test_dir and String.starts_with?(resolved, test_dir <> "/") do
+      :ok
+    else
+      {:error, "file_path must resolve under the test/ directory"}
+    end
+  end
+
+  defp ensure_regular_non_symlink_file(resolved) do
+    case File.lstat(resolved) do
+      {:ok, %File.Stat{type: :regular}} ->
+        :ok
+
+      {:ok, %File.Stat{type: :symlink}} ->
+        {:error, "file_path must be a regular test file, not a symlink"}
+
+      {:ok, _stat} ->
+        {:error, "file_path must be a regular test file"}
+
+      {:error, :enoent} ->
+        {:error, "file_path must be an existing test file"}
+
+      {:error, reason} ->
+        {:error, "file_path could not be inspected: #{reason}"}
+    end
   end
 
   # -- Safety helpers -----------------------------------------------------------
@@ -288,12 +356,13 @@ defmodule Muse.Tools.TestRunner do
   defp valid_workspace?(_), do: false
 
   defp safe_env do
-    # Force MIX_ENV=test, strip any network-leaking env vars
-    base = System.get_env() |> Map.new(fn {k, v} -> {to_string(k), v} end)
-
-    base
+    # Force MIX_ENV=test, strip any network-leaking env vars. Port.open/2 expects
+    # env entries as charlist pairs, unlike System.cmd/3's binary env values.
+    System.get_env()
+    |> Map.new(fn {k, v} -> {to_string(k), to_string(v)} end)
     |> Map.put("MIX_ENV", "test")
     |> Map.drop(network_env_keys())
+    |> Enum.map(fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
   end
 
   defp network_env_keys do
@@ -303,14 +372,13 @@ defmodule Muse.Tools.TestRunner do
   end
 
   defp cap_and_redact(output) when is_binary(output) do
-    capped =
-      if byte_size(output) > @max_output_bytes do
-        String.slice(output, 0, @max_output_bytes) <> "... [output truncated]"
-      else
-        output
-      end
+    redacted = Redactor.redact_text(output)
 
-    Redactor.redact_text(capped)
+    if byte_size(redacted) > @max_output_bytes do
+      String.slice(redacted, 0, @max_output_bytes) <> "... [output truncated]"
+    else
+      redacted
+    end
   end
 
   defp cap_and_redact(output), do: inspect(output, limit: 10, printable_limit: 200)

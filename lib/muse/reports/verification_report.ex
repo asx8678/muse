@@ -24,6 +24,8 @@ defmodule Muse.Reports.VerificationReport do
   is never stored verbatim — only a preview is retained.
   """
 
+  alias Muse.Prompt.Redactor
+
   @max_key_output 5_000
   @max_failure_len 500
   @max_failures 10
@@ -205,12 +207,24 @@ defmodule Muse.Reports.VerificationReport do
 
   defp cap_string(nil, _max), do: nil
 
-  defp cap_string(s, max) when is_binary(s) and byte_size(s) > max do
+  defp cap_string(s, max) when is_binary(s) do
+    s
+    |> Redactor.redact_text()
+    |> truncate_string(max)
+  end
+
+  defp cap_string(s, max) do
+    s
+    |> inspect(limit: 10, printable_limit: max)
+    |> Redactor.redact_text()
+    |> truncate_string(max)
+  end
+
+  defp truncate_string(s, max) when byte_size(s) > max do
     String.slice(s, 0, max) <> "..."
   end
 
-  defp cap_string(s, _max) when is_binary(s), do: s
-  defp cap_string(s, max), do: s |> inspect(limit: 10, printable_limit: max)
+  defp truncate_string(s, _max), do: s
 
   defp format_duration(nil), do: "unknown"
   defp format_duration(ms), do: "#{ms}ms"

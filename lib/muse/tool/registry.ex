@@ -526,8 +526,7 @@ defmodule Muse.Tool.Registry do
       iex> specs = Muse.Tool.Registry.specs_for_muse(:coding)
       iex> Enum.map(specs, & &1.name)
       ["list_files", "read_file", "repo_search", "git_status",
-       "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
-       "patch_propose", "patch_apply", "rollback_checkpoint"]
+       "git_diff_readonly", "patch_propose", "patch_apply"]
 
   """
   @spec specs_for_muse(atom()) :: [Spec.t()]
@@ -556,9 +555,11 @@ defmodule Muse.Tool.Registry do
       "list_files"
 
       iex> schemas = Muse.Tool.Registry.provider_schemas(:coding)
-      iex> true = "patch_propose" in Enum.map(schemas, & &1[:name])
-      iex> true = "patch_apply" in Enum.map(schemas, & &1[:name])
-      iex> true = "rollback_checkpoint" in Enum.map(schemas, & &1[:name])
+      iex> names = Enum.map(schemas, & &1[:name])
+      iex> true = "patch_propose" in names
+      iex> true = "patch_apply" in names
+      iex> false = "rollback_checkpoint" in names
+      iex> false = "test_runner" in names
 
   """
   @spec provider_schemas(atom()) :: [map()]

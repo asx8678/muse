@@ -455,13 +455,19 @@ defmodule Muse.ApprovalGateTest do
       assert reason =~ "plan approval does not authorize tool execution"
     end
 
-    test "test permission is safe (pre-approved presets, no arbitrary shell)" do
-      # :test is in the safe_tool_permissions set, so tools with :test
-      # permission that don't require approval are allowed without gating.
-      # The test_runner handler enforces its own preset allowlist independently.
+    test "test_runner is the only pre-approved :test tool" do
+      # :test is not a generic shell grant. Only the registered test_runner name
+      # is allowed without gating; the handler then enforces preset allowlisting.
       spec = tool_spec(name: "test_runner", permission: :test, requires_approval: false)
 
       assert :ok = ApprovalGate.authorize_tool(spec, %{})
+    end
+
+    test "test permission does not become generic shell authority" do
+      spec = tool_spec(name: "future_test_shell", permission: :test, requires_approval: false)
+
+      assert {:blocked, reason} = ApprovalGate.authorize_tool(spec, %{})
+      assert reason =~ "denied by default"
     end
 
     test "test permission does not authorize tools that require approval" do

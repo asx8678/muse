@@ -20,6 +20,8 @@ defmodule Muse.Reports.ReviewReport do
   verbatim in findings — only summaries and evidence excerpts.
   """
 
+  alias Muse.Prompt.Redactor
+
   @max_string_len 500
   @max_findings 20
   @max_gaps 10
@@ -210,12 +212,22 @@ defmodule Muse.Reports.ReviewReport do
 
   defp cap_string(nil, _max), do: nil
 
-  defp cap_string(s, max) when is_binary(s) and byte_size(s) > max do
+  defp cap_string(s, max) when is_binary(s) do
+    s
+    |> Redactor.redact_text()
+    |> truncate_string(max)
+  end
+
+  defp cap_string(s, max) do
+    s
+    |> inspect(limit: 10, printable_limit: max)
+    |> Redactor.redact_text()
+    |> truncate_string(max)
+  end
+
+  defp truncate_string(s, max) when byte_size(s) > max do
     String.slice(s, 0, max) <> "..."
   end
 
-  defp cap_string(s, _max) when is_binary(s), do: s
-
-  defp cap_string(s, max),
-    do: s |> inspect(limit: 10, printable_limit: max) |> String.slice(0, max)
+  defp truncate_string(s, _max), do: s
 end

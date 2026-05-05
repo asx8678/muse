@@ -30,7 +30,7 @@ defmodule Muse.ApprovalGate do
   # patch_apply_allowed?/2 and rollback_checkpoint_allowed?/2 above,
   # so they are removed from the blanket deny set.
 
-  @safe_tool_permissions MapSet.new([:read, :interactive, :test])
+  @safe_tool_permissions MapSet.new([:read, :interactive])
 
   @approval_scoped_tool_permissions MapSet.new([
                                       :write,
@@ -44,9 +44,10 @@ defmodule Muse.ApprovalGate do
                                       :remote_execution
                                     ])
 
-  # :test is a safe permission (pre-approved presets only, no arbitrary shell),
-  # so it is NOT in the approval-scoped set. The test_runner handler enforces
-  # its own preset allowlist and bounds independently of the approval gate.
+  # :test is not a generic safe permission. Only the registered test_runner
+  # handler is allowed without an approval record, and it enforces preset-only,
+  # bounded execution internally. Future tools cannot gain shell authority just
+  # by setting permission: :test.
 
   @type approval :: Approval.t() | map()
   @type binding :: map()
@@ -1011,6 +1012,13 @@ defmodule Muse.ApprovalGate do
   end
 
   # -- Tool internals -----------------------------------------------------------
+
+  defp safe_without_approval?(%Spec{
+         name: "test_runner",
+         permission: :test,
+         requires_approval: false
+       }),
+       do: true
 
   defp safe_without_approval?(%Spec{requires_approval: false} = spec) do
     MapSet.member?(@safe_tool_permissions, tool_scope(spec))

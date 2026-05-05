@@ -83,6 +83,28 @@ defmodule Muse.Reports.ReviewReportTest do
       assert byte_size(finding.recommendation) <= 503
     end
 
+    test "redacts secrets from findings and recommendations" do
+      report =
+        ReviewReport.new(
+          decision: :revise,
+          findings: [
+            %{
+              severity: :high,
+              issue: "token leak",
+              evidence: "API_KEY=abc123456789 and sk-test-secret123",
+              recommendation: "remove sk-test-secret123"
+            }
+          ],
+          final_recommendation: "Do not ship with sk-test-secret123"
+        )
+
+      finding = hd(report.findings)
+      assert finding.evidence =~ "[REDACTED]"
+      refute finding.evidence =~ "sk-test-secret123"
+      refute finding.recommendation =~ "sk-test-secret123"
+      refute report.final_recommendation =~ "sk-test-secret123"
+    end
+
     test "includes final_recommendation" do
       report =
         ReviewReport.new(decision: :approve, final_recommendation: "Ship it — all checks pass")
