@@ -70,12 +70,25 @@ defmodule MuseWeb.ExternalSocketConfig do
   """
   @spec replay_limit() :: non_neg_integer()
   def replay_limit do
-    app_env() |> Keyword.get(:replay_limit, @default_replay_limit)
+    app_env()
+    |> Keyword.get(:replay_limit, @default_replay_limit)
+    |> normalize_replay_limit()
   end
 
   # -- Helpers -----------------------------------------------------------------
 
   defp app_env, do: Application.get_env(:muse, :external_ws, [])
+
+  defp normalize_replay_limit(limit) when is_integer(limit) and limit >= 0, do: limit
+
+  defp normalize_replay_limit(limit) when is_binary(limit) do
+    case Integer.parse(String.trim(limit)) do
+      {parsed, ""} when parsed >= 0 -> parsed
+      _ -> @default_replay_limit
+    end
+  end
+
+  defp normalize_replay_limit(_limit), do: @default_replay_limit
 
   # App config enabled: true unconditionally enables.
   defp resolve_enabled(true), do: true

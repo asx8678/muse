@@ -9,7 +9,7 @@
 | **Bead** | `muse-1ki.2.6` |
 | **Lane** | 01 — Plan/contract artifact |
 | **Branch** | `pr16/lane01-contract` |
-| **Status** | Contract/plan complete; ready for downstream implementation lanes |
+| **Status** | ✅ Implemented (all lanes merged). Doc updated to match actual implementation. |
 | **Owner** | asx8678 |
 
 ## 2. Objective & Acceptance Criteria
@@ -111,10 +111,10 @@ The external WebSocket channel is **disabled by default**. It is enabled only wh
 
 ```elixir
 # config/config.exs (or dev/prod config)
-config :muse, :external_websocket, enabled: false
+config :muse, :external_ws, enabled: false
 
 # To enable:
-config :muse, :external_websocket, enabled: true
+config :muse, :external_ws, enabled: true
 ```
 
 When disabled:
@@ -126,7 +126,7 @@ This guard allows the code to ship merged without risk and be activated by confi
 
 ### 5.3.1 Dev-only debug topic (deferred)
 
-A future dev-only `debug:events` topic (all events, all visibilities, local-only) is explicitly **not part of PR16**. It may be added in a follow-up PR under a `config :muse, :external_websocket, enable_debug_topic: true` guard, but only if:
+A future dev-only `debug:events` topic (all events, all visibilities, local-only) is explicitly **not part of PR16**. It may be added in a follow-up PR under a `config :muse, :external_ws, enable_debug_topic: true` guard, but only if:
 
 - The config is gated behind `Mix.env() == :dev`.
 - All events still pass through `Muse.EventDisplay.safe_data/1` redaction.
@@ -164,64 +164,60 @@ All messages are JSON-encoded Phoenix WebSocket push messages with the standard 
 
 ```json
 {
-  "event": "muse_event",
   "id": 123,
-  "timestamp": "2026-05-03T18:49:07Z",
-  "source": "planning_muse",
   "type": "assistant_delta",
+  "source": "planning_muse",
+  "timestamp": "2026-05-03T18:49:07Z",
   "session_id": "sess_123",
   "turn_id": "turn_abc",
   "seq": 17,
-  "parent_id": 122,
   "visibility": "user",
   "muse_id": "planning",
-  "data": {"text": "..."},
-  "summary": "..."
+  "payload": {"text": "..."}
 }
 ```
+
+> **Note:** The Phoenix push event name is `"muse_event"` — it is the channel event name, not a field
+> inside the envelope. Replay batch uses the same push event with `%{"events" => [...]}`.
 
 ### 7.2 Serialization rules
 
 | Field | Type | Notes |
 |---|---|---|
-| `event` | string (literal) | Always `"muse_event"` |
 | `id` | integer | `event.id` |
-| `timestamp` | string (ISO8601) | `DateTime.to_iso8601(event.timestamp)` |
-| `source` | string | `Atom.to_string(event.source)` |
 | `type` | string | `Atom.to_string(event.type)` |
+| `source` | string | `Atom.to_string(event.source)` |
+| `timestamp` | string (ISO8601) | `DateTime.to_iso8601(event.timestamp)` |
 | `session_id` | string \| omitted | Omitted if nil |
 | `turn_id` | string \| omitted | Omitted if nil |
 | `seq` | integer \| omitted | Omitted if nil |
-| `parent_id` | integer \| omitted | Omitted if nil |
 | `visibility` | string \| omitted | `Atom.to_string(event.visibility)`; omitted if nil |
 | `muse_id` | string \| omitted | Omitted if nil |
-| `data` | object | `event.data \|> Muse.EventDisplay.safe_data() \|> MuseWeb.ExportJSON.json_safe()` |
-| `summary` | string | `Muse.EventDisplay.summary(event)` or safe equivalent |
+| `payload` | object | `event.data \|> Muse.EventDisplay.safe_data() \|> external_json_safe()` |
 
 ### 7.3 Implementation strategy
 
-Reuse `MuseWeb.EventFormatter.event_to_map/1` directly. It already:
-- Converts atoms to strings via ExportJSON.
-- Omits nil metadata fields via `maybe_put/3`.
-- Applies `safe_data` + `json_safe` to the `data` field.
+Serialization and filtering are combined in `MuseWeb.ExternalEventFilter.to_external_map/2`.
+This module:
+- Validates session ID and checks visibility before building the envelope.
+- Converts atoms to strings; omits nil metadata fields.
+- Applies `safe_data` then `external_json_safe` (depth-limited, struct-suppressing
+  JSON safety) to the `payload` field.
+- Returns `{:ok, envelope}` or `{:error, reason}`.
 
-The only addition needed: include a `summary` field derived from `Muse.EventDisplay.summary/1`.
+The originally planned `MuseWeb.ExternalEventSerializer` module was not created;
+`ExternalEventFilter` absorbed both roles (filter + serialize).
 
-**Suggested helper module:** `MuseWeb.ExternalEventSerializer` with:
-- `serialize(event)` → map prepared for JSON encoding (wraps `event_to_map` + adds `summary`).
+### 7.4 `events_cleared` push
 
-### 7.4 `muse_events_cleared` envelope
-
-When the event log is cleared, the channel may forward:
+When the event log is cleared, the channel pushes:
 
 ```json
-{
-  "event": "muse_events_cleared",
-  "session_id": "sess_123"
-}
+channel.push("events_cleared", {})
 ```
 
-This is optional; the implementation lane should decide whether to forward.
+The push event name is `"events_cleared"` and the payload is empty (`%{}`).
+No session ID or internal state details are included.
 
 ## 8. Filtering & Redaction Contract
 
@@ -283,8 +279,10 @@ def handle_info({:muse_event, %Event{} = event}, socket) do
   session_id = socket.assigns.session_id
 
   if event.session_id == session_id && visible_to_external?(event) do
-    payload = MuseWeb.ExternalEventSerializer.serialize(event)
-    push(socket, "muse_event", payload)
+    case MuseWeb.ExternalEventFilter.to_external_map(event, session_id: session_id) do
+      {:ok, envelope} -> push(socket, "muse_event", envelope)
+      {:error, _reason} -> :ok
+    end
   end
 
   {:noreply, socket}
@@ -325,7 +323,7 @@ end
 
 ### 9.2 Optional-by-default (config guard)
 
-- The channel is disabled by default (`config :muse, :external_websocket, enabled: false`).
+- The channel is disabled by default (`config :muse, :external_ws, enabled: false`).
 - When disabled, `MuseWeb.UserSocket.connect/3` returns `:error`.
 - No channel processes start; no resources consumed; no socket-level handlers run beyond the reject.
 
@@ -364,15 +362,15 @@ The following categories of data are **never** forwarded to external WebSocket c
 |---|---|---|---|
 | 1 | `lib/muse_web/channels/user_socket.ex` | Phoenix WebSocket socket module; connects at `/socket`; calls `MuseWeb.UserSocket` | Lane 02 |
 | 2 | `lib/muse_web/channels/session_channel.ex` | Channel process for `session:<session_id>` topic; subscribes to Muse.State; filters and forwards events | Lane 03 |
-| 3 | `lib/muse_web/external_event_serializer.ex` | Pure helper: serializes `%Muse.Event{}` to JSON-safe map with `summary` field (wraps `EventFormatter.event_to_map/1`) | Lane 04 |
-| 4 | `lib/muse_web/external_event_filter.ex` | Pure helper: determines whether an event is visible to external WebSocket clients | Lane 04 |
+| 3 | `lib/muse_web/external_event_filter.ex` | Pure helper: visibility filtering **and** envelope serialization (`to_external_map/2`) | Lane 04 |
+| 4 | `lib/muse_web/external_socket_config.ex` | Runtime config: `enabled?/0`, `replay_limit/0`, env var resolution | Lane 02 |
 
 ### 10.2 Files to modify
 
 | # | File | Change | Lane |
 |---|---|---|---|
 | 1 | `lib/muse_web/endpoint.ex` | Add `socket("/socket", MuseWeb.UserSocket, ...)` next to existing LiveView socket | Lane 02 |
-| 2 | `config/config.exs` (or relevant) | Add `config :muse, :external_websocket, enabled: false` | Lane 02 |
+| 2 | `config/config.exs` (or relevant) | Add `config :muse, :external_ws, enabled: false` | Lane 02 |
 | 3 | `lib/muse/application.ex` | Possibly map CLI `--ws` or `--external-ws` flag to config; otherwise minimal | Lane 05 |
 | 4 | `lib/muse/startup_banner.ex` | Show WS URL when enabled | Lane 05 |
 
@@ -382,8 +380,9 @@ The following categories of data are **never** forwarded to external WebSocket c
 |---|---|---|---|
 | 1 | `test/muse_web/channels/user_socket_test.exs` | Socket `connect/3` tests: allowed when enabled, rejected when disabled | Lane 06 |
 | 2 | `test/muse_web/channels/session_channel_test.exs` | Channel `join/3` and `handle_info` tests: session matching, filtering, redaction, deny internal/sensitive | Lane 06 |
-| 3 | `test/muse_web/external_event_serializer_test.exs` | Serializer unit tests: all field types, nil omissions, safe_data integration, summary field | Lane 06 |
-| 4 | `test/muse_web/external_event_filter_test.exs` | Filter unit tests: every visibility value, allowlist types, nil edge cases | Lane 06 |
+| 3 | `test/muse_web/external_event_filter_test.exs` | Filter + serializer unit tests: every visibility value, allowlist types, nil edge cases, envelope shape | Lane 06 |
+| 4 | `test/muse_web/external_event_security_test.exs` | Security boundary: redaction, secret suppression, struct omission, session ID validation | Lane 06 |
+| 5 | `test/muse_web/external_socket_config_test.exs` | Config defaults: enabled/disabled, env var truthy values, replay_limit | Lane 06 |
 
 ### 10.4 Lane breakdown
 
@@ -392,7 +391,7 @@ The following categories of data are **never** forwarded to external WebSocket c
 | **01** | ✅ Plan/contract artifact (this document) | asx8678 |
 | **02** | Endpoint/socket wiring: `user_socket.ex`, `endpoint.ex` socket registration, config guard | Code-Puppy |
 | **03** | Channel process: `session_channel.ex` — join, subscribe to Muse.State, filter/forward | Code-Puppy |
-| **04** | Serializer/filter helpers: `ExternalEventSerializer`, `ExternalEventFilter` | Code-Puppy |
+| **04** | Filter + serializer helper: `ExternalEventFilter` (combined) | Code-Puppy |
 | **05** | Integration: startup banner, boot flag, config wiring | Code-Puppy |
 | **06** | Tests: all four test files, integration tests | Code-Puppy |
 | **07** | Docs: update `docs/architecture.md` §8.5, `docs/security.md` checklist, `docs/provider-roadmap.md` | Code-Puppy |
@@ -406,8 +405,9 @@ The following categories of data are **never** forwarded to external WebSocket c
 |---|---|---|
 | `test/muse_web/channels/user_socket_test.exs` | Socket connect | Connect succeeds when enabled; `:error` when disabled; socket params correct |
 | `test/muse_web/channels/session_channel_test.exs` | Channel join & handle_info | Join `session:<id>` OK; join mismatched topic returns `{:error, ...}`; `handle_info({:muse_event, ...})` forwards matching session events; drops non-matching session; drops `:internal`; drops `:sensitive`; forwards `:user`; drops ordinary `:debug` event (not allowlisted); forwards allowlisted lifecycle type with `:debug`/nil visibility; drops nil-visibility non-allowlisted; respects allowlist |
-| `test/muse_web/external_event_serializer_test.exs` | Serialization | All fields present; nil fields omitted; atoms→strings; timestamp ISO8601; summary field present; `data` passes through `safe_data` + `json_safe`; plan data replaced by summary map |
-| `test/muse_web/external_event_filter_test.exs` | Filtering | `:user` → true; `:debug` with non-allowlisted type → false; `:debug` with allowlisted lifecycle type → true; `:internal` → false (even if allowlisted); `:sensitive` → false (even if allowlisted); `nil` → false for ordinary types, true for allowlisted lifecycle types; each allowlisted type returns true for `:user`, and also for `:debug`/nil only when data proven safe |
+| `test/muse_web/external_event_filter_test.exs` | Filtering + serialization | `:user` → true; `:debug` with non-allowlisted type → false; `:debug` with allowlisted lifecycle type → true; `:internal` → false (even if allowlisted); `:sensitive` → false (even if allowlisted); `nil` → false for ordinary types, true for allowlisted lifecycle types; each allowlisted type returns true for `:user`, and also for `:debug`/nil only when data proven safe; envelope shape (string keys, `payload` field, nil omission) |
+| `test/muse_web/external_event_security_test.exs` | Security boundary | Redaction, secret suppression, struct omission, nested event omission, session ID validation, provider/auth/debug denial |
+| `test/muse_web/external_socket_config_test.exs` | Config defaults | enabled/disabled, env var truthy values, replay_limit |
 
 ## 12. Docs Matrix
 
@@ -475,7 +475,7 @@ Lane 02 (socket wiring) ──► Lane 04 (serializer/filter) ──► Lane 03 
 
 - **Race with concurrent PRs that touch `endpoint.ex`**: If another PR adds socket registrations, coordinate with Lane 02 to avoid conflicts.
 - **LiveView regression**: Lane 03 must not change any LiveView-related code. The channel is a separate process tree.
-- **Config flag naming**: Align on `config :muse, :external_websocket, enabled:` — do not diverge.
+- **Config flag naming**: Config key is `config :muse, :external_ws, enabled:` — do not diverge.
 
 ## 14. Acceptance Checklist
 

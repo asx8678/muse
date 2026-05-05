@@ -14,7 +14,8 @@ defmodule Muse.EventStreamTest do
         Process.unlink(pid)
 
       _pid ->
-        :ok
+        # Reset for test isolation — prior sync tests may have left events
+        Muse.State.clear()
     end
 
     on_exit(fn ->

@@ -115,5 +115,19 @@ defmodule MuseWeb.ExternalSocketConfigTest do
       Application.put_env(:muse, :external_ws, replay_limit: 0)
       assert ExternalSocketConfig.replay_limit() == 0
     end
+
+    test "parses non-negative string values" do
+      Application.put_env(:muse, :external_ws, replay_limit: "25")
+      assert ExternalSocketConfig.replay_limit() == 25
+    end
+
+    test "falls back to default for invalid values" do
+      for invalid <- [-1, "-1", "not-an-integer", nil, :bad] do
+        Application.put_env(:muse, :external_ws, replay_limit: invalid)
+
+        assert ExternalSocketConfig.replay_limit() == 100,
+               "Expected default replay limit for #{inspect(invalid)}"
+      end
+    end
   end
 end
