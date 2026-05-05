@@ -291,16 +291,22 @@ def handle_info({:muse_event, %Event{} = event}, socket) do
 end
 
 defp visible_to_external?(%Event{visibility: visibility, type: type}) do
-  # :internal and :sensitive are ALWAYS rejected, even for allowlisted types
-  if visibility in [:internal, :sensitive], do: return false
+  cond do
+    # :internal and :sensitive are ALWAYS rejected, even for allowlisted types
+    visibility in [:internal, :sensitive] ->
+      false
 
-  case visibility do
-    :user -> true
-    # :debug and nil/unknown pass ONLY if the type is explicitly allowlisted
-    :debug -> type in @allowlisted_lifecycle_types
-    nil -> type in @allowlisted_lifecycle_types
-    # Unknown visibility values: reject unless allowlisted
-    _ -> type in @allowlisted_lifecycle_types
+    # :user is always forwarded (when session matches)
+    visibility == :user ->
+      true
+
+    # :debug, nil, and unknown visibility pass ONLY if type is allowlisted
+    type in @allowlisted_lifecycle_types ->
+      true
+
+    # Everything else (ordinary :debug events, unknown types) is dropped
+    true ->
+      false
   end
 end
 ```
