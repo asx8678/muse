@@ -11,6 +11,8 @@ defmodule MuseWeb.Endpoint do
     websocket: [connect_info: [session: @session_options], log: false]
   )
 
+  socket("/socket", MuseWeb.UserSocket, websocket: [log: false])
+
   if code_reloading? do
     socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
     plug(Phoenix.LiveReloader)
