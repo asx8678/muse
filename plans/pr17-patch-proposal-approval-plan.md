@@ -13,15 +13,24 @@
 
 ## 1. Objective
 
-Enable Coding Muse to **propose a structured, parseable, content-hash-stable patch proposal** after a plan is approved, and to **gate execution on user approval** without modifying any file before `/approve patch proposal`.
+Enable Coding Muse to **propose a structured, parseable, content-hash-stable patch proposal** after a plan is approved, and to **gate execution on user approval** without modifying any file before `/approve patch`.
+
+PR17 introduces **two distinct gates**:
+
+| Gate | Scope | Purpose |
+|---|---|---|
+| **Pre-proposal gate** | `:patch_proposal` | User-granted permission for Coding Muse to prepare a *non-mutating* proposal after an approved plan exists. Satisfied by `/propose patch`. |
+| **Post-proposal gate** | `:patch` | Approval of the generated proposal after review, bound to patch id/hash. Satisfied by `/approve patch proposal`. Future PR18 extends this to unlock `patch_apply`. |
+
+Plan approval alone satisfies **neither** gate.
 
 ### PR17 Acceptance Criteria (from bead `muse-1ki.3.1`)
 
-1. Coding Muse can prepare a patch **only after an approved plan** exists.
+1. Coding Muse can prepare a patch **only after an approved plan** exists and the pre-proposal `:patch_proposal` scope is active.
 2. The patch proposal is **parseable, formatable, and includes a stable hash**.
 3. The proposal **diff is displayed** for user review.
-4. The session enters `:awaiting_patch_approval` — no file is modified before a user `/approve patch` command.
-5. Approval of a plan alone **does not unlock** patch proposal, `patch_apply`, write, shell, or network tools.
+4. The session enters `:awaiting_patch_approval` after a valid non-mutating proposal is returned — no file is modified before `/approve patch`.
+5. Approval of a plan alone **does not unlock** `patch_propose`, `patch_apply`, write, shell, or network tools.
 
 ---
 
@@ -32,15 +41,15 @@ Enable Coding Muse to **propose a structured, parseable, content-hash-stable pat
 | Module | Current state | PR17 relevance |
 |---|---|---|
 | `Muse.Approval` | Already has `:patch` kind, `:patch_id`, `:patch_hash` fields. Accepts `"patch_propose"` → `:patch` kind mapping. | Reuse/extend; `:patch` kind already routed |
-| `Muse.ApprovalGate` | Has `:patch` in `@denied_scopes`, `@approval_scoped_tool_permissions`. No `:patch_proposal` or `:patch` scope approval flow yet. | Needs scope-specific approval for `:patch` kind (distinct from `:plan`) |
+| `Muse.ApprovalGate` | Has `:patch` in `@denied_scopes`, `@approval_scoped_tool_permissions`. No `:patch_proposal` or proposal-before-patch flow yet. | Needs distinct `:patch_proposal` scope for pre-proposal gate + `:patch` scope for post-proposal approval |
 | `Muse.PlanBinding` | Stable content-hash binding for plans. No patch binding. | Patch proposal needs analogous but separate binding/hash |
 | `Muse.Tool.Registry` | `patch_propose` and `patch_apply` are **blocked names**, not registered tools. | Must register `patch_propose` as read-only/non-mutating; keep `patch_apply` blocked |
 | `Muse.Tool.Runner` | Blocks `patch_propose`, `patch_apply`, and dangerous look-alikes. | Must allow `patch_propose` when approval-gated; keep `patch_apply` hard-blocked |
 | `Muse.MuseRegistry` | Coding Muse profile lists `patch_propose`/`patch_apply` in tool list (roadmap-only). | Unblock `patch_propose` for Coding Muse; keep `patch_apply` roadmap-only |
 | `Muse.CommandDispatcher` | Has `:approve_plan`, `:reject_plan` handlers. No patch approval commands. | Add `/propose patch`, `/approve patch proposal`, `/reject patch`, `/patch status` |
-| `Muse.SessionServer` | Handles `:approve_plan` via `handle_plan_lifecycle_command`. Session state `:awaiting_patch_approval` already defined in `Muse.Session`. | Wire patch approval lifecycle analogously to plan approval |
-| `Muse.Session` | Status flow: `… → :executing → :awaiting_patch_approval → :verifying → :reviewing`. Status `:awaiting_patch_approval` already valid. | Transition to `:awaiting_patch_approval` after patch proposal |
-| `Muse.Conductor` | Handles plan lifecycle routing, turn execution, tool loops. | Add `:patch_approval_requested` routing, patch-proposal turn phase |
+| `Muse.SessionServer` | Handles `:approve_plan` via `handle_plan_lifecycle_command`. Session state `:awaiting_patch_approval` already defined in `Muse.Session`. | Wire two-gate lifecycle: `/propose patch` grants `:patch_proposal` scope; `/approve patch` transitions `:patch` approval. Session enters `:awaiting_patch_approval` after `patch_propose` returns a valid proposal. |
+| `Muse.Session` | Status flow: `… → :executing → :awaiting_patch_approval → :verifying → :reviewing`. Status `:awaiting_patch_approval` already valid. | Transition to `:awaiting_patch_approval` after `patch_propose` returns a valid non-mutating proposal |
+| `Muse.Conductor` | Handles plan lifecycle routing, turn execution, tool loops. | Add `:patch_proposal` scope routing, `:patch_approval_requested` event, patch-proposal turn phase |
 | Fake provider tests | Use scripted event batches. Reference events `:patch_approval_requested`, `:patch_approved`, `:patch_applied`. | Add PR17 fixtures: patch proposal tool-call events, approval flow batches |
 
 ---
@@ -61,11 +70,12 @@ Enable Coding Muse to **propose a structured, parseable, content-hash-stable pat
 > **Plan approval alone does NOT unlock `patch_propose`, `patch_apply`, write, shell, or network tools.**
 
 Enforcement chain:
-1. `Muse.ApprovalGate.require_approved_scope(:patch, …)` requires a pending/approved `:patch`-kind approval for the session and plan.
-2. `Muse.Tool.Runner` checks scope before executing `patch_propose` — returns block error without valid patch approval.
+1. `Muse.ApprovalGate.require_approved_scope(:patch_proposal, …)` requires an explicit pre-proposal scope for the session and plan — plan approval alone is insufficient.
+2. `Muse.Tool.Runner` checks `:patch_proposal` scope before executing `patch_propose` — returns block error without valid scope.
 3. `Muse.Tool.Registry` does NOT register `patch_apply` — still hard-blocked.
 4. Write/shell/network tools remain blocked per existing registry rules.
-5. Session transitions to `:awaiting_patch_approval` before any tool runs; `patch_apply` tools are never callable regardless of approval.
+5. `patch_propose` runs as a **non-mutating** read-only tool; session transitions to `:awaiting_patch_approval` only after it returns a valid `PatchProposal` artifact.
+6. No apply/write/shell/network can occur before `/approve patch`. Even after approval, PR17 still does **not** apply files — that is PR18 scope.
 
 ---
 
@@ -74,12 +84,17 @@ Enforcement chain:
 ```
 Approved Plan exists  ──►  User: "/propose patch"
                                 │
-                    Coding Muse turn starts
-                                │
-                    Coding Muse calls patch_propose tool
-                                │
-                    Tool produces structured PatchProposal
+                    ┌─── Grant :patch_proposal scope ───┐
+                    │                                    │
+                    Coding Muse turn starts,             │
+                    has :patch_proposal scope            │
+                                │                        │
+                    Coding Muse calls patch_propose tool │
+                    (gated on :patch_proposal scope)     │
+                                │                        │
+                    Tool produces structured PatchProposal─┘
                         with stable hash, diff preview
+                        (non-mutating — no files written)
                                 │
                     Session → :awaiting_patch_approval
                     Event: :patch_approval_requested
@@ -87,6 +102,7 @@ Approved Plan exists  ──►  User: "/propose patch"
                     ┌───────────┴───────────┐
                     │                       │
           User: "/approve patch"    User: "/reject patch"
+          (:patch approval)       (reject)
                     │                       │
          Event: :patch_approved    Event: :patch_rejected
          Session stays in          Session → :idle (or :executing)
@@ -95,7 +111,7 @@ Approved Plan exists  ──►  User: "/propose patch"
           to apply phase)
 ```
 
-**Key constraint**: No file is modified before `/approve patch`. The `patch_propose` tool is non-mutating — it analyzes, sources the plan, and produces an artifact without writing to disk.
+**Key constraint**: No file is modified before `/approve patch`. The `patch_propose` tool is non-mutating — it analyzes, sources the plan, and produces an artifact without writing to disk. Two distinct gates: `:patch_proposal` scope unlocks the non-mutating proposal tool; `:patch` scope (via `/approve patch`) approves the generated proposal for future PR18 apply.
 
 ---
 
@@ -193,15 +209,16 @@ end
 | Function | Purpose |
 |---|---|
 | `capture_patch_binding(patch_proposal, opts)` | Capture binding when patch proposal is created (similar to `capture_binding` for plans) |
+| `require_patch_proposal_scope(session, plan, opts)` | Gate producing a proposal: must have an approved plan AND an active `:patch_proposal` scope granted by `/propose patch` |
 | `require_patch_approval(session, plan, patch_proposal, scope)` | Require a `:patch`-scope approval tied to the specific proposal id/hash |
 | `approve_patch(session_id, plan, patch_proposal, opts)` | Transition patch approval to `:approved`; validate binding against current proposal |
 | `reject_patch(session_id, plan, patch_proposal, opts)` | Transition patch approval to `:rejected` |
-| `require_patch_proposal_scope(context, permission)` | Gate `patch_propose` tool: verify active plan approval exists AND a patch-proposal scope is active |
 
 ### Binding semantics
 
+- A `:patch_proposal` scope binds to `plan_id`, `plan_version`, `plan_hash`, `session_id`, `workspace`. It does **not** require a patch to exist yet.
 - A `:patch` approval binds to `plan_id`, `plan_version`, `plan_hash`, `patch_id`, `patch_hash`, `session_id`, `workspace`.
-- Plan approval does NOT satisfy a `:patch` scope check.
+- Plan approval does NOT satisfy either `:patch_proposal` or `:patch` scope checks.
 - Stale detection: if the plan is superseded or the patch hash changes, existing patch approvals become stale.
 
 ---
@@ -241,8 +258,8 @@ Spec.new!(
       warning: %{type: "string"}
     }
   },
-  requires_approval: :patch,   # Must have a :patch scope approval
-  requires_plan_approval: true # An approved plan must exist
+  requires_approval: :patch_proposal, # Must have pre-proposal scope — not :patch (no proposal exists yet)
+  requires_plan_approval: true         # An approved plan must exist
 )
 ```
 
@@ -250,9 +267,10 @@ Spec.new!(
 
 | Change | Detail |
 |---|---|
-| Gate `patch_propose` on `requires_approval: :patch` scope | Run `ApprovalGate.require_patch_proposal_scope/2` before executing |
+| Gate `patch_propose` on `requires_approval: :patch_proposal` scope | Run `ApprovalGate.require_patch_proposal_scope/2` before executing |
+| Add separate gate for `:patch` scope | `patch_propose` uses `:patch_proposal`; post-proposal `:patch` approval gates `patch_apply` (PR18) |
 | Add check: `requires_plan_approval` | Verify plan is approved and not stale before allowing the tool |
-| No change to `patch_apply` blocking | Still hard-blocked |
+| No change to `patch_apply` blocking | Still hard-blocked until PR18; even then requires `:patch` approval |
 | Event emission: add `:tool_call_patch_proposed` event | Distinct from `:tool_call_completed`; includes proposal summary |
 
 ---
@@ -262,22 +280,28 @@ Spec.new!(
 ### Session states
 
 ```
-:executing ──► :awaiting_patch_approval ──► ... (future PR18)
-                                    │
-                          ┌─────────┴─────────┐
-                     /approve patch     /reject patch
-                          │                    │
-                    :awaiting_patch_   :executing (or :idle)
-                    approval (stay)    plan stays approved
+:executing ──► [grant :patch_proposal scope] ──► Coding Muse runs patch_propose
+                                                      │
+                                              valid PatchProposal returned
+                                                      │
+                                              :awaiting_patch_approval ──► ... (future PR18)
+                                                                   │
+                                                         ┌─────────┴─────────┐
+                                                    /approve patch    /reject patch
+                                                    (:patch approve)  (reject)
+                                                         │                    │
+                                                   :awaiting_patch_   :executing (or :idle)
+                                                   approval (stay)    plan stays approved
 ```
 
 ### Event names
 
 | Event | Trigger |
 |---|---|
+| `:patch_proposal_scope_granted` | User runs `/propose patch` — `:patch_proposal` scope activated for session |
 | `:patch_proposal_created` | `patch_propose` tool returns valid `PatchProposal` |
 | `:patch_approval_requested` | Session transitions to `:awaiting_patch_approval` |
-| `:patch_approved` | User runs `/approve patch proposal` |
+| `:patch_approved` | User runs `/approve patch proposal` — `:patch` scope approved |
 | `:patch_rejected` | User runs `/reject patch` |
 | `:patch_approval_expired` | Patch approval TTL elapsed (future) |
 
@@ -304,12 +328,12 @@ Spec.new!(
 
 ### Proposed command set
 
-| Command | Alias | Handler | Description |
-|---|---|---|---|
-| `/propose patch` | — | `:propose_patch` | Request Coding Muse to produce a patch proposal from the approved plan |
-| `/approve patch proposal` | `/approve patch` | `:approve_patch` | Approve a pending patch proposal |
-| `/reject patch` | — | `:reject_patch` | Reject a pending patch proposal |
-| `/patch status` | — | `:patch_status` | Show current patch proposal + approval state |
+| Command | Alias | Scope | Handler | Description |
+|---|---|---|---|---|
+| `/propose patch` | — | Grants `:patch_proposal` pre-proposal scope | `:propose_patch` | Request Coding Muse to produce a patch proposal from the approved plan. Activating `:patch_proposal` does not create a proposal — it only permits the tool call. |
+| `/approve patch proposal` | `/approve patch` | Approves `:patch` scope | `:approve_patch` | Approve a pending patch proposal, bound to patch id/hash |
+| `/reject patch` | — | Rejects `:patch` scope | `:reject_patch` | Reject a pending patch proposal |
+| `/patch status` | — | — | `:patch_status` | Show current patch proposal + approval state |
 
 ### Tradeoff: long vs short command names
 
@@ -397,7 +421,7 @@ Spec.new!(
 |---|---|---|
 | Full flow: plan approved → patch proposed → approved | `test/muse/m1_read_only_planning_test.exs` (extend PR09 suite) | Scripted events: plan approved, Coding Muse turn, patch_propose tool call, patch approval requested, user approves |
 | Full flow: plan approved → patch proposed → rejected | Same | Rejection path, session returns to idle/executing |
-| Safety: no patch_propose without plan approval | `test/muse/m1_read_only_planning_test.exs` | Assert block when no plan approved |
+| Safety: no patch_propose without `:patch_proposal` scope | `test/muse/m1_read_only_planning_test.exs` | Assert block when no `:patch_proposal` scope granted |
 | Safety: no patch_apply in PR17 | `test/muse/tool/runner_test.exs` | `patch_apply` hard-blocked |
 | Fake provider: patch proposal tool batch | `test/support/muse/` (new fixture) | Scripted batch with `patch_propose` tool call, expected PatchProposal output |
 
@@ -415,8 +439,8 @@ Spec.new!(
 | Lane | Recommended Agent | Scope |
 |---|---|---|
 | **Lane A — Data model** | `elixir-expert` | `Muse.PatchProposal` struct, parse/format, content_hash, to_map/from_map, redacted_preview |
-| **Lane B — Approval gate** | `elixir-expert` or `code-puppy` | `ApprovalGate` patch scope: capture_binding, require_patch_approval, approve/reject_patch, stale detection |
-| **Lane C — Tool registry/runner** | `code-puppy` | `Tool.Registry`: unblock `patch_propose`, add spec. `Tool.Runner`: gate on `:patch` scope, `requires_plan_approval` check |
+| **Lane B — Approval gate** | `elixir-expert` or `code-puppy` | `ApprovalGate` `:patch_proposal` and `:patch` scopes: `require_patch_proposal_scope`, `require_patch_approval`, approve/reject_patch, stale detection |
+| **Lane C — Tool registry/runner** | `code-puppy` | `Tool.Registry`: unblock `patch_propose`, add spec. `Tool.Runner`: gate on `:patch_proposal` scope, `requires_plan_approval` check |
 | **Lane D — Command dispatcher** | `code-puppy` | `CommandDispatcher` `/propose patch`, `/approve patch`, `/reject patch`, `/patch status`; `Muse.Commands` registration |
 | **Lane E — SessionServer/Conductor** | `elixir-expert` | SessionServer approve_patch/reject_patch/patch_status handlers; Conductor patch proposal turn routing; event emission |
 | **Lane F — Tests** | `elixir-expert` | All unit, integration, and fixture tests from section 12 |
@@ -457,6 +481,7 @@ Lanes A–E can run in parallel *after* A completes, since B–E depend on the `
 |---|---|---|
 | `patch_propose` tool runs long/complex analysis | Tool blocks session | Set tool timeout; run analysis as Task under supervisor; cap analysis scope |
 | Patch proposal hash changes between creation and approval | Stale approval | Stale detection in `ApprovalGate.require_patch_approval` — reject if hash mismatches |
+| `:patch_proposal` vs `:patch` scope confusion | Accidentally requiring proposal approval before proposal exists | Clear naming, distinct scope checks: `:patch_proposal` gates `patch_propose`; `:patch` gates approval of generated proposal |
 | User approves patch, then uses `/propose patch` again | Multiple competing proposals | Session holds at most one pending patch proposal; new proposal supersedes old |
 | LLM produces unparseable patch proposal | Flow blocked | `Muse.PatchProposal.parse` returns `:error`; session stays in `:executing`; emit parse-error event |
 | LiveView coupling (if adding UI) | Not a blocker for PR17 | All flows are command-line based; LiveView patch-status view is optional scope |
@@ -479,7 +504,7 @@ Lanes A–E can run in parallel *after* A completes, since B–E depend on the `
 
 - `patch_propose` is a registered read-only tool that Coding Muse calls explicitly.
 - `Tool.Registry` controls availability.
-- `Tool.Runner` gates on `requires_approval: :patch` and `requires_plan_approval: true`.
+- `Tool.Runner` gates on `requires_approval: :patch_proposal` and `requires_plan_approval: true`. The generated proposal is then approved via `:patch` scope — two distinct gates.
 - **Pros**: Clean gating, structured input/output, extensible for PR18, testable in isolation.  
 - **Cons**: More initial work; requires tool registration, handler module, runner changes.  
 - **Recommendation**: **Primary approach** — aligns with architecture and future PR18 apply flow.
@@ -502,7 +527,8 @@ Lanes A–E can run in parallel *after* A completes, since B–E depend on the `
 4. **Multiple proposals**: Allow only one pending proposal per session (recommended) or multiple concurrent proposals?
 5. **Patch proposal content**: Should hunks include full diff lines (recommended for review) or only line-number references with a summary?
 6. **Approval expiration**: Should patch approvals have a TTL? If so, default? (Recommended: same 24h default as plan approvals)
-7. **Test scope**: Include property-based tests for PatchProposal roundtrip? (Recommended: defer to future)
+7. **Pre-proposal scope name**: Use `:patch_proposal` scope (distinct from `:patch`) to gate `patch_propose`? (Recommended: yes — avoids circular dependency where a patch approval is required before a patch exists)
+8. **Test scope**: Include property-based tests for PatchProposal roundtrip? (Recommended: defer to future)
 
 ---
 
@@ -518,13 +544,22 @@ Lanes A–E can run in parallel *after* A completes, since B–E depend on the `
 | 6 | Approval TTL | **24h default** (same as plan approvals) |
 | 7 | Property tests | **Defer** to future PR |
 | 8 | PR16 WS integration | **Design events now, implement WS delivery after PR16 merges** — not a blocker |
-| 9 | Plan approval → patch approval binding | Strict binding: plan_id + plan_version + plan_hash must match |
+| 9 | Plan approval → patch proposal/pre-proposal scope | Strict binding: plan_id + plan_version + plan_hash must match. Plan approval alone satisfies neither gate. |
+| 10 | Pre-proposal scope name | **`:patch_proposal`** — distinct from `:patch` approval scope, avoiding circular dependency |
 
 ---
 
 ## Appendix A — Event Specification
 
 ```elixir
+{:patch_proposal_scope_granted, %{
+  session_id: "sess_xxx",
+  plan_id: "plan_xxx",
+  scope: :patch_proposal,
+  granted_by: "user",
+  granted_at: "2026-05-04T12:00:00Z"
+}}
+
 {:patch_proposal_created, %{
   session_id: "sess_xxx",
   plan_id: "plan_xxx",
@@ -576,19 +611,19 @@ Lanes A–E can run in parallel *after* A completes, since B–E depend on the `
 | File | Action | Lane |
 |---|---|---|
 | `lib/muse/patch_proposal.ex` | **Create** — struct, parse/format, content_hash, to_map/from_map, redacted_preview | A |
-| `lib/muse/approval_gate.ex` | **Modify** — add capture_patch_binding, require_patch_approval, approve/reject_patch, require_patch_proposal_scope | B |
+| `lib/muse/approval_gate.ex` | **Modify** — add `:patch_proposal` scope, `require_patch_proposal_scope`, `require_patch_approval`, `approve_patch`, `reject_patch` | B |
 | `lib/muse/tool/registry.ex` | **Modify** — remove patch_propose from blocked list, add Spec | C |
 | `lib/muse/tools/patch_propose.ex` | **Create** — handler module | C |
 | `lib/muse/tool/runner.ex` | **Modify** — gate patch_propose on :patch scope + plan approval | C |
 | `lib/muse/command_dispatcher.ex` | **Modify** — add propose_patch, approve_patch, reject_patch, patch_status | D |
 | `lib/muse/commands.ex` | **Modify** — add new command registrations | D |
-| `lib/muse/session_server.ex` | **Modify** — add approve_patch/reject_patch/patch_status handlers, event emission | E |
+| `lib/muse/session_server.ex` | **Modify** — add scope-grant, approve_patch/reject_patch/patch_status handlers, event emission for both gates | E |
 | `lib/muse/conductor.ex` | **Modify** — patch proposal turn routing, event emission | E |
 | `lib/muse/session.ex` | **Verify** — :awaiting_patch_approval already defined | E |
 | `test/muse/patch_proposal_test.exs` | **Create** — unit tests | F |
-| `test/muse/approval_gate_test.exs` | **Modify** — add patch scope tests | F |
+| `test/muse/approval_gate_test.exs` | **Modify** — add `:patch_proposal` and `:patch` scope tests | F |
 | `test/muse/tool/registry_test.exs` | **Modify** — add patch_propose registration tests | F |
-| `test/muse/tool/runner_test.exs` | **Modify** — add patch_propose gating tests | F |
+| `test/muse/tool/runner_test.exs` | **Modify** — add patch_propose gating tests for `:patch_proposal` scope | F |
 | `test/muse/command_dispatcher_test.exs` | **Modify** — add patch command tests | F |
 | `test/muse/m1_read_only_planning_test.exs` | **Modify** — add patch proposal integration tests | F |
 | `test/support/muse/patch_proposal_fixtures.ex` | **Create** — fixture batches | F |
