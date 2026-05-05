@@ -78,15 +78,35 @@ defmodule Muse.Checkpoint.Store do
           {:ok, Checkpoint.t()} | {:error, term()}
   def load(session_id, checkpoint_id, opts \\ []) do
     base_dir = Keyword.get(opts, :base_dir, @default_base_dir)
-    chk_dir = checkpoint_dir(base_dir, session_id, checkpoint_id)
-    manifest_path = Path.join(chk_dir, "manifest.json")
 
-    with {:ok, content} <- File.read(manifest_path),
-         {:ok, decoded} <- Jason.decode(content) do
-      {:ok, Checkpoint.from_map(decoded)}
+    with :ok <- validate_path_component(session_id, "session_id"),
+         :ok <- validate_path_component(checkpoint_id, "checkpoint_id") do
+      chk_dir = checkpoint_dir(base_dir, session_id, checkpoint_id)
+      manifest_path = Path.join(chk_dir, "manifest.json")
+
+      with {:ok, content} <- File.read(manifest_path),
+           {:ok, decoded} <- Jason.decode(content) do
+        checkpoint = Checkpoint.from_map(decoded)
+
+        # Verify loaded identity matches requested ids
+        if checkpoint.session_id == session_id and checkpoint.id == checkpoint_id do
+          {:ok, checkpoint}
+        else
+          {:error,
+           {:identity_mismatch,
+            %{
+              requested_session_id: session_id,
+              requested_checkpoint_id: checkpoint_id,
+              loaded_session_id: checkpoint.session_id,
+              loaded_checkpoint_id: checkpoint.id
+            }}}
+        end
+      else
+        {:error, :enoent} -> {:error, :checkpoint_not_found}
+        {:error, reason} -> {:error, {:manifest_corrupt, reason}}
+      end
     else
-      {:error, :enoent} -> {:error, :checkpoint_not_found}
-      {:error, reason} -> {:error, {:manifest_corrupt, reason}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -247,13 +267,13 @@ defmodule Muse.Checkpoint.Store do
 
   defp capture_single_snapshot(rel_path, workspace, snapshots_dir) do
     # Validate the path is safe for snapshot (no secrets, no traversal)
-    with :ok <- validate_snapshot_path(rel_path, workspace) do
-      abs_path = Path.join(workspace, rel_path)
-
+    with :ok <- validate_snapshot_path(rel_path, workspace),
+         {:ok, safe_abs} <- safe_resolve_restore_path(rel_path, workspace) do
       # Check for symlink escape at capture time
-      with :ok <- reject_symlink_at(abs_path, workspace) do
-        if File.exists?(abs_path) do
-          case File.read(abs_path) do
+      with :ok <- reject_symlink_at(safe_abs, workspace),
+           :ok <- reject_symlink_components_in_path(safe_abs, workspace) do
+        if File.exists?(safe_abs) do
+          case File.read(safe_abs) do
             {:ok, content} ->
               content_hash =
                 :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
@@ -287,6 +307,7 @@ defmodule Muse.Checkpoint.Store do
           end
         else
           # File does not exist before patch — rollback should delete it
+          # Parent dirs already validated by reject_symlink_components_in_path
           {:ok,
            %{
              path: rel_path,
@@ -297,6 +318,51 @@ defmodule Muse.Checkpoint.Store do
         end
       end
     end
+  end
+
+  # Check symlink components in the full path to the file (including parent dirs).
+  # This prevents git apply from writing through symlink parents.
+  defp reject_symlink_components_in_path(abs_path, workspace) do
+    ws = Path.expand(workspace)
+
+    # Walk from workspace root to the parent of abs_path
+    parent = Path.dirname(abs_path)
+
+    if parent_safe_for_capture?(parent, ws) do
+      :ok
+    else
+      {:error, {:symlink_component_in_path, abs_path}}
+    end
+  end
+
+  # For capture, we allow existing safe symlinks that resolve inside workspace
+  # but block any symlink that could let git write outside.
+  defp parent_safe_for_capture?(target, ws) do
+    ws_parts = Path.split(ws)
+    target_parts = Path.split(target)
+
+    Enum.reduce_while(
+      Enum.drop(target_parts, length(ws_parts)),
+      ws,
+      fn part, acc ->
+        candidate = Path.join(acc, part)
+
+        case File.lstat(candidate) do
+          {:ok, %{type: :symlink}} ->
+            # Block any symlink component for captures — conservative
+            {:halt, false}
+
+          {:error, :enoent} ->
+            {:cont, candidate}
+
+          {:error, _} ->
+            {:halt, false}
+
+          {:ok, _} ->
+            {:cont, candidate}
+        end
+      end
+    )
   end
 
   defp validate_snapshot_path(rel_path, workspace) do
@@ -321,16 +387,24 @@ defmodule Muse.Checkpoint.Store do
          _snapshots_dir,
          _base_dir
        ) do
-    with :ok <- validate_restore_path(rel_path, workspace) do
-      abs_path = Path.join(workspace, rel_path)
+    with :ok <- validate_restore_path(rel_path, workspace),
+         {:ok, safe_abs} <- safe_resolve_restore_path(rel_path, workspace) do
+      # Reject if the target path is a symlink (don't delete through symlinks)
+      case File.lstat(safe_abs) do
+        {:ok, %{type: :symlink}} ->
+          {:error, {:symlink_delete_target, rel_path}}
 
-      if File.exists?(abs_path) do
-        case File.rm(abs_path) do
-          :ok -> :ok
-          {:error, reason} -> {:error, {:delete_failed, rel_path, reason}}
-        end
-      else
-        :ok
+        {:ok, _} ->
+          case File.rm(safe_abs) do
+            :ok -> :ok
+            {:error, reason} -> {:error, {:delete_failed, rel_path, reason}}
+          end
+
+        {:error, :enoent} ->
+          :ok
+
+        {:error, reason} ->
+          {:error, {:delete_lstat_failed, rel_path, reason}}
       end
     end
   end
@@ -342,17 +416,18 @@ defmodule Muse.Checkpoint.Store do
          base_dir
        ) do
     with :ok <- validate_restore_path(rel_path, workspace),
-         :ok <- validate_snapshot_path_boundary(snap_rel, snapshots_dir, base_dir) do
+         {:ok, safe_abs} <- safe_resolve_restore_path(rel_path, workspace),
+         :ok <- validate_snapshot_path_boundary(snap_rel, snapshots_dir, base_dir),
+         :ok <- require_valid_content_hash(expected_hash, rel_path) do
       snapshot_abs = Path.join(snapshots_dir, snap_rel)
-      abs_path = Path.join(workspace, rel_path)
 
       case File.read(snapshot_abs) do
         {:ok, content} ->
-          # Verify content hash if present
+          # Verify content hash
           with :ok <- verify_snapshot_hash(content, expected_hash, rel_path),
-               :ok <- reject_symlink_at(abs_path, workspace),
-               {:ok, _} <- safe_mkdir_p(Path.dirname(abs_path)),
-               {:ok, _} <- safe_write_file(abs_path, content) do
+               :ok <- reject_symlink_at(safe_abs, _workspace = nil),
+               {:ok, _} <- safe_mkdir_p(Path.dirname(safe_abs)),
+               {:ok, _} <- safe_write_file(safe_abs, content) do
             :ok
           else
             {:error, {:hash_mismatch, _path, _expected, _actual} = reason} -> {:error, reason}
@@ -391,23 +466,120 @@ defmodule Muse.Checkpoint.Store do
     end
   end
 
-  # Ensure snapshot_path doesn't escape the checkpoint snapshots directory.
-  defp validate_snapshot_path_boundary(snap_rel, snapshots_dir, _base_dir) do
-    snapshot_abs = Path.expand(Path.join(snapshots_dir, snap_rel))
-    snapshots_expanded = Path.expand(snapshots_dir)
+  # Returns a safe resolved absolute path for the restore target.
+  # Walks parent components checking for symlink escapes.
+  defp safe_resolve_restore_path(rel_path, workspace) do
+    abs = Path.join(workspace, rel_path) |> Path.expand()
+    ws = Path.expand(workspace)
 
-    if String.starts_with?(snapshot_abs, snapshots_expanded <> "/") or
-         snapshot_abs == snapshots_expanded do
-      :ok
+    # Check each existing parent for symlink escape
+    parent = Path.dirname(abs)
+
+    if parent_safe?(parent, ws) do
+      {:ok, abs}
     else
-      {:error, {:snapshot_path_escape, snap_rel}}
+      {:error, {:restore_path_symlink_component, rel_path}}
     end
   end
 
-  # Verify snapshot content hash matches the recorded hash (if present).
-  defp verify_snapshot_hash(_content, nil, _rel_path), do: :ok
+  # Walk from workspace root toward the parent dir, checking each existing
+  # component via lstat to ensure no symlink escapes.
+  defp parent_safe?(target, ws) do
+    ws_parts = Path.split(ws)
+    target_parts = Path.split(target)
 
-  defp verify_snapshot_hash(content, expected_hash, rel_path) when is_binary(expected_hash) do
+    # Only check components between workspace root and target parent
+    Enum.reduce_while(
+      Enum.drop(target_parts, length(ws_parts)),
+      ws,
+      fn part, acc ->
+        candidate = Path.join(acc, part)
+
+        case File.lstat(candidate) do
+          {:ok, %{type: :symlink}} ->
+            # Symlink component found — check if it resolves inside workspace
+            case File.stat(candidate) do
+              {:ok, _} ->
+                resolved = Path.expand(candidate)
+
+                if String.starts_with?(resolved, ws <> "/") or resolved == ws do
+                  # Symlink points inside workspace — still block for writes
+                  {:halt, false}
+                else
+                  {:halt, false}
+                end
+
+              {:error, _} ->
+                {:halt, false}
+            end
+
+          {:error, :enoent} ->
+            # Non-existent component — safe to proceed (we'll create it)
+            {:cont, candidate}
+
+          {:error, _} ->
+            {:halt, false}
+
+          {:ok, _} ->
+            {:cont, candidate}
+        end
+      end
+    )
+  end
+
+  # Ensure snapshot_path doesn't escape the checkpoint snapshots directory.
+  # Rejects nil, non-binary, empty, traversal, and boundary-escaping paths.
+  # Also rejects if final path equals the snapshots dir itself.
+  defp validate_snapshot_path_boundary(snap_rel, snapshots_dir, _base_dir) do
+    cond do
+      not is_binary(snap_rel) ->
+        {:error, {:invalid_snapshot_path, snap_rel}}
+
+      snap_rel == "" ->
+        {:error, {:invalid_snapshot_path, ""}}
+
+      true ->
+        snapshot_abs = Path.expand(Path.join(snapshots_dir, snap_rel))
+        snapshots_expanded = Path.expand(snapshots_dir)
+
+        cond do
+          snapshot_abs == snapshots_expanded ->
+            # Must be strictly UNDER, not equal to
+            {:error, {:snapshot_path_escape, snap_rel}}
+
+          not String.starts_with?(snapshot_abs, snapshots_expanded <> "/") ->
+            {:error, {:snapshot_path_escape, snap_rel}}
+
+          true ->
+            # Also check the snapshot file itself is not a symlink
+            reject_snapshot_symlink(snapshot_abs, snap_rel)
+        end
+    end
+  end
+
+  defp reject_snapshot_symlink(snapshot_abs, snap_rel) do
+    case File.lstat(snapshot_abs) do
+      {:ok, %{type: :symlink}} ->
+        {:error, {:snapshot_symlink, snap_rel}}
+
+      _ ->
+        :ok
+    end
+  rescue
+    # If lstat fails (e.g. enoent), that's fine — we'll catch it on File.read
+    _ -> :ok
+  end
+
+  # Verify snapshot content hash matches the recorded hash.
+  # For existed=true snapshots, content_hash must be non-blank binary.
+  defp require_valid_content_hash(hash, _rel_path) when is_binary(hash) and hash != "", do: :ok
+
+  defp require_valid_content_hash(_hash, rel_path) do
+    {:error, {:invalid_snapshot_hash, rel_path}}
+  end
+
+  defp verify_snapshot_hash(content, expected_hash, rel_path)
+       when is_binary(expected_hash) and expected_hash != "" do
     actual = :crypto.hash(:sha256, content) |> Base.encode16(case: :lower)
 
     if String.equivalent?(actual, expected_hash) do
@@ -419,7 +591,7 @@ defmodule Muse.Checkpoint.Store do
 
   defp verify_snapshot_hash(_content, _expected, _rel_path), do: :ok
 
-  # Reject if the target path is a symlink pointing outside the workspace.
+  # Reject if the target path is a symlink (for both workspace and snapshot paths).
   defp reject_symlink_at(abs_path, _workspace) do
     case File.lstat(abs_path) do
       {:ok, %{type: :symlink}} ->

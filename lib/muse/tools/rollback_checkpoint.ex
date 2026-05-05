@@ -28,7 +28,7 @@ defmodule Muse.Tools.RollbackCheckpoint do
     * All operations are auditable via checkpoint manifest updates.
   """
 
-  alias Muse.{Checkpoint, Checkpoint.Store}
+  alias Muse.{Checkpoint, Checkpoint.Store, SessionStore}
   alias Muse.Tool.Result
 
   @doc """
@@ -55,6 +55,9 @@ defmodule Muse.Tools.RollbackCheckpoint do
          :ok <- verify_workspace_match(checkpoint, workspace),
          :ok <- verify_plan_binding(checkpoint, context),
          {:ok, rolled_back} <- Store.rollback(checkpoint) do
+      # Persist rollback audit record
+      _ = persist_rollback_audit(context, rolled_back, :completed)
+
       Result.ok(
         "rollback_checkpoint",
         %{
@@ -73,6 +76,8 @@ defmodule Muse.Tools.RollbackCheckpoint do
       )
     else
       {:error, reason} ->
+        # Attempt to persist rollback failure audit if we have enough context
+        _ = persist_rollback_audit(context, nil, :failed)
         Result.error("rollback_checkpoint", format_error(reason))
     end
   end
@@ -95,6 +100,9 @@ defmodule Muse.Tools.RollbackCheckpoint do
 
       blank?(Map.get(context, :plan_id)) ->
         {:error, "rollback_checkpoint requires plan_id in context"}
+
+      blank?(Map.get(context, :plan_hash)) ->
+        {:error, "rollback_checkpoint requires plan_hash in context"}
 
       blank?(Map.get(context, :session_id)) ->
         {:error, "rollback_checkpoint requires session_id in context"}
@@ -175,10 +183,13 @@ defmodule Muse.Tools.RollbackCheckpoint do
         {:error,
          "checkpoint plan_id #{inspect(checkpoint.plan_id)} does not match active plan #{inspect(plan_id)}"}
 
-      checkpoint.plan_hash != nil and checkpoint.plan_hash != "" and
-        plan_hash != nil and plan_hash != "" and
-          checkpoint.plan_hash != plan_hash ->
-        {:error, "checkpoint plan_hash does not match active plan hash (stale plan binding)"}
+      # PR18 strict: checkpoint must have non-blank plan_hash that matches context
+      blank?(checkpoint.plan_hash) ->
+        {:error, "checkpoint has missing or blank plan_hash; cannot verify plan binding"}
+
+      checkpoint.plan_hash != plan_hash ->
+        {:error,
+         "checkpoint plan_hash does not match active plan hash (stale or tampered plan binding)"}
 
       true ->
         :ok
@@ -189,4 +200,30 @@ defmodule Muse.Tools.RollbackCheckpoint do
 
   defp format_error(reason) when is_binary(reason), do: reason
   defp format_error(reason), do: "rollback failed: #{inspect(reason)}"
+
+  # -- Audit persistence ---------------------------------------------------------
+
+  defp persist_rollback_audit(context, checkpoint, status) do
+    session_id = to_string(Map.get(context, :session_id, ""))
+
+    audit_record =
+      %{
+        event: if(status == :completed, do: :rollback_completed, else: :rollback_failed),
+        checkpoint_id: if(checkpoint, do: checkpoint.id, else: nil),
+        patch_id: if(checkpoint, do: checkpoint.patch_id, else: nil),
+        patch_hash: if(checkpoint, do: checkpoint.patch_hash, else: nil),
+        plan_id: Map.get(context, :plan_id),
+        plan_hash: Map.get(context, :plan_hash),
+        session_id: session_id,
+        source: "coding_muse",
+        timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
+        status: status
+      }
+
+    case SessionStore.append_patch(session_id, audit_record) do
+      :ok -> :ok
+      # non-fatal for rollback audit
+      {:error, _reason} -> :ok
+    end
+  end
 end

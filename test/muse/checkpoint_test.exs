@@ -191,6 +191,33 @@ defmodule Muse.CheckpointTest do
       assert checkpoint.strategy == :git_apply
     end
 
+    test "defaults unknown strategy atoms safely" do
+      checkpoint =
+        Checkpoint.new(%{
+          session_id: "s",
+          plan_id: "p",
+          patch_id: "pa",
+          patch_hash: "h",
+          strategy: :dangerous_atom_strategy
+        })
+
+      # Unknown atoms must default to :git_apply, not pass through
+      assert checkpoint.strategy == :git_apply
+    end
+
+    test "known strategy atoms pass through" do
+      checkpoint =
+        Checkpoint.new(%{
+          session_id: "s",
+          plan_id: "p",
+          patch_id: "pa",
+          patch_hash: "h",
+          strategy: :git_apply
+        })
+
+      assert checkpoint.strategy == :git_apply
+    end
+
     test "normalizes snapshot keys via whitelist only" do
       map = %{
         "session_id" => "s",

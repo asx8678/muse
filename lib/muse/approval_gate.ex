@@ -470,7 +470,8 @@ defmodule Muse.ApprovalGate do
        ) do
     approved_plan_context?(context) and
       is_binary(Map.get(context, :session_id)) and Map.get(context, :session_id) != "" and
-      is_binary(Map.get(context, :plan_id)) and Map.get(context, :plan_id) != ""
+      is_binary(Map.get(context, :plan_id)) and Map.get(context, :plan_id) != "" and
+      is_binary(Map.get(context, :plan_hash)) and Map.get(context, :plan_hash) != ""
   end
 
   defp rollback_checkpoint_allowed?(_, _), do: false
@@ -489,17 +490,21 @@ defmodule Muse.ApprovalGate do
   defp approved_patch_context?(context) when is_map(context) do
     session_id = Map.get(context, :session_id)
     plan_id = Map.get(context, :plan_id)
+    plan_hash = Map.get(context, :plan_hash)
     approvals = Approval.normalize_list(Map.get(context, :approvals, []))
 
     is_binary(session_id) and session_id != "" and
       is_binary(plan_id) and plan_id != "" and
+      is_binary(plan_hash) and plan_hash != "" and
       Enum.any?(approvals, fn a ->
         a.kind == :patch and
           a.status == :approved and
           a.session_id == session_id and
           is_binary(a.patch_id) and a.patch_id != "" and
           is_binary(a.patch_hash) and a.patch_hash != "" and
-          a.plan_id == plan_id
+          a.plan_id == plan_id and
+          is_binary(a.plan_hash) and a.plan_hash != "" and
+          a.plan_hash == plan_hash
       end)
   end
 

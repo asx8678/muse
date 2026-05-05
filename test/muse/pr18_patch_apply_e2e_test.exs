@@ -51,6 +51,86 @@ defmodule Muse.PR18PatchApplyE2ETest do
 
   describe "PR18 patch apply/rollback E2E" do
     @tag :pr18_patch_apply
+    test "new-file diff E2E: apply creates file, rollback removes it, audit records exist", %{
+      workspace: workspace
+    } do
+      session_id = pr18_session_id("new-file-e2e")
+      pid = start_server(session_id)
+
+      plan = create_approved_plan(session_id, workspace)
+      :ok = GenServer.call(pid, {:store_approved_plan, plan})
+
+      # Use a new-file diff
+      new_file_diff = """
+      --- /dev/null
+      +++ b/lib/new_module.ex
+      @@ -0,0 +1,3 @@
+      +defmodule NewModule do
+      +  def greet, do: :hello
+      +end
+      """
+
+      # Step 1: Propose
+      {:ok, patch} =
+        SessionServer.propose_patch(pid,
+          diff: new_file_diff,
+          affected_files: ["lib/new_module.ex"]
+        )
+
+      assert %Patch{} = patch
+
+      # Step 2: Approve
+      {:ok, approved_patch} = SessionServer.approve_patch(pid, :cli)
+      assert approved_patch.status == :approved
+
+      # Step 3: Apply
+      {:ok, result} = SessionServer.apply_patch(pid, nil)
+      assert is_binary(result.checkpoint_id)
+      assert result.status == :applied
+
+      # Verify file was created
+      new_file = Path.join(workspace, "lib/new_module.ex")
+      assert File.exists?(new_file)
+      content = File.read!(new_file)
+      assert content =~ "NewModule"
+
+      # Step 4: Rollback
+      {:ok, rollback_result} = SessionServer.rollback_checkpoint(pid, result.checkpoint_id)
+      assert rollback_result.status == :rolled_back
+
+      # Verify file was removed
+      refute File.exists?(new_file)
+
+      # Verify checkpoint manifest reflects rolled_back
+      {:ok, checkpoint} = Store.load(session_id, result.checkpoint_id)
+      assert checkpoint.status == :rolled_back
+
+      # Verify audit records exist for both apply and rollback
+      {:ok, patches, _} = Muse.SessionStore.load_patches(session_id)
+
+      apply_audits =
+        Enum.filter(patches, fn p ->
+          p["event"] == "patch_applied" or p[:event] == :patch_applied
+        end)
+
+      rollback_audits =
+        Enum.filter(patches, fn p ->
+          p["event"] == "rollback_completed" or p[:event] == :rollback_completed
+        end)
+
+      assert length(apply_audits) >= 1
+      assert length(rollback_audits) >= 1
+
+      # Verify audit records contain checkpoint_id and plan_hash
+      apply_audit = hd(apply_audits)
+
+      assert apply_audit["checkpoint_id"] == result.checkpoint_id or
+               apply_audit[:checkpoint_id] == result.checkpoint_id
+
+      assert is_binary(apply_audit["plan_hash"]) or is_binary(apply_audit[:plan_hash])
+    end
+
+    @tag :pr18_patch_apply
     test "full flow: propose → approve → apply → rollback", %{workspace: workspace} do
       session_id = pr18_session_id("full-flow")
       pid = start_server(session_id)

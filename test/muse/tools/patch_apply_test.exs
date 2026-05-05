@@ -32,7 +32,6 @@ defmodule Muse.Tools.PatchApplyTest do
   -end
   """
 
-  # Diff with "/dev/null" in hunk content (not a deletion) — must NOT be rejected
   @dev_null_in_content_diff """
   --- a/lib/example.ex
   +++ b/lib/example.ex
@@ -46,7 +45,10 @@ defmodule Muse.Tools.PatchApplyTest do
   @plan_hash String.duplicate("f", 64)
 
   setup do
-    workspace = Path.join(System.tmp_dir!(), "muse_pa_#{System.unique_integer([:positive])}")
+    base_dir =
+      Path.join(System.tmp_dir!(), "muse_pa_#{System.unique_integer([:positive])}")
+
+    workspace = Path.join(base_dir, "workspace")
     File.mkdir_p!(Path.join(workspace, "lib"))
 
     File.write!(Path.join([workspace, "lib", "example.ex"]), """
@@ -62,11 +64,10 @@ defmodule Muse.Tools.PatchApplyTest do
     System.cmd("git", ["commit", "-m", "initial"], cd: workspace)
 
     on_exit(fn ->
-      File.rm_rf!(workspace)
-      File.rm_rf!(".muse/sessions")
+      File.rm_rf!(base_dir)
     end)
 
-    %{workspace: workspace}
+    %{workspace: workspace, base_dir: base_dir}
   end
 
   defp approved_context(overrides \\ %{}) do
@@ -83,6 +84,20 @@ defmodule Muse.Tools.PatchApplyTest do
       },
       overrides
     )
+  end
+
+  defp make_approval(patch, overrides \\ %{}) do
+    defaults = %{
+      kind: :patch,
+      status: :approved,
+      session_id: "s1",
+      patch_id: patch.id,
+      patch_hash: patch.hash,
+      plan_id: "plan-1",
+      plan_hash: @plan_hash
+    }
+
+    Approval.new(Map.merge(defaults, overrides))
   end
 
   describe "execute/2 — authorization" do
@@ -155,23 +170,73 @@ defmodule Muse.Tools.PatchApplyTest do
           status: :approved
         })
 
-      approval =
-        Approval.new(%{
-          kind: :patch,
-          status: :approved,
-          session_id: "s1",
-          patch_id: patch.id,
-          patch_hash: patch.hash,
-          plan_id: "wrong-plan"
-        })
-
-      ctx =
-        approved_context(%{approvals: [approval]})
-        |> Map.put(:pending_patch, patch)
+      approval = make_approval(patch, %{plan_id: "wrong-plan"})
+      ctx = approved_context(%{approvals: [approval]}) |> Map.put(:pending_patch, patch)
 
       result = PatchApply.execute(%{"patch_id" => patch.id}, ctx)
       refute result.success
       assert result.error =~ "no matching approved patch approval"
+    end
+
+    test "rejects approval with missing plan_hash" do
+      {:ok, patch} =
+        Patch.new(%{
+          session_id: "s1",
+          plan_id: "plan-1",
+          plan_version: 1,
+          plan_hash: @plan_hash,
+          diff: @valid_diff,
+          status: :approved
+        })
+
+      approval = make_approval(patch, %{plan_hash: nil})
+      ctx = approved_context(%{approvals: [approval]}) |> Map.put(:pending_patch, patch)
+
+      result = PatchApply.execute(%{"patch_id" => patch.id}, ctx)
+      refute result.success
+      assert result.error =~ "no matching approved patch approval"
+    end
+
+    test "rejects approval with mismatched plan_hash" do
+      {:ok, patch} =
+        Patch.new(%{
+          session_id: "s1",
+          plan_id: "plan-1",
+          plan_version: 1,
+          plan_hash: @plan_hash,
+          diff: @valid_diff,
+          status: :approved
+        })
+
+      wrong_hash = String.duplicate("e", 64)
+      approval = make_approval(patch, %{plan_hash: wrong_hash})
+      ctx = approved_context(%{approvals: [approval]}) |> Map.put(:pending_patch, patch)
+
+      result = PatchApply.execute(%{"patch_id" => patch.id}, ctx)
+      refute result.success
+      assert result.error =~ "no matching approved patch approval"
+    end
+
+    test "rejects when context plan_hash is missing" do
+      {:ok, patch} =
+        Patch.new(%{
+          session_id: "s1",
+          plan_id: "plan-1",
+          plan_version: 1,
+          plan_hash: @plan_hash,
+          diff: @valid_diff,
+          status: :approved
+        })
+
+      approval = make_approval(patch)
+
+      ctx =
+        approved_context(%{plan_hash: nil, approvals: [approval]})
+        |> Map.put(:pending_patch, patch)
+
+      result = PatchApply.execute(%{"patch_id" => patch.id}, ctx)
+      refute result.success
+      assert result.error =~ "plan_hash"
     end
   end
 
@@ -205,19 +270,8 @@ defmodule Muse.Tools.PatchApplyTest do
           status: :approved
         })
 
-      approval =
-        Approval.new(%{
-          kind: :patch,
-          status: :approved,
-          session_id: "s1",
-          patch_id: patch.id,
-          patch_hash: patch.hash,
-          plan_id: "plan-1"
-        })
-
-      ctx =
-        approved_context(%{approvals: [approval]})
-        |> Map.put(:pending_patch, patch)
+      approval = make_approval(patch)
+      ctx = approved_context(%{approvals: [approval]}) |> Map.put(:pending_patch, patch)
 
       result = PatchApply.execute(%{"patch_id" => patch.id}, ctx)
       refute result.success
@@ -226,7 +280,9 @@ defmodule Muse.Tools.PatchApplyTest do
   end
 
   describe "execute/2 — successful apply" do
-    test "creates checkpoint, applies patch, and returns diff preview", %{workspace: workspace} do
+    test "creates checkpoint, applies patch, and returns diff preview", %{
+      workspace: workspace
+    } do
       {:ok, patch} =
         Patch.new(%{
           session_id: "s_apply_1",
@@ -237,15 +293,7 @@ defmodule Muse.Tools.PatchApplyTest do
           status: :approved
         })
 
-      approval =
-        Approval.new(%{
-          kind: :patch,
-          status: :approved,
-          session_id: "s_apply_1",
-          patch_id: patch.id,
-          patch_hash: patch.hash,
-          plan_id: "plan-1"
-        })
+      approval = make_approval(patch, %{session_id: "s_apply_1"})
 
       :ok = Muse.SessionStore.append_patch("s_apply_1", Patch.to_map(patch))
 
@@ -270,6 +318,13 @@ defmodule Muse.Tools.PatchApplyTest do
       assert content =~ "@moduledoc"
 
       assert is_binary(result.output.git_diff_preview)
+
+      # Verify audit record persisted
+      {:ok, patches, _} = Muse.SessionStore.load_patches("s_apply_1")
+
+      assert Enum.any?(patches, fn p ->
+               p["event"] == "patch_applied" or p[:event] == :patch_applied
+             end)
     end
   end
 end

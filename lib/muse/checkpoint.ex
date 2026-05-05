@@ -180,7 +180,11 @@ defmodule Muse.Checkpoint do
   defp normalize_status(status) when is_binary(status), do: Map.get(@status_map, status, :created)
   defp normalize_status(_), do: :created
 
-  defp normalize_strategy(strategy) when is_atom(strategy), do: strategy
+  defp normalize_strategy(strategy) when strategy in [:git_apply, :elixir_fallback],
+    do: strategy
+
+  defp normalize_strategy(strategy) when is_atom(strategy),
+    do: :git_apply
 
   defp normalize_strategy(strategy) when is_binary(strategy),
     do: Map.get(@strategy_map, strategy, :git_apply)

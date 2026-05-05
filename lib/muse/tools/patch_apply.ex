@@ -85,7 +85,7 @@ defmodule Muse.Tools.PatchApply do
       manifest_result = Store.update_manifest(checkpoint)
 
       # Persist auditable apply record to session patches.jsonl
-      :ok =
+      audit_result =
         persist_apply_audit(context, applied_patch, checkpoint)
 
       # Get bounded post-apply diff preview
@@ -114,6 +114,21 @@ defmodule Muse.Tools.PatchApply do
               base_output,
               :audit_warning,
               "checkpoint manifest update failed: #{inspect(reason)}; workspace was modified"
+            )
+        end
+
+      # If apply audit persistence failed, surface warning
+      output =
+        case audit_result do
+          :ok ->
+            output
+
+          {:error, reason} ->
+            Map.put(
+              output,
+              :audit_warning,
+              output[:audit_warning] ||
+                "apply audit persistence failed: #{inspect(reason)}"
             )
         end
 
@@ -286,24 +301,30 @@ defmodule Muse.Tools.PatchApply do
     plan_hash = Map.get(context, :plan_hash)
     approvals = Map.get(context, :approvals, [])
 
-    matching =
-      approvals
-      |> Approval.normalize_list()
-      |> Enum.any?(fn a ->
-        a.kind == :patch and
-          a.status == :approved and
-          a.session_id == session_id and
-          a.patch_id == patch.id and
-          a.patch_hash == patch.hash and
-          a.plan_id == plan_id and
-          (a.plan_hash == plan_hash or is_nil(a.plan_hash))
-      end)
-
-    if matching do
-      :ok
+    # plan_hash must be non-blank in context for strict matching
+    if blank?(plan_hash) do
+      {:error, "patch_apply requires non-blank plan_hash in context for approval verification"}
     else
-      {:error,
-       "no matching approved patch approval for patch #{patch.id} in session #{session_id} plan #{plan_id}"}
+      matching =
+        approvals
+        |> Approval.normalize_list()
+        |> Enum.any?(fn a ->
+          a.kind == :patch and
+            a.status == :approved and
+            a.session_id == session_id and
+            a.patch_id == patch.id and
+            a.patch_hash == patch.hash and
+            a.plan_id == plan_id and
+            is_binary(a.plan_hash) and a.plan_hash != "" and
+            a.plan_hash == plan_hash
+        end)
+
+      if matching do
+        :ok
+      else
+        {:error,
+         "no matching approved patch approval for patch #{patch.id} in session #{session_id} plan #{plan_id}"}
+      end
     end
   end
 
@@ -438,8 +459,7 @@ defmodule Muse.Tools.PatchApply do
 
     case SessionStore.append_patch(session_id, audit_record) do
       :ok -> :ok
-      # non-fatal; already applied
-      {:error, _reason} -> :ok
+      {:error, reason} -> {:error, {:audit_persist_failed, reason}}
     end
   end
 end
