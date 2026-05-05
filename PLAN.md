@@ -67,19 +67,25 @@ Plan ready:
 Approve this plan? [y/N]
 ```
 
-The second product experience:
+The second product experience (future — requires patch-proposal gate, PR 17+):
 
 ```text
 muse> approve plan
 
 Muse Conductor:
-Plan approved. Coding Muse will prepare a patch.
+Plan approved. The plan decision is recorded; no implementation,
+patching, shell, or workspace writes will occur.
+
+...after a scoped implementation/patch-proposal gate is introduced...
 
 Coding Muse:
 I found the command handler and test files. Here is the proposed diff.
 
 Apply this patch? [y/N]
 ```
+
+> **PR 09 guarantee:** `/approve plan` records the plan decision only.
+> It does not start implementation, patching, shell/network access, or workspace writes.
 
 ---
 
@@ -92,7 +98,7 @@ Apply this patch? [y/N]
 5. **No Agent/Bot/mascot labels** in CLI, TUI, LiveView, docs, prompts, events, or examples
 6. **Prompt text is guidance, not security** — runtime safety enforced in Elixir code
 7. **Planning Muse uses read-only tools only** before plan approval
-8. **Coding Muse prepares patches only after an approved plan**
+8. **Coding Muse prepares patches only after plan approval AND a scoped implementation/patch-proposal gate** — not merely `/approve plan` in PR 09
 9. **File writes require patch approval**; shell commands require explicit approval
 10. **Network disabled or approval-gated by default**; remote execution always denied until later milestone
 11. **Secrets never appear** in prompt previews, logs, events, crash text, or provider debug output
@@ -156,7 +162,7 @@ Each turn → TurnRunner (Task):
 | 07a | Conductor — Muse selection & prompt building | Select Muse, build bundle, call fake provider, emit events |
 | 07b | Conductor — tool loop | TurnRunner Task, iterative tool calls, caps, cancellation, blocked-tool handling |
 | 08 | Structured plan model & Planning Muse MVP | Plan/Task structs, parser, validation, `/plan`, session `:awaiting_plan_approval` |
-| 09 | Approval Gate & plan approval | Approval struct, ApprovalGate, `/approve plan`, `/reject plan`, stale prevention |
+| 09 | Approval Gate & plan approval | Approval struct, ApprovalGate, `/approve plan`, `/reject plan`, stale prevention · *approval records plan decision only — no implementation, patching, or workspace writes* |
 | 10 | **Read-only Planning Muse milestone** 🔒 | End-to-end hardening, integration test, fake provider script, no writes |
 | 11 | Provider config & request mappers | ProviderConfig, Responses/ChatCompletions JSON mappers, secret redaction |
 | 12 | OpenAI-compatible non-streaming provider | Encoder/decoder, req dep, custom base_url, redacted errors |
@@ -235,6 +241,7 @@ lib/muse/muse_profile.ex            lib/muse/muses/testing_muse.ex
 - Planning Muse uses read-only tools (list, read, search, git)
 - Structured plan created, persisted, shown by `/plan`
 - Session status `:awaiting_plan_approval`; CLI/TUI/LiveView show plan
+- `/approve plan` records the plan decision only — does not start implementation, patching, shell/network, or workspace writes
 - **Zero files modified, zero shell commands, zero implementation handoffs**
 
 ### Muse Runtime v0

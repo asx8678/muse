@@ -41,11 +41,13 @@
 Implemented runtime scope for PR09:
 
 - `Muse.MuseRegistry` currently registers **Planning Muse** and **Coding Muse** only.
-- `Muse.Conductor.select_muse/2` currently executes turns with **Planning Muse**.
+- `Muse.Conductor.select_muse/2` currently executes turns with **Planning Muse** only; Coding Muse handoff is **disabled** until future gates (PR17/PR18/PR19) are implemented.
 - Planning Muse is expected to output **structured JSON plan text** parsed by `Muse.PlanParser`.
 - On successful parse, users see `Muse.Plan.render/1` output with `/approve plan` and `/reject plan` guidance.
 - Plan lifecycle approvals are explicit and auditable in PR09.
-- Approval remains lifecycle-only in PR09; no patch apply, shell execution, network execution, or automatic Coding Muse handoff is enabled.
+- Approval remains **lifecycle-only and non-executing** in PR09; it transitions plan status and emits events but does not apply patches, write files, run shell/network operations, or hand off to Coding Muse.
+
+> **Prompt text is guidance, not a security boundary.** Runtime safety is enforced by `Muse.Tool.Registry` + `Muse.Tool.Runner` (deny-by-default) and `Muse.ApprovalGate` (lifecycle checks). Prompts describe intended behavior; code prevents violations.
 
 The additional Muse profiles and prompts below are roadmap references unless explicitly noted as implemented.
 
@@ -120,7 +122,7 @@ The additional Muse profiles and prompts below are roadmap references unless exp
 }
 ```
 
-> PR09 note: Coding Muse profile metadata is present, but Conductor does not route active turns to Coding Muse yet and `patch_propose`/`patch_apply` are not part of the current registered executable tool set.
+> PR09 note: Coding Muse profile metadata is present in `Muse.MuseRegistry` as a **future contract reference**, but Conductor does not route active turns to Coding Muse (`select_muse/2` always returns `:planning`), and `patch_propose`/`patch_apply` are not part of the current registered executable tool set. Coding Muse execution handoff is **disabled** until later approval gates (PR17/PR18/PR19) are implemented.
 
 ### 1.3 Reviewing Muse
 
@@ -184,7 +186,7 @@ The additional Muse profiles and prompts below are roadmap references unless exp
 
 ### 1.8 Tool Muse (Note)
 
-Tool Muse does not need to be a chat persona in v0. It is a product-facing way to describe the **Tool Registry** and **Tool Runner** control plane. In PR09, plan lifecycle approval is explicit and auditable, while risky execution categories (patch apply, shell, network, delete, remote) remain deny-by-default in `Muse.Tool.Runner`/`Muse.Tool.Registry` until later gates are implemented.
+Tool Muse does not need to be a chat persona in v0. It is a product-facing way to describe the **Tool Registry** and **Tool Runner** control plane. In PR09, plan lifecycle approval is explicit and auditable, while risky execution categories (patch apply, shell, network, delete, remote) remain deny-by-default in `Muse.Tool.Runner`/`Muse.Tool.Registry` until later gates are implemented. Prompt instructions alone do not enforce these boundaries; the Elixir runtime code does.
 
 ---
 
@@ -268,7 +270,7 @@ Allowed tools in PR09:
 - list_muses
 - list_skills
 
-Blocked tools in PR09:
+Blocked tools in PR09 (enforced by `Muse.Tool.Registry` + `Muse.Tool.Runner` deny-by-default, not solely by prompt text):
 - write_file
 - replace_in_file
 - delete_file
@@ -301,7 +303,7 @@ Behavior:
 
 ## 4. Coding Muse Prompt
 
-> Roadmap: this prompt is documented for contract clarity, but Coding Muse execution/handoff is not active in the current PR09 Conductor routing.
+> Roadmap: this prompt is documented for contract clarity, but Coding Muse execution/handoff is **disabled** in the current PR09 Conductor routing (`select_muse/2` always returns `:planning`). Coding Muse turn execution and `patch_propose`/`patch_apply` tool usage are planned for PR17/PR18/PR19.
 
 ```text
 You are the Coding Muse, the implementation specialist inside Muse.
