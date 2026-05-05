@@ -1237,6 +1237,84 @@ defmodule MuseWeb.ConsoleComponents do
   defp runtime_status_label(:disconnected), do: "Disconnected"
   defp runtime_status_label(other), do: String.capitalize(to_string(other))
 
+  # -- Patch proposal panel (PR17) ------------------------------------------
+
+  @max_diff_display_lines 80
+
+  attr(:patch_proposal, :any, default: nil)
+
+  def patch_proposal_panel(assigns) do
+    ~H"""
+    <%= if @patch_proposal do %>
+      <aside id="patch-proposal-panel" class="patch-proposal-panel" role="region" aria-label="Patch proposal awaiting approval" aria-live="polite">
+        <div class="patch-proposal-header">
+          <span class="patch-proposal-title">Patch Proposal</span>
+          <button type="button" class="patch-proposal-dismiss" phx-click="dismiss_patch_proposal" title="Dismiss" aria-label="Dismiss patch proposal">✕</button>
+        </div>
+        <div class="patch-proposal-body">
+          <div class="patch-proposal-hash">
+            <span class="patch-proposal-label">Hash:</span>
+            <code class="patch-proposal-hash-value"><%= truncate_hash(@patch_proposal[:patch_hash] || @patch_proposal["patch_hash"] || @patch_proposal[:hash] || @patch_proposal["hash"] || "unknown") %></code>
+          </div>
+          <%= if patch_proposal_files(@patch_proposal) != [] do %>
+            <div class="patch-proposal-files">
+              <span class="patch-proposal-label">Affected files:</span>
+              <ul class="patch-proposal-file-list">
+                <%= for file <- patch_proposal_files(@patch_proposal) do %>
+                  <li><code><%= file %></code></li>
+                <% end %>
+              </ul>
+            </div>
+          <% end %>
+          <%= if patch_proposal_diff(@patch_proposal) do %>
+            <div class="patch-proposal-diff-section">
+              <span class="patch-proposal-label">Diff:</span>
+              <pre class="patch-proposal-diff-pre"><code class="patch-proposal-diff-code"><%= truncate_diff(patch_proposal_diff(@patch_proposal), max_diff_display_lines()) %></code></pre>
+            </div>
+          <% end %>
+          <div class="patch-proposal-guidance">
+            <p>Approve with <code>/approve patch</code> or reject with <code>/reject patch</code></p>
+            <p class="patch-proposal-lifecycle">PR17 lifecycle only — no apply, no checkpoints, no file modifications</p>
+          </div>
+        </div>
+      </aside>
+    <% end %>
+    """
+  end
+
+  defp max_diff_display_lines, do: @max_diff_display_lines
+
+  defp truncate_hash(nil), do: "unknown"
+
+  defp truncate_hash(hash) when is_binary(hash) do
+    String.slice(hash, 0, 12)
+  end
+
+  defp truncate_hash(other), do: to_string(other) |> String.slice(0, 12)
+
+  defp patch_proposal_files(%{files: files}) when is_list(files), do: files
+  defp patch_proposal_files(%{"files" => files}) when is_list(files), do: files
+  defp patch_proposal_files(%{affected_files: files}) when is_list(files), do: files
+  defp patch_proposal_files(%{"affected_files" => files}) when is_list(files), do: files
+  defp patch_proposal_files(_), do: []
+
+  defp patch_proposal_diff(%{diff: diff}) when is_binary(diff), do: diff
+  defp patch_proposal_diff(%{"diff" => diff}) when is_binary(diff), do: diff
+  defp patch_proposal_diff(_), do: nil
+
+  defp truncate_diff(nil, _max_lines), do: ""
+
+  defp truncate_diff(diff, max_lines) when is_binary(diff) do
+    lines = String.split(diff, "\n")
+
+    if length(lines) > max_lines do
+      (Enum.take(lines, max_lines) ++ ["… (#{length(lines) - max_lines} more lines)"])
+      |> Enum.join("\n")
+    else
+      diff
+    end
+  end
+
   # -- Diagnostics metadata helpers ------------------------------------------
 
   def diagnostic_file_value(%{metadata: meta}) when is_map(meta) do

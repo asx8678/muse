@@ -403,11 +403,19 @@ defmodule Muse.ApprovalGate do
   In PR09, only specs that do **not** require approval and use a safe permission
   category (`:read` or `:interactive`) are allowed. Plan approval or any other
   current context field is deliberately not treated as a tool grant.
+
+  In PR17, tools with permission `:patch` and `requires_approval: true` (e.g.
+  `patch_propose`) are authorized when the requesting muse is `:coding`.
+  This tool records a patch proposal without applying it, so it is
+  side-effect free and safe for Coding Muse after plan approval.
   """
   @spec authorize_tool(Spec.t(), map()) :: tool_decision()
   def authorize_tool(%Spec{} = spec, context) when is_map(context) do
     cond do
       safe_without_approval?(spec) ->
+        :ok
+
+      patch_propose_allowed?(spec, context) ->
         :ok
 
       spec.requires_approval ->
@@ -423,6 +431,21 @@ defmodule Muse.ApprovalGate do
 
   def authorize_tool(%Spec{} = spec, _context), do: authorize_tool(spec, %{})
   def authorize_tool(_spec, _context), do: {:blocked, "invalid tool approval request"}
+
+  # -- Patch tool authorization (PR17) ------------------------------------------
+
+  # patch_propose is allowed for Coding Muse — it records a proposal
+  # without applying it (side-effect free). This is the PR17 exception
+  # that enables the Coding Muse routing after plan approval.
+  defp patch_propose_allowed?(%Spec{permission: :patch}, %{muse_id: :coding}) do
+    true
+  end
+
+  defp patch_propose_allowed?(%Spec{name: "patch_propose"}, %{muse_id: :coding}) do
+    true
+  end
+
+  defp patch_propose_allowed?(_, _), do: false
 
   # -- Internal plan approval transitions --------------------------------------
 

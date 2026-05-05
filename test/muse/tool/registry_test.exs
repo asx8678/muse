@@ -4,12 +4,12 @@ defmodule Muse.Tool.RegistryTest do
   alias Muse.Tool.Registry
 
   describe "all/0" do
-    test "returns all 8 registered tool specs" do
-      assert length(Registry.all()) == 8
+    test "returns all 9 registered tool specs" do
+      assert length(Registry.all()) == 9
     end
 
     test "keeps registered specs within the no-approval safe tool surface" do
-      for spec <- Registry.all() do
+      for spec <- Registry.all(), spec.name != "patch_propose" do
         refute spec.requires_approval
         assert spec.permission in [:read, :interactive]
         refute spec.permission in [:write, :shell, :network, :patch, :delete]
@@ -27,7 +27,8 @@ defmodule Muse.Tool.RegistryTest do
                "git_diff_readonly",
                "ask_user_question",
                "list_muses",
-               "list_skills"
+               "list_skills",
+               "patch_propose"
              ]
     end
   end
@@ -154,7 +155,8 @@ defmodule Muse.Tool.RegistryTest do
       assert Registry.blocked_tool?("replace_in_file")
       assert Registry.blocked_tool?("delete_file")
       assert Registry.blocked_tool?("patch_apply")
-      assert Registry.blocked_tool?("patch_propose")
+      # patch_propose is now a registered tool, not blocked
+      refute Registry.blocked_tool?("patch_propose")
       assert Registry.blocked_tool?("shell_command")
       assert Registry.blocked_tool?("network_call")
       assert Registry.blocked_tool?("remote_execution")
@@ -181,7 +183,9 @@ defmodule Muse.Tool.RegistryTest do
     test "returns all blocked tool names" do
       names = Registry.blocked_tool_names()
       assert "write_file" in names
-      assert "patch_propose" in names
+      # patch_propose was removed from blocked list (now a registered tool)
+      refute "patch_propose" in names
+      assert "patch_apply" in names
       assert "shell_command" in names
       assert "network_call" in names
     end
@@ -190,7 +194,7 @@ defmodule Muse.Tool.RegistryTest do
   describe "tool_names/0" do
     test "returns all registered tool names" do
       names = Registry.tool_names()
-      assert length(names) == 8
+      assert length(names) == 9
       assert "read_file" in names
     end
   end

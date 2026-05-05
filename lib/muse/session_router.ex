@@ -102,6 +102,46 @@ defmodule Muse.SessionRouter do
   end
 
   @doc """
+  Approves the active pending patch proposal for an existing session.
+
+  PR17: approval records the decision only; no files are modified, no checkpoint
+  is created, and no patch is applied. Patch application will be handled in a
+  future PR.
+  """
+  @spec approve_patch(String.t(), atom()) ::
+          {:ok, map()}
+          | {:error,
+             :not_found
+             | :turn_running
+             | :no_pending_patch
+             | {:patch_not_awaiting_approval, term()}}
+  def approve_patch(session_id \\ @default_session_id, source \\ :system) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.approve_patch(pid, source)
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Rejects the active pending patch proposal for an existing session.
+
+  PR17: rejection records the decision only; no files are modified.
+  """
+  @spec reject_patch(String.t(), atom()) ::
+          {:ok, map()}
+          | {:error,
+             :not_found
+             | :turn_running
+             | :no_pending_patch
+             | {:patch_not_awaiting_approval, term()}}
+  def reject_patch(session_id \\ @default_session_id, source \\ :system) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.reject_patch(pid, source)
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
   Returns a list of all active session ids and their pids.
   """
   @spec active_sessions() :: [{String.t(), pid()}]

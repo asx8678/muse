@@ -111,6 +111,14 @@ defmodule Muse.CommandDispatcher do
     dispatch_plan_lifecycle_command(:reject_plan, args, context)
   end
 
+  def dispatch(:approve_patch, args, context) do
+    dispatch_patch_lifecycle_command(:approve_patch, args, context)
+  end
+
+  def dispatch(:reject_patch, args, context) do
+    dispatch_patch_lifecycle_command(:reject_patch, args, context)
+  end
+
   # -- Events ------------------------------------------------------------------
 
   def dispatch(:events, _args, context) do
@@ -1069,6 +1077,112 @@ defmodule Muse.CommandDispatcher do
   end
 
   defp safe_plan_lifecycle_reason(_reason), do: "unexpected approval error"
+
+  # -- Patch lifecycle ---------------------------------------------------------
+
+  defp dispatch_patch_lifecycle_command(action, args, context) do
+    if present_args?(args) do
+      {:error, no_args_usage_error(patch_lifecycle_usage(action), args), []}
+    else
+      session_id = context_session_id(context)
+      source = context_source(context)
+
+      action
+      |> call_patch_lifecycle_router(session_id, source)
+      |> format_patch_lifecycle_result(action)
+    end
+  end
+
+  defp call_patch_lifecycle_router(:approve_patch, session_id, source) do
+    Muse.SessionRouter.approve_patch(session_id, source)
+  end
+
+  defp call_patch_lifecycle_router(:reject_patch, session_id, source) do
+    Muse.SessionRouter.reject_patch(session_id, source)
+  end
+
+  defp format_patch_lifecycle_result({:ok, patch}, :approve_patch) do
+    {:ok, format_patch_approval_message(patch), [{:refresh, :events}]}
+  end
+
+  defp format_patch_lifecycle_result({:ok, patch}, :reject_patch) do
+    {:ok, format_patch_rejection_message(patch), [{:refresh, :events}]}
+  end
+
+  defp format_patch_lifecycle_result({:error, :turn_running}, action) do
+    verb = patch_lifecycle_verb(action)
+    {:error, "Error: cannot #{verb} a patch while a turn is running.", []}
+  end
+
+  defp format_patch_lifecycle_result({:error, reason}, _action)
+       when reason in [:not_found, :no_session, :no_pending_patch] do
+    {:error, "Error: no pending patch proposal is awaiting approval.", []}
+  end
+
+  defp format_patch_lifecycle_result({:error, {:patch_not_awaiting_approval, status}}, _action) do
+    {:error, "Error: pending patch proposal status is #{status}, not awaiting approval.", []}
+  end
+
+  defp format_patch_lifecycle_result({:error, reason}, _action) do
+    {:error, "Error: unable to process patch approval (#{safe_patch_lifecycle_reason(reason)}).",
+     []}
+  end
+
+  defp format_patch_approval_message(patch) do
+    patch_id = Map.get(patch, :patch_id, Map.get(patch, :id, "unknown"))
+    patch_hash = Map.get(patch, :hash, Map.get(patch, :content_hash, "n/a"))
+    plan_id = Map.get(patch, :plan_id, "n/a")
+
+    [
+      "Patch proposal approved.",
+      "",
+      "- Patch id: #{patch_id}",
+      "- Patch hash: #{patch_hash}",
+      "- Plan id: #{plan_id}",
+      "- Approval status: approved",
+      "- PR17: approval recorded the patch proposal only; no files were modified, no checkpoint was created, and no patch was applied. Patch application will be handled in a future PR."
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp format_patch_rejection_message(patch) do
+    patch_id = Map.get(patch, :patch_id, Map.get(patch, :id, "unknown"))
+    patch_hash = Map.get(patch, :hash, Map.get(patch, :content_hash, "n/a"))
+    plan_id = Map.get(patch, :plan_id, "n/a")
+
+    [
+      "Patch proposal rejected.",
+      "",
+      "- Patch id: #{patch_id}",
+      "- Patch hash: #{patch_hash}",
+      "- Plan id: #{plan_id}",
+      "- Rejection status: rejected",
+      "- PR17: rejection recorded the decision only; no files were modified and no rollback is needed.",
+      "- Next: ask Coding Muse for a revised patch proposal."
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp patch_lifecycle_usage(:approve_patch), do: "/approve patch"
+  defp patch_lifecycle_usage(:reject_patch), do: "/reject patch"
+
+  defp patch_lifecycle_verb(:approve_patch), do: "approve"
+  defp patch_lifecycle_verb(:reject_patch), do: "reject"
+
+  defp safe_patch_lifecycle_reason(%_{} = patch) do
+    id = Map.get(patch, :patch_id, Map.get(patch, :id, "?"))
+    status = Map.get(patch, :status, "?")
+    "patch #{id} status #{status}"
+  end
+
+  defp safe_patch_lifecycle_reason({tag, patch}) when is_atom(tag) and is_map(patch) do
+    id = Map.get(patch, :patch_id, Map.get(patch, :id, "?"))
+    "#{tag}: patch #{id}"
+  end
+
+  defp safe_patch_lifecycle_reason(atom) when is_atom(atom), do: Atom.to_string(atom)
+  defp safe_patch_lifecycle_reason(binary) when is_binary(binary), do: binary
+  defp safe_patch_lifecycle_reason(_reason), do: "unexpected patch approval error"
 
   defp context_session_id(context) do
     case map_get_any(context, [:session_id, "session_id"]) do

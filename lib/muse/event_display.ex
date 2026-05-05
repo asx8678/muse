@@ -12,6 +12,10 @@ defmodule Muse.EventDisplay do
   belongs to `/plan` and `/plan show <id>`, not generic event rows. Approval
   lifecycle summaries also make it explicit that plan approval records a plan
   decision only; it does not start implementation by itself.
+
+  Patch lifecycle summaries include affected files, stable hash, capped diff
+  text, and `/approve patch` guidance. Diffs are capped at 4,000 characters
+  to prevent oversized payloads.
   """
 
   alias Muse.{Event, Plan}
@@ -28,12 +32,27 @@ defmodule Muse.EventDisplay do
     :approval_rejected
   ]
 
+  @patch_lifecycle_types [
+    :patch_proposed,
+    :patch_approval_requested,
+    :patch_approved,
+    :patch_rejected
+  ]
+
+  @max_diff_chars 4_000
+
   @doc "Return a concise, redacted summary for an event."
   @spec summary(Event.t() | term()) :: String.t()
   def summary(%Event{type: type, data: data}) when type in @plan_lifecycle_types do
     data
     |> safe_data()
     |> plan_lifecycle_summary(type)
+  end
+
+  def summary(%Event{type: type, data: data}) when type in @patch_lifecycle_types do
+    data
+    |> safe_data()
+    |> patch_lifecycle_summary(type)
   end
 
   def summary(%Event{data: data}), do: data |> safe_data() |> data_summary()
@@ -46,6 +65,36 @@ defmodule Muse.EventDisplay do
     |> Redactor.redact_term()
     |> omit_raw_plan_payloads()
   end
+
+  @doc """
+  Cap diff text to a maximum character limit, appending a truncation marker.
+
+  Returns `{:ok, capped_text}` or `{:truncated, capped_text}` so callers
+  can distinguish full from truncated diffs.
+
+      iex> Muse.EventDisplay.cap_diff("short diff", 100)
+      {:ok, "short diff"}
+
+      iex> {tag, text} = Muse.EventDisplay.cap_diff(String.duplicate("a", 5_000), 4_000)
+      iex> tag
+      :truncated
+      iex> String.ends_with?(text, "…")
+      true
+  """
+  @spec cap_diff(String.t(), pos_integer()) :: {:ok, String.t()} | {:truncated, String.t()}
+  def cap_diff(diff, max_chars \\ @max_diff_chars)
+
+  def cap_diff(diff, max_chars)
+      when is_binary(diff) and is_integer(max_chars) and max_chars > 0 do
+    if String.length(diff) <= max_chars do
+      {:ok, diff}
+    else
+      {:truncated, String.slice(diff, 0, max_chars) <> "…"}
+    end
+  end
+
+  def cap_diff(nil, _max_chars), do: {:ok, ""}
+  def cap_diff(_other, _max_chars), do: {:ok, ""}
 
   @doc "Redact text and suppress raw structured plan JSON strings."
   @spec safe_text(String.t()) :: String.t()
@@ -113,6 +162,47 @@ defmodule Muse.EventDisplay do
       approval_identity(data),
       hash_sentence(data),
       "No implementation started"
+    ]
+    |> compact_sentences()
+  end
+
+  # -- Patch lifecycle summaries -------------------------------------------------
+
+  defp patch_lifecycle_summary(data, :patch_proposed) do
+    [
+      "Patch proposed: #{patch_identity(data)}",
+      "Status: #{format_status(map_get_any(data, [:status, "status"]) || :proposed)}",
+      patch_files_sentence(data),
+      hash_sentence(data),
+      diff_snippet_sentence(data)
+    ]
+    |> compact_sentences()
+  end
+
+  defp patch_lifecycle_summary(data, :patch_approval_requested) do
+    [
+      "Patch approval requested: #{patch_identity(data)}",
+      patch_files_sentence(data),
+      hash_sentence(data),
+      "Approve with /approve patch or reject with /reject patch"
+    ]
+    |> compact_sentences()
+  end
+
+  defp patch_lifecycle_summary(data, :patch_approved) do
+    [
+      "Patch approved: #{patch_identity(data)}",
+      hash_sentence(data),
+      "No changes applied; patch apply requires a separate explicit step"
+    ]
+    |> compact_sentences()
+  end
+
+  defp patch_lifecycle_summary(data, :patch_rejected) do
+    [
+      "Patch rejected: #{patch_identity(data)}",
+      hash_sentence(data),
+      "No changes applied"
     ]
     |> compact_sentences()
   end
@@ -291,6 +381,52 @@ defmodule Muse.EventDisplay do
 
   defp task_count_from_tasks(tasks) when is_list(tasks), do: length(tasks)
   defp task_count_from_tasks(_), do: nil
+
+  # -- Patch summary fragments ---------------------------------------------------
+
+  defp patch_identity(data) when is_map(data) do
+    id = map_get_any(data, [:patch_id, "patch_id", :id, "id"]) |> present_string()
+    id || "(no id)"
+  end
+
+  defp patch_identity(_data), do: "(no id)"
+
+  defp patch_files_sentence(data) when is_map(data) do
+    files = map_get_any(data, [:files, "files", :affected_files, "affected_files"])
+
+    case files do
+      files when is_list(files) and files != [] ->
+        n = length(files)
+        label = if n == 1, do: "file", else: "files"
+        sample = files |> Enum.take(3) |> Enum.join(", ")
+        suffix = if n > 3, do: " and #{n - 3} more", else: ""
+        "#{n} #{label}: #{sample}#{suffix}"
+
+      _ ->
+        nil
+    end
+  end
+
+  defp patch_files_sentence(_), do: nil
+
+  defp diff_snippet_sentence(data) when is_map(data) do
+    diff = map_get_any(data, [:diff, "diff", :diff_text, "diff_text"])
+
+    case cap_diff(diff, @max_diff_chars) do
+      {:ok, text} when text != "" ->
+        first_line = text |> String.split("\n", parts: 2) |> hd() |> String.slice(0, 120)
+        "Diff: #{first_line}"
+
+      {:truncated, _text} ->
+        first_line = diff |> String.split("\n", parts: 2) |> hd() |> String.slice(0, 120)
+        "Diff: #{first_line} (truncated)"
+
+      _ ->
+        nil
+    end
+  end
+
+  defp diff_snippet_sentence(_), do: nil
 
   # -- Formatting primitives ----------------------------------------------------
 

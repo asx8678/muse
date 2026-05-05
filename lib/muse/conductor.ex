@@ -114,9 +114,15 @@ defmodule Muse.Conductor do
   @doc """
   Select the appropriate Muse profile for the given session state.
 
-  For PR07a, the Planning Muse is selected for all sessions that are in
-  idle, running, planning, or awaiting_plan_approval status. The Coding Muse
-  is never selected before plan approval.
+  ## Routing rules
+
+    * **Planning Muse** is selected for sessions in `:idle`, `:running`,
+      `:planning`, or `:awaiting_plan_approval` status without an approved
+      plan — these are read-only planning turns.
+
+    * **Coding Muse** is selected when the session is `:idle` with an
+      approved active plan — this enables the patch-proposal path after
+      plan approval.
 
   ## Examples
 
@@ -124,15 +130,35 @@ defmodule Muse.Conductor do
       iex> muse = Muse.Conductor.select_muse(session, [])
       iex> muse.id
       :planning
+
+      iex> plan = Muse.Plan.new(objective: "Test", session_id: "s1")
+      iex> {:ok, approved} = Muse.Plan.transition(plan, :approved)
+      iex> session = %{Muse.Session.new(workspace: "/tmp", status: :idle, id: "s1") | active_plan_id: "p1", plans: %{"p1" => approved}}
+      iex> muse = Muse.Conductor.select_muse(session, [])
+      iex> muse.id
+      :coding
   """
   @spec select_muse(Session.t(), keyword()) :: Muse.MuseProfile.t()
   def select_muse(session, _opts) do
-    if planning_muse_applicable?(session) do
-      MuseRegistry.get(:planning)
+    if coding_muse_applicable?(session) do
+      MuseRegistry.get(:coding)
     else
-      # Default to Planning Muse until plan-approval flow is implemented
       MuseRegistry.get(:planning)
     end
+  end
+
+  # -- Muse selection -----------------------------------------------------------
+
+  defp coding_muse_applicable?(session) do
+    session.status == :idle and session_has_approved_plan?(session)
+  end
+
+  defp session_has_approved_plan?(session) do
+    session.active_plan_id != nil and
+      case Map.get(session.plans || %{}, session.active_plan_id) do
+        %Plan{status: :approved} -> true
+        _ -> false
+      end
   end
 
   # -- Turn execution -----------------------------------------------------------
@@ -331,13 +357,16 @@ defmodule Muse.Conductor do
     }
 
     # Post-process for plan creation when using Planning Muse
-    maybe_add_plan_to_result(result, session, turn, muse, start_time, opts)
-  end
+    result =
+      case maybe_add_plan_to_result(result, session, turn, muse, start_time, opts) do
+        {:ok, r} -> r
+        r -> r
+      end
 
-  # -- Muse selection -----------------------------------------------------------
+    # Post-process for patch proposal capture when using Coding Muse
+    result = maybe_capture_patch_proposal(result, muse, opts)
 
-  defp planning_muse_applicable?(session) do
-    session.status in [:idle, :running, :planning, :awaiting_plan_approval]
+    {:ok, result}
   end
 
   # -- Provider streaming -------------------------------------------------------
@@ -775,6 +804,63 @@ defmodule Muse.Conductor do
     plans = Map.put(session.plans || %{}, plan.id, plan)
 
     %{session | active_plan_id: plan.id, plans: plans}
+  end
+
+  # -- Patch proposal capture (PR17) --------------------------------------------
+
+  # When Coding Muse completes a turn with patch_propose tool calls,
+  # capture the proposals and transition the session to :awaiting_patch_approval.
+  # Full `/approve patch` command lifecycle is owned by lane06.
+  defp maybe_capture_patch_proposal(result, %{id: :coding} = _muse, opts) do
+    proposals = Keyword.get(opts, :patch_proposals, [])
+
+    if proposals != [] do
+      latest_proposal = List.last(proposals)
+      session = result.session
+
+      # Transition session to :awaiting_patch_approval instead of :idle
+      {:ok, updated_session} = Session.transition(session, :awaiting_patch_approval)
+
+      pending_patch = Map.put(latest_proposal, :proposed_at, DateTime.utc_now())
+      updated_session = %{updated_session | pending_patch: pending_patch}
+
+      guidance = patch_proposal_guidance(latest_proposal)
+
+      %{
+        result
+        | session: updated_session,
+          assistant_text: guidance,
+          event_specs:
+            result.event_specs ++
+              [
+                {:conductor, :patch_proposed, %{tool_call_id: latest_proposal[:tool_call_id]},
+                 [visibility: :user]}
+              ]
+      }
+    else
+      result
+    end
+  end
+
+  defp maybe_capture_patch_proposal(result, _muse, _opts), do: result
+
+  defp patch_proposal_guidance(proposal) do
+    target_files = Map.get(proposal, :target_files, Map.get(proposal, :affected_files, []))
+    description = Map.get(proposal, :description, Map.get(proposal, :summary, ""))
+    content_length = Map.get(proposal, :content_length, 0)
+
+    file_list = if target_files != [], do: Enum.join(target_files, ", "), else: "(none specified)"
+
+    """
+    📋 Patch proposal recorded (#{content_length} chars). Awaiting approval.
+
+    **Files:** #{file_list}
+    **Description:** #{description}
+
+    Use `/approve patch` to authorize this proposal, or `/reject patch` to discard it.
+    No files have been modified.
+    """
+    |> String.trim()
   end
 
   defp drop_assistant_output_specs(event_specs) do
