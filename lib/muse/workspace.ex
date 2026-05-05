@@ -20,10 +20,11 @@ defmodule Muse.Workspace do
 
     * `.env`, `.env.*`
     * `*.pem`, `*.key`, `*.p12`, `*.pfx`
-    * `id_rsa`, `id_ed25519`
-    * `.ssh/`, `.aws/`, `.gcp/`, `.gcloud/`, `.azure/`
+    * `id_rsa`, `id_ed25519`, `id_dsa`, `id_ecdsa`
+    * `.ssh/`, `.aws/`, `.gcp/`, `.gcloud/`, `.azure/`, `.docker/`, `.kube/`, `.gnupg/`
     * `.npmrc`, `.pypirc`, `.netrc`, `.git-credentials`
-    * `credentials.json`, `secrets.*`, `auth.json`
+    * `credentials.json|yml|yaml|toml|enc`, `secrets.*`
+    * `auth.json|yml|yaml|toml|enc`, cloud service-account files
     * `.git/` contents (except when `allow_git_contents: true`)
 
   ## Ignored directories
@@ -45,16 +46,41 @@ defmodule Muse.Workspace do
                       ".env",
                       "id_rsa",
                       "id_ed25519",
+                      "id_dsa",
+                      "id_ecdsa",
                       ".npmrc",
                       ".pypirc",
                       ".netrc",
                       ".git-credentials",
+                      ".dockercfg",
+                      "credentials",
                       "credentials.json",
-                      "auth.json"
+                      "credentials.yml",
+                      "credentials.yaml",
+                      "credentials.toml",
+                      "credentials.enc",
+                      "auth.json",
+                      "auth.yml",
+                      "auth.yaml",
+                      "auth.toml",
+                      "auth.enc",
+                      "application_default_credentials.json",
+                      "service_account.json",
+                      "service-account.json"
                     ])
 
   @secret_filename_prefixes [".env."]
-  @secret_filename_suffixes [".pem", ".key", ".p12", ".pfx"]
+  @secret_filename_suffixes [
+    ".pem",
+    ".key",
+    ".p12",
+    ".pfx",
+    ".p8",
+    ".pkcs8",
+    ".jks",
+    ".keystore",
+    ".kdb"
+  ]
   @secret_filename_patterns [~r/^secrets\./]
 
   @secret_dirnames MapSet.new([
@@ -62,7 +88,10 @@ defmodule Muse.Workspace do
                      ".aws",
                      ".gcp",
                      ".gcloud",
-                     ".azure"
+                     ".azure",
+                     ".docker",
+                     ".kube",
+                     ".gnupg"
                    ])
 
   @ignored_dirnames MapSet.new([
