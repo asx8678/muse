@@ -1,0 +1,17 @@
+{
+  "type": "turn_completed",
+  "id": 9040,
+  "timestamp": "2025-05-27T14:32:40.000Z",
+  "session_id": "sess_a1b2c3",
+  "turn_id": "turn_f7e8d9",
+  "seq": 35,
+  "source": "conductor",
+  "muse_id": null,
+  "visibility": "user",
+  "payload": {
+    "status": "completed",
+    "streamed": true,
+    "tool_call_count": 3,
+    "duration_ms": 4250
+  }
+}
