@@ -375,11 +375,13 @@ defmodule Muse.ConductorCodingMuseTest do
       # pending_patch should be present with expected fields
       pending = result.session.pending_patch
       assert pending != nil, "Expected pending_patch to be set"
-      assert pending[:hash] != nil, "Expected pending_patch hash to be present"
-      assert pending[:affected_files] == ["lib/example.ex"]
-      assert pending[:summary] == "Add moduledoc to Example"
-      assert pending[:proposed_at] != nil, "Expected proposed_at timestamp"
-      assert pending[:tool_call_id] != nil, "Expected tool_call_id from ToolLoop"
+      assert pending.hash != nil, "Expected pending_patch hash to be present"
+      assert pending.affected_files == ["lib/example.ex"]
+      # summary and tool_call_id are stored in metadata for %Patch{} structs
+      metadata = pending.metadata || %{}
+      assert Map.get(metadata, :summary) == "Add moduledoc to Example"
+      assert Map.get(metadata, :proposed_at) != nil, "Expected proposed_at timestamp"
+      assert Map.get(metadata, :tool_call_id) != nil, "Expected tool_call_id from ToolLoop"
 
       # Assistant guidance should mention awaiting approval
       assert result.assistant_text =~ "Awaiting approval",

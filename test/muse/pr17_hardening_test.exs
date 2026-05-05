@@ -11,6 +11,10 @@ defmodule Muse.PR17HardeningTest do
     E. pending_patch is restored from snapshot
     F. Patch decision history survives after clearing pending_patch
     G. patch_proposed events avoid raw diff in event payloads
+    H. True E2E: submit/4 → TurnRunner → Conductor → ToolLoop → handle_task_result
+    I. Snapshot restore degrades safely when pending_patch cannot be restored
+    J. Conductor path persists pending_patch to patches.jsonl
+    K. Conductor path patch_proposed events use diff_ref not raw diff
   """
   use ExUnit.Case, async: false
 
@@ -535,6 +539,333 @@ defmodule Muse.PR17HardeningTest do
       {paths_after, hashes_after} = workspace_snapshot(workspace)
       assert paths_after == paths_before
       assert hashes_after == hashes_before
+    end
+  end
+
+  # -- Gap H: True E2E through SessionServer.submit → TurnRunner → Conductor -----
+
+  describe "Gap H: submit/4 → TurnRunner → Conductor → ToolLoop patch_propose → handle_task_result" do
+    @simple_diff """
+    diff --git a/lib/muse/example.ex b/lib/muse/example.ex
+    --- a/lib/muse/example.ex
+    +++ b/lib/muse/example.ex
+    @@ -1,3 +1,4 @@
+     defmodule Muse.Example do
+    +  @moduledoc "Example module"
+       def hello, do: :world
+     end
+    """
+
+    @tag :pr17_hardening
+    test "patch_propose through real TurnRunner path sets pending_patch and :awaiting_patch_approval",
+         %{workspace: workspace} do
+      session_id = unique_id("gap-h-e2e")
+      pid = start_server(session_id)
+
+      plan = create_approved_plan(session_id, workspace)
+      :ok = GenServer.call(pid, {:store_approved_plan, plan})
+
+      {paths_before, hashes_before} = workspace_snapshot(workspace)
+
+      State.clear()
+
+      # Build fake provider batches that will cause the Coding Muse to
+      # call patch_propose via the ToolLoop, just like a real LLM would.
+      batch0 = [
+        {:tool_call, "patch_propose",
+         %{
+           "diff" => @simple_diff,
+           "affected_files" => ["lib/muse/example.ex"],
+           "summary" => "Add moduledoc to example.ex"
+         }},
+        {:response_completed, nil}
+      ]
+
+      batch1 = [
+        {:assistant_delta, "I've proposed a patch."},
+        {:assistant_completed, "I've proposed a patch."},
+        {:response_completed, nil}
+      ]
+
+      request_options = [options: %{fake_event_batches: [batch0, batch1]}]
+
+      # Submit through the REAL path: submit/4 → do_submit → TurnRunner.async →
+      # Conductor.run → ToolLoop (patch_propose) → handle_task_result
+      {:ok, assistant_text} =
+        SessionServer.submit(pid, :cli, "implement the plan",
+          workspace: workspace,
+          prompt_opts: [project_rules?: false],
+          request_options: request_options
+        )
+
+      # Assert: assistant text mentions awaiting approval
+      assert assistant_text =~ "Awaiting approval",
+             "Expected assistant text to mention awaiting approval, got: #{inspect(assistant_text)}"
+
+      # Assert: session status is :awaiting_patch_approval
+      status = SessionServer.status(pid)
+
+      assert status.status == :awaiting_patch_approval,
+             "Expected :awaiting_patch_approval, got: #{inspect(status.status)}"
+
+      # Assert: pending_patch is a %Patch{} struct
+      assert status.pending_patch != nil
+
+      assert match?(%Patch{}, status.pending_patch),
+             "Expected pending_patch to be %Patch{}, got: #{inspect(status.pending_patch)}"
+
+      # Assert: /approve patch works and appends approval record
+      {:ok, approved} = SessionServer.approve_patch(pid, :cli)
+      assert approved.status == :approved
+
+      status_after = SessionServer.status(pid)
+      assert status_after.status == :idle
+      assert status_after.pending_patch == nil
+
+      # Assert: a patch approval record was appended
+      patch_approvals =
+        Enum.filter(status_after.approvals, fn a ->
+          match?(%Approval{kind: :patch}, a)
+        end)
+
+      assert length(patch_approvals) >= 1
+      approval = hd(patch_approvals)
+      assert approval.kind == :patch
+      assert approval.status == :approved
+
+      # Assert: no workspace files changed
+      {paths_after, hashes_after} = workspace_snapshot(workspace)
+      assert paths_after == paths_before
+      assert hashes_after == hashes_before
+    end
+  end
+
+  # -- Gap I: Snapshot restore safety when pending_patch is invalid ---------------
+
+  describe "Gap I: snapshot restore degrades safely when pending_patch cannot be restored" do
+    @tag :pr17_hardening
+    test "awaiting_patch_approval with binary patch in pending_patch degrades to :idle",
+         %{workspace: _workspace} do
+      session_id = unique_id("gap-i-binary-patch")
+
+      # Write a snapshot with status "awaiting_patch_approval" and a pending_patch
+      # containing a GIT binary patch which Patch.from_map will reject
+      corrupt_data = %{
+        "status" => "awaiting_patch_approval",
+        "pending_patch" => %{
+          "session_id" => "s1",
+          "plan_id" => "p1",
+          "plan_version" => 1,
+          "plan_hash" => "abc",
+          "diff" => "GIT binary patch\nliteral 0\nHcmV?00001\n",
+          "hash" => String.duplicate("a", 64),
+          "status" => "proposed"
+        },
+        "active_plan_id" => nil,
+        "approval_binding" => nil,
+        "active_approval" => nil,
+        "approvals" => [],
+        "plan" => nil,
+        "plans" => %{}
+      }
+
+      :ok = Muse.SessionStore.save_session(session_id, corrupt_data)
+
+      # Start the session server — it should restore from the snapshot
+      # without crashing and degrade to :idle since pending_patch is invalid
+      # (binary patches are rejected by DiffParser.validate)
+      pid = start_server(session_id)
+
+      status = SessionServer.status(pid)
+
+      assert status.status == :idle,
+             "Expected :idle (safe degradation), got: #{inspect(status.status)}"
+
+      assert status.pending_patch == nil,
+             "Expected pending_patch to be nil after failed restore"
+
+      GenServer.stop(pid)
+    end
+
+    @tag :pr17_hardening
+    test "awaiting_patch_approval with nil pending_patch in snapshot degrades to :idle",
+         %{workspace: _workspace} do
+      session_id = unique_id("gap-i-nil-patch")
+
+      snapshot_data = %{
+        "status" => "awaiting_patch_approval",
+        "pending_patch" => nil,
+        "active_plan_id" => nil,
+        "approval_binding" => nil,
+        "active_approval" => nil,
+        "approvals" => [],
+        "plan" => nil,
+        "plans" => %{}
+      }
+
+      :ok = Muse.SessionStore.save_session(session_id, snapshot_data)
+
+      pid = start_server(session_id)
+      status = SessionServer.status(pid)
+
+      assert status.status == :idle,
+             "Expected :idle (safe degradation), got: #{inspect(status.status)}"
+
+      assert status.pending_patch == nil
+
+      GenServer.stop(pid)
+    end
+  end
+
+  # -- Gap J: Conductor path persists patch to patches.jsonl --------------------
+
+  describe "Gap J: patch persisted to patches.jsonl via Conductor path" do
+    @simple_diff """
+    diff --git a/lib/muse/example.ex b/lib/muse/example.ex
+    --- a/lib/muse/example.ex
+    +++ b/lib/muse/example.ex
+    @@ -1,3 +1,4 @@
+     defmodule Muse.Example do
+    +  @moduledoc "Example module"
+       def hello, do: :world
+     end
+    """
+
+    @tag :pr17_hardening
+    test "Conductor path (submit/4) persists pending_patch to patches.jsonl",
+         %{workspace: workspace} do
+      session_id = unique_id("gap-j-persist")
+      pid = start_server(session_id)
+
+      plan = create_approved_plan(session_id, workspace)
+      :ok = GenServer.call(pid, {:store_approved_plan, plan})
+
+      State.clear()
+
+      batch0 = [
+        {:tool_call, "patch_propose",
+         %{
+           "diff" => @simple_diff,
+           "affected_files" => ["lib/muse/example.ex"],
+           "summary" => "Add moduledoc"
+         }},
+        {:response_completed, nil}
+      ]
+
+      batch1 = [
+        {:assistant_delta, "Patch proposed."},
+        {:assistant_completed, "Patch proposed."},
+        {:response_completed, nil}
+      ]
+
+      request_options = [options: %{fake_event_batches: [batch0, batch1]}]
+
+      {:ok, _text} =
+        SessionServer.submit(pid, :cli, "implement the plan",
+          workspace: workspace,
+          prompt_opts: [project_rules?: false],
+          request_options: request_options
+        )
+
+      # Verify patches.jsonl was written
+      {:ok, patches, %{skipped: skipped}} =
+        Muse.SessionStore.load_patches(session_id)
+
+      assert skipped == 0
+      assert length(patches) >= 1
+
+      patch_map = hd(patches)
+      assert Map.get(patch_map, "hash") != nil
+      assert Map.get(patch_map, "affected_files") != nil
+    end
+
+    @tag :pr17_hardening
+    test "direct propose_patch also persists to patches.jsonl without duplicates",
+         %{workspace: workspace} do
+      session_id = unique_id("gap-j-direct")
+      pid = start_server(session_id)
+
+      plan = create_approved_plan(session_id, workspace)
+      :ok = GenServer.call(pid, {:store_approved_plan, plan})
+
+      {:ok, _patch} =
+        SessionServer.propose_patch(pid,
+          diff: @simple_diff,
+          affected_files: ["lib/muse/example.ex"]
+        )
+
+      {:ok, patches, %{skipped: skipped}} =
+        Muse.SessionStore.load_patches(session_id)
+
+      assert skipped == 0
+      assert length(patches) == 1
+
+      patch_map = hd(patches)
+      assert Map.get(patch_map, "hash") != nil
+    end
+  end
+
+  # -- Gap K: patch_proposed events avoid raw diff (Conductor path) ---------------
+
+  describe "Gap K: Conductor path patch_proposed events use diff_ref not raw diff" do
+    @simple_diff """
+    diff --git a/lib/muse/example.ex b/lib/muse/example.ex
+    --- a/lib/muse/example.ex
+    +++ b/lib/muse/example.ex
+    @@ -1,3 +1,4 @@
+     defmodule Muse.Example do
+    +  @moduledoc "Example module"
+       def hello, do: :world
+     end
+    """
+
+    @tag :pr17_hardening
+    test "patch_proposed event from Conductor path has no raw diff",
+         %{workspace: workspace} do
+      session_id = unique_id("gap-k-event")
+      pid = start_server(session_id)
+
+      plan = create_approved_plan(session_id, workspace)
+      :ok = GenServer.call(pid, {:store_approved_plan, plan})
+
+      State.clear()
+
+      batch0 = [
+        {:tool_call, "patch_propose",
+         %{
+           "diff" => @simple_diff,
+           "affected_files" => ["lib/muse/example.ex"],
+           "summary" => "Add moduledoc"
+         }},
+        {:response_completed, nil}
+      ]
+
+      batch1 = [
+        {:assistant_delta, "Patch proposed."},
+        {:assistant_completed, "Patch proposed."},
+        {:response_completed, nil}
+      ]
+
+      request_options = [options: %{fake_event_batches: [batch0, batch1]}]
+
+      {:ok, _text} =
+        SessionServer.submit(pid, :cli, "implement the plan",
+          workspace: workspace,
+          prompt_opts: [project_rules?: false],
+          request_options: request_options
+        )
+
+      events = State.events()
+      patch_proposed = Enum.find(events, &(&1.type == :patch_proposed))
+
+      assert patch_proposed != nil
+      # Event should NOT contain raw diff
+      assert Map.get(patch_proposed.data, :diff) == nil
+      assert Map.get(patch_proposed.data, "diff") == nil
+      # Event SHOULD contain diff_ref
+      assert Map.get(patch_proposed.data, :diff_ref) != nil
+      assert Map.get(patch_proposed.data, :patch_id) != nil
+      assert Map.get(patch_proposed.data, :hash) != nil
     end
   end
 

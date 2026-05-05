@@ -28,8 +28,10 @@ defmodule Muse.Conductor do
   alias Muse.{
     MetadataSanitizer,
     MuseRegistry,
+    Patch,
     Plan,
     PlanApprovalRequest,
+    PlanBinding,
     PlanParser,
     Session,
     Telemetry,
@@ -820,25 +822,32 @@ defmodule Muse.Conductor do
       latest_proposal = List.last(proposals)
       session = result.session
 
-      # Transition session to :awaiting_patch_approval instead of :idle
-      {:ok, updated_session} = Session.transition(session, :awaiting_patch_approval)
+      case build_pending_patch(latest_proposal, session) do
+        {:ok, %Patch{} = pending_patch} ->
+          # Transition session to :awaiting_patch_approval instead of :idle.
+          {:ok, updated_session} = Session.transition(session, :awaiting_patch_approval)
+          updated_session = %{updated_session | pending_patch: pending_patch}
 
-      pending_patch = Map.put(latest_proposal, :proposed_at, DateTime.utc_now())
-      updated_session = %{updated_session | pending_patch: pending_patch}
+          guidance = patch_proposal_guidance(pending_patch)
+          patch_event_data = patch_proposed_event_data(pending_patch, latest_proposal)
 
-      guidance = patch_proposal_guidance(latest_proposal)
+          %{
+            result
+            | session: updated_session,
+              assistant_text: guidance,
+              event_specs:
+                result.event_specs ++
+                  [
+                    {:conductor, :patch_proposed, patch_event_data, [visibility: :user]},
+                    {:conductor, :patch_approval_requested,
+                     Map.take(patch_event_data, [:patch_id, :plan_id, :hash, :affected_files]),
+                     [visibility: :user]}
+                  ]
+          }
 
-      %{
-        result
-        | session: updated_session,
-          assistant_text: guidance,
-          event_specs:
-            result.event_specs ++
-              [
-                {:conductor, :patch_proposed, %{tool_call_id: latest_proposal[:tool_call_id]},
-                 [visibility: :user]}
-              ]
-      }
+        {:error, _reason} ->
+          result
+      end
     else
       result
     end
@@ -846,11 +855,103 @@ defmodule Muse.Conductor do
 
   defp maybe_capture_patch_proposal(result, _muse, _opts), do: result
 
-  defp patch_proposal_guidance(proposal) do
-    target_files = Map.get(proposal, :target_files, Map.get(proposal, :affected_files, []))
-    description = Map.get(proposal, :description, Map.get(proposal, :summary, ""))
-    content_length = Map.get(proposal, :content_length, 0)
+  defp build_pending_patch(proposal, %Session{} = session) when is_map(proposal) do
+    with %Plan{status: :approved} = plan <- active_approved_plan(session),
+         diff when is_binary(diff) and diff != "" <-
+           proposal_get(proposal, :diff) || proposal_get(proposal, :patch_content) do
+      metadata =
+        %{
+          summary: proposal_get(proposal, :summary) || proposal_get(proposal, :description),
+          tool_call_id: proposal_get(proposal, :tool_call_id),
+          proposed_at: DateTime.utc_now()
+        }
+        |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
+        |> Map.new()
 
+      attrs = [
+        session_id: session.id,
+        plan_id: proposal_get(proposal, :plan_id) || plan.id || session.active_plan_id,
+        plan_version: proposal_get(proposal, :plan_version) || plan.version,
+        plan_hash: proposal_get(proposal, :plan_hash) || PlanBinding.content_hash(plan),
+        diff: diff,
+        metadata: metadata
+      ]
+
+      attrs =
+        maybe_put_patch_id(
+          attrs,
+          proposal_get(proposal, :patch_id) || proposal_get(proposal, :id)
+        )
+
+      attrs = maybe_put_affected_files(attrs, proposal_files(proposal))
+
+      Patch.new(attrs)
+    else
+      _ -> {:error, :invalid_patch_proposal}
+    end
+  end
+
+  defp active_approved_plan(%Session{active_plan_id: active_plan_id, plans: plans})
+       when is_binary(active_plan_id) and is_map(plans) do
+    case Map.get(plans, active_plan_id) do
+      %Plan{status: :approved} = plan -> plan
+      _ -> nil
+    end
+  end
+
+  defp active_approved_plan(_session), do: nil
+
+  defp maybe_put_patch_id(attrs, patch_id) when is_binary(patch_id) and patch_id != "" do
+    Keyword.put(attrs, :id, patch_id)
+  end
+
+  defp maybe_put_patch_id(attrs, _patch_id), do: attrs
+
+  defp maybe_put_affected_files(attrs, files) when is_list(files) and files != [] do
+    Keyword.put(attrs, :affected_files, files)
+  end
+
+  defp maybe_put_affected_files(attrs, _files), do: attrs
+
+  defp proposal_files(proposal) do
+    proposal_get(proposal, :affected_files) || proposal_get(proposal, :target_files) || []
+  end
+
+  defp patch_proposed_event_data(%Patch{} = patch, proposal) do
+    %{
+      patch_id: patch.id,
+      plan_id: patch.plan_id,
+      hash: patch.hash,
+      affected_files: patch.affected_files,
+      diff_ref: patch.hash
+    }
+    |> maybe_put_event_field(:tool_call_id, proposal_get(proposal, :tool_call_id))
+  end
+
+  defp maybe_put_event_field(data, _key, nil), do: data
+  defp maybe_put_event_field(data, _key, ""), do: data
+  defp maybe_put_event_field(data, key, value), do: Map.put(data, key, value)
+
+  defp patch_proposal_guidance(%Patch{} = patch) do
+    target_files = patch.affected_files || []
+    description = metadata_get(patch.metadata, :summary) || ""
+    content_length = byte_size(patch.diff || "")
+
+    patch_proposal_guidance_text(target_files, description, content_length)
+  end
+
+  defp patch_proposal_guidance(proposal) do
+    target_files = proposal_files(proposal)
+    description = proposal_get(proposal, :description) || proposal_get(proposal, :summary) || ""
+
+    content_length =
+      proposal_get(proposal, :content_length) ||
+        byte_size(proposal_get(proposal, :diff) || proposal_get(proposal, :patch_content) || "")
+
+    patch_proposal_guidance_text(target_files, description, content_length)
+  end
+
+  defp patch_proposal_guidance_text(target_files, description, content_length) do
     file_list = if target_files != [], do: Enum.join(target_files, ", "), else: "(none specified)"
 
     """
@@ -864,6 +965,16 @@ defmodule Muse.Conductor do
     """
     |> String.trim()
   end
+
+  defp proposal_get(map, key) when is_map(map) and is_atom(key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp metadata_get(map, key) when is_map(map) and is_atom(key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp metadata_get(_map, _key), do: nil
 
   defp drop_assistant_output_specs(event_specs) do
     Enum.reject(event_specs, fn

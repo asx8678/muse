@@ -437,10 +437,6 @@ defmodule Muse.ApprovalGate do
   # patch_propose is allowed for Coding Muse ONLY when there is an approved
   # plan in the context. This prevents direct Runner calls from bypassing
   # plan approval. Planning Muse and other muses are always denied.
-  defp patch_propose_allowed?(%Spec{permission: :patch}, %{muse_id: :coding} = context) do
-    approved_plan_context?(context)
-  end
-
   defp patch_propose_allowed?(%Spec{name: "patch_propose"}, %{muse_id: :coding} = context) do
     approved_plan_context?(context)
   end

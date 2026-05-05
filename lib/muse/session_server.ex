@@ -529,12 +529,27 @@ defmodule Muse.SessionServer do
     # state so that /approve patch and /reject patch can operate on it.
     pending_patch = Map.get(result.session, :pending_patch) || state.pending_patch
 
+    # PR17 hardening: persist pending_patch to patches.jsonl when it arrives
+    # via the Conductor/ToolLoop path. The direct propose_patch path already
+    # appends in create_patch_proposal/2. Guard against duplicate appends
+    # by only persisting if pending_patch is new (was not in the prior state).
+    had_pending_patch_before = state.pending_patch != nil
+
     state = %{
       state
       | status: session_status,
         active_muse: Atom.to_string(result.selected_muse.id),
         pending_patch: pending_patch
     }
+
+    state =
+      if pending_patch != nil and not had_pending_patch_before and
+           match?(%Patch{}, pending_patch) do
+        :ok = SessionStore.append_patch(state.session_id, Patch.to_map(pending_patch))
+        state
+      else
+        state
+      end
 
     # Store plan if present in the result and create a content-bound pending
     # approval record for plans awaiting approval. This approval is persisted in
@@ -565,7 +580,11 @@ defmodule Muse.SessionServer do
     session_events = session_events ++ [turn_completed_event]
 
     updated_events = state.events ++ session_events
-    state = %{state | events: updated_events}
+
+    state =
+      state
+      |> Map.put(:events, updated_events)
+      |> maybe_persist_snapshot()
 
     # Reply to the original caller
     GenServer.reply(state.from, {:ok, result.assistant_text})
@@ -1336,11 +1355,20 @@ defmodule Muse.SessionServer do
           )
 
         # PR17 hardening: restore pending_patch from snapshot (Gap E)
+        # Safety: if snapshot status is :awaiting_patch_approval but pending_patch
+        # cannot be restored, downgrade to :idle to avoid a stuck session.
         pending_patch = restore_pending_patch(Map.get(data, "pending_patch"))
+
+        safe_status =
+          if status == :awaiting_patch_approval and is_nil(pending_patch) do
+            :idle
+          else
+            status
+          end
 
         %{
           state
-          | status: status,
+          | status: safe_status,
             plan: plan,
             plans: plans,
             active_plan_id: active_id,
