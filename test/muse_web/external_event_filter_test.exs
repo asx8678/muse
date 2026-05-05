@@ -189,6 +189,26 @@ defmodule MuseWeb.ExternalEventFilterTest do
       assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
     end
 
+    test "allows patch_proposed with nil visibility" do
+      event = make_event(:patch_proposed, %{patch_id: "p1"})
+      assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
+    end
+
+    test "allows patch_approval_requested with nil visibility" do
+      event = make_event(:patch_approval_requested, %{patch_id: "p1"})
+      assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
+    end
+
+    test "allows patch_approved with nil visibility" do
+      event = make_event(:patch_approved, %{patch_id: "p1"})
+      assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
+    end
+
+    test "allows patch_rejected with nil visibility" do
+      event = make_event(:patch_rejected, %{patch_id: "p1"})
+      assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
+    end
+
     test "allows session_status_changed with nil visibility" do
       event = make_event(:session_status_changed, %{status: "active"})
       assert {:ok, _} = ExternalEventFilter.to_external_map(event, [])
@@ -539,6 +559,10 @@ defmodule MuseWeb.ExternalEventFilterTest do
       assert MapSet.member?(types, :assistant_delta)
       assert MapSet.member?(types, :turn_completed)
       assert MapSet.member?(types, :session_status_changed)
+      assert MapSet.member?(types, :patch_proposed)
+      assert MapSet.member?(types, :patch_approval_requested)
+      assert MapSet.member?(types, :patch_approved)
+      assert MapSet.member?(types, :patch_rejected)
     end
   end
 
@@ -570,6 +594,59 @@ defmodule MuseWeb.ExternalEventFilterTest do
 
       assert {:error, {:denied_visibility, :internal}} =
                ExternalEventFilter.to_external_json(event, [])
+    end
+  end
+
+  # -- Patch diff capping tests -------------------------------------------------
+
+  describe "patch diff capping in external envelopes" do
+    test "caps oversized diff in patch_proposed envelope" do
+      huge_diff = String.duplicate("line\n", 1_500)
+
+      event =
+        make_event(:patch_proposed, %{patch_id: "p1", diff: huge_diff}, visibility: :user)
+
+      assert {:ok, envelope} = ExternalEventFilter.to_external_map(event, [])
+
+      diff_value = envelope["payload"]["diff"]
+      assert String.ends_with?(diff_value, "…")
+      refute diff_value == huge_diff
+    end
+
+    test "preserves short diff in patch_approval_requested envelope" do
+      short_diff = "diff --git a/foo.ex"
+
+      event =
+        make_event(:patch_approval_requested, %{patch_id: "p1", diff: short_diff},
+          visibility: :user
+        )
+
+      assert {:ok, envelope} = ExternalEventFilter.to_external_map(event, [])
+      assert envelope["payload"]["diff"] == short_diff
+    end
+
+    test "caps diff_text key as well as diff key" do
+      huge_diff = String.duplicate("x", 3_000)
+
+      event =
+        make_event(:patch_proposed, %{patch_id: "p1", diff_text: huge_diff}, visibility: :user)
+
+      assert {:ok, envelope} = ExternalEventFilter.to_external_map(event, [])
+
+      diff_text = envelope["payload"]["diff_text"]
+      assert String.ends_with?(diff_text, "…")
+    end
+
+    test "does not cap non-patch event diffs" do
+      # Non-patch events should go through normal string truncation only
+      long_text = String.duplicate("a", 3_000)
+      event = make_event(:user_message, %{diff: long_text}, visibility: :user)
+
+      assert {:ok, envelope} = ExternalEventFilter.to_external_map(event, [])
+
+      # Normal external_json_safe truncates at 2_000 chars
+      diff_value = envelope["payload"]["diff"]
+      assert String.ends_with?(diff_value, "…")
     end
   end
 end

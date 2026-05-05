@@ -61,6 +61,10 @@ defmodule MuseWeb.ExternalEventFilter do
                                :approval_requested,
                                :approval_approved,
                                :approval_rejected,
+                               :patch_proposed,
+                               :patch_approval_requested,
+                               :patch_approved,
+                               :patch_rejected,
                                :turn_completed,
                                :turn_failed,
                                :session_status_changed
@@ -283,10 +287,14 @@ defmodule MuseWeb.ExternalEventFilter do
 
   # -- Envelope builder ---------------------------------------------------------
 
+  @patch_types [:patch_proposed, :patch_approval_requested, :patch_approved, :patch_rejected]
+  @external_diff_cap 2_000
+
   defp build_envelope(event) do
     payload =
       event.data
       |> EventDisplay.safe_data()
+      |> maybe_cap_patch_diff(event.type)
       |> external_json_safe()
 
     base = %{
@@ -307,6 +315,24 @@ defmodule MuseWeb.ExternalEventFilter do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, external_json_safe(value))
+
+  # -- Patch diff capping --------------------------------------------------------
+
+  @diff_keys [:diff, "diff", :diff_text, "diff_text"]
+
+  defp maybe_cap_patch_diff(data, type) when type in @patch_types and is_map(data) do
+    Enum.reduce(@diff_keys, data, fn key, acc ->
+      case Map.get(acc, key) do
+        diff when is_binary(diff) and byte_size(diff) > @external_diff_cap ->
+          Map.put(acc, key, String.slice(diff, 0, @external_diff_cap) <> "…")
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  defp maybe_cap_patch_diff(data, _type), do: data
 
   # -- JSON safety --------------------------------------------------------------
 

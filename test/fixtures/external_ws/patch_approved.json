@@ -1,0 +1,16 @@
+{
+  "type": "patch_approved",
+  "id": 9065,
+  "timestamp": "2025-05-27T14:40:30.000Z",
+  "session_id": "sess_a1b2c3",
+  "turn_id": "turn_f7e8d9",
+  "seq": 40,
+  "source": "approval_gate",
+  "muse_id": null,
+  "visibility": "user",
+  "payload": {
+    "kind": "patch",
+    "patch_id": "patch_g7h8i9",
+    "hash": "sha256abc123def"
+  }
+}

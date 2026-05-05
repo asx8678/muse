@@ -84,7 +84,8 @@ defmodule MuseWeb.EventFormatter do
       :reload_success,
       :rollback_success,
       :plan_approved,
-      :approval_approved
+      :approval_approved,
+      :patch_approved
     ]
   end
 
@@ -99,7 +100,8 @@ defmodule MuseWeb.EventFormatter do
       "reload_success",
       "rollback_success",
       "plan_approved",
-      "approval_approved"
+      "approval_approved",
+      "patch_approved"
     ]
   end
 
@@ -134,7 +136,11 @@ defmodule MuseWeb.EventFormatter do
         :plan_rejected,
         :approval_requested,
         :approval_approved,
-        :approval_rejected
+        :approval_rejected,
+        :patch_proposed,
+        :patch_approval_requested,
+        :patch_approved,
+        :patch_rejected
       ] ->
         "event-badge event-badge-accent"
 
