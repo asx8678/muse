@@ -112,6 +112,7 @@ defmodule Muse.Tool.RunnerTest do
             "shell_command",
             "network_call",
             "patch_apply",
+            "patch_propose",
             "delete_file"
           ] do
         result = Runner.run(tool_name, %{"payload" => "x"}, approved_plan_context)
