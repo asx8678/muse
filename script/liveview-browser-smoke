@@ -21,8 +21,8 @@
 #   - mix deps.get has been run
 #
 # This script does NOT require a real browser (Playwright/QA Kitten).
-# For browser console-error detection, see docs/testing.md for the
-# optional Playwright integration path.
+# For browser console-error detection and keyboard focus verification,
+# see script/liveview-browser-smoke-playwright or docs/testing.md §11.7.
 #
 # Exit codes:
 #   0 — all smoke checks passed

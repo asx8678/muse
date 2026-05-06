@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# script/liveview-browser-smoke-playwright
+#
+# Real-browser LiveView smoke test using Playwright.
+#
+# Starts Muse with fake provider on a non-default port, waits for HTTP
+# readiness, runs Playwright headless browser assertions, and tears down
+# cleanly. Non-interactive — suitable for CI and dev use.
+#
+# Usage:
+#   ./script/liveview-browser-smoke-playwright
+#   MUSE_BROWSER_SMOKE_PORT=4200 ./script/liveview-browser-smoke-playwright
+#
+# Environment:
+#   MUSE_BROWSER_SMOKE_PORT       — HTTP port (default: 4101)
+#   MUSE_BROWSER_SMOKE_HOST       — HTTP host (default: 127.0.0.1)
+#   MUSE_BROWSER_SMOKE_TIMEOUT    — Server readiness timeout in seconds (default: 60)
+#   MUSE_PLAYWRIGHT_BROWSER       — Browser to use (default: chromium)
+#
+# Prerequisites:
+#   - Elixir/Erlang installed
+#   - Node.js 18+ and npm installed
+#   - mix deps.get has been run
+#   - npm install has been run (for @playwright/test)
+#   - npx playwright install chromium (or npm run browser:install)
+#
+# Exit codes:
+#   0 — all browser smoke checks passed
+#   1 — one or more checks failed, or server/deps failed
+#   2 — prerequisites missing (node, npm, playwright)
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+ROOT="$(pwd)"
+
+PORT="${MUSE_BROWSER_SMOKE_PORT:-4101}"
+HOST="${MUSE_BROWSER_SMOKE_HOST:-127.0.0.1}"
+TIMEOUT="${MUSE_BROWSER_SMOKE_TIMEOUT:-60}"
+MUSE_PROVIDER="fake"
+MIX_ENV="smoke"
+
+SERVER_PID=""
+SMOKE_LOG=""
+
+# ─── Prerequisite checks ──────────────────────────────────────────────────
+
+check_prerequisites() {
+    local missing=0
+
+    if ! command -v node &>/dev/null; then
+        echo "ERROR: node is not installed. Install Node.js 18+." >&2
+        missing=1
+    fi
+
+    if ! command -v npm &>/dev/null; then
+        echo "ERROR: npm is not installed. Install npm (comes with Node.js 18+)." >&2
+        missing=1
+    fi
+
+    if [ ! -d "${ROOT}/node_modules/@playwright/test" ]; then
+        echo "ERROR: @playwright/test not installed." >&2
+        echo "       Run: npm install" >&2
+        missing=1
+    fi
+
+    # Check that Playwright browsers are installed
+    if ! npx playwright install --dry-run chromium &>/dev/null 2>&1; then
+        # --dry-run may not be supported in all versions; try a different check
+        local browser_path
+        browser_path="$(npx playwright install --dry-run 2>&1 | grep -c 'chromium' || true)"
+        if [ "$browser_path" -eq 0 ]; then
+            # Try actually checking the browser binary
+            if ! npx playwright open --browser chromium "about:blank" &>/dev/null 2>&1; then
+                echo "WARNING: Playwright browsers may not be installed." >&2
+                echo "       Run: npm run browser:install" >&2
+                echo "       Attempting auto-install..." >&2
+                npm run browser:install 2>&1 || {
+                    echo "ERROR: Playwright browser install failed." >&2
+                    echo "       Run manually: npm run browser:install" >&2
+                    missing=1
+                }
+            fi
+        fi
+    fi
+
+    if [ "$missing" -ne 0 ]; then
+        echo "" >&2
+        echo "Prerequisites missing. Install them with:" >&2
+        echo "  npm install" >&2
+        echo "  npm run browser:install" >&2
+        exit 2
+    fi
+}
+
+# ─── Cleanup ──────────────────────────────────────────────────────────────
+
+cleanup() {
+    if [ -n "${SERVER_PID:-}" ] && kill -0 "${SERVER_PID}" 2>/dev/null; then
+        echo "==> Stopping Muse server (PID ${SERVER_PID})"
+        kill "${SERVER_PID}" 2>/dev/null || true
+        local wait_count=0
+        while kill -0 "${SERVER_PID}" 2>/dev/null && [ $wait_count -lt 5 ]; do
+            sleep 1
+            wait_count=$((wait_count + 1))
+        done
+        if kill -0 "${SERVER_PID}" 2>/dev/null; then
+            kill -9 "${SERVER_PID}" 2>/dev/null || true
+        fi
+    fi
+    if [ -n "${SMOKE_LOG:-}" ] && [ -f "${SMOKE_LOG}" ]; then
+        rm -f "${SMOKE_LOG}"
+    fi
+}
+trap cleanup EXIT
+
+# ─── Main ─────────────────────────────────────────────────────────────────
+
+echo "==> Muse LiveView Browser Smoke (Playwright)"
+echo "    Port:    ${PORT}"
+echo "    Host:    ${HOST}"
+echo "    Timeout: ${TIMEOUT}s"
+echo "    Env:     ${MIX_ENV}"
+echo "    Provider: ${MUSE_PROVIDER}"
+echo ""
+
+echo "==> Checking prerequisites..."
+check_prerequisites
+
+# Compile in the smoke environment first so readiness wait
+# doesn't race with compilation.
+echo "==> Compiling (MIX_ENV=${MIX_ENV})..."
+MIX_ENV="${MIX_ENV}" mix compile 2>&1
+
+# Start Muse server in background, capturing output to a temp log.
+SMOKE_LOG="$(mktemp /tmp/muse-smoke-server.XXXXXX.log)"
+echo "==> Starting Muse on http://${HOST}:${PORT}/ (fake provider)..."
+MIX_ENV="${MIX_ENV}" MUSE_PROVIDER="${MUSE_PROVIDER}" \
+    mix muse --web-only --port "${PORT}" --no-watch \
+    > "${SMOKE_LOG}" 2>&1 &
+SERVER_PID=$!
+
+# Wait for HTTP readiness
+echo "==> Waiting for server readiness..."
+elapsed=0
+while [ "${elapsed}" -lt "${TIMEOUT}" ]; do
+    if curl -sf -o /dev/null "http://${HOST}:${PORT}/" 2>/dev/null; then
+        echo "==> Server ready after ${elapsed}s"
+        break
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+
+if [ "${elapsed}" -ge "${TIMEOUT}" ]; then
+    echo "ERROR: Muse did not become ready within ${TIMEOUT}s" >&2
+    echo "       Server log (last 20 lines):" >&2
+    tail -20 "${SMOKE_LOG}" >&2 2>/dev/null || true
+    exit 1
+fi
+
+# Also run the HTTP-based smoke assertions first (reuse existing Mix task)
+echo "==> Running HTTP smoke assertions..."
+MIX_ENV="${MIX_ENV}" mix muse.smoke --port "${PORT}" --host "${HOST}" || {
+    echo "ERROR: HTTP smoke checks failed" >&2
+    exit 1
+}
+
+# Run Playwright browser smoke tests
+echo "==> Running Playwright browser smoke tests..."
+MUSE_BROWSER_SMOKE_PORT="${PORT}" \
+MUSE_BROWSER_SMOKE_HOST="${HOST}" \
+npx playwright test --config playwright.config.js 2>&1
+
+echo ""
+echo "==> LiveView browser smoke complete!"

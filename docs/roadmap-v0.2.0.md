@@ -60,8 +60,10 @@ Delivered:
 - **Docs updated**: README documents `--version` and `-v`, escript usage notes
 
 Not yet implemented (deferred to follow-up issues):
-- Cross-browser Playwright automation (requires infrastructure setup)
 - Full WCAG 2.1 AA audit (manual testing required)
+
+Delivered (follow-up `muse-3pq`):
+- **Real-browser LiveView smoke with Playwright**: `script/liveview-browser-smoke-playwright` starts Muse with fake provider on a non-default port, waits for HTTP readiness, runs HTTP smoke assertions, then runs Playwright headless browser tests. Browser checks: no console.error/pageerror/unhandledrejection, LiveView WebSocket connects, command/help discoverability in DOM, keyboard Tab reaches message composer input, session/context panel ARIA markers, no visible secrets/tokens in page text, ARIA landmarks and live regions. Prerequisites: `npm install && npm run browser:install`. Default `mix test` unchanged. See `docs/testing.md` §11.7.
 
 Delivered (follow-up `muse-po4`):
 - **Executable LiveView browser smoke**: `script/liveview-browser-smoke` starts Muse with fake provider on a non-default port, waits for HTTP readiness, and runs `mix muse.smoke` assertions against the running server. Checks: page load, accessibility markers, command discoverability, session/context panel, no visible secrets, keyboard focus indicators. Non-interactive, suitable for CI. Default `mix test` unchanged. Real-browser console-error detection remains opt-in Playwright (see `docs/testing.md` §11).

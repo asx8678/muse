@@ -18,6 +18,14 @@
 # Build artifacts directory (release build script output)
 /dist/
 
+# Node / Playwright (browser smoke only — not required for mix test)
+node_modules/
+package-lock.json
+playwright-report/
+test-results/
+blob-report/
+*.trace.zip
+
 # Editor / OS
 *.swp
 *.swo

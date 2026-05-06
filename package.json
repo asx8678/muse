@@ -1,0 +1,13 @@
+{
+  "name": "muse-browser-smoke",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playwright browser smoke tests for Muse LiveView UI",
+  "scripts": {
+    "browser:install": "npx playwright install chromium",
+    "smoke:liveview:browser": "npx playwright test --config playwright.config.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0"
+  }
+}

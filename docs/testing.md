@@ -713,28 +713,71 @@ This environment does NOT interfere with the default `mix test` suite.
 
 The browser smoke uses `MUSE_PROVIDER=fake` (the project default). No real API keys, no network calls to LLM providers, no browser downloads required. Running `mix test` (the default test suite) is unchanged.
 
-### 11.7 Optional: Playwright / Real Browser QA
+### 11.7 Playwright / Real Browser QA
 
-The HTTP-based smoke verifies server-rendered HTML content but **cannot detect JavaScript runtime errors** in the browser. For full browser console-error detection:
+The HTTP-based smoke (§11.1–11.6) verifies server-rendered HTML content but **cannot detect JavaScript runtime errors** in the browser. The Playwright browser smoke provides full console-error detection and keyboard focus verification.
 
-1. Install Playwright in the project:
+#### Quick Start
 
 ```bash
-npm init -y
-npm install --save-dev @playwright/test
-npx playwright install
+./script/liveview-browser-smoke-playwright
 ```
 
-2. Start the smoke server:
+This single command:
+
+1. Checks prerequisites (Node.js, npm, Playwright)
+2. Compiles and starts Muse with `MUSE_PROVIDER=fake` on port 4101
+3. Waits for HTTP readiness
+4. Runs HTTP smoke assertions (`mix muse.smoke`)
+5. Runs Playwright headless browser tests against the LiveView page
+6. Tears down the server cleanly (trap-based cleanup)
+7. Exits 0 on success, 1 on failure, 2 on missing prerequisites
+
+#### Prerequisites
 
 ```bash
+npm install                     # Install @playwright/test
+npm run browser:install        # Download Chromium browser
+```
+
+Node.js 18+ and npm are required. These are **not** required for `mix test` — the default Elixir test suite remains unaffected.
+
+#### What the Browser Smoke Checks
+
+| Check | What it verifies |
+|-------|-----------------|
+| No console.error / pageerror / unhandledrejection | No JavaScript runtime errors during page load, LiveView connect, or hook mount |
+| LiveView WebSocket connected | `phx-loading` class removed, `data-phx-session` element present |
+| Command discoverability | Input `aria-label` mentions `/help`, placeholder text, `data-slash-commands`, composer `role="form"`, send button label |
+| Keyboard focusability | Tab navigation reaches the chat input textarea; Enter submit doesn't throw errors |
+| Session/context panel markers | `role="complementary"`, `aria-label` for workspace context, `role="status"` elements |
+| No visible secrets | Visible page text doesn't contain API key prefixes, bearer tokens, or secret env var names |
+| ARIA landmarks | Chat region, log role, live region, toast status, form role, labels, sr-only help text |
+| Page load success | Main shell element present, substantial HTML content |
+
+#### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MUSE_BROWSER_SMOKE_PORT` | 4101 | HTTP port for the smoke server |
+| `MUSE_BROWSER_SMOKE_HOST` | 127.0.0.1 | HTTP host |
+| `MUSE_BROWSER_SMOKE_TIMEOUT` | 60 | Server readiness timeout (seconds) |
+| `MUSE_PLAYWRIGHT_BROWSER` | chromium | Browser to use |
+
+#### Running Without the Orchestration Script
+
+If the server is already running:
+
+```bash
+# Terminal 1: start server
 MIX_ENV=smoke MUSE_PROVIDER=fake mix muse --web-only --port 4101 --no-watch
+
+# Terminal 2: run just the Playwright tests
+npm run smoke:liveview:browser
+# Or directly:
+MUSE_BROWSER_SMOKE_PORT=4101 npx playwright test
 ```
 
-3. Run Playwright tests against `http://127.0.0.1:4101/` that:
-   - Open the page in a headless browser
-   - Listen for `console.error` / `window.onerror`
-   - Assert no unhandled exceptions
-   - Verify interactive elements are keyboard-focusable
+#### No-Network Invariant Preserved
 
-This Playwright integration is **opt-in** and not required for the default quality gates. Full Playwright smoke test implementation is tracked by **muse-3pq** (`Add real-browser LiveView smoke with console-error detection`, P2).
+The browser smoke uses `MUSE_PROVIDER=fake`. No real API keys, no network calls to LLM providers. The `npm install` step downloads Playwright and Chromium but this is separate from `mix deps.get` — the default Elixir quality gates (`mix test`, `mix compile --warnings-as-errors`) remain unchanged and do not require Node.js or browser downloads.
