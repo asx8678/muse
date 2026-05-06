@@ -102,11 +102,13 @@ defmodule Muse.LLM.Transport.SSE.ReqStream do
   def default_post_stream(url, req_options, chunk_callback)
       when is_binary(url) and is_list(req_options) and is_function(chunk_callback, 1) do
     streaming_options =
-      Keyword.put(req_options, :into, fn
+      req_options
+      |> Keyword.put(:into, fn
         {:data, data}, {req, resp} when is_binary(data) ->
           chunk_callback.(data)
           {:cont, {req, resp}}
       end)
+      |> Keyword.put_new(:method, :post)
 
     case Req.request(url, streaming_options) do
       {:ok, %Req.Response{status: status, headers: headers}} when is_integer(status) ->
