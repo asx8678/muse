@@ -1536,4 +1536,128 @@ defmodule Muse.CommandDispatcherTest do
       refute rendered =~ "sentinel-non-map"
     end
   end
+
+  # -- muse-8ha: /memory clear honors context session_id --
+
+  describe "dispatch/3 — :memory_clear session routing" do
+    test "clears memory for the session specified in context, not default" do
+      # Start both sessions
+      default_id = "default"
+      other_id = "memory-clear-other-#{:erlang.unique_integer([:positive])}"
+
+      # Create snapshots
+      default_snapshot = %{
+        "status" => "idle",
+        "active_plan_id" => nil,
+        "plan" => nil,
+        "pending_patch" => nil,
+        "active_muse" => nil,
+        "active_turn_id" => nil,
+        "event_count" => 0
+      }
+
+      other_snapshot = Map.put(default_snapshot, "event_count", 1)
+
+      :ok = Muse.SessionStore.save_session(default_id, default_snapshot)
+      :ok = Muse.SessionStore.save_session(other_id, other_snapshot)
+
+      # Start session servers
+      {:ok, default_pid} =
+        DynamicSupervisor.start_child(
+          Muse.SessionSupervisor,
+          {Muse.SessionServer, session_id: default_id}
+        )
+
+      {:ok, other_pid} =
+        DynamicSupervisor.start_child(
+          Muse.SessionSupervisor,
+          {Muse.SessionServer, session_id: other_id}
+        )
+
+      # Set memory on both sessions
+      default_memory = %{user_goal: "Default goal", source_session_id: default_id}
+      other_memory = %{user_goal: "Other goal", source_session_id: other_id}
+
+      :ok = Muse.SessionServer.set_memory(default_pid, default_memory)
+      :ok = Muse.SessionServer.set_memory(other_pid, other_memory)
+
+      # Clear memory on the non-default session via dispatch
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:memory_clear, nil, %{session_id: other_id})
+
+      assert output =~ "Session memory cleared"
+      assert {:refresh, :session} in effects
+
+      # Verify: other session memory is cleared, default memory is intact
+      other_status = Muse.SessionServer.status(other_pid)
+      default_status = Muse.SessionServer.status(default_pid)
+
+      assert other_status.memory == nil
+      assert default_status.memory != nil
+      assert default_status.memory.user_goal == "Default goal"
+
+      # Cleanup
+      DynamicSupervisor.terminate_child(Muse.SessionSupervisor, default_pid)
+      DynamicSupervisor.terminate_child(Muse.SessionSupervisor, other_pid)
+    rescue
+      _ -> :ok
+    end
+
+    test "falls back to default session when context has no session_id" do
+      session_id = "default"
+
+      snapshot = %{
+        "status" => "idle",
+        "active_plan_id" => nil,
+        "plan" => nil,
+        "pending_patch" => nil,
+        "active_muse" => nil,
+        "active_turn_id" => nil,
+        "event_count" => 0
+      }
+
+      :ok = Muse.SessionStore.save_session(session_id, snapshot)
+
+      {:ok, pid} =
+        DynamicSupervisor.start_child(
+          Muse.SessionSupervisor,
+          {Muse.SessionServer, session_id: session_id}
+        )
+
+      # Set memory on default session
+      memory = %{user_goal: "Default goal", source_session_id: session_id}
+      :ok = Muse.SessionServer.set_memory(pid, memory)
+
+      # Clear with empty context - should fall back to default
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:memory_clear, nil, %{})
+
+      assert output =~ "Session memory cleared"
+      assert {:refresh, :session} in effects
+
+      # Verify default session memory is cleared
+      status = Muse.SessionServer.status(pid)
+      assert status.memory == nil
+
+      DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid)
+    rescue
+      _ -> :ok
+    end
+
+    test "returns usage error when extra args are provided" do
+      {:error, output, effects} =
+        CommandDispatcher.dispatch(:memory_clear, "extra args", %{})
+
+      assert output =~ "usage: /memory clear"
+      assert effects == []
+    end
+
+    test "returns not-found message when session does not exist" do
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:memory_clear, nil, %{session_id: "no-such-session"})
+
+      assert output =~ "No active Muse session"
+      refute {:refresh, :session} in effects
+    end
+  end
 end

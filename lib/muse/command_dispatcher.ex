@@ -685,11 +685,11 @@ defmodule Muse.CommandDispatcher do
     end
   end
 
-  def dispatch(:memory_clear, args, _context) do
+  def dispatch(:memory_clear, args, context) do
     if present_args?(args) do
       {:error, "Error: usage: /memory clear", []}
     else
-      session_id = context_session_id(%{})
+      session_id = context_session_id(context)
 
       case Muse.SessionRouter.clear_memory(session_id) do
         :ok ->
