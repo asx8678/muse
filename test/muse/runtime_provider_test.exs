@@ -1,5 +1,5 @@
 defmodule Muse.RuntimeProviderTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Muse.RuntimeProvider
   alias Muse.LLM.ProviderConfig
@@ -31,6 +31,28 @@ defmodule Muse.RuntimeProviderTest do
     Enum.each(env_vars, fn {key, value} ->
       System.put_env(key, value)
     end)
+
+    try do
+      fun.()
+    after
+      Enum.each(original_values, fn {key, original} ->
+        if is_nil(original) do
+          System.delete_env(key)
+        else
+          System.put_env(key, original)
+        end
+      end)
+    end
+  end
+
+  # Delete specific env vars and restore after callback.
+  defp without_system_env(keys, fun) when is_list(keys) do
+    original_values =
+      Enum.map(keys, fn key ->
+        {key, System.get_env(key)}
+      end)
+
+    Enum.each(keys, &System.delete_env/1)
 
     try do
       fun.()
@@ -99,19 +121,14 @@ defmodule Muse.RuntimeProviderTest do
       end)
     end
 
-    test "with MUSE_PROVIDER unset returns empty opts" do
+    test "with MUSE_PROVIDER unset and no app config returns empty opts" do
       with_app_env(:runtime_provider_enabled, true, fn ->
-        # Ensure MUSE_PROVIDER is not set
-        original = System.get_env("MUSE_PROVIDER")
-        System.delete_env("MUSE_PROVIDER")
-
-        try do
-          assert {:ok, []} = RuntimeProvider.resolve_opts()
-        after
-          if original do
-            System.put_env("MUSE_PROVIDER", original)
-          end
-        end
+        # Ensure no MUSE_PROVIDER env and no :llm app config
+        without_system_env(["MUSE_PROVIDER", "MUSE_MODEL"], fn ->
+          with_app_env(:llm, [], fn ->
+            assert {:ok, []} = RuntimeProvider.resolve_opts()
+          end)
+        end)
       end)
     end
 
@@ -122,10 +139,20 @@ defmodule Muse.RuntimeProviderTest do
         end)
       end)
     end
+
+    test "with fake provider in app config returns empty opts" do
+      with_app_env(:runtime_provider_enabled, true, fn ->
+        without_system_env(["MUSE_PROVIDER", "MUSE_MODEL"], fn ->
+          with_app_env(:llm, [provider: "fake"], fn ->
+            assert {:ok, []} = RuntimeProvider.resolve_opts()
+          end)
+        end)
+      end)
+    end
   end
 
-  describe "resolve_opts/0 — valid non-fake providers" do
-    test "MUSE_PROVIDER=openai_compatible returns provider_env opts" do
+  describe "resolve_opts/0 — valid non-fake providers via env" do
+    test "MUSE_PROVIDER=openai_compatible returns provider_config opts" do
       with_app_env(:runtime_provider_enabled, true, fn ->
         with_system_env(
           %{
@@ -135,22 +162,20 @@ defmodule Muse.RuntimeProviderTest do
           },
           fn ->
             assert {:ok, opts} = RuntimeProvider.resolve_opts()
-            assert Keyword.has_key?(opts, :provider_env)
+            assert Keyword.has_key?(opts, :provider_config)
             assert Keyword.has_key?(opts, :model_router_opts)
 
-            # provider_env should contain MUSE_* keys only
-            env = Keyword.fetch!(opts, :provider_env)
-            assert Map.has_key?(env, "MUSE_PROVIDER")
-            assert Map.has_key?(env, "MUSE_MODEL")
-            # Non-MUSE keys should not be present
-            refute Map.has_key?(env, "HOME")
-            refute Map.has_key?(env, "PATH")
+            # provider_config should be a resolved ProviderConfig struct
+            config = Keyword.fetch!(opts, :provider_config)
+            assert %ProviderConfig{} = config
+            assert config.id == "openai_compatible"
+            assert config.model == "gpt-4"
           end
         )
       end)
     end
 
-    test "MUSE_PROVIDER=openrouter returns provider_env opts" do
+    test "MUSE_PROVIDER=openrouter returns provider_config opts" do
       with_app_env(:runtime_provider_enabled, true, fn ->
         with_system_env(
           %{
@@ -159,16 +184,17 @@ defmodule Muse.RuntimeProviderTest do
           },
           fn ->
             assert {:ok, opts} = RuntimeProvider.resolve_opts()
-            assert Keyword.has_key?(opts, :provider_env)
+            assert Keyword.has_key?(opts, :provider_config)
 
-            env = Keyword.fetch!(opts, :provider_env)
-            assert env["MUSE_PROVIDER"] == "openrouter"
+            config = Keyword.fetch!(opts, :provider_config)
+            assert %ProviderConfig{} = config
+            assert config.id == "openrouter"
           end
         )
       end)
     end
 
-    test "MUSE_PROVIDER=ollama returns provider_env opts" do
+    test "MUSE_PROVIDER=ollama returns provider_config opts" do
       with_app_env(:runtime_provider_enabled, true, fn ->
         with_system_env(
           %{
@@ -177,16 +203,17 @@ defmodule Muse.RuntimeProviderTest do
           },
           fn ->
             assert {:ok, opts} = RuntimeProvider.resolve_opts()
-            assert Keyword.has_key?(opts, :provider_env)
+            assert Keyword.has_key?(opts, :provider_config)
 
-            env = Keyword.fetch!(opts, :provider_env)
-            assert env["MUSE_PROVIDER"] == "ollama"
+            config = Keyword.fetch!(opts, :provider_config)
+            assert %ProviderConfig{} = config
+            assert config.id == "ollama"
           end
         )
       end)
     end
 
-    test "MUSE_PROVIDER=anthropic returns provider_env opts" do
+    test "MUSE_PROVIDER=anthropic returns provider_config opts" do
       with_app_env(:runtime_provider_enabled, true, fn ->
         with_system_env(
           %{
@@ -195,16 +222,17 @@ defmodule Muse.RuntimeProviderTest do
           },
           fn ->
             assert {:ok, opts} = RuntimeProvider.resolve_opts()
-            assert Keyword.has_key?(opts, :provider_env)
+            assert Keyword.has_key?(opts, :provider_config)
 
-            env = Keyword.fetch!(opts, :provider_env)
-            assert env["MUSE_PROVIDER"] == "anthropic"
+            config = Keyword.fetch!(opts, :provider_config)
+            assert %ProviderConfig{} = config
+            assert config.id == "anthropic"
           end
         )
       end)
     end
 
-    test "model_router_opts contains env map" do
+    test "model_router_opts contains filtered MUSE_* env map" do
       with_app_env(:runtime_provider_enabled, true, fn ->
         with_system_env(
           %{
@@ -219,6 +247,8 @@ defmodule Muse.RuntimeProviderTest do
 
             env = Keyword.fetch!(router_opts, :env)
             assert env["MUSE_PLANNING_MODEL"] == "pinned-model"
+            # Only MUSE_* keys
+            assert Enum.all?(Map.keys(env), &String.starts_with?(&1, "MUSE_"))
           end
         )
       end)
@@ -244,6 +274,117 @@ defmodule Muse.RuntimeProviderTest do
             assert :openai_compatible in ProviderConfig.known_providers()
           end
         )
+      end)
+    end
+  end
+
+  describe "resolve_opts/0 — valid non-fake providers via app config" do
+    test "app config with non-fake provider and no MUSE_PROVIDER env returns provider_config opts" do
+      with_app_env(:runtime_provider_enabled, true, fn ->
+        without_system_env(["MUSE_PROVIDER", "MUSE_MODEL", "MUSE_OPENAI_BASE_URL"], fn ->
+          with_app_env(
+            :llm,
+            [
+              provider: "openai_compatible",
+              model: "gpt-4o",
+              base_url: "https://api.openai.com/v1"
+            ],
+            fn ->
+              assert {:ok, opts} = RuntimeProvider.resolve_opts()
+              assert opts != []
+
+              assert Keyword.has_key?(opts, :provider_config)
+              config = Keyword.fetch!(opts, :provider_config)
+              assert %ProviderConfig{} = config
+              assert config.id == "openai_compatible"
+              assert config.model == "gpt-4o"
+            end
+          )
+        end)
+      end)
+    end
+
+    test "app config with openrouter provider returns provider_config opts" do
+      with_app_env(:runtime_provider_enabled, true, fn ->
+        without_system_env(["MUSE_PROVIDER", "MUSE_MODEL"], fn ->
+          with_app_env(:llm, [provider: "openrouter", model: "anthropic/claude-3.5-sonnet"], fn ->
+            assert {:ok, opts} = RuntimeProvider.resolve_opts()
+            assert opts != []
+
+            config = Keyword.fetch!(opts, :provider_config)
+            assert %ProviderConfig{} = config
+            assert config.id == "openrouter"
+            assert config.model == "anthropic/claude-3.5-sonnet"
+          end)
+        end)
+      end)
+    end
+
+    test "app config with ollama provider returns provider_config opts" do
+      with_app_env(:runtime_provider_enabled, true, fn ->
+        without_system_env(["MUSE_PROVIDER", "MUSE_MODEL"], fn ->
+          with_app_env(:llm, [provider: "ollama", model: "llama3.1"], fn ->
+            assert {:ok, opts} = RuntimeProvider.resolve_opts()
+            assert opts != []
+
+            config = Keyword.fetch!(opts, :provider_config)
+            assert %ProviderConfig{} = config
+            assert config.id == "ollama"
+          end)
+        end)
+      end)
+    end
+
+    test "app config with anthropic provider returns provider_config opts" do
+      with_app_env(:runtime_provider_enabled, true, fn ->
+        without_system_env(["MUSE_PROVIDER", "MUSE_MODEL"], fn ->
+          with_app_env(:llm, [provider: "anthropic", model: "claude-sonnet-4-20250514"], fn ->
+            assert {:ok, opts} = RuntimeProvider.resolve_opts()
+            assert opts != []
+
+            config = Keyword.fetch!(opts, :provider_config)
+            assert %ProviderConfig{} = config
+            assert config.id == "anthropic"
+          end)
+        end)
+      end)
+    end
+
+    test "env var overrides app config for provider" do
+      # When both app config and env var set provider, env var wins
+      with_app_env(:runtime_provider_enabled, true, fn ->
+        with_app_env(:llm, [provider: "ollama", model: "llama3.1"], fn ->
+          with_system_env(
+            %{
+              "MUSE_PROVIDER" => "openrouter",
+              "MUSE_MODEL" => "env-model"
+            },
+            fn ->
+              assert {:ok, opts} = RuntimeProvider.resolve_opts()
+              config = Keyword.fetch!(opts, :provider_config)
+              # Env var should win over app config
+              assert config.id == "openrouter"
+              assert config.model == "env-model"
+            end
+          )
+        end)
+      end)
+    end
+
+    test "model_router_opts still contains filtered MUSE_* env when using app config" do
+      with_app_env(:runtime_provider_enabled, true, fn ->
+        without_system_env(["MUSE_PROVIDER"], fn ->
+          with_system_env(%{"MUSE_MODEL" => "app-model", "MUSE_PLANNING_MODEL" => "pinned"}, fn ->
+            with_app_env(:llm, [provider: "openrouter"], fn ->
+              assert {:ok, opts} = RuntimeProvider.resolve_opts()
+
+              router_opts = Keyword.fetch!(opts, :model_router_opts)
+              env = Keyword.fetch!(router_opts, :env)
+              # Only MUSE_* keys in the filtered env
+              assert Enum.all?(Map.keys(env), &String.starts_with?(&1, "MUSE_"))
+            end)
+          end)
+        end)
       end)
     end
   end
@@ -287,6 +428,34 @@ defmodule Muse.RuntimeProviderTest do
       end)
     end
 
+    test "invalid app config provider returns actionable error" do
+      with_app_env(:runtime_provider_enabled, true, fn ->
+        without_system_env(["MUSE_PROVIDER"], fn ->
+          with_app_env(:llm, [provider: "totally_invalid_app_provider"], fn ->
+            assert {:error, reason} = RuntimeProvider.resolve_opts()
+            assert is_binary(reason)
+            assert reason =~ "unknown provider"
+          end)
+        end)
+      end)
+    end
+
+    test "app config non-fake provider without model returns error" do
+      with_app_env(:runtime_provider_enabled, true, fn ->
+        without_system_env(["MUSE_PROVIDER", "MUSE_MODEL"], fn ->
+          with_app_env(
+            :llm,
+            [provider: "openai_compatible", base_url: "https://api.openai.com/v1"],
+            fn ->
+              assert {:error, reason} = RuntimeProvider.resolve_opts()
+              assert is_binary(reason)
+              assert reason =~ "model"
+            end
+          )
+        end)
+      end)
+    end
+
     test "error message does not leak API keys" do
       with_app_env(:runtime_provider_enabled, true, fn ->
         with_system_env(
@@ -323,7 +492,7 @@ defmodule Muse.RuntimeProviderTest do
   end
 
   describe "resolve_opts/0 — env filtering" do
-    test "only MUSE_* keys are included in provider_env" do
+    test "model_router_opts env only contains MUSE_* keys" do
       with_app_env(:runtime_provider_enabled, true, fn ->
         with_system_env(
           %{
@@ -332,7 +501,7 @@ defmodule Muse.RuntimeProviderTest do
           },
           fn ->
             assert {:ok, opts} = RuntimeProvider.resolve_opts()
-            env = Keyword.fetch!(opts, :provider_env)
+            env = Keyword.fetch!(opts, :model_router_opts)[:env]
 
             # Should have MUSE_ keys
             assert Map.has_key?(env, "MUSE_PROVIDER")
@@ -351,7 +520,9 @@ defmodule Muse.RuntimeProviderTest do
       end)
     end
 
-    test "provider_env and model_router_opts env are the same map" do
+    test "no provider_env key in opts (replaced by provider_config)" do
+      # Verify that the old provider_env key is not present —
+      # we now pass the resolved ProviderConfig directly.
       with_app_env(:runtime_provider_enabled, true, fn ->
         with_system_env(
           %{
@@ -360,10 +531,8 @@ defmodule Muse.RuntimeProviderTest do
           },
           fn ->
             assert {:ok, opts} = RuntimeProvider.resolve_opts()
-            provider_env = Keyword.fetch!(opts, :provider_env)
-            router_env = Keyword.fetch!(opts, :model_router_opts)[:env]
-
-            assert provider_env == router_env
+            refute Keyword.has_key?(opts, :provider_env)
+            assert Keyword.has_key?(opts, :provider_config)
           end
         )
       end)

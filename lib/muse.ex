@@ -33,9 +33,10 @@ defmodule Muse do
 
   ## Options
 
-    * `:provider_env` — env map for Conductor provider resolution
-      (see `Muse.Conductor.resolve_provider_config/1`)
-    * `:provider_config` — explicit `Muse.LLM.ProviderConfig` struct
+    * `:provider_config` — resolved `Muse.LLM.ProviderConfig` struct
+      (from `Muse.RuntimeProvider.resolve_opts/0`)
+    * `:provider_env` — env map for Conductor provider resolution (legacy,
+      prefer `:provider_config`; see `Muse.Conductor.resolve_provider_config/1`)
     * `:model_router_opts` — opts for `Muse.LLM.ModelRouter.resolve/3`
     * `:provider_module` — explicit provider module override
     * `:workspace` — workspace root override
