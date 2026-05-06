@@ -182,6 +182,7 @@ defmodule Muse.Tools.TestRunner do
 
     case exec_result.status do
       :ok ->
+        # LocalRunner returns :ok only for exit_status 0
         exit_status = exec_result.exit_status || 0
         status = if exit_status == 0, do: :passed, else: :failed
 
@@ -196,6 +197,28 @@ defmodule Muse.Tools.TestRunner do
           next_action: next_action(status)
         })
 
+      :error ->
+        exit_status = exec_result.exit_status
+
+        if is_integer(exit_status) and exit_status != 0 do
+          # Command completed with non-zero exit — test/tool failure, not infra failure.
+          # Test failures are reported as verification failures so callers can
+          # distinguish them from tool execution errors.
+          Result.ok("test_runner", %{
+            command: command,
+            argv_display: argv_display,
+            exit_status: exit_status,
+            duration_ms: duration_ms,
+            timed_out: false,
+            status: :failed,
+            output_preview: cap_and_redact(exec_result.output || ""),
+            next_action: next_action(:failed)
+          })
+        else
+          # Infra error (no exit status — command blocked, validation failed, etc.)
+          Result.error("test_runner", exec_result.error || "execution failed")
+        end
+
       :timed_out ->
         Result.ok("test_runner", %{
           command: command,
@@ -208,7 +231,7 @@ defmodule Muse.Tools.TestRunner do
           next_action: "increase_timeout_or_simplify_command"
         })
 
-      status when status in [:error, :blocked] ->
+      status when status in [:blocked, :denied] ->
         Result.error("test_runner", exec_result.error || "execution failed")
     end
   end

@@ -426,11 +426,24 @@ defmodule Muse.Tools.PatchApply do
     case Command.new("git", args: args, cwd: workspace, timeout_ms: 60_000) do
       {:ok, cmd} ->
         case LocalRunner.run(cmd) do
-          {:ok, %ExecutionResult{status: :ok}} -> {:ok, ""}
-          {:ok, %ExecutionResult{output: output}} -> {:ok, output || ""}
-          {:ok, %ExecutionResult{error: error}} -> {:error, to_string(error)}
-          {:error, %ExecutionResult{error: error}} -> {:error, to_string(error)}
-          {:error, reason} -> {:error, inspect(reason)}
+          {:ok, %ExecutionResult{status: :ok, exit_status: 0, output: output}} ->
+            {:ok, output || ""}
+
+          {:ok, %ExecutionResult{} = result} ->
+            # Non-zero exit, timed_out, or other non-success — fail closed.
+            # Use output if available (captures git error messages), else error.
+            error_msg =
+              if is_binary(result.output) and result.output != "",
+                do: result.output,
+                else: result.error || "git command failed (status: #{result.status})"
+
+            {:error, String.slice(to_string(error_msg), 0, 500)}
+
+          {:error, %ExecutionResult{error: error}} ->
+            {:error, to_string(error)}
+
+          {:error, reason} ->
+            {:error, inspect(reason)}
         end
 
       {:error, reason} ->

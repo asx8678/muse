@@ -283,6 +283,58 @@ defmodule Muse.Tools.PatchApplyTest do
     end
   end
 
+  # Diff with mismatched context lines — passes structural validation but
+  # git apply --check rejects it because context doesn't match the file.
+  @mismatched_context_diff """
+  --- a/lib/example.ex
+  +++ b/lib/example.ex
+  @@ -1,3 +1,4 @@
+   defmodule Example do
+  +  @moduledoc "Example module"
+     def goodbye, do: :universe
+   end
+  """
+
+  describe "execute/2 — git apply check failure (regression muse-1ki.4.6)" do
+    test "git apply --check failure does not mark patch as applied", %{
+      workspace: workspace,
+      session_id: session_id
+    } do
+      {:ok, patch} =
+        Patch.new(%{
+          session_id: session_id,
+          plan_id: "plan-1",
+          plan_version: 1,
+          plan_hash: @plan_hash,
+          diff: @mismatched_context_diff,
+          status: :approved
+        })
+
+      approval = make_approval(patch, %{session_id: session_id})
+
+      :ok = Muse.SessionStore.append_patch(session_id, Patch.to_map(patch))
+
+      ctx =
+        approved_context(%{
+          session_id: session_id,
+          workspace: workspace,
+          approvals: [approval]
+        })
+        |> Map.put(:pending_patch, patch)
+
+      result = PatchApply.execute(%{"patch_id" => patch.id}, ctx)
+
+      # The patch must NOT be marked as applied
+      refute result.success
+      assert result.error =~ "apply --check failed"
+
+      # Verify the file was NOT modified
+      content = File.read!(Path.join([workspace, "lib", "example.ex"]))
+      refute content =~ "@moduledoc"
+      assert content =~ "def hello"
+    end
+  end
+
   describe "execute/2 — successful apply" do
     test "creates checkpoint, applies patch, and returns diff preview", %{
       workspace: workspace,

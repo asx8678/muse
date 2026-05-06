@@ -5,10 +5,13 @@ defmodule Muse.Execution.LocalRunner do
   Executes commands locally via `Port.open({:spawn_executable, path}, ...)`.
   Never uses shell interpolation. Enforces:
 
-    * Timeout — kills the port on timeout, no orphan processes.
+    * Timeout — closes the port on timeout; best-effort cleanup
+      (descendant processes may survive port closure).
     * Output capping — caps output at `max_output_bytes`.
     * Secret redaction — redacts secrets via `Muse.Prompt.Redactor`.
-    * Safe env — only explicitly passed env; no inherited secrets.
+    * Safe env — explicitly provided env replaces inherited env;
+      inherits process env if `env` is not set.
+    * Non-zero exit — produces `status: :error`, not `status: :ok`.
 
   ## Safety properties
 
@@ -215,10 +218,11 @@ defmodule Muse.Execution.LocalRunner do
           {:ok, Result.ok(command.id, "", argv_display: Command.safe_display(command))}
 
         {^port, {:exit_status, status}} ->
-          # Non-zero exit is still a completed execution, not an error
+          # Non-zero exit is a failed execution
           {:ok,
-           Result.ok(command.id, "",
+           Result.error(command.id, "command exited with status #{status}",
              exit_status: status,
+             output: "",
              argv_display: Command.safe_display(command)
            )}
       after
@@ -255,10 +259,11 @@ defmodule Muse.Execution.LocalRunner do
            )}
 
         {^port, {:exit_status, status}} ->
-          # Non-zero exit is still a completed execution, not an error
+          # Non-zero exit is a failed execution
           {:ok,
-           Result.ok(command.id, cap_and_redact(acc, max_output),
+           Result.error(command.id, "command exited with status #{status}",
              exit_status: status,
+             output: cap_and_redact(acc, max_output),
              argv_display: Command.safe_display(command)
            )}
       after

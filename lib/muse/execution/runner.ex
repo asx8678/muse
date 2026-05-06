@@ -6,7 +6,7 @@ defmodule Muse.Execution.Runner do
   `Muse.Execution.Result` structs. All runners must:
 
     * Execute via argv vector — no shell interpolation.
-    * Enforce timeout and kill orphan processes.
+    * Enforce timeout; close port on expiry (descendant processes may survive).
     * Cap and redact output.
     * Return safe results suitable for events/logs.
 

@@ -74,12 +74,15 @@ defmodule Muse.Execution.LocalRunnerTest do
       assert result.error =~ "executable not found"
     end
 
-    test "returns ok with exit_status for non-zero exit code" do
+    test "returns error result for non-zero exit code" do
       {:ok, cmd} = Command.new("elixir", args: ["-e", "exit(1)"])
 
-      {:ok, %Result{status: :ok, exit_status: exit_status}} = LocalRunner.run(cmd)
-      # Exit code 1 should be reflected in result
+      {:ok, %Result{status: :error, exit_status: exit_status} = result} = LocalRunner.run(cmd)
+      # Exit code 1 should produce status: :error, not :ok
       assert exit_status == 1
+      assert result.error =~ "command exited with status 1"
+      refute Result.ok?(result)
+      assert Result.failed?(result)
     end
   end
 
