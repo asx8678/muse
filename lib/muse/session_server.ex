@@ -46,6 +46,8 @@ defmodule Muse.SessionServer do
     Approval,
     ApprovalGate,
     Event,
+    EventPayloadRedactor,
+    MetadataSanitizer,
     Patch,
     PlanBinding,
     Prompt.Redactor,
@@ -771,7 +773,7 @@ defmodule Muse.SessionServer do
     {cancel_text, state}
   end
 
-  defp handle_task_result({:error, %{event_specs: event_specs}}, state) do
+  defp handle_task_result({:error, %{event_specs: event_specs, reason: reason}}, state) do
     turn_id = state.active_turn_id
     session_events = state.session_events_before_turn
 
@@ -781,7 +783,10 @@ defmodule Muse.SessionServer do
 
     # Emit a user-visible assistant_message so CLI/State consumers
     # see the failure in the event stream (not just the return value).
-    error_text = "Error: provider error occurred"
+    # Include a safe summary of the error reason for actionable debugging.
+    # The reason is already redacted by the provider layer, but we apply
+    # additional sanitization here as defense-in-depth.
+    error_text = format_provider_error(reason)
 
     {error_event, state} =
       emit_session_event(
@@ -882,6 +887,42 @@ defmodule Muse.SessionServer do
         session_events_before_turn: [],
         cancellation_requested: false
     }
+  end
+
+  # -- Provider error formatting -----------------------------------------------
+
+  # Format a provider error reason into a safe, user-visible error message.
+  # The reason is already redacted by the provider layer, but we apply
+  # additional sanitization as defense-in-depth to ensure no secrets leak.
+  @spec format_provider_error(term()) :: String.t()
+  defp format_provider_error(reason) do
+    safe_reason = safe_error_summary(reason)
+    "Error: provider error occurred — #{safe_reason}"
+  end
+
+  # Generate a safe, bounded string summary of an error term.
+  # Applies redaction and sanitization to prevent secret leakage.
+  @spec safe_error_summary(term()) :: String.t()
+  defp safe_error_summary(reason) when is_binary(reason) do
+    reason
+    |> EventPayloadRedactor.redact_string()
+    |> MetadataSanitizer.sanitize(max_string_len: 200)
+    |> String.slice(0, 200)
+  end
+
+  defp safe_error_summary(reason) do
+    reason
+    |> EventPayloadRedactor.redact()
+    |> MetadataSanitizer.sanitize(
+      max_depth: 4,
+      max_map_keys: 20,
+      max_list_length: 10,
+      max_string_len: 200
+    )
+    |> inspect(limit: 5, printable_limit: 200)
+  rescue
+    _ ->
+      "(error details unavailable)"
   end
 
   defp store_result_plan(state, %Plan{} = raw_plan, result_session) do
