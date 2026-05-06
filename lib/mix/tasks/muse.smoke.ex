@@ -155,8 +155,8 @@ defmodule Mix.Tasks.Muse.Smoke do
       checks = [
         {"/help", "/help hint visible"},
         {"data-slash-commands", "slash commands data attribute"},
-        {"Ask muse to inspect, explain, fix, or generate code", "chat placeholder text"},
-        {~s(aria-label="Message input - type /help for commands"), "input /help ARIA label"},
+        {"Ask Muse anything, or type /help", "chat placeholder text"},
+        {~s(aria-label="Message input"), "input ARIA label"},
         {~s(aria-label="Message composer"), "composer ARIA label"},
         {~s(aria-label="Send message to Muse"), "send button ARIA label"}
       ]
@@ -232,7 +232,8 @@ defmodule Mix.Tasks.Muse.Smoke do
     with {:ok, html} <- fetch_html(base_url) do
       checks = [
         {~s(<label for="chat-input-textarea"), "visible label on chat input"},
-        {~s(aria-describedby="chat-input-help"), "help text linked to input"},
+        {~s(placeholder="Ask Muse anything, or type /help..."),
+         "concise placeholder on chat input"},
         {~s(role="form"), "form role on composer"},
         {~s(type="submit"), "submit button present"},
         {~s(aria-label="Collapse to rail"), "sidebar collapse button label"},

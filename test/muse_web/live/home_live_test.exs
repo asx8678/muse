@@ -245,7 +245,7 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ ~s(class="chat-composer-form")
     assert html =~ "chat-send-button"
     assert html =~ ~s(id="command-form")
-    assert html =~ "Ask muse to inspect, explain, fix, or generate code..."
+    assert html =~ "Ask Muse anything, or type /help"
     assert html =~ "Help me connect the Muse runtime"
     refute html =~ "Help me connect the agent runtime"
   end
@@ -1547,7 +1547,21 @@ defmodule MuseWeb.HomeLiveTest do
     test "chat composer has accessible label" do
       {:ok, _view, html} = live(build_conn(), "/")
       assert html =~ ~s(aria-label="Message composer")
-      assert html =~ ~s(aria-label="Message input - type /help for commands")
+      assert html =~ ~s(aria-label="Message input")
+      # sr-only label still present for screen readers
+      assert html =~ ~s(Message to Muse)
+    end
+
+    test "chat composer uses concise placeholder" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(placeholder="Ask Muse anything, or type /help...")
+    end
+
+    test "chat composer does not render standalone helper text" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      # The old visible help span is removed; no chat-input-help element
+      refute html =~ ~s(id="chat-input-help")
+      refute html =~ ~s(Type a message or use /help to see available commands)
     end
 
     test "send button has descriptive aria-label" do
@@ -1582,15 +1596,14 @@ defmodule MuseWeb.HomeLiveTest do
   describe "command discoverability" do
     test "chat placeholder hints at /help" do
       {:ok, _view, html} = live(build_conn(), "/")
-      # The textarea should have a placeholder that guides users
-      assert html =~ "Ask muse to inspect, explain, fix, or generate code"
+      # The textarea should have a concise placeholder
+      assert html =~ "Ask Muse anything, or type /help"
     end
 
-    test "chat input has aria-describedby for help text" do
+    test "chat input does not have separate help text span" do
       {:ok, _view, html} = live(build_conn(), "/")
-      assert html =~ ~s(aria-describedby="chat-input-help")
-      assert html =~ ~s(id="chat-input-help")
-      assert html =~ "/help"
+      refute html =~ ~s(aria-describedby="chat-input-help")
+      refute html =~ ~s(id="chat-input-help")
     end
 
     test "slash commands data attribute includes key commands" do

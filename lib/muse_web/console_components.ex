@@ -713,12 +713,10 @@ defmodule MuseWeb.ConsoleComponents do
           id="chat-input-textarea"
           name="text"
           class="chat-input command-input"
-          placeholder="Ask muse to inspect, explain, fix, or generate code..."
+          placeholder="Ask Muse anything, or type /help..."
           rows="1"
-          aria-label="Message input - type /help for commands"
-          aria-describedby="chat-input-help"
+          aria-label="Message input"
         ><%= @input %></textarea>
-        <span id="chat-input-help" class="sr-only">Type a message or use /help to see available commands</span>
         <button type="submit" class="primary-button chat-send-button" aria-label="Send message to Muse">Send</button>
       </form>
     </div>

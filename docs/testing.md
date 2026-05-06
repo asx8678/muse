@@ -708,7 +708,7 @@ mix muse.smoke --port 4101
 | Command discoverability | `/help` hints visible, `data-slash-commands` attribute, placeholder text, descriptive ARIA labels on input and buttons |
 | Session/context panel | Context sidebar renders, session labels present, `role="complementary"`, `aria-label` for workspace context and session status |
 | No visible secrets | HTML does not contain `sk-` prefixes, `Bearer` tokens, API key env var names, or `secret_key_base` |
-| Keyboard focus indicators | Visible `<label>` on chat input, `aria-describedby` for help text, `role="form"` on composer, submit button, `.sr-only` class |
+| Keyboard focus indicators | Visible `<label>` on chat input, concise placeholder text, `role="form"` on composer, submit button, `.sr-only` class |
 
 ### 11.5 Mix Environment
 

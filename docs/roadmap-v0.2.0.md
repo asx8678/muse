@@ -41,7 +41,7 @@ Delivered:
 - **Help documents version flags**: `--help` output explicitly lists `--version, -v` option
 - **Accessibility hardening**:
   - Chat panel has `role="region"`, `aria-label`, `role="log"`, `aria-live="polite"`
-  - Chat composer has visible label, `aria-describedby` hint text
+  - Chat composer has visible label, concise placeholder text
   - Prompt chips have descriptive `aria-label` attributes
   - Toast container has `role="status"`, `aria-live`, `aria-label`
   - Context panel has `role="complementary"` and session status uses `role="status"` and `role="alert"`

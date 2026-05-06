@@ -104,9 +104,8 @@ test.describe("Muse LiveView browser smoke", () => {
     // Placeholder text is present and meaningful (contains prompt-like language)
     const placeholder = await input.getAttribute("placeholder");
     expect(placeholder).toBeTruthy();
-    // The /help discoverability is via aria-label, not the placeholder text.
-    // The placeholder is conversational: "Ask muse to inspect, explain, fix, or generate code..."
-    expect(placeholder.toLowerCase()).toMatch(/ask|inspect|explain|fix|generate|muse/);
+    // The placeholder is concise: "Ask Muse anything, or type /help..."
+    expect(placeholder.toLowerCase()).toMatch(/ask.*muse/);
 
     // data-slash-commands attribute on composer
     const composer = page.locator("#input-form");
@@ -259,9 +258,9 @@ test.describe("Muse LiveView browser smoke", () => {
     const label = page.locator('label[for="chat-input-textarea"]');
     await expect(label).toBeAttached();
 
-    // sr-only help text
-    const helpText = page.locator("#chat-input-help");
-    await expect(helpText).toBeAttached();
+    // Concise placeholder present
+    const textarea = page.locator('#chat-input-textarea');
+    await expect(textarea).toHaveAttribute('placeholder', /Ask Muse/);
   });
 
   // ─── 8. Page load success and no network errors ──────────────────────
