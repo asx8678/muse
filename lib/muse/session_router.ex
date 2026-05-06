@@ -192,6 +192,52 @@ defmodule Muse.SessionRouter do
     Registry.select(Muse.SessionRegistry, [{{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2"}}]}])
   end
 
+  # -- Memory API ----------------------------------------------------------------
+
+  @doc """
+  Returns the memory artifact for the given session, or `nil`.
+  """
+  @spec get_memory(String.t()) :: {:ok, term() | nil} | {:error, :not_found}
+  def get_memory(session_id \\ @default_session_id) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> {:ok, Muse.SessionServer.get_memory(pid)}
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Sets the memory artifact for the given session.
+  """
+  @spec set_memory(String.t(), term()) :: :ok | {:error, :not_found}
+  def set_memory(session_id \\ @default_session_id, memory) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.set_memory(pid, memory)
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Clears the memory artifact for the given session.
+  """
+  @spec clear_memory(String.t()) :: :ok | {:error, :not_found}
+  def clear_memory(session_id \\ @default_session_id) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.clear_memory(pid)
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Sets the active Muse for the given session, affecting turn routing.
+  """
+  @spec set_active_muse(String.t(), String.t()) :: :ok | {:error, :not_found}
+  def set_active_muse(session_id \\ @default_session_id, muse_id) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.set_active_muse(pid, muse_id)
+      [] -> {:error, :not_found}
+    end
+  end
+
   # -- Session lifecycle --------------------------------------------------------
 
   @doc false

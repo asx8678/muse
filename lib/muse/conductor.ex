@@ -142,6 +142,19 @@ defmodule Muse.Conductor do
   """
   @spec select_muse(Session.t(), keyword()) :: Muse.MuseProfile.t()
   def select_muse(session, _opts) do
+    # If an explicit active_muse has been set (e.g. via /handoff), honor it.
+    # Only fall back to the plan-status-based selection if no explicit muse.
+    if session.active_muse != nil do
+      case MuseRegistry.fetch(session.active_muse) do
+        {:ok, profile} -> profile
+        {:error, :not_found} -> fallback_select_muse(session)
+      end
+    else
+      fallback_select_muse(session)
+    end
+  end
+
+  defp fallback_select_muse(session) do
     if coding_muse_applicable?(session) do
       MuseRegistry.get(:coding)
     else
@@ -162,6 +175,8 @@ defmodule Muse.Conductor do
         _ -> false
       end
   end
+
+  # -- Handoff API --------------------------------------------------------------
 
   # -- Handoff API --------------------------------------------------------------
 

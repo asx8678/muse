@@ -211,6 +211,41 @@ defmodule Muse.SessionServer do
     GenServer.call(pid, {:rollback_checkpoint, checkpoint_id})
   end
 
+  @doc """
+  Returns the session's memory artifact, or `nil` if none exists.
+  """
+  @spec get_memory(pid()) :: term() | nil
+  def get_memory(pid) do
+    GenServer.call(pid, :get_memory)
+  end
+
+  @doc """
+  Sets the session's memory artifact.
+  """
+  @spec set_memory(pid(), term()) :: :ok
+  def set_memory(pid, memory) do
+    GenServer.call(pid, {:set_memory, memory})
+  end
+
+  @doc """
+  Clears the session's memory artifact.
+  """
+  @spec clear_memory(pid()) :: :ok
+  def clear_memory(pid) do
+    GenServer.call(pid, :clear_memory)
+  end
+
+  @doc """
+  Sets the session's active Muse to the given muse id.
+
+  This affects routing: the next turn will use the specified Muse
+  instead of the default plan-status-based selection.
+  """
+  @spec set_active_muse(pid(), String.t()) :: :ok
+  def set_active_muse(pid, muse_id) do
+    GenServer.call(pid, {:set_active_muse, muse_id})
+  end
+
   # -- GenServer callbacks -----------------------------------------------------
 
   @impl true
@@ -232,6 +267,10 @@ defmodule Muse.SessionServer do
       approval_binding: nil,
       active_approval: nil,
       pending_patch: nil,
+      memory: nil,
+      checkpoints: [],
+      artifacts: [],
+      workspace: get_workspace(),
       # TurnRunner state
       active_turn_id: nil,
       runner_pid: nil,
@@ -274,7 +313,11 @@ defmodule Muse.SessionServer do
       active_turn_id: state.active_turn_id,
       runner_pid: state.runner_pid,
       cancellation_requested: state.cancellation_requested,
-      pending_patch: state.pending_patch
+      pending_patch: state.pending_patch,
+      memory: state.memory,
+      checkpoints: state.checkpoints,
+      artifacts: state.artifacts,
+      workspace: state.workspace
     }
 
     {:reply, reply, state}
@@ -372,6 +415,30 @@ defmodule Muse.SessionServer do
     }
 
     {:reply, :ok, state}
+  end
+
+  # -- Memory API handlers -----------------------------------------------------
+
+  @impl true
+  def handle_call(:get_memory, _from, state) do
+    {:reply, state.memory, state}
+  end
+
+  @impl true
+  def handle_call({:set_memory, memory}, _from, state) do
+    {:reply, :ok, %{state | memory: memory}}
+  end
+
+  @impl true
+  def handle_call(:clear_memory, _from, state) do
+    {:reply, :ok, %{state | memory: nil}}
+  end
+
+  # -- Active Muse handler -----------------------------------------------------
+
+  @impl true
+  def handle_call({:set_active_muse, muse_id}, _from, state) do
+    {:reply, :ok, %{state | active_muse: muse_id}}
   end
 
   defp do_submit(source, text, opts, from, state) do
@@ -473,13 +540,16 @@ defmodule Muse.SessionServer do
     %{
       Session.new(
         id: state.session_id,
-        workspace: Keyword.get(opts, :workspace, get_workspace()),
+        workspace: Keyword.get(opts, :workspace, state.workspace || get_workspace()),
         status: state.status
       )
       | active_muse: state.active_muse,
         active_plan_id: state.active_plan_id,
         plans: turn_session_plans(state),
-        approvals: state.approvals || []
+        approvals: state.approvals || [],
+        memory: state.memory,
+        checkpoints: state.checkpoints || [],
+        artifacts: state.artifacts || []
     }
   end
 

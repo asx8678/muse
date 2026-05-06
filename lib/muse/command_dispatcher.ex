@@ -637,17 +637,16 @@ defmodule Muse.CommandDispatcher do
     else
       session_id = context_session_id(context)
 
-      case Muse.SessionRouter.status(session_id) do
-        {:ok, %{memory: nil}} ->
+      case Muse.SessionRouter.get_memory(session_id) do
+        {:ok, nil} ->
           {:ok, "No session memory. Use /memory compact to create one.", []}
 
-        {:ok, %{memory: memory}} when is_map(memory) ->
+        {:ok, memory} when is_map(memory) ->
           output = format_memory(memory)
           {:ok, output, []}
 
-        {:ok, %{memory: other_memory}} ->
+        {:ok, other_memory} ->
           # Non-map memory (binary, list, etc.) — redact and display safely.
-          # Map memory is handled by the clause above.
           output = format_memory_safely(other_memory)
           {:ok, output, []}
 
@@ -665,18 +664,18 @@ defmodule Muse.CommandDispatcher do
 
       case Muse.SessionRouter.status(session_id) do
         {:ok, session_status} when is_map(session_status) ->
-          # Build a minimal session for compaction
           session = build_session_from_status(session_status)
-          memory = Muse.Memory.compact(session)
 
-          # Validate no secrets
-          case Muse.Memory.validate_no_secrets(memory) do
-            :ok ->
-              # In a full implementation, this would persist via SessionRouter
+          # Use compact_safe for fail-closed validation
+          case Muse.Memory.compact_safe(session) do
+            {:ok, memory} ->
+              # Persist via SessionRouter so it's available for future turns
+              Muse.SessionRouter.set_memory(session_id, memory)
+
               output = "Memory compacted successfully.\n\n" <> Muse.Memory.render(memory)
               {:ok, output, [{:refresh, :session}]}
 
-            {:error, reasons} ->
+            {:error, :secrets_detected, reasons} ->
               {:error, "Memory compaction blocked: secrets detected. #{inspect(reasons)}", []}
           end
 
@@ -690,9 +689,16 @@ defmodule Muse.CommandDispatcher do
     if present_args?(args) do
       {:error, "Error: usage: /memory clear", []}
     else
-      # In a full implementation, this would clear via SessionRouter
-      {:ok, "Session memory cleared. Future turns will not have memory context.",
-       [{:refresh, :session}]}
+      session_id = context_session_id(%{})
+
+      case Muse.SessionRouter.clear_memory(session_id) do
+        :ok ->
+          {:ok, "Session memory cleared. Future turns will not have memory context.",
+           [{:refresh, :session}]}
+
+        {:error, :not_found} ->
+          {:ok, "No active Muse session.", []}
+      end
     end
   end
 
@@ -712,7 +718,6 @@ defmodule Muse.CommandDispatcher do
 
         case Muse.SessionRouter.status(session_id) do
           {:ok, session_status} when is_map(session_status) ->
-            # Get current Muse
             current_muse_id =
               session_status[:active_muse] || session_status["active_muse"] || :planning
 
@@ -726,12 +731,33 @@ defmodule Muse.CommandDispatcher do
                 true ->
                   target_muse = Muse.MuseRegistry.get(target_muse_id)
 
-                  output =
-                    "Handoff requested from #{current_muse.display_name} to #{target_muse.display_name}.\n" <>
-                      "Handoff is explicit and will not auto-start a turn.\n" <>
-                      "Next message will route to #{target_muse.display_name}."
+                  # 1. Call Conductor.request_handoff to get the event spec
+                  #    (reason and context are redacted by Conductor)
+                  case Muse.Conductor.request_handoff(current_muse, target_muse_id, session,
+                         reason: "explicit user handoff",
+                         context: %{source: "command"}
+                       ) do
+                    {:ok, _handoff_spec} ->
+                      # 2. Complete the handoff via Conductor
+                      case Muse.Conductor.complete_handoff(session, target_muse_id) do
+                        {:ok, _updated_session} ->
+                          # 3. Persist the active_muse change on the SessionServer
+                          target_muse_str = Atom.to_string(target_muse_id)
+                          Muse.SessionRouter.set_active_muse(session_id, target_muse_str)
 
-                  {:ok, output, [{:refresh, :session}]}
+                          output =
+                            "Handoff completed: #{current_muse.display_name} → #{target_muse.display_name}.\n" <>
+                              "Next message will route to #{target_muse.display_name}."
+
+                          {:ok, output, [{:refresh, :session}]}
+
+                        {:error, reason} ->
+                          {:error, "Error completing handoff: #{inspect(reason)}", []}
+                      end
+
+                    {:error, reason} ->
+                      {:error, "Error requesting handoff: #{inspect(reason)}", []}
+                  end
 
                 false ->
                   {:error,
@@ -777,17 +803,28 @@ defmodule Muse.CommandDispatcher do
         session_id = context_session_id(context)
 
         case Muse.SessionRouter.status(session_id) do
-          {:ok, session_status} when is_map(session_status) ->
-            # In a full implementation, this would:
-            # 1. Load the checkpoint via Muse.Checkpoint.Store
-            # 2. Request approval for restore
-            # 3. Only restore after explicit approval
-            output =
-              "Restore requested for checkpoint #{checkpoint_id}.\n" <>
-                "Restoration requires explicit approval before files are modified.\n" <>
-                "Use /approve restore to confirm."
+          {:ok, _} ->
+            # Load checkpoint from store — this is a query-only, no file mutation
+            case Muse.Checkpoint.Store.load(session_id, checkpoint_id) do
+              {:ok, checkpoint} ->
+                summary = Muse.Checkpoint.event_summary(checkpoint)
 
-            {:ok, output, [{:refresh, :session}]}
+                output =
+                  "Restore requested for checkpoint #{checkpoint_id}.\n" <>
+                    "  Session: #{summary.session_id}\n" <>
+                    "  Patch: #{summary.patch_id || "unknown"}\n" <>
+                    "  Files affected: #{summary.file_count}\n" <>
+                    "  Status: #{summary.status}\n" <>
+                    "Restoration requires explicit approval before files are modified.\n" <>
+                    "Use /approve restore to confirm."
+
+                {:ok, output, [{:refresh, :session}]}
+
+              {:error, reason} ->
+                {:error,
+                 "Error: checkpoint #{checkpoint_id} not found or could not be loaded: #{inspect(reason)}",
+                 []}
+            end
 
           {:error, :not_found} ->
             {:ok, "No active Muse session.", []}
@@ -1678,6 +1715,7 @@ defmodule Muse.CommandDispatcher do
       id: Map.get(status, :id) || Map.get(status, "session_id"),
       status: Map.get(status, :status) || Map.get(status, "status", :idle),
       active_plan_id: Map.get(status, :active_plan_id) || Map.get(status, "active_plan_id"),
+      active_muse: Map.get(status, :active_muse) || Map.get(status, "active_muse"),
       plans: Map.get(status, :plans) || Map.get(status, "plans", %{}),
       approvals: Map.get(status, :approvals) || Map.get(status, "approvals", []),
       checkpoints: Map.get(status, :checkpoints) || Map.get(status, "checkpoints", []),
