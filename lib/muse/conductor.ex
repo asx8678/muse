@@ -226,18 +226,28 @@ defmodule Muse.Conductor do
       reason = Keyword.get(opts, :reason, "explicit handoff request")
       context = Keyword.get(opts, :context, %{})
 
-      sanitized_context = MetadataSanitizer.sanitize(context)
+      # SECURITY: Redact reason and context before returning event spec.
+      # Both are treated as untrusted input that may contain secrets.
+      # - reason: redact secret patterns (Bearer tokens, API keys, passwords, private keys)
+      # - context: redact sensitive keys AND secret patterns in string values
+      # Use Prompt.Redactor for comprehensive coverage including private key blocks.
+      redacted_reason = Redactor.redact_text(reason)
+      redacted_context = Redactor.redact_term(context)
 
-      spec =
-        {:conductor, :muse_handoff_requested,
-         %{
-           source_muse_id: source_muse.id,
-           target_muse_id: target_muse_id,
-           target_muse_name: target_muse.display_name,
-           reason: reason,
-           context: sanitized_context,
-           session_status: session.status
-         }, [visibility: :user]}
+      # Defense-in-depth: build the data map, then redact it wholesale to ensure
+      # no secrets can appear in inspect(spec) output.
+      raw_data = %{
+        source_muse_id: source_muse.id,
+        target_muse_id: target_muse_id,
+        target_muse_name: target_muse.display_name,
+        reason: redacted_reason,
+        context: redacted_context,
+        session_status: session.status
+      }
+
+      safe_data = Redactor.redact_term(raw_data)
+
+      spec = {:conductor, :muse_handoff_requested, safe_data, [visibility: :user]}
 
       {:ok, spec}
     else

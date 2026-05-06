@@ -96,6 +96,293 @@ defmodule Muse.ConductorHandoffTest do
     end
   end
 
+  # -- Security regression tests (muse-mlp) --------------------------------------
+
+  describe "request_handoff/4 — security: reason redaction" do
+    test "reason with Bearer token does not leak in returned spec" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          reason: "auth failed: Bearer raw-token-abc123"
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      # Reason should be redacted
+      refute data.reason =~ "raw-token-abc123"
+      assert data.reason =~ "[REDACTED]"
+
+      # inspect(spec) must not contain raw secret
+      refute inspect(spec) =~ "raw-token-abc123"
+    end
+
+    test "reason with sk- prefixed API key does not leak" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          reason: "API key sk-proj-abcdefghij123456 was invalid"
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      refute data.reason =~ "sk-proj-abcdefghij123456"
+      assert data.reason =~ "[REDACTED]"
+      refute inspect(spec) =~ "sk-proj-abcdefghij123456"
+    end
+
+    test "reason with password assignment does not leak" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          reason: "login failed: password=hunter2 for user admin"
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      refute data.reason =~ "hunter2"
+      assert data.reason =~ "[REDACTED]"
+      refute inspect(spec) =~ "hunter2"
+    end
+
+    test "reason with private key block does not leak" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      private_key =
+        "-----BEGIN RSA PRIVATE KEY-----MIIEpQIBAAKCAQEA0Z3JS6tq" <>
+          String.duplicate("X", 100) <> "-----END RSA PRIVATE KEY-----"
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session, reason: "Found key: #{private_key}")
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      refute data.reason =~ "BEGIN RSA PRIVATE KEY"
+      refute inspect(spec) =~ "BEGIN RSA PRIVATE KEY"
+    end
+
+    test "reason with Authorization header does not leak" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          reason: "Request header: Authorization: Bearer secret-token-xyz"
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      refute data.reason =~ "secret-token-xyz"
+      assert data.reason =~ "[REDACTED]"
+      refute inspect(spec) =~ "secret-token-xyz"
+    end
+  end
+
+  describe "request_handoff/4 — security: context redaction" do
+    test "context with sensitive atom key does not leak" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          context: %{api_key: "plain-secret-value", safe_field: "visible"}
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      # Sensitive key value should be redacted
+      assert data.context.api_key == "[REDACTED]"
+      assert data.context.safe_field == "visible"
+      refute inspect(spec) =~ "plain-secret-value"
+    end
+
+    test "context with sensitive string key does not leak" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          context: %{"api_key" => "plain-secret-value", "normal" => "ok"}
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      assert data.context["api_key"] == "[REDACTED]"
+      assert data.context["normal"] == "ok"
+      refute inspect(spec) =~ "plain-secret-value"
+    end
+
+    test "context with nested sensitive data does not leak" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          context: %{nested: %{password: "hunter2", safe: "ok"}}
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      assert data.context.nested.password == "[REDACTED]"
+      assert data.context.nested.safe == "ok"
+      refute inspect(spec) =~ "hunter2"
+    end
+
+    test "context with token pattern values does not leak" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          context: %{note: "key is sk-test-abc123", safe_note: "no secrets"}
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      refute data.context.note =~ "sk-test-abc123"
+      assert data.context.note =~ "[REDACTED]"
+      assert data.context.safe_note == "no secrets"
+      refute inspect(spec) =~ "sk-test-abc123"
+    end
+
+    test "context with deep nesting is redacted" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      deep_context = %{
+        level1: %{
+          level2: %{
+            level3: %{
+              level4: %{
+                secret: "deep-secret-value"
+              }
+            }
+          }
+        }
+      }
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session, context: deep_context)
+
+      {:conductor, :muse_handoff_requested, _data, _opts} = spec
+
+      # Even deeply nested secrets should be redacted or truncated
+      refute inspect(spec) =~ "deep-secret-value"
+    end
+
+    test "context with tuple containing secrets does not leak" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          context: %{notes: {:password, "hunter2"}}
+        )
+
+      {:conductor, :muse_handoff_requested, _data, _opts} = spec
+
+      # Tuple is converted to list and redacted
+      refute inspect(spec) =~ "hunter2"
+    end
+
+    test "context with keyword list containing secrets does not leak" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          context: %{notes: [{:password, "hunter2"}, {:safe, "ok"}]}
+        )
+
+      {:conductor, :muse_handoff_requested, _data, _opts} = spec
+
+      refute inspect(spec) =~ "hunter2"
+    end
+
+    test "context with string tuple pair does not leak" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          context: %{notes: [{"api_key", "plain-secret-value"}]}
+        )
+
+      {:conductor, :muse_handoff_requested, _data, _opts} = spec
+
+      refute inspect(spec) =~ "plain-secret-value"
+    end
+  end
+
+  describe "request_handoff/4 — security: safe fields preserved" do
+    test "safe context fields survive redaction" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          context: %{
+            user: "alice",
+            action: "plan_approved",
+            timestamp: "2024-01-01T00:00:00Z",
+            count: 42,
+            metadata: %{plan_id: "plan-123", status: "approved"}
+          }
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      assert data.context.user == "alice"
+      assert data.context.action == "plan_approved"
+      assert data.context.timestamp == "2024-01-01T00:00:00Z"
+      assert data.context.count == 42
+      assert data.context.metadata.plan_id == "plan-123"
+      assert data.context.metadata.status == "approved"
+    end
+
+    test "safe reason text is preserved" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          reason: "Plan approved, ready for implementation"
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      assert data.reason == "Plan approved, ready for implementation"
+    end
+  end
+
+  describe "request_handoff/4 — security: defense in depth" do
+    test "entire spec data is redacted wholesale" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      # Inject secret in multiple places
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          reason: "Bearer token-here-12345",
+          context: %{note: "sk-test-secret-key"}
+        )
+
+      # Both should be redacted
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      refute data.reason =~ "token-here-12345"
+      refute data.context.note =~ "sk-test-secret-key"
+      refute inspect(spec) =~ "token-here-12345"
+      refute inspect(spec) =~ "sk-test-secret-key"
+    end
+  end
+
   describe "complete_handoff/2" do
     test "updates session active_muse" do
       session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)

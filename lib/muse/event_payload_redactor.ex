@@ -64,6 +64,8 @@ defmodule Muse.EventPayloadRedactor do
   @spec redact(term()) :: term()
   def redact(term), do: redact(term, nil)
 
+  # -- redact/2 clauses (grouped together) ---------------------------------------
+
   # Map: walk each key/value pair, redact sensitive-key values, recurse others
   defp redact(map, _parent_key) when is_map(map) and not is_struct(map) do
     Map.new(map, fn {k, v} ->
@@ -89,12 +91,34 @@ defmodule Muse.EventPayloadRedactor do
     |> then(fn map -> struct(struct_name, map) end)
   end
 
-  # List: redact each element
+  # List: check if it's a keyword list (list of 2-tuples with atom/string keys)
+  # Otherwise, redact each element normally.
   defp redact(list, parent_key) when is_list(list) do
-    Enum.map(list, &redact(&1, parent_key))
+    if keyword_list?(list) do
+      # Treat as key-value pairs: check sensitive keys
+      Enum.map(list, fn {k, v} ->
+        if Muse.MetadataSanitizer.sensitive_key?(k) do
+          {k, @redacted}
+        else
+          {k, redact(v, k)}
+        end
+      end)
+    else
+      Enum.map(list, &redact(&1, parent_key))
+    end
   end
 
-  # Tuple: convert to list, redact, convert back
+  # Tuple: check if it's a 2-element key-value pair
+  defp redact({key, value}, _parent_key) when is_tuple(key) == false do
+    # Single key-value pair tuple: check if key is sensitive
+    if Muse.MetadataSanitizer.sensitive_key?(key) do
+      {key, @redacted}
+    else
+      {key, redact(value, key)}
+    end
+  end
+
+  # Tuple with more than 2 elements: convert to list, redact, convert back
   defp redact(tuple, parent_key) when is_tuple(tuple) do
     tuple
     |> Tuple.to_list()
@@ -111,6 +135,17 @@ defmodule Muse.EventPayloadRedactor do
 
   # Primitives and other terms: pass through unchanged
   defp redact(term, _parent_key), do: term
+
+  # -- Helper functions ----------------------------------------------------------
+
+  # Helper: check if list is a keyword list (list of 2-tuples with atom keys)
+  # or a list of string-key tuples
+  defp keyword_list?([]), do: true
+  defp keyword_list?([{k, _v} | rest]) when is_atom(k), do: keyword_list?(rest)
+  defp keyword_list?([{k, _v} | rest]) when is_binary(k), do: keyword_list?(rest)
+  defp keyword_list?(_), do: false
+
+  # -- Public API ---------------------------------------------------------------
 
   @doc """
   Redact a string by replacing secret patterns.
