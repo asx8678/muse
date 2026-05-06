@@ -1,6 +1,8 @@
-# Muse Runtime Docs
+# Muse Runtime — Documentation
 
-This directory contains the detailed Muse Universal Runtime planning documents. Start with [../PLAN.md](../PLAN.md) for the executive summary.
+Documentation directory for the Muse Universal Runtime. Start with [../README.md](../README.md) for quick-start/onboarding, or [../PLAN.md](../PLAN.md) for the executive roadmap.
+
+## Document index
 
 | Document | Purpose |
 |---|---|
@@ -10,10 +12,48 @@ This directory contains the detailed Muse Universal Runtime planning documents. 
 | [testing.md](testing.md) | Offline-first testing strategy, provider contracts, fixtures, integration/safety/product-language tests, first fake-provider demo. |
 | [security.md](security.md) | MVP security checklist, workspace safety, secret denylist, redaction, approval/security rules. |
 
+## Recommended reading paths
+
+### 🆕 New users
+
+1. [../README.md](../README.md) — Quick start, run modes, provider setup
+2. [architecture.md](architecture.md) — High-level architecture §1–§4
+3. [provider-roadmap.md](provider-roadmap.md) — Provider setup deep-dive §3–§5
+4. [testing.md](testing.md) — Offline-first testing strategy and demo flow §1, §9
+
+### 🔑 Provider setup
+
+1. [provider-roadmap.md](provider-roadmap.md) — Full provider config reference, env vars, wire mappings, transports
+2. [../README.md#provider-configuration](../README.md#provider-configuration) — Quick-start provider env vars
+3. [security.md](security.md) — Auth security rules §8, redaction rules §4
+
+### 🛡️ Safety & security reviewers
+
+1. [security.md](security.md) — Full security model: MVP checklist, workspace path policy, secret denylist, redaction, approval lifecycle
+2. [architecture.md](architecture.md) — Approval flows §11, tool system §6, plan lifecycle §0
+3. [../README.md#safety--approval-model](../README.md#safety--approval-model) — High-level safety overview
+
+### 👩‍💻 Contributors
+
+1. [../README.md#development-workflow](../README.md#development-workflow) — Build, test, format, compile gates
+2. [testing.md](testing.md) — Testing strategy, provider contract tests, safety tests
+3. [architecture.md](architecture.md) — Module map §4, data models §3, Conductor §7
+4. [prompts.md](prompts.md) — Prompt assembly system, Muse profiles, project rules
+5. [../README.md#architecture-overview](../README.md#architecture-overview) — Runtime architecture diagram
+
+### 🗺️ PR roadmap & context
+
+1. [../PLAN.md](../PLAN.md) — Executive summary and full PR roadmap
+2. [provider-roadmap.md](provider-roadmap.md) — Provider sequencing (PR03 → PR11–15 → PR23)
+3. [architecture.md](architecture.md) — PR09/PR17/PR18 boundaries documented inline
+4. [security.md](security.md) — MVP checklist and future-scope items
+
 ## Canonical ownership
 
-- **architecture.md** — Runtime process architecture, module map, data models, normalized event types, Conductor behavior, tool system, streaming API, telemetry, approvals, patch/checkpoint/rollback behavior.
-- **prompts.md** — Muse profiles, prompt templates, Muse role behavior, and project-rules loading behavior.
-- **provider-roadmap.md** — Provider sequencing, fake-provider behavior, provider configuration, OpenAI-compatible wire mapping, transports, and auth roadmap.
-- **testing.md** — Testing strategy and acceptance checks. Provider/event assertions reference the canonical normalized event types in architecture.md.
-- **security.md** — Workspace safety, secret handling, redaction, approval/security rules, and MVP security checklist.
+| Document | Canonical for |
+|---|---|
+| [architecture.md](architecture.md) | Runtime process architecture, module map, data models, normalized event types, Conductor behavior, tool system, streaming API, telemetry, approvals, patch/checkpoint/rollback behavior. |
+| [prompts.md](prompts.md) | Muse profiles, prompt templates, Muse role behavior, and project-rules loading behavior. |
+| [provider-roadmap.md](provider-roadmap.md) | Provider sequencing, fake-provider behavior, provider configuration, OpenAI-compatible wire mapping, transports, and auth roadmap. |
+| [testing.md](testing.md) | Testing strategy and acceptance checks. Provider/event assertions reference the canonical normalized event types in architecture.md. |
+| [security.md](security.md) | Workspace safety, secret handling, redaction, approval/security rules, and MVP security checklist. |

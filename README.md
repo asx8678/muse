@@ -79,6 +79,68 @@ MUSE_PROVIDER=openai_compatible \
   mix muse
 ```
 
+
+## Safety & Approval Model
+
+Muse implements a layered safety model that keeps write, shell, and network
+actions behind explicit user approval gates. Every execution boundary is
+enforced at the runtime level, not at the prompt level.
+
+### Plan lifecycle & approval
+
+1. Planning Muse produces a structured plan with tasks, target files, and risk
+   notes.
+2. The plan is rendered to the user --- no files are touched, no shell commands
+   run, no network calls are made.
+3. The user reviews and either `/approve plan` or `/reject plan`.
+4. Approval is **content-bound**: the plan’s hash, id, version, session, and
+   workspace are validated together. Stale or mismatched approvals are rejected.
+5. `/approve plan` records the approval and transitions the session --- it does
+   **not** start implementation, write files, or execute code.
+
+### Patch proposal & application
+
+1. After plan approval, Coding Muse can propose patches via `patch_propose`.
+2. The diff is displayed to the user; `/approve patch` records the approval
+   decision (lifecycle-only --- no files are modified).
+3. Patch application with **checkpoint/rollback** is reserved for a future
+   release (PR18). When implemented:
+   - A filesystem checkpoint is created before any patch is applied.
+   - Rollback restores files from the checkpoint.
+   - `/rollback` in the REPL already triggers the rollback flow.
+
+### Shell & network safety
+
+- All shell commands, network calls, and remote execution tools are **blocked
+  by default** in the tool registry.
+- The tool runner (`Muse.Tool.Runner`) hard-denies dangerous tool names such
+  as `shell_command`, `network_call`, `remote_execution`, `write_file`,
+  `delete_file`, and `patch_apply`.
+- Approval-gated shell/test/network execution is future scope (PR19).
+
+### Memory, handoff & restoration safety
+
+- **Memory Muse** (PR21) compacts session history into durable memory bundles
+  that survive across sessions. Memory is read-only in prompt context --- it
+  never mutates workspace files.
+- **Handoff** between Muses (e.g., Planning → Coding) is a supervised turn
+  transition; the Conductor logs every handoff as an auditable event
+  (`:muse_handoff_requested`, `:muse_handoff_completed`).
+- **Restoration Muse** (PR21) can inspect session events, checkpoints, git
+  status, and diffs, but cannot restore or modify files without approval.
+- Every tool call, approval decision, and session transition is recorded in
+  the event log for full auditability.
+
+### Workspace path safety
+
+Every file tool passes through a 9-step path validation (`Muse.Workspace.safe_resolve!/2):
+accept relative paths → reject absolute → normalize → resolve symlinks →
+confirm inside workspace → enforce permission policy → enforce secret-file
+policy → block writes through symlinks → emit audit event.
+
+See [`docs/security.md`](docs/security.md) for the full security model and
+[`docs/architecture.md`](docs/architecture.md) for approval flows.
+
 ---
 
 ## Commands
@@ -413,6 +475,43 @@ and [`docs/security.md` §9](docs/security.md#9-external-websocket-channel-secur
 - **Elixir** ~> 1.17
 - **Erlang/OTP** 27+ (matching Elixir 1.17)
 - Install dependencies: `mix deps.get`
+
+---
+
+## Development Workflow
+
+```bash
+# Fetch dependencies
+mix deps.get
+
+# Run the full test suite (offline by default, no API keys needed)
+mix test
+
+# Run a specific test file
+mix test test/muse/command_dispatcher_test.exs
+
+# Check code formatting
+mix format --check-formatted
+
+# Compile with strict warnings (treat warnings as errors)
+mix compile --warnings-as-errors
+
+# Start Muse (REPL + web interface on http://127.0.0.1:4000)
+mix muse
+```
+
+**CI expectations:**
+
+| Check | Command |
+|---|---|
+| Tests pass | `mix test` |
+| No formatting violations | `mix format --check-formatted` |
+| Clean compile with strict warnings | `mix compile --warnings-as-errors` |
+| Muse-first terminology grep check | No "Active Agent", "Agent Plan", or "Bot" in user-facing surfaces (see [`docs/testing.md`](docs/testing.md#8-product-language-tests)) |
+
+All CI gates run offline with the fake provider. External/network-dependent tests are opt-in via the `@tag :external` mechanism.
+
+See [`docs/testing.md`](docs/testing.md) for the full testing strategy.
 
 ---
 
