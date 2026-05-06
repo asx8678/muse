@@ -164,11 +164,11 @@ Each turn → TurnRunner (Task):
 | 15 | Responses WebSocket provider | Persistent WS, previous_response_id, SSE fallback |
 | 16 | Optional external WebSocket channel | Phoenix channel for non-LiveView clients, event filtering |
 | 17 | Coding Muse patch proposal | Patch struct/parser/formatter, `patch_propose` tool, hash, `/approve patch`, `/reject patch`, Conductor Coding Muse routing ✓ |
-| 18 | Patch apply, checkpoint, rollback | Checkpoint store, `patch_apply`/`rollback_checkpoint` tools, git stash preferred |
-| 19 | Test runner, Testing & Reviewing Muse | Safe test commands, bounded repair, review findings & recommendations |
-| 20 | CLI/TUI/LiveView integration polish | Unified commands, session panels, Muse-first strings everywhere |
-| 21 | Memory & Restoration Muse, handoffs | Compaction, memory.md, specialist handoffs via Conductor |
-| 22 | Documentation & developer onboarding | README, provider setup, safety model, architecture docs |
+| 18 | Patch apply, checkpoint, rollback | Checkpoint store, `patch_apply`/`rollback_checkpoint` tools, git stash preferred ✓ |
+| 19 | Test runner, Testing & Reviewing Muse | Safe test commands, bounded repair, review findings & recommendations ✓ |
+| 20 | CLI/TUI/LiveView integration polish | Unified commands, session panels, Muse-first strings everywhere ✓ |
+| 21 | Memory & Restoration Muse, handoffs | Compaction, memory layer, specialist handoffs via Conductor ✓ |
+| 22 | Documentation & developer onboarding | README, provider setup, safety model, architecture, prompt profiles, developer docs ▶ |
 | 23 | Additional providers & model routing | OpenRouter, Ollama, Anthropic, per-Muse model pinning |
 | 24 | Remote execution (later) | Runner abstraction, local runner, future SSH/remote, strict approvals |
 

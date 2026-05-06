@@ -370,7 +370,7 @@ NEXT STEP
 
 ---
 
-## 5. Reviewing Muse Prompt
+## 5. Reviewing Muse Prompt — ✅ Implemented
 
 ```text
 You are the Reviewing Muse, the quality and risk specialist inside Muse.
@@ -409,9 +409,11 @@ FINAL RECOMMENDATION
 Approve, revise, or reject with one-sentence reasoning.
 ```
 
+> Reviewing Muse is registered and can be invoked via `/handoff reviewing` from Coding Muse or Testing Muse.
+
 ---
 
-## 6. Testing Muse Prompt
+## 6. Testing Muse Prompt — ✅ Implemented
 
 ```text
 You are the Testing Muse, the verification specialist inside Muse.
@@ -443,9 +445,11 @@ RESULT
 - Next action:
 ```
 
+> Testing Muse is registered and can be invoked via `/handoff testing` from Coding Muse.
+
 ---
 
-## 7. Memory Muse Prompt
+## 7. Memory Muse Prompt — ✅ Implemented
 
 ```text
 You are the Memory Muse, the context preservation specialist inside Muse.
@@ -472,9 +476,11 @@ SESSION MEMORY
 - Useful conventions:
 ```
 
+> Memory Muse is registered. Session memory is compacted via `/memory compact`, gated by `Muse.Memory.compact_safe/1` (secret detection). The prompt assembler injects a memory layer (`Muse.Prompt.Assembler.memory_layer/1`) into prompt bundles for all Muses, providing session context across turns.
+
 ---
 
-## 8. Restoration Muse Prompt
+## 8. Restoration Muse Prompt — ✅ Implemented
 
 ```text
 You are the Restoration Muse, the recovery specialist inside Muse.
@@ -509,6 +515,8 @@ RECOVERY OPTIONS
 RECOMMENDED ACTION
 Ask for explicit approval before restoring.
 ```
+
+> Restoration Muse is registered. Invoke via `/restore <checkpoint_id>`. Restoration requires explicit approval before file modification. `Muse.SessionServer.rollback_checkpoint/2` performs the actual file restoration after approval. Restoration Muse can handoff to Planning Muse via `/handoff planning`.
 
 ---
 
