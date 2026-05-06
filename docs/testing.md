@@ -6,6 +6,49 @@
 
 ---
 
+## Developer Onboarding
+
+### Standard Quality Gates
+
+Before submitting any PR, run these commands:
+
+```bash
+mix format --check-formatted  # All files must be formatted
+mix compile --warnings-as-errors  # Zero warnings allowed
+mix test  # Full test suite, runs offline with fake provider
+```
+
+All three must pass. CI enforces these gates automatically.
+
+### Running Focused Tests
+
+For faster iteration during development:
+
+```bash
+# Run tests matching a pattern
+mix test test/muse/conductor_test.exs
+mix test --only planning
+
+# Run a single test file
+mix test test/muse/session_server_test.exs
+
+# Run with trace output
+mix test --trace test/muse/plan_test.exs
+```
+
+### External Provider Tests (Opt-In Only)
+
+Tests that call real APIs require explicit opt-in:
+
+```bash
+# OpenAI integration tests
+MUSE_OPENAI_TEST=1 OPENAI_API_KEY=sk-... mix test --only external
+```
+
+External tests are **disabled by default** and never run in CI. They are for manual verification only.
+
+---
+
 ## Table of Contents
 
 1. [No-Network Default](#1-no-network-default)
@@ -166,68 +209,120 @@ Primary coverage areas:
 
 ---
 
+## 4.6 PR21 Memory & Restoration Muse Coverage
+
+PR21 adds memory compaction, session handoffs, and restoration support.
+
+Primary coverage areas:
+
+- `test/muse/memory_test.exs`
+  - Memory compaction produces valid `memory.md` content
+  - Compaction preserves critical context while reducing token count
+  - Memory file persistence and loading
+- `test/muse/session_server_test.exs` (extended)
+  - Session handoff to Memory Muse for compaction
+  - Handoff completion and session state restoration
+  - Memory summary injection into prompt layers
+- `test/muse/prompt/assembler_test.exs` (extended)
+  - Memory layer integration in prompt bundle
+  - Memory summary ordering in layer stack
+
+All tests remain offline by default. Memory compaction is exercised with deterministic fixtures.
+
+---
+
 ## 5. Unit Tests
 
-Complete checklist. Every item must have at least one passing test before merge.
+Unit tests cover individual modules and functions. Key test files and their focus areas:
 
-### Profile & Muse Configuration
+### Session & State
 
-- [ ] `MuseProfile` loads all Muses from config
-- [ ] Planning Muse has no write tools in its tool set
-- [ ] (PR17+) Coding Muse requires plan approval before write access is granted
-- [ ] Each Muse reports the correct `id`, `name`, and `description`
+**Key files:** `test/muse/session_server_test.exs`, `test/muse/session_store_test.exs`, `test/muse/state_test.exs`
+
+- Session creation, lookup, persistence, and state transitions
+- SessionServer remains responsive during long model turns
+- Event log replay and PubSub broadcasting
+- Cancellation mid-turn stops streaming cleanly
+
+### Conductor & Turns
+
+**Key files:** `test/muse/conductor_test.exs`, `test/muse/conductor/turn_runner_test.exs`, `test/muse/conductor/tool_loop_test.exs`
+
+- Muse selection logic (Planning Muse default, Coding Muse after plan approval)
+- Tool-call loop iteration with caps and limits
+- Provider error handling without crashing session
+- Turn cancellation checkpoints
+
+### Planning & Plan Lifecycle
+
+**Key files:** `test/muse/plan_test.exs`, `test/muse/plan_parser_test.exs`, `test/muse/plan_schema_test.exs`, `test/muse/plan_history_test.exs`
+
+- Plan parsing from structured JSON
+- Plan schema validation (required fields, optional fields)
+- Plan status transitions and rendering
+- Plan history queries
+
+### Approval & Binding
+
+**Key files:** `test/muse/approval_test.exs`, `test/muse/approval_gate_test.exs`, `test/muse/plan_binding_test.exs`, `test/muse/approval_persistence_test.exs`
+
+- Plan approval/rejection lifecycle commands
+- Content-bound approval binding (session_id, plan_id, version, hash, workspace)
+- Stale approval rejection
+- Approval persistence and audit trail
+
+### Patch Proposal & Approval
+
+**Key files:** `test/muse/patch_test.exs`, `test/muse/patch/diff_parser_test.exs`, `test/muse/patch/validator_test.exs`
+
+- Patch struct construction and deterministic hashing
+- Diff parsing, canonicalization, and validation
+- Path safety, size limits, binary rejection, secret detection
+- Patch approval lifecycle (lifecycle-only in PR17)
+
+### Tools & Registry
+
+**Key files:** `test/muse/tool/registry_test.exs`, `test/muse/tool/runner_test.exs`, `test/muse/tools/*_test.exs`
+
+- Tool registration and spec validation
+- Blocked-tool enforcement (write/shell/network/delete/remote)
+- Role-based tool access (Planning vs Coding Muse)
+- Individual tool behavior (list_files, read_file, repo_search, git_*, etc.)
+
+### Memory & Handoff
+
+**Key files:** `test/muse/memory_test.exs`
+
+- Memory compaction and summarization
+- `memory.md` persistence and restoration
+- Muse handoff coordination
 
 ### Prompt Assembly
 
-- [ ] `PromptAssembler` orders layers in the correct priority: core → project → user → session
-- [ ] Project rules load with correct priority (later layers can extend, never override core)
-- [ ] Project rules **cannot** override core rules (e.g., a project rule cannot re-enable shell access if core disables it)
-- [ ] Duplicate rules from different layers are deduplicated (latest wins within same layer)
+**Key files:** `test/muse/prompt/assembler_test.exs`, `test/muse/prompt/project_rules_test.exs`, `test/muse/prompt/debug_preview_test.exs`
 
-### Debug & Preview
+- Layer ordering and priority (core → project → user → session)
+- Project rules loading from trusted locations
+- Debug preview redaction of secrets
+- Model preparer output shape
 
-- [ ] Debug preview output redacts all secret values (API keys, tokens) with `***`
-- [ ] Debug preview shows layer ordering clearly for troubleshooting
+### Auth & Provider
 
-### Model Preparation
+**Key files:** `test/muse/auth/*_test.exs`, `test/muse/llm/*_test.exs`
 
-- [ ] `ModelPreparer` creates the expected request shape for each provider
-- [ ] Model preparer injects the correct tool definitions for the active Muse
-- [ ] Model preparer omits tools that the active Muse does not have access to
+- Credential resolution (API key, bearer command, Codex cache)
+- Provider contract compliance
+- Fake provider scripted responses
+- SSE and WebSocket transport decoding
 
-### Plan Lifecycle + Tool Safety (PR09)
+### Workspace Safety
 
-- [ ] `/approve plan` transitions active plan from `:awaiting_approval` to `:approved`
-- [ ] `/reject plan` transitions active plan from `:awaiting_approval` to `:rejected`
-- [ ] Session status returns from `:awaiting_plan_approval` to `:idle` after lifecycle command
-- [ ] Plan lifecycle emits auditable events (`:approval_requested`, `:approval_approved`/`:approval_rejected`, `:plan_approved`/`:plan_rejected` + status change when applicable)
-- [ ] Stale plan approval attempts are rejected via content-bound binding checks
-- [ ] Plan approval does not apply patches, write files, run shell, or perform network calls
-- [ ] `Tool.Runner` blocks known dangerous tool names (`write_file`, `patch_apply`, `shell_command`, etc.)
-- [ ] `Tool.Runner` blocks destructive unknown tool-name shapes and rejects other unknown tools safely
+**Key files:** `test/muse/workspace_test.exs`
 
-### Workspace Path Safety
-
-- [ ] Workspace path safety blocks `../` traversal outside the project root
-- [ ] Workspace path safety blocks symlink escapes that resolve outside the project root
-- [ ] Read-file operations block paths matching secret patterns (`.env`, `credentials.json`, `auth.json`, etc.)
-- [ ] Hidden files (dotfiles) are blocked unless explicitly allowed by config
-
-### Tool Execution
-
-- [ ] `ToolRunner` emits `:tool_call_started`, `:tool_call_completed`, `:tool_call_failed`, and `:tool_call_blocked` events
-- [ ] Fake provider returns scripted tool calls from fixture data
-- [ ] Tool runner respects the active Muse's allowed tool set — disallowed tools are rejected
-
-### Conductor & Session
-
-- [ ] `Conductor` handles the full tool-call loop: model → tool call → tool result → model → … → done
-- [ ] `SessionStore` persists session state and can resume from disk
-- [ ] Provider errors do **not** crash `SessionServer` — errors are captured and reported
-- [ ] Unknown provider events are ignored (or logged at debug level) without crashing
-- [ ] Existing State PubSub behavior remains stable (subscriptions, broadcasts)
-- [ ] `SessionServer` remains responsive to queries during a long model turn
-- [ ] Cancellation works mid-turn — calling cancel during a streaming response stops the turn cleanly
+- Path traversal blocking (`../` outside workspace)
+- Symlink escape prevention
+- Secret file blocking (`.env`, `credentials.json`, etc.)
+- Hidden file handling
 
 ---
 
@@ -257,42 +352,57 @@ Current PR09 integration happy path (fake provider only):
 
 ## 7. Safety Tests
 
-Every safety boundary must have a dedicated test. No exceptions.
+Every safety boundary has dedicated test coverage. Key safety test areas:
 
 ### Filesystem Boundaries
 
-- [ ] Blocked: read outside workspace (e.g., `/etc/passwd`)
-- [ ] Blocked: write outside workspace (e.g., `/tmp/evil.sh`)
-- [ ] Blocked: `../` traversal (e.g., `../../.ssh/id_rsa`)
-- [ ] Blocked: symlink write — symlink pointing outside workspace
-- [ ] Blocked: symlink read escape — reading through symlink outside workspace
-- [ ] Blocked: secret read — paths matching `**/.env`, `**/credentials.json`, `**/auth.json`, `**/.netrc`
-- [ ] Blocked: hidden file read — dotfiles unless explicitly in allowlist
+**Key files:** `test/muse/workspace_test.exs`, `test/muse/tool/runner_test.exs`, `test/muse/tools/read_file_test.exs`
+
+Blocked operations:
+- Read outside workspace (e.g., `/etc/passwd`)
+- Write outside workspace (e.g., `/tmp/evil.sh`)
+- `../` traversal (e.g., `../../.ssh/id_rsa`)
+- Symlink write/read escapes pointing outside workspace
+- Secret file reads (`.env`, `credentials.json`, `auth.json`, `.netrc`)
+- Hidden files (dotfiles) unless explicitly allowed
 
 ### Approval / Blocking Boundaries (PR09)
 
-- [ ] Blocked: dangerous tool names (`write_file`, `patch_apply`, `shell_command`, etc.)
-- [ ] Blocked: destructive unknown tool-name shapes (write/patch/shell/network/remote-like)
-- [ ] Blocked: tool not available to active Muse role
-- [ ] Blocked: unknown tool name returns safe error result
-- [ ] Blocked: `requires_approval: true` tool specs cannot execute yet
-- [ ] Blocked: `/approve plan` or `/reject plan` when no active plan awaiting approval
-- [ ] Blocked: stale/mismatched plan approval binding
+**Key files:** `test/muse/approval_gate_test.exs`, `test/muse/tool/registry_test.exs`, `test/muse/tool/runner_test.exs`
+
+Blocked operations:
+- Dangerous tool names (`write_file`, `patch_apply`, `shell_command`, etc.)
+- Destructive unknown tool-name shapes (write/patch/shell/network/remote-like)
+- Tools not available to active Muse role
+- Unknown tool names return safe error result
+- `requires_approval: true` tool specs cannot execute yet
+- `/approve plan` or `/reject plan` when no active plan awaiting approval
+- Stale/mismatched plan approval binding
 
 ### Approval / Blocking Boundaries (PR17)
 
-- [ ] Blocked: `patch_apply` for all roles in PR17 (no apply authority)
-- [ ] Blocked: `patch_propose` for Planning Muse (Coding Muse only, after plan approval)
-- [ ] Session transition to `:awaiting_patch_approval` is valid
-- [ ] `:patch` kind approval with `patch_id`/`patch_hash` binding
-- [ ] Stale/mismatched patch approval binding is rejected
-- [ ] Patch approval does not apply files, create checkpoints, or run shell/network commands
-- [ ] No file modifications occur before patch approval
+**Key files:** `test/muse/patch_test.exs`, `test/muse/tool/registry_test.exs`, `test/muse/session_server_test.exs`
+
+Blocked operations:
+- `patch_apply` for all roles in PR17 (no apply authority)
+- `patch_propose` for Planning Muse (Coding Muse only, after plan approval)
+
+Valid transitions:
+- Session transition to `:awaiting_patch_approval`
+- `:patch` kind approval with `patch_id`/`patch_hash` binding
+
+Rejections:
+- Stale/mismatched patch approval binding
+- Patch approval does not apply files, create checkpoints, or run shell/network
+- No file modifications occur before patch approval
 
 ### Data Boundaries
 
-- [ ] Provider request debug snapshots redact `Authorization` headers (show `Bearer sk-...****`)
-- [x] External WebSocket channel does **not** forward internal/sensitive events (e.g., `secret_read_attempt`, `approval_state_change`) — enforced in `MuseWeb.ExternalEventFilter`
+**Key files:** `test/muse/event_payload_redactor_test.exs`, `test/muse_web/external_event_filter_test.exs`
+
+- Provider request debug snapshots redact `Authorization` headers
+- External WebSocket channel does not forward internal/sensitive events
+- Payload redaction for secrets (API keys, tokens, credentials)
 
 ---
 
@@ -315,19 +425,37 @@ The external WebSocket channel (`MuseWeb.SessionChannel`) is tested through:
 
 Muse-first naming is a product commitment. These tests verify that user-facing surfaces do not use "Agent," "Bot," mascot names, or Code Puppy branding. Technical LLM protocol roles and internal event names such as `role: :assistant`, `:assistant_delta`, and `:assistant_message` are allowed where they are implementation details rather than product labels.
 
-### Surfaces to Check
+### Surfaces Verified
 
-- [ ] `/muses` lists **Planning Muse** and **Coding Muse** with Muse-first naming
-- [ ] `/status` says **Active Muse** (not "Active Agent" or "Current Assistant")
-- [ ] Plan output says **Recommended Muse** (not "Recommended Agent")
-- [ ] Approval messages say **Muse Plan** and **Patch Proposal** (not "Agent Plan" or "Bot Patch")
-- [ ] LiveView panels use **Muse** labels in headers, badges, and status indicators
-- [ ] Documentation and examples do **not** use "mascot" or generic "Agent" naming in user-facing text
+**Key files:** `test/muse/cli/tui_test.exs`, `test/muse_web/live/*_test.exs`, `test/muse/commands_test.exs`
+
+- `/muses` lists **Planning Muse** and **Coding Muse** with Muse-first naming
+- `/status` says **Active Muse** (not "Active Agent" or "Current Assistant")
+- Plan output says **Recommended Muse** (not "Recommended Agent")
+- Approval messages say **Muse Plan** and **Patch Proposal** (not "Agent Plan" or "Bot Patch")
+- LiveView panels use **Muse** labels in headers, badges, and status indicators
+- Documentation and examples do not use "mascot" or generic "Agent" naming in user-facing text
 
 ### Enforcement
 
-- [ ] A grep-based CI check (`grep -r "Active Agent\|Current Agent\|Agent Plan" lib/ test/`) fails the build on violation
-- [ ] I18n/localization keys use `muse.*` namespace, not `agent.*`
+A grep-based CI check fails the build on violation:
+
+```bash
+grep -r "Active Agent\|Current Agent\|Agent Plan" lib/ test/
+# Should return no matches
+```
+
+I18n/localization keys use `muse.*` namespace, not `agent.*`.
+
+### Known Internal Exceptions
+
+These internal identifiers are intentionally preserved and are not user-facing:
+- Module names: `Muse.AgentRegistry`, `Muse.AgentRuntime`
+- Data keys: `agent_snapshot`, `agent_runtime`, `agents` (map fields)
+- CSS classes: `agent-*` (e.g., `agent-runtime-card`, `agent-entry`)
+- Phoenix event names: `connect_agent_runtime`, `disconnect_agent_runtime`
+- PubSub messages: `:muse_agent_registry_updated`, `:muse_agent_runtime_updated`
+- Process names: `Muse.AgentRegistry`, `Muse.AgentRuntime`
 
 ---
 

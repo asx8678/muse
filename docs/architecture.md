@@ -6,6 +6,67 @@
 
 ---
 
+## Developer Onboarding Map
+
+New to the Muse codebase? Start here:
+
+### Quick Start
+
+1. **Read this document** — especially §0 (Implemented Contract), §1 (Runtime Path), §2 (Process Architecture), and §7 (Conductor).
+2. **Run the tests** — `mix test` runs offline by default with the fake provider. See [`testing.md`](testing.md) for the full testing strategy.
+3. **Explore the module map** — §4 lists all modules by category. Key entry points:
+   - `Muse.submit/2` — public API
+   - `Muse.SessionRouter` — session lookup/creation
+   - `Muse.SessionServer` — GenServer per session, owns state
+   - `Muse.Conductor` — orchestrates turns, Muse selection, tool loops
+   - `Muse.Tool.Runner` — tool execution with safety checks
+4. **Try the CLI** — `iex -S mix` then `Muse.CLI.TUI.start/1` or use the `muse` escript.
+
+### What's Implemented (through PR21)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Session management | ✅ Implemented | SessionRouter, SessionServer, SessionStore, persistence |
+| Event streaming | ✅ Implemented | Delta events, PubSub, replay, `streamed?` flag |
+| Fake provider | ✅ Implemented | Deterministic, offline-first testing |
+| Planning Muse | ✅ Implemented | Read-only inspection, structured JSON plans |
+| Coding Muse routing | ✅ Implemented | Conductor routes to Coding Muse after plan approval |
+| Plan approval lifecycle | ✅ Implemented | `/approve plan`, `/reject plan`, content-bound binding |
+| Patch proposal | ✅ Implemented | `patch_propose` tool, hash, `/approve patch`, `/reject patch` |
+| Memory compaction | ✅ Implemented (PR21) | Memory Muse, `memory.md`, handoff support |
+| Auth layer | ✅ Implemented | API key, bearer command, Codex cache bridge |
+| SSE provider | ✅ Implemented | HTTP SSE streaming for OpenAI-compatible |
+| Responses WebSocket | ✅ Implemented | OpenAI Responses API with previous_response_id |
+| External WS channel | ✅ Implemented | Phoenix channel for non-LiveView clients |
+| CLI/TUI/LiveView | ✅ Implemented | Unified commands, Muse-first strings |
+
+### What's Roadmap (PR22+)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Patch apply | 🗓️ PR18 | `patch_apply`, checkpoint, rollback |
+| Test runner | 🗓️ PR19 | Safe test commands, bounded repair |
+| Reviewing Muse | 🗓️ PR19 | Diff review, risk assessment |
+| Additional providers | 🗓️ PR23 | OpenRouter, Ollama, Anthropic |
+| Remote execution | 🗓️ PR24+ | SSH/remote runners, strict approvals |
+| Shell approval flows | 🗓️ PR19 | `/approve shell`, command allowlists |
+
+### Key Files by Area
+
+- **Session:** `lib/muse/session*.ex`, `lib/muse/state.ex`
+- **Conductor/Turns:** `lib/muse/conductor*.ex`, `lib/muse/turn.ex`
+- **Tools:** `lib/muse/tool/*.ex`, `lib/muse/tools/*.ex`
+- **Planning:** `lib/muse/plan*.ex`, `lib/muse/task.ex`
+- **Patches:** `lib/muse/patch*.ex`, `lib/muse/checkpoint*.ex`
+- **Memory:** `lib/muse/memory.ex`
+- **Auth:** `lib/muse/auth/*.ex`
+- **Prompts:** `lib/muse/prompt/*.ex`
+- **LLM/Providers:** `lib/muse/llm/**/*.ex`
+- **CLI/TUI:** `lib/muse/cli/*.ex`
+- **Tests:** `test/muse/**/*.exs`
+
+---
+
 ## Table of Contents
 
 0. [PR09 ApprovalGate MVP — Implemented Contract](#0-pr09-approvalgate-mvp--implemented-contract)
