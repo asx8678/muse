@@ -12,6 +12,7 @@ import Config
 
 config :muse, MuseWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4101],
+  url: [host: "127.0.0.1"],
   server: true,
   code_reloader: false,
   debug_errors: false,
