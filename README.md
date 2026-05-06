@@ -9,11 +9,11 @@ opt into OpenAI-compatible providers when configured.
 
 > **⚠️ Provider-ready** — `Muse.submit/2` routes through the Conductor which
 > delegates to an LLM provider. The fake provider (offline, deterministic) is the
-> default. `Muse.LLM.OpenAICompatibleProvider` (`complete/1`, `complete/2`,
-> `stream/2`) is available for real HTTP calls against any OpenAI-compatible
-> Chat Completions endpoint with a custom `base_url`.  Auth/API-key resolution
-> is handled by the `Muse.Auth` layer (`Resolver`, `ApiKey`, `BearerCommand`,
-> `CodexCache`, `Credential`); use `/auth status` to inspect configuration.
+> default. Available providers: `OpenAICompatibleProvider` for OpenAI Chat Completions
+> and Responses APIs; `AnthropicProvider` for Anthropic Messages API; OpenRouter and
+> Ollama presets via the OpenAI-compatible adapter. Auth/API-key resolution is handled
+> by the `Muse.Auth` layer (`Resolver`, `ApiKey`, `BearerCommand`, `CodexCache`,
+> `Credential`); use `/auth status` to inspect configuration.
 
 ---
 
@@ -44,6 +44,16 @@ Muse defaults to the offline fake provider and needs no API key:
 MUSE_PROVIDER=fake mix muse
 ```
 
+Available providers:
+
+| Provider | Env Var | Description |
+|---|---|---|
+| `fake` | `MUSE_PROVIDER=fake` | Offline, deterministic (default) |
+| `openai_compatible` | `MUSE_PROVIDER=openai_compatible` | OpenAI Chat Completions/Responses |
+| `openrouter` | `MUSE_PROVIDER=openrouter` | OpenRouter preset |
+| `ollama` | `MUSE_PROVIDER=ollama` | Local Ollama (no auth) |
+| `anthropic` | `MUSE_PROVIDER=anthropic` | Anthropic Messages API |
+
 The default CLI/LiveView turn path stays on the fake provider unless execution is explicitly given a resolved provider config. For integration code, tests, or lower-level Conductor/SessionServer calls that opt into the real provider, use the environment/app-config contract below and pass the resolved `ProviderConfig` into turn execution; `/auth status` can inspect the same config read-only.
 
 ```bash
@@ -73,11 +83,35 @@ Use `/auth status` in the REPL to inspect active auth configuration.
 # Fake provider — no auth, no env vars (default)
 MUSE_PROVIDER=fake mix muse
 
-# OpenAI-compatible — auth via MUSE_OPENAI_API_KEY (optional, real-provider opt-in)
+# OpenAI-compatible — auth via MUSE_OPENAI_API_KEY
 MUSE_PROVIDER=openai_compatible \
   MUSE_OPENAI_BASE_URL=https://api.openai.com/v1 \
   MUSE_MODEL=gpt-4.1 \
   MUSE_OPENAI_API_KEY=sk-... \
+  mix muse
+
+# OpenRouter — access multiple models through one provider
+MUSE_PROVIDER=openrouter \
+  MUSE_MODEL=anthropic/claude-3.5-sonnet \
+  MUSE_OPENROUTER_API_KEY=sk-or-... \
+  mix muse
+
+# Ollama — local, no auth required
+MUSE_PROVIDER=ollama \
+  MUSE_MODEL=llama3.1 \
+  mix muse
+
+# Anthropic — Anthropic Messages API
+MUSE_PROVIDER=anthropic \
+  MUSE_MODEL=claude-sonnet-4-20250514 \
+  MUSE_ANTHROPIC_API_KEY=sk-ant-... \
+  mix muse
+
+# Per-Muse model pinning via environment
+MUSE_PROVIDER=openrouter \
+  MUSE_PLANNING_MODEL=anthropic/claude-3-opus \
+  MUSE_CODING_MODEL=anthropic/claude-3.5-sonnet \
+  MUSE_OPENROUTER_API_KEY=sk-or-... \
   mix muse
 ```
 

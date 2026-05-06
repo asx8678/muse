@@ -22,7 +22,7 @@ New to the Muse codebase? Start here:
    - `Muse.Tool.Runner` — tool execution with safety checks
 4. **Try the CLI** — `iex -S mix` then `Muse.CLI.TUI.start/1` or use the `muse` escript.
 
-### What's Implemented (through PR21)
+### What's Implemented (through PR23)
 
 | Feature | Status | Notes |
 |---|---|---|
@@ -43,14 +43,13 @@ New to the Muse codebase? Start here:
 | Responses WebSocket | ✅ Implemented | OpenAI Responses API with previous_response_id |
 | External WS channel | ✅ Implemented | Phoenix channel for non-LiveView clients |
 | CLI/TUI/LiveView | ✅ Implemented | Unified commands, Muse-first strings |
+| Additional providers | ✅ Implemented (PR23) | OpenRouter, Ollama, Anthropic provider presets |
+| Model routing | ✅ Implemented (PR23) | Per-Muse model/provider pinning via env or opts |
 
-### What's Roadmap (PR23+)
+### What's Roadmap (PR24+)
 
 | Feature | Status | Notes |
 |---|---|---|
-| Additional providers | 🗓️ PR23 | OpenRouter, Ollama, Anthropic |
-| Model routing | 🗓️ PR23+ | Per-Muse model pinning and fallback routing |
-| Generic shell/network approvals | 🗓️ Future | Beyond PR19 preset test runner; arbitrary shell/network remain blocked |
 | Remote execution | 🗓️ PR24+ | SSH/remote runners, strict approvals |
 
 ### Key Files by Area

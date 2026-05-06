@@ -169,7 +169,7 @@ Each turn → TurnRunner (Task):
 | 20 | CLI/TUI/LiveView integration polish | Unified commands, session panels, Muse-first strings everywhere ✓ |
 | 21 | Memory & Restoration Muse, handoffs | Compaction, memory layer, specialist handoffs via Conductor ✓ |
 | 22 | Documentation & developer onboarding | README, provider setup, safety model, architecture, prompt profiles, developer docs ✓ |
-| 23 | Additional providers & model routing | OpenRouter, Ollama, Anthropic, per-Muse model pinning |
+| 23 | Additional providers & model routing | OpenRouter, Ollama, Anthropic, per-Muse model pinning ✓ |
 | 24 | Remote execution (later) | Runner abstraction, local runner, future SSH/remote, strict approvals |
 
 **Critical path:** `00 → 01a/01b/01c → 02 → 03 → 04 → 05 → 06 → 07a/07b → 08 → 09 → 10` (Milestone 1) `→ 11-15` (Providers) `→ 17-19` (Patch/Test/Review) `→ 20-24` (Polish/Extensions)

@@ -4,7 +4,7 @@
 >
 > **Canonical source:** Provider sequencing, fake-provider behavior, provider configuration, OpenAI-compatible wire mapping, transports, auth resolution, and streaming implementation status through PR21.
 >
-> **Status (PR21):** Fake provider (default), OpenAI-compatible provider (Chat Completions non-streaming + SSE streaming), Responses WebSocket transport, and auth layer are implemented. Additional providers and model routing are PR23+.
+> **Status (PR23):** Fake provider (default), OpenAI-compatible provider (Chat Completions non-streaming + SSE streaming), Responses WebSocket transport, auth layer, Anthropic provider, OpenRouter, Ollama presets, and per-Muse model routing are implemented. Remote execution is PR24+.
 
 ---
 
@@ -59,11 +59,11 @@ PR09 approval boundary reminder:
 
 ---
 
-## 2. Current Implementation Status (PR21)
+## 2. Current Implementation Status (PR23)
 
-This section summarizes what is implemented through PR21 and what remains future work.
+This section summarizes what is implemented through PR23 and what remains future work.
 
-### Implemented (PR09–PR21)
+### Implemented (PR09–PR23)
 
 | Feature | PR | Description |
 |---|---|---|
@@ -74,13 +74,16 @@ This section summarizes what is implemented through PR21 and what remains future
 | Responses WebSocket | PR15 | `ResponsesStreamDecoder`, `ResponsesWebSocket.RequestBuilder`, WebSocket transport lifecycle |
 | External WebSocket channel | PR16 | Optional Phoenix channel for non-LiveView clients, read-only, filtered, disabled by default |
 | Patch proposal approval | PR17 | `patch_propose` tool, patch approval lifecycle (no apply authority) |
+| Anthropic provider | PR23 | Anthropic Messages API adapter with `x-api-key` auth |
+| OpenRouter preset | PR23 | OpenRouter provider preset via OpenAI-compatible adapter |
+| Ollama preset | PR23 | Ollama local provider preset (no auth) |
+| Per-Muse model routing | PR23 | `ModelRouter` for per-Muse model/provider pinning via env or explicit opts |
 
-### Not Yet Implemented (PR23+)
+### Not Yet Implemented (PR24+)
 
 | Feature | PR | Description |
 |---|---|---|
-| Additional providers | PR23 | Anthropic, Azure OpenAI, Ollama, OpenRouter adapters |
-| Model routing | PR23+ | Per-session model selection, fallback routing, cost/performance optimization |
+| Remote execution | PR24 | Runner abstraction, local runner, future SSH/remote, strict approvals |
 | Responses non-streaming HTTP execution | Future | Non-streaming `complete/2` dispatch to `{base_url}/responses`; Responses SSE/WebSocket streaming paths are implemented |
 | Native OAuth | Future | Browser-based sign-in without Codex CLI bridge |
 | Codex CLI bridge | Future | `codex login` shelling-out for auth flows |
@@ -88,11 +91,36 @@ This section summarizes what is implemented through PR21 and what remains future
 ### Default Provider Behavior
 
 ```text
-MUSE_PROVIDER unset or "fake" → Muse.LLM.FakeProvider (offline, deterministic)
-MUSE_PROVIDER=openai_compatible → Muse.LLM.OpenAICompatibleProvider (real HTTP)
+MUSE_PROVIDER unset or "fake"         → Muse.LLM.FakeProvider (offline, deterministic)
+MUSE_PROVIDER=openai_compatible        → Muse.LLM.OpenAICompatibleProvider (real HTTP)
+MUSE_PROVIDER=openrouter               → Muse.LLM.OpenAICompatibleProvider (OpenRouter preset)
+MUSE_PROVIDER=ollama                   → Muse.LLM.OpenAICompatibleProvider (Ollama preset)
+MUSE_PROVIDER=anthropic                → Muse.LLM.AnthropicProvider (Anthropic Messages API)
 ```
 
 The fake provider is the **default**. Running `mix muse` or `mix test` without provider env vars uses the fake provider and requires no API key, no network, and no auth configuration. This is the Muse-first offline-by-default experience.
+
+### Per-Muse Model Routing
+
+Environment variables can pin models to specific Muses:
+
+```text
+MUSE_PLANNING_MODEL=claude-3-opus      # Planning Muse uses claude-3-opus
+MUSE_CODING_MODEL=gpt-4                # Coding Muse uses gpt-4
+MUSE_REVIEWING_MODEL=claude-3-sonnet   # Reviewing Muse uses claude-3-sonnet
+```
+
+See `Muse.LLM.ModelRouter` for programmatic API.
+
+### Runtime Provider Resolution
+
+The Conductor resolves provider configuration at runtime with this precedence:
+
+1. **Explicit `provider_config`** — wins, no env override
+2. **`provider_env` map** — passed to `Muse.Config.llm_provider_config/1`
+3. **Default** — fake provider (no network)
+
+After resolving base config, `ModelRouter` applies per-Muse model/provider pins from `model_router_opts` or `provider_env`.
 
 ---
 

@@ -765,4 +765,133 @@ defmodule Muse.ConductorTest do
       assert result.request.model == "explicit-bundle-model"
     end
   end
+
+  # -- run/3 provider_env runtime config selection -----------------------------
+
+  describe "run/3 — provider_env config selection" do
+    test "provider_env with MUSE_MODEL changes request.model" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          provider_env: %{"MUSE_MODEL" => "env-custom-model"}
+        )
+
+      # provider_env selects fake provider with custom model
+      assert result.request.provider == :fake
+      assert result.request.model == "env-custom-model"
+    end
+
+    test "provider_env with MUSE_PROVIDER=fake uses fake provider" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          provider_env: %{"MUSE_PROVIDER" => "fake", "MUSE_MODEL" => "test-model"}
+        )
+
+      assert result.request.provider == :fake
+      assert result.request.model == "test-model"
+    end
+
+    test "provider_env with MUSE_PROVIDER=openrouter resolves correctly without network" do
+      # Inject FakeProvider to avoid network calls while testing config resolution
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          provider_module: FakeProvider,
+          provider_env: %{
+            "MUSE_PROVIDER" => "openrouter",
+            "MUSE_MODEL" => "anthropic/claude-3.5-sonnet"
+          }
+        )
+
+      # Config resolved to openrouter, but we injected FakeProvider for no-network test
+      assert result.request.provider == :openrouter
+      assert result.request.model == "anthropic/claude-3.5-sonnet"
+      # Request has correct provider config fields
+      assert result.request.options[:base_url] == "https://openrouter.ai/api/v1"
+    end
+
+    test "provider_env with MUSE_PROVIDER=ollama resolves correctly without network" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          provider_module: FakeProvider,
+          provider_env: %{
+            "MUSE_PROVIDER" => "ollama",
+            "MUSE_MODEL" => "llama3.1"
+          }
+        )
+
+      assert result.request.provider == :ollama
+      assert result.request.model == "llama3.1"
+      assert result.request.options[:base_url] == "http://127.0.0.1:11434/v1"
+    end
+
+    test "provider_env with MUSE_PROVIDER=anthropic resolves correctly without network" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          provider_module: FakeProvider,
+          provider_env: %{
+            "MUSE_PROVIDER" => "anthropic",
+            "MUSE_MODEL" => "claude-sonnet-4-20250514"
+          }
+        )
+
+      assert result.request.provider == :anthropic
+      assert result.request.model == "claude-sonnet-4-20250514"
+      assert result.request.options[:base_url] == "https://api.anthropic.com/v1"
+    end
+
+    test "provider_env with MUSE_PLANNING_MODEL applies per-Muse model pin" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          provider_env: %{"MUSE_PLANNING_MODEL" => "pinned-via-env"}
+        )
+
+      # Planning Muse is selected, so MUSE_PLANNING_MODEL should apply
+      assert result.selected_muse.id == :planning
+      assert result.request.model == "pinned-via-env"
+    end
+
+    test "explicit provider_config wins over provider_env" do
+      explicit_config = %ProviderConfig{
+        ProviderConfig.fake()
+        | model: "explicit-config-model"
+      }
+
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          provider_config: explicit_config,
+          provider_env: %{"MUSE_MODEL" => "env-model-should-be-ignored"}
+        )
+
+      # Explicit provider_config.model wins
+      assert result.request.model == "explicit-config-model"
+    end
+
+    test "invalid provider_env falls back to fake provider safely" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          provider_env: %{"MUSE_PROVIDER" => "totally_invalid_provider_xyz"}
+        )
+
+      # Invalid provider falls back to fake
+      assert result.request.provider == :fake
+    end
+
+    test "empty provider_env uses fake provider default" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          provider_env: %{}
+        )
+
+      assert result.request.provider == :fake
+      assert result.request.model == "fake-planning-model"
+    end
+  end
 end

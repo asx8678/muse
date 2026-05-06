@@ -41,6 +41,7 @@ defmodule Muse.Conductor do
   alias Muse.Conductor.ToolLoop
   alias Muse.LLM.{FakeProvider, ModelRouter, ProviderConfig, ProviderRouter, Message}
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
+  alias Muse.Config, as: LLMConfig
 
   @type event_spec :: {atom(), atom(), map(), keyword()}
 
@@ -56,9 +57,20 @@ defmodule Muse.Conductor do
   ## Options
 
     * `:provider_module` — explicit provider module (overrides router selection)
-    * `:provider_config` — `ProviderConfig.t()` (default: `ProviderConfig.fake/0`)
+    * `:provider_config` — explicit `ProviderConfig.t()` (wins over provider_env)
+    * `:provider_env`    — env map for `Muse.Config.llm_provider_config/1` when
+      no explicit provider_config. Defaults to `%{}` (fake provider).
+      Pass `System.get_env()` or a test env map to load from environment.
+    * `:model_router_opts` — keyword opts for `ModelRouter.resolve/3` (env, model_pins, provider_pins)
     * `:prompt_opts`     — keyword opts passed to `Assembler.build/4`
     * `:request_options` — keyword opts passed to `ModelPreparer.to_request/3`
+
+  ## Provider resolution order
+
+    1. Explicit `:provider_config` wins and is not overridden by provider_env.
+    2. If no provider_config, use `Muse.Config.llm_provider_config(provider_env)`.
+    3. If provider_env is empty or config fails, fall back to `ProviderConfig.fake()`.
+    4. After resolving base config, apply `ModelRouter` with model_router_opts.
 
   ## Returns
 
@@ -344,7 +356,12 @@ defmodule Muse.Conductor do
       )
 
     # 3. Resolve provider config with optional model routing
-    provider_config = Keyword.get(opts, :provider_config, ProviderConfig.fake())
+    # Resolution order:
+    #   1. Explicit provider_config wins
+    #   2. If no provider_config, use LLMConfig.llm_provider_config(provider_env)
+    #   3. If that fails or env is empty, fall back to fake
+    #   4. Apply ModelRouter with model_router_opts
+    provider_config = resolve_provider_config(opts)
     provider_config = resolve_with_routing(muse, provider_config, opts)
 
     # 4. Prepare provider request
@@ -479,8 +496,40 @@ defmodule Muse.Conductor do
   end
 
   @doc false
+  defp resolve_provider_config(opts) do
+    cond do
+      # 1. Explicit provider_config wins — no env override
+      Keyword.has_key?(opts, :provider_config) ->
+        Keyword.fetch!(opts, :provider_config)
+
+      # 2. provider_env provided — use LLMConfig to load from env
+      Keyword.has_key?(opts, :provider_env) ->
+        env = Keyword.fetch!(opts, :provider_env)
+
+        case LLMConfig.llm_provider_config(env) do
+          {:ok, config} -> config
+          {:error, _reason} -> ProviderConfig.fake()
+        end
+
+      # 3. Default — fake provider (no network)
+      true ->
+        ProviderConfig.fake()
+    end
+  end
+
+  @doc false
   defp resolve_with_routing(muse, provider_config, opts) do
     model_router_opts = Keyword.get(opts, :model_router_opts, [])
+
+    # If no explicit model_router_opts but provider_env is set,
+    # pass the env to ModelRouter for per-Muse model/provider pins
+    model_router_opts =
+      if model_router_opts == [] and Keyword.has_key?(opts, :provider_env) do
+        env = Keyword.fetch!(opts, :provider_env)
+        [env: env]
+      else
+        model_router_opts
+      end
 
     if model_router_opts == [] do
       provider_config
