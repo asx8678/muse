@@ -762,8 +762,6 @@ Node.js 18+ and npm are required. These are **not** required for `mix test` — 
 | `MUSE_BROWSER_SMOKE_PORT` | 4101 | HTTP port for the smoke server |
 | `MUSE_BROWSER_SMOKE_HOST` | 127.0.0.1 | HTTP host |
 | `MUSE_BROWSER_SMOKE_TIMEOUT` | 60 | Server readiness timeout (seconds) |
-| `MUSE_PLAYWRIGHT_BROWSER` | chromium | Browser to use |
-
 #### Running Without the Orchestration Script
 
 If the server is already running:

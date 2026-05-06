@@ -15,7 +15,6 @@
 #   MUSE_BROWSER_SMOKE_PORT       — HTTP port (default: 4101)
 #   MUSE_BROWSER_SMOKE_HOST       — HTTP host (default: 127.0.0.1)
 #   MUSE_BROWSER_SMOKE_TIMEOUT    — Server readiness timeout in seconds (default: 60)
-#   MUSE_PLAYWRIGHT_BROWSER       — Browser to use (default: chromium)
 #
 # Prerequisites:
 #   - Elixir/Erlang installed

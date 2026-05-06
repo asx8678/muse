@@ -20,7 +20,6 @@
 
 # Node / Playwright (browser smoke only — not required for mix test)
 node_modules/
-package-lock.json
 playwright-report/
 test-results/
 blob-report/
