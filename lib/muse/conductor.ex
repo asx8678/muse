@@ -39,7 +39,7 @@ defmodule Muse.Conductor do
   }
 
   alias Muse.Conductor.ToolLoop
-  alias Muse.LLM.{FakeProvider, ProviderConfig, ProviderRouter, Message}
+  alias Muse.LLM.{FakeProvider, ModelRouter, ProviderConfig, ProviderRouter, Message}
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
 
   @type event_spec :: {atom(), atom(), map(), keyword()}
@@ -343,14 +343,18 @@ defmodule Muse.Conductor do
         Keyword.merge(prompt_opts, turn_id: turn.id)
       )
 
-    # 3. Prepare provider request
+    # 3. Resolve provider config with optional model routing
     provider_config = Keyword.get(opts, :provider_config, ProviderConfig.fake())
+    provider_config = resolve_with_routing(muse, provider_config, opts)
+
+    # 4. Prepare provider request
     request_opts = Keyword.get(opts, :request_options, [])
+
     request = ModelPreparer.to_request(bundle, provider_config, request_opts)
     request = merge_request_options(request, request_opts)
     request = hydrate_previous_response_id(request, session, request_opts)
 
-    # 4. Call provider
+    # 5. Call provider
     provider_module = resolve_provider_module(opts, request)
 
     # Build conductor overhead event specs (always emitted)
@@ -471,6 +475,24 @@ defmodule Muse.Conductor do
         )
 
         {:error, %{reason: reason, event_specs: all_specs}}
+    end
+  end
+
+  @doc false
+  defp resolve_with_routing(muse, provider_config, opts) do
+    model_router_opts = Keyword.get(opts, :model_router_opts, [])
+
+    if model_router_opts == [] do
+      provider_config
+    else
+      case ModelRouter.resolve(muse, provider_config, model_router_opts) do
+        {:ok, config} ->
+          config
+
+        {:error, reason} ->
+          raise ArgumentError,
+                "model routing failed for muse #{inspect(muse.id)}: #{inspect(reason)}"
+      end
     end
   end
 

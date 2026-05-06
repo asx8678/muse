@@ -700,4 +700,69 @@ defmodule Muse.ConductorTest do
       :telemetry.detach("cond-test-prov-error")
     end
   end
+
+  # -- run/3 model routing -----------------------------------------------------
+
+  describe "run/3 — model routing" do
+    test "model_router_opts with model_pins overrides model for Planning Muse" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          model_router_opts: [model_pins: %{planning: "pinned-planning-model"}]
+        )
+
+      assert result.selected_muse.id == :planning
+      assert result.request.model == "pinned-planning-model"
+    end
+
+    test "model_router_opts with model_pins for non-selected Muse leaves model unchanged" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          model_router_opts: [model_pins: %{coding: "pinned-coder-model"}]
+        )
+
+      # Planning Muse is selected, coding pin doesn't match
+      assert result.request.model == "fake-planning-model"
+    end
+
+    test "without model_router_opts, model remains default" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(), prompt_opts: [project_rules?: false])
+
+      assert result.request.model == "fake-planning-model"
+    end
+
+    test "empty model_router_opts does not change model" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          model_router_opts: []
+        )
+
+      assert result.request.model == "fake-planning-model"
+    end
+
+    test "model_router_opts with env map model pin works" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false],
+          model_router_opts: [env: %{"MUSE_PLANNING_MODEL" => "env-planner"}]
+        )
+
+      assert result.request.model == "env-planner"
+    end
+
+    test "explicit request_options model takes precedence over model_router pin" do
+      {:ok, result} =
+        Conductor.run(build_session(), build_turn(),
+          prompt_opts: [project_rules?: false, model: "explicit-bundle-model"],
+          model_router_opts: [model_pins: %{planning: "router-pinned-model"}]
+        )
+
+      # bundle.model from prompt_opts takes precedence over provider config model
+      # (ModelPreparer uses opts[:model] || bundle.model || provider_config.model)
+      assert result.request.model == "explicit-bundle-model"
+    end
+  end
 end
