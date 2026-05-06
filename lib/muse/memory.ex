@@ -26,7 +26,7 @@ defmodule Muse.Memory do
 
   """
 
-  alias Muse.{MetadataSanitizer, Session}
+  alias Muse.{EventPayloadRedactor, MetadataSanitizer, Prompt.Redactor, Session}
 
   @max_memory_bytes 20_000
   @max_list_length 10
@@ -65,10 +65,27 @@ defmodule Muse.Memory do
   end
 
   @doc """
+  Returns true if the given map has the shape of a memory artifact.
+
+  Used by the prompt assembler to decide whether to render through
+  `render/1` (canonical artifact) or a generic redacted inspect
+  (arbitrary map).
+  """
+  @spec memory_artifact?(map()) :: boolean()
+  def memory_artifact?(map) when is_map(map) do
+    Map.has_key?(map, :user_goal) and
+      Map.has_key?(map, :compacted_at) and
+      Map.has_key?(map, :source_session_id)
+  end
+
+  @doc """
   Compact a session into a memory artifact.
 
   This extracts key information from the session while ensuring
   no secrets are included. All content is sanitized.
+
+  For a fail-closed variant that returns an error tuple when secrets
+  are detected, see `compact_safe/2`.
 
   ## Options
 
@@ -76,8 +93,33 @@ defmodule Muse.Memory do
     * `:max_events` — maximum events to consider (default: 20)
 
   """
+  @type compact_result ::
+          {:ok, memory_artifact()}
+          | {:error, :secrets_detected, reasons :: [String.t()]}
+
   @spec compact(Session.t(), keyword()) :: memory_artifact()
   def compact(%Session{} = session, opts \\ []) do
+    do_compact(session, opts)
+  end
+
+  @doc """
+  Compact a session into a memory artifact with fail-closed validation.
+
+  Returns `{:ok, memory}` on success or `{:error, :secrets_detected, reasons}`
+  if secrets are detected after compaction. This is the safe variant that
+  callers should prefer when they need to handle the error case.
+  """
+  @spec compact_safe(Session.t(), keyword()) :: compact_result()
+  def compact_safe(%Session{} = session, opts \\ []) do
+    memory = do_compact(session, opts)
+
+    case validate_no_secrets(memory) do
+      :ok -> {:ok, memory}
+      {:error, reasons} -> {:error, :secrets_detected, reasons}
+    end
+  end
+
+  defp do_compact(session, opts) do
     include_events = Keyword.get(opts, :include_events, false)
     max_events = Keyword.get(opts, :max_events, 20)
 
@@ -132,23 +174,31 @@ defmodule Muse.Memory do
   @doc """
   Render a memory artifact as a human-readable string.
 
-  Used by the Prompt Assembler's memory_layer.
+  All output is redacted through the event-payload and prompt redactors
+  before rendering, ensuring that any secrets that may have been stored
+  are never displayed raw.
+
+  Used by the Prompt Assembler's memory_layer and the `/memory` command.
   """
   @spec render(memory_artifact()) :: String.t()
   def render(%{user_goal: nil} = memory) do
-    render_without_goal(memory)
+    memory
+    |> redact_memory()
+    |> render_without_goal()
   end
 
   def render(memory) do
+    redacted = redact_memory(memory)
+
     sections = [
-      goal_section(memory),
-      facts_section(memory),
-      decisions_section(memory),
-      plans_section(memory),
-      changes_section(memory),
-      validation_section(memory),
-      issues_section(memory),
-      conventions_section(memory)
+      goal_section(redacted),
+      facts_section(redacted),
+      decisions_section(redacted),
+      plans_section(redacted),
+      changes_section(redacted),
+      validation_section(redacted),
+      issues_section(redacted),
+      conventions_section(redacted)
     ]
 
     sections
@@ -159,18 +209,32 @@ defmodule Muse.Memory do
   @doc """
   Validate that a memory artifact contains no secrets.
 
+  Checks for two classes of secrets:
+
+    1. **Sensitive keys** — any key (atom or string) matching
+       `Muse.MetadataSanitizer.sensitive_key?/1` is flagged regardless of
+       the value content. A key like `:password` or `"api_key"` is unsafe
+       even if the value doesn't match a token regex.
+
+    2. **Secret patterns** — binary values containing known credential
+       patterns (API keys, Bearer tokens, private keys, etc.).
+
+  Recursively walks maps, lists, tuples, keywords, and charlists.
+  Non-binary values (tuples, charlists, iodata, etc.) are stringified
+  via `inspect/1` and checked for secret patterns.
+
   Returns `:ok` if safe, `{:error, reasons}` if secrets detected.
   """
-  @spec validate_no_secrets(memory_artifact()) :: :ok | {:error, [String.t()]}
+  @spec validate_no_secrets(memory_artifact()) :: :ok | {:error, reasons :: [String.t()]}
   def validate_no_secrets(memory) do
     memory
     |> Map.drop([:compacted_at, :source_session_id])
     |> Enum.flat_map(fn {key, value} ->
-      check_for_secrets(key, value)
+      check_for_secrets(key, value, [])
     end)
     |> case do
       [] -> :ok
-      reasons -> {:error, reasons}
+      reasons -> {:error, Enum.uniq(reasons)}
     end
   end
 
@@ -297,7 +361,169 @@ defmodule Muse.Memory do
 
   defp sanitize_string(other), do: sanitize_string(inspect(other))
 
-  # Secret pattern matchers - defined as module attributes for clarity
+  # -- Private: Secret validation (recursive, key-aware) -------------------------
+
+  defp check_for_secrets(key, value, path) when is_binary(value) do
+    full_path = path ++ [key]
+
+    # Sensitive-key detection: if the key is sensitive, flag regardless of value.
+    # Pattern detection: check binary value against known secret patterns.
+    sensitive_key_reasons(full_path) ++
+      if secret_pattern_match?(value) do
+        ["Secret pattern found in #{format_path(full_path)}"]
+      else
+        []
+      end
+  end
+
+  # Keyword lists: check both the key and the value of each pair.
+  defp check_for_secrets(key, [{k, _v} | _] = kw, path) when is_atom(k) do
+    full_path = path ++ [key]
+
+    # Walk keyword pairs — each pair's key is checked for sensitivity.
+    kw_reasons =
+      Enum.flat_map(kw, fn {k, v} ->
+        pair_key_reasons =
+          if sensitive_key?(k) do
+            ["Sensitive key #{format_path(full_path ++ [k])} with value present"]
+          else
+            []
+          end
+
+        pair_value_reasons = check_for_secrets(k, v, full_path)
+        pair_key_reasons ++ pair_value_reasons
+      end)
+
+    sensitive_key_reasons(full_path) ++ kw_reasons
+  end
+
+  # 2-tuples: treat as key-value pair if first element is an atom.
+  # This catches {:password, "hunter2"} where the first element is a
+  # sensitive key.
+  defp check_for_secrets(key, {k, v}, path) when is_atom(k) do
+    full_path = path ++ [key]
+
+    key_reasons =
+      if sensitive_key?(k) do
+        ["Sensitive key #{format_path(full_path ++ [k])} with value present"]
+      else
+        []
+      end
+
+    value_reasons = check_for_secrets(k, v, full_path)
+    sensitive_key_reasons(full_path) ++ key_reasons ++ value_reasons
+  end
+
+  # Tuples (3+ elements): convert to list and recurse.
+  defp check_for_secrets(key, value, path) when is_tuple(value) do
+    full_path = path ++ [key]
+
+    tuple_reasons =
+      value
+      |> Tuple.to_list()
+      |> Enum.with_index()
+      |> Enum.flat_map(fn {elem, idx} ->
+        check_for_secrets(:"[#{idx}]", elem, full_path)
+      end)
+
+    sensitive_key_reasons(full_path) ++ tuple_reasons
+  end
+
+  # Maps: recurse into each key/value pair.
+  defp check_for_secrets(key, value, path) when is_map(value) do
+    full_path = path ++ [key]
+
+    map_reasons =
+      Enum.flat_map(value, fn {k, v} ->
+        check_for_secrets(k, v, full_path)
+      end)
+
+    sensitive_key_reasons(full_path) ++ map_reasons
+  end
+
+  # Lists: check if this is a charlist first, then recurse into each element.
+  # Charlists (lists of integers) are stringified and checked for secret
+  # patterns in addition to the per-element recursion.
+  defp check_for_secrets(key, value, path) when is_list(value) do
+    full_path = path ++ [key]
+
+    # Check for charlist: a list of integers that can be converted to a string.
+    charlist_reasons =
+      if charlist?(value) do
+        try do
+          stringified = List.to_string(value)
+
+          pattern_reasons =
+            if secret_pattern_match?(stringified) do
+              ["Secret pattern found in #{format_path(full_path)} (charlist)"]
+            else
+              []
+            end
+
+          pattern_reasons
+        rescue
+          ArgumentError -> []
+        end
+      else
+        []
+      end
+
+    list_reasons =
+      Enum.with_index(value)
+      |> Enum.flat_map(fn {elem, idx} ->
+        check_for_secrets(:"[#{idx}]", elem, full_path)
+      end)
+
+    sensitive_key_reasons(full_path) ++ charlist_reasons ++ list_reasons
+  end
+
+  # Catch-all: inspect non-standard types (pids, refs, functions, iodata, etc.)
+  # and check the stringified form for secrets.
+  defp check_for_secrets(key, value, path) do
+    full_path = path ++ [key]
+
+    stringified = inspect(value, limit: 10, printable_limit: 200)
+
+    value_reasons =
+      if secret_pattern_match?(stringified) do
+        ["Secret pattern found in #{format_path(full_path)} (non-binary value)"]
+      else
+        []
+      end
+
+    sensitive_key_reasons(full_path) ++ value_reasons
+  end
+
+  # Helper: produce sensitive-key reasons for a given path if the last
+  # element is a sensitive key. Used by composite-type clauses above.
+  defp sensitive_key_reasons(full_path) do
+    case List.last(full_path) do
+      nil ->
+        []
+
+      key ->
+        if sensitive_key?(key),
+          do: ["Sensitive key #{format_path(full_path)} with value present"],
+          else: []
+    end
+  end
+
+  # Check if a key (atom or string) is sensitive using MetadataSanitizer.
+  defp sensitive_key?(key), do: MetadataSanitizer.sensitive_key?(key)
+
+  # Check if a list is a charlist (all elements are integers in Unicode range).
+  defp charlist?([]), do: false
+
+  defp charlist?([h | _] = list) when is_integer(h) do
+    Enum.all?(list, fn
+      i when is_integer(i) and i >= 0 and i <= 0x10FFFF -> true
+      _ -> false
+    end)
+  end
+
+  defp charlist?(_), do: false
+
+  # Check a binary string against known secret patterns.
   @sk_pattern ~r|sk-[a-zA-Z0-9]+|
   @bearer_pattern ~r|Bearer\s+[a-zA-Z0-9\-._~+/]+=*|
   @api_key_pattern ~r|api[_-]?key\s*[=:]\s*\S+|i
@@ -307,7 +533,7 @@ defmodule Muse.Memory do
   @private_key_pattern ~r|-----BEGIN.*PRIVATE KEY-----|
   @auth_header_pattern ~r|Authorization:\s*Bearer|i
 
-  defp check_for_secrets(key, value) when is_binary(value) do
+  defp secret_pattern_match?(binary) when is_binary(binary) do
     patterns = [
       @sk_pattern,
       @bearer_pattern,
@@ -319,26 +545,14 @@ defmodule Muse.Memory do
       @auth_header_pattern
     ]
 
-    matches = Enum.filter(patterns, fn pattern -> Regex.match?(pattern, value) end)
-
-    if matches != [] do
-      ["Secret pattern found in #{key}"]
-    else
-      []
-    end
+    Enum.any?(patterns, &Regex.match?(&1, binary))
   end
 
-  defp check_for_secrets(key, value) when is_list(value) do
-    Enum.flat_map(value, &check_for_secrets(key, &1))
-  end
+  defp secret_pattern_match?(_), do: false
 
-  defp check_for_secrets(key, value) when is_map(value) do
-    Enum.flat_map(value, fn {k, v} ->
-      check_for_secrets("#{key}.#{k}", v)
-    end)
-  end
-
-  defp check_for_secrets(_key, _value), do: []
+  # Format a path list as a dot-separated string for error messages.
+  defp format_path([]), do: "root"
+  defp format_path(path), do: Enum.map_join(path, ".", &to_string/1)
 
   # -- Private: Size bounding -----------------------------------------------------
 
@@ -392,6 +606,107 @@ defmodule Muse.Memory do
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
+
+  # -- Private: Memory redaction --------------------------------------------------
+
+  # Redact all string values in the memory artifact through the full
+  # redaction pipeline (EventPayloadRedactor + Prompt.Redactor) before
+  # rendering. This ensures that even if secrets were somehow stored,
+  # they are never rendered raw.
+  defp redact_memory(memory) do
+    memory
+    |> redact_memory_strings()
+    |> redact_memory_maps()
+  end
+
+  # Redact top-level string fields and list-of-strings fields.
+  # Works with both canonical memory_artifact maps and arbitrary maps.
+  defp redact_memory_strings(memory) do
+    list_of_strings_keys =
+      [
+        :project_facts,
+        :decisions_made,
+        :approved_plans,
+        :changes_completed,
+        :validation_results,
+        :open_issues,
+        :useful_conventions
+      ]
+
+    memory
+    |> safe_update(:user_goal, &redact_optional_string/1)
+    |> then(fn mem ->
+      Enum.reduce(list_of_strings_keys, mem, fn key, acc ->
+        safe_update(acc, key, fn list ->
+          Enum.map(list, &redact_string_value/1)
+        end)
+      end)
+    end)
+  end
+
+  # Redact map values in list fields (e.g., open_issues containing maps).
+  # Works with both canonical memory_artifact maps and arbitrary maps.
+  defp redact_memory_maps(memory) do
+    map_list_keys = [:open_issues]
+
+    Enum.reduce(map_list_keys, memory, fn key, acc ->
+      safe_update(acc, key, fn list ->
+        Enum.map(list, &redact_term_value/1)
+      end)
+    end)
+  end
+
+  # Safe version of Map.update!/3 that handles missing keys gracefully.
+  # For canonical memory artifacts (which always have these keys), behaves
+  # identically. For arbitrary maps, applies the function if the key exists,
+  # or skips otherwise.
+  defp safe_update(map, key, fun) when is_map(map) do
+    if Map.has_key?(map, key) do
+      Map.update!(map, key, fun)
+    else
+      # For unknown keys in arbitrary maps, redact the value if present
+      map
+    end
+  end
+
+  defp redact_optional_string(nil), do: nil
+  defp redact_optional_string(str) when is_binary(str), do: redact_string_value(str)
+
+  defp redact_optional_string(other),
+    do: redact_string_value(inspect(other, limit: 10, printable_limit: 200))
+
+  # Redact private key headers that don't have the full BEGIN...END block.
+  # Prompt.Redactor.redact_text only matches the full block pattern, so
+  # partial headers need separate handling.
+  @private_key_header_pattern ~r/-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----/
+
+  defp redact_string_value(str) when is_binary(str) do
+    str
+    |> EventPayloadRedactor.redact_string()
+    |> Redactor.redact_text()
+    |> redact_private_key_header()
+  end
+
+  defp redact_string_value(other),
+    do: redact_string_value(inspect(other, limit: 10, printable_limit: 200))
+
+  defp redact_private_key_header(str) when is_binary(str) do
+    Regex.replace(@private_key_header_pattern, str, "[REDACTED]")
+  end
+
+  defp redact_term_value(term) when is_binary(term), do: redact_string_value(term)
+
+  defp redact_term_value(term) when is_map(term),
+    do: EventPayloadRedactor.redact(term) |> Redactor.redact_term()
+
+  defp redact_term_value(term) when is_list(term),
+    do: EventPayloadRedactor.redact(term) |> Redactor.redact_term()
+
+  defp redact_term_value(term) when is_tuple(term),
+    do: EventPayloadRedactor.redact(term) |> Redactor.redact_term()
+
+  defp redact_term_value(term),
+    do: redact_string_value(inspect(term, limit: 10, printable_limit: 200))
 
   defp facts_section(%{project_facts: []}), do: nil
 

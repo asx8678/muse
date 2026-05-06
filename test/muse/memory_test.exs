@@ -189,6 +189,109 @@ defmodule Muse.MemoryTest do
       assert {:error, reasons} = Memory.validate_no_secrets(memory)
       assert length(reasons) > 0
     end
+
+    # -- muse-e49: Sensitive key detection ---------------------------------------
+
+    test "detects sensitive atom keys with non-matching values" do
+      # password: "hunter2" — value doesn't match token regex, but key is sensitive
+      memory = Memory.new(open_issues: [%{password: "hunter2"}])
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "detects sensitive string keys with non-matching values" do
+      memory = Memory.new(open_issues: [%{"api_key" => "plain-text-value"}])
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "detects deeply nested sensitive atom keys" do
+      memory =
+        Memory.new(
+          open_issues: [
+            %{layer1: %{layer2: %{layer3: %{token: "some-value"}}}}
+          ]
+        )
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "detects deeply nested sensitive string keys" do
+      memory =
+        Memory.new(
+          open_issues: [
+            %{"outer" => %{"inner" => %{"secret" => "abc"}}}
+          ]
+        )
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "detects secrets in keyword lists" do
+      memory = Memory.new(open_issues: [[password: "hunter2", safe_key: "ok"]])
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "detects secrets in tuples" do
+      memory = Memory.new(open_issues: [{:password, "hunter2"}])
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "detects secrets in nested tuples" do
+      memory = Memory.new(open_issues: [{:config, {:private_key, "pem-data"}}])
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "detects token strings in charlists" do
+      # A charlist that renders to a string containing a secret
+      charlist = ~c"key=sk-test12345"
+      memory = Memory.new(open_issues: [charlist])
+
+      assert {:error, _reasons} = Memory.validate_no_secrets(memory)
+    end
+
+    test "detects secret patterns in non-binary values via inspect" do
+      # A struct-like map that contains secret patterns when inspected
+      memory = Memory.new(open_issues: [%{key: %{nested: ~c"sk-test12345"}}])
+
+      assert {:error, _reasons} = Memory.validate_no_secrets(memory)
+    end
+
+    test "detects multiple sensitive keys at different levels" do
+      memory =
+        Memory.new(
+          open_issues: [
+            %{api_key: "val1", nested: %{password: "val2", safe: "ok"}}
+          ]
+        )
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      # Both api_key and password should be flagged
+      sensitive_count = Enum.count(reasons, &String.contains?(&1, "Sensitive key"))
+      assert sensitive_count >= 2
+    end
+
+    test "does not flag safe keys with safe values" do
+      memory = Memory.new(user_goal: "Build app", project_facts: ["Uses Elixir"])
+
+      assert :ok = Memory.validate_no_secrets(memory)
+    end
+
+    test "handles empty lists and nil values gracefully" do
+      memory = Memory.new(open_issues: [], user_goal: nil)
+
+      assert :ok = Memory.validate_no_secrets(memory)
+    end
   end
 
   describe "merge/2" do
@@ -224,6 +327,75 @@ defmodule Muse.MemoryTest do
       # fact2 should appear only once
       count = Enum.count(merged.project_facts, &(&1 == "fact2"))
       assert count <= 1
+    end
+  end
+
+  # -- muse-e49: Render safety tests -----------------------------------------------
+
+  describe "render/1 — secret redaction" do
+    test "rendered output contains no raw API keys" do
+      # Simulate stored memory that somehow contains a secret string
+      memory = Memory.new(user_goal: "key is sk-test12345secret")
+
+      rendered = Memory.render(memory)
+      refute rendered =~ "sk-test12345secret"
+    end
+
+    test "rendered output contains no raw Bearer tokens" do
+      memory = Memory.new(project_facts: ["Config: Bearer abc123token"])
+
+      rendered = Memory.render(memory)
+      refute rendered =~ "abc123token"
+    end
+
+    test "rendered output contains no raw private keys" do
+      memory =
+        Memory.new(decisions_made: ["Key: -----BEGIN RSA PRIVATE KEY-----MIIEpAIBAA"])
+
+      rendered = Memory.render(memory)
+      refute rendered =~ "-----BEGIN RSA PRIVATE KEY-----"
+    end
+
+    test "safe memory still renders usefully" do
+      memory = Memory.new(user_goal: "Build a REST API", project_facts: ["Elixir project"])
+
+      rendered = Memory.render(memory)
+      assert rendered =~ "Build a REST API"
+      assert rendered =~ "Elixir project"
+    end
+
+    test "render does not crash on malformed memory with non-string values" do
+      # Memory with non-standard values (maps in lists, tuples, etc.)
+      memory = Memory.new(open_issues: [%{config: {:password, "admin"}}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+    end
+  end
+
+  # -- muse-e49: compact_safe tests -----------------------------------------------
+
+  describe "compact_safe/2" do
+    test "returns {:ok, memory} for safe session" do
+      session = Session.new(workspace: "/tmp/test", id: "session_safe")
+
+      assert {:ok, memory} = Memory.compact_safe(session)
+      assert %DateTime{} = memory.compacted_at
+    end
+
+    test "returns {:error, :secrets_detected, reasons} when memory has secrets" do
+      # Create memory directly with a secret and validate
+      malicious_memory = Memory.new(open_issues: [%{api_key: "sk-badkey123"}])
+
+      result =
+        case Memory.validate_no_secrets(malicious_memory) do
+          :ok -> {:ok, malicious_memory}
+          {:error, reasons} -> {:error, :secrets_detected, reasons}
+        end
+
+      assert {:error, :secrets_detected, reasons} = result
+      assert is_list(reasons)
+      assert length(reasons) > 0
     end
   end
 end

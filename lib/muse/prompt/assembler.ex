@@ -393,11 +393,18 @@ defmodule Muse.Prompt.Assembler do
         nil
 
       memory when is_binary(memory) and memory != "" ->
+        # Redact binary memory through the full redaction pipeline before
+        # inclusion in provider messages.
+        safe_content =
+          memory
+          |> Muse.EventPayloadRedactor.redact_string()
+          |> Muse.Prompt.Redactor.redact_text()
+
         Layer.new!(
           id: :memory_summary,
           priority: 12,
           source: :muse_profile,
-          content: memory,
+          content: safe_content,
           title: "Session Memory Summary",
           visibility: :debug_preview,
           kind: :context,
@@ -405,13 +412,26 @@ defmodule Muse.Prompt.Assembler do
         )
 
       memory when is_map(memory) and map_size(memory) > 0 ->
-        content = memory |> inspect(limit: :infinity, printable_limit: 10_000)
+        # Map memory: redact through EventPayloadRedactor + Prompt.Redactor,
+        # then render safely. For canonical memory_artifacts (with :user_goal etc.),
+        # use Memory.render/1. For arbitrary maps, use redacted inspect.
+        # Never use raw inspect/1 on untrusted memory.
+        safe_content =
+          if Muse.Memory.memory_artifact?(memory) do
+            Muse.Memory.render(memory)
+          else
+            memory
+            |> Muse.EventPayloadRedactor.redact()
+            |> Muse.Prompt.Redactor.redact_term()
+            |> inspect(limit: 20, printable_limit: 500)
+            |> Muse.Prompt.Redactor.redact_text()
+          end
 
         Layer.new!(
           id: :memory_summary,
           priority: 12,
           source: :muse_profile,
-          content: content,
+          content: safe_content,
           title: "Session Memory Summary",
           visibility: :debug_preview,
           kind: :context,

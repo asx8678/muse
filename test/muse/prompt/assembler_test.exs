@@ -451,6 +451,111 @@ defmodule Muse.Prompt.AssemblerTest do
 
       refute Enum.any?(bundle.layers, &(&1.id == :active_plan_state))
     end
+
+    # -- muse-e49: memory layer secret redaction --------------------------------
+
+    test "map memory layer does not contain raw API keys in provider messages", %{
+      session: session,
+      profile: profile
+    } do
+      # Simulate stored memory that contains a secret
+      session_with_secret = %{
+        session
+        | memory: %{open_issues: [%{api_key: "sk-secretkey123"}]}
+      }
+
+      bundle =
+        Assembler.build(session_with_secret, profile, "hello",
+          id: "pb_secret_map",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      # The secret should be redacted, not raw
+      refute memory_layer.content =~ "sk-secretkey123"
+    end
+
+    test "map memory layer does not contain raw Bearer tokens in provider messages", %{
+      session: session,
+      profile: profile
+    } do
+      session_with_secret = %{
+        session
+        | memory: %{notes: "auth: Bearer abc123token"}
+      }
+
+      bundle =
+        Assembler.build(session_with_secret, profile, "hello",
+          id: "pb_bearer",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      refute memory_layer.content =~ "abc123token"
+    end
+
+    test "string memory layer does not contain raw secrets in provider messages", %{
+      session: session,
+      profile: profile
+    } do
+      session_with_secret = %{session | memory: "The key is sk-test12345secret"}
+
+      bundle =
+        Assembler.build(session_with_secret, profile, "hello",
+          id: "pb_secret_str",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      refute memory_layer.content =~ "sk-test12345secret"
+    end
+
+    test "map memory layer does not use raw inspect on untrusted memory", %{
+      session: session,
+      profile: profile
+    } do
+      # Memory with a sensitive key that would leak via raw inspect
+      session_with_secret = %{
+        session
+        | memory: %{password: "hunter2", safe_field: "visible"}
+      }
+
+      bundle =
+        Assembler.build(session_with_secret, profile, "hello",
+          id: "pb_no_inspect",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      # password value should be redacted
+      refute memory_layer.content =~ "hunter2"
+    end
+
+    test "safe map memory still appears in provider messages", %{
+      session: session,
+      profile: profile
+    } do
+      session_with_memory = %{session | memory: %{notes: "prefers tabs", count: 5}}
+
+      bundle =
+        Assembler.build(session_with_memory, profile, "hello",
+          id: "pb_safe_map",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      assert memory_layer.content =~ "notes"
+    end
   end
 
   describe "build/4 no dynamic atom creation" do

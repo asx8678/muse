@@ -645,6 +645,12 @@ defmodule Muse.CommandDispatcher do
           output = format_memory(memory)
           {:ok, output, []}
 
+        {:ok, %{memory: other_memory}} ->
+          # Non-map memory (binary, list, etc.) — redact and display safely.
+          # Map memory is handled by the clause above.
+          output = format_memory_safely(other_memory)
+          {:ok, output, []}
+
         {:error, :not_found} ->
           {:ok, "No active Muse session.", []}
       end
@@ -1632,10 +1638,35 @@ defmodule Muse.CommandDispatcher do
   # -- Memory helpers ----------------------------------------------------------
 
   defp format_memory(memory) when is_map(memory) do
+    # Memory.render/1 redacts secrets by default; additionally wrap in
+    # rescue for malformed structures that might crash rendering.
     Muse.Memory.render(memory)
+  rescue
+    e ->
+      "Memory display unavailable (render error: #{Exception.message(e)}). " <>
+        "Stored memory may contain unsafe data and has been withheld."
   end
 
   defp format_memory(_), do: "No memory available."
+
+  defp format_memory_safely(memory) when is_binary(memory) do
+    # Redact binary memory through full pipeline before display.
+    memory
+    |> Muse.EventPayloadRedactor.redact_string()
+    |> Muse.Prompt.Redactor.redact_text()
+  rescue
+    _ -> "Memory display unavailable (redaction error). Content withheld."
+  end
+
+  defp format_memory_safely(memory) do
+    # Non-map, non-binary memory (lists, tuples, etc.) — inspect + redact.
+    memory
+    |> inspect(limit: 20, printable_limit: 500)
+    |> Muse.EventPayloadRedactor.redact_string()
+    |> Muse.Prompt.Redactor.redact_text()
+  rescue
+    _ -> "Memory display unavailable (render error). Content withheld."
+  end
 
   defp build_session_from_status(status) when is_map(status) do
     Muse.Session.new(
