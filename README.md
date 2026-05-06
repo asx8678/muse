@@ -267,8 +267,8 @@ execution.
 
 See the [Installation Guide](docs/install.md) for detailed instructions covering:
 
-- **Source/development install** — `git clone && mix deps.get && mix muse`
-- **Direct escript download** from GitHub Releases (Linux/macOS) with SHA256 verification
+- **Source/development install** — `git clone && mix deps.get && mix muse` — the stable path for v0.1.0
+- **Direct escript download** from GitHub Releases (Linux/macOS) with SHA256 verification — expected for v0.2.0+
 - **Mix release** for TUI and native NIF support
 - **Homebrew** (planned; see [roadmap](docs/roadmap-v0.2.0.md))
 - **Windows** via WSL2
