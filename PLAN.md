@@ -168,7 +168,7 @@ Each turn → TurnRunner (Task):
 | 19 | Test runner, Testing & Reviewing Muse | Safe test commands, bounded repair, review findings & recommendations ✓ |
 | 20 | CLI/TUI/LiveView integration polish | Unified commands, session panels, Muse-first strings everywhere ✓ |
 | 21 | Memory & Restoration Muse, handoffs | Compaction, memory layer, specialist handoffs via Conductor ✓ |
-| 22 | Documentation & developer onboarding | README, provider setup, safety model, architecture, prompt profiles, developer docs ▶ |
+| 22 | Documentation & developer onboarding | README, provider setup, safety model, architecture, prompt profiles, developer docs ✓ |
 | 23 | Additional providers & model routing | OpenRouter, Ollama, Anthropic, per-Muse model pinning |
 | 24 | Remote execution (later) | Runner abstraction, local runner, future SSH/remote, strict approvals |
 
@@ -215,7 +215,7 @@ lib/muse/muse_profile.ex            lib/muse/muses/testing_muse.ex
 
 **M1 — Read-Only Planning Muse.** User request → session → Planning Muse inspects with read-only tools → structured plan persisted → `:awaiting_plan_approval`. No files modified, no shell run, no implementation before approval.
 
-**M2 — Basic Coding Muse.** After plan approval → Conductor routes to Coding Muse → Coding Muse proposes patch via `patch_propose` tool → diff displayed → session enters `:awaiting_patch_approval`. `/approve patch` records approval only; no file modifications. Patch apply is PR18.
+**M2 — Basic Coding Muse.** After plan approval → Conductor routes to Coding Muse → Coding Muse proposes patch via `patch_propose` tool → diff displayed → session enters `:awaiting_patch_approval`. `/approve patch` records approval only; `/apply patch` is the separate PR18 checkpoint-gated application step.
 
 **M3 — Patch Apply, Verification, Rollback.** Approved patch → checkpoint → apply → git diff visible → optional safe test commands → rollback works. Bounded repair, not infinite loops.
 

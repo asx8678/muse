@@ -1,10 +1,11 @@
 # Muse
 
-Minimal Elixir/Phoenix LiveView coding-runtime foundation for Muse.
+Local Elixir/Phoenix LiveView coding runtime for Muse.
 
-Muse gives you a CLI REPL and a web interface that both funnel through a
-single `Muse.submit/2` API — so adding real AI behavior later is a one-module
-change.
+Muse gives you a CLI REPL, TUI, and web interface that all funnel through a
+single `Muse.submit/2` API, session runtime, Conductor, tool runner, and LLM
+provider layer. It is offline-first with the fake provider by default and can
+opt into OpenAI-compatible providers when configured.
 
 > **⚠️ Provider-ready** — `Muse.submit/2` routes through the Conductor which
 > delegates to an LLM provider. The fake provider (offline, deterministic) is the
@@ -26,8 +27,8 @@ mix deps.get && mix muse
 You'll see the startup banner, a `muse>` prompt, and (unless you pass
 `--no-web`) a web UI at **http://127.0.0.1:4000**.
 
-Type anything at the prompt and press Enter to get the placeholder response.
-Type `/quit` to exit.
+Type a message at the prompt and press Enter to route it through the session
+runtime, Conductor, and default offline fake provider. Type `/quit` to exit.
 
 Run the test suite:
 
@@ -43,13 +44,14 @@ Muse defaults to the offline fake provider and needs no API key:
 MUSE_PROVIDER=fake mix muse
 ```
 
-To use a real OpenAI-compatible endpoint, set the provider and base URL:
+The default CLI/LiveView turn path stays on the fake provider unless execution is explicitly given a resolved provider config. For integration code, tests, or lower-level Conductor/SessionServer calls that opt into the real provider, use the environment/app-config contract below and pass the resolved `ProviderConfig` into turn execution; `/auth status` can inspect the same config read-only.
 
 ```bash
 MUSE_PROVIDER=openai_compatible \
   MUSE_OPENAI_BASE_URL=https://api.openai.com/v1 \
   MUSE_MODEL=gpt-4.1 \
-  mix muse
+  MUSE_OPENAI_API_KEY=sk-... \
+  iex -S mix
 ```
 
 > The PR13 auth layer (`Muse.Auth`) is implemented: `ApiKey` resolves
@@ -102,21 +104,25 @@ enforced at the runtime level, not at the prompt level.
 
 1. After plan approval, Coding Muse can propose patches via `patch_propose`.
 2. The diff is displayed to the user; `/approve patch` records the approval
-   decision (lifecycle-only --- no files are modified).
-3. Patch application with **checkpoint/rollback** is reserved for a future
-   release (PR18). When implemented:
-   - A filesystem checkpoint is created before any patch is applied.
-   - Rollback restores files from the checkpoint.
-   - `/rollback` in the REPL already triggers the rollback flow.
+   decision but does **not** modify files by itself.
+3. Patch application is a separate explicit step: `/apply patch` applies the
+   latest approved patch (or the supplied patch id), creates a Muse Checkpoint
+   first, and shows the resulting git diff summary.
+4. Rollback is explicit and checkpoint-scoped: `/rollback checkpoint <id>`
+   restores the workspace from that checkpoint. The shorter `/rollback` command
+   is still reserved for dev hot-reload rollback, not Muse patch rollback.
 
 ### Shell & network safety
 
-- All shell commands, network calls, and remote execution tools are **blocked
-  by default** in the tool registry.
+- Arbitrary shell commands, network calls, and remote execution tools are
+  **blocked by default** in the tool registry.
 - The tool runner (`Muse.Tool.Runner`) hard-denies dangerous tool names such
   as `shell_command`, `network_call`, `remote_execution`, `write_file`,
-  `delete_file`, and `patch_apply`.
-- Approval-gated shell/test/network execution is future scope (PR19).
+  `replace_in_file`, and `delete_file`. `patch_apply` is registered but only
+  runs after plan + patch approval context and creates a checkpoint first.
+- PR19 adds a preset-only `test_runner` for bounded verification commands such
+  as `mix test`, `mix test <test-file>`, `mix format --check-formatted`, and
+  `mix compile --warnings-as-errors`; it does not grant arbitrary shell access.
 
 ### Memory, handoff & restoration safety
 
@@ -133,7 +139,7 @@ enforced at the runtime level, not at the prompt level.
 
 ### Workspace path safety
 
-Every file tool passes through a 9-step path validation (`Muse.Workspace.safe_resolve!/2):
+Every file tool passes through a 9-step path validation (`Muse.Workspace.safe_resolve!/2`):
 accept relative paths → reject absolute → normalize → resolve symlinks →
 confirm inside workspace → enforce permission policy → enforce secret-file
 policy → block writes through symlinks → emit audit event.
@@ -185,13 +191,23 @@ Inside the `muse>` REPL:
 | `/plan show <id>` | Show a Muse Plan by id |
 | `/approve plan` | Approve the active Muse Plan; records approval only and does **not** start implementation |
 | `/reject plan` | Reject the active Muse Plan and request a revised plan |
-| `/approve patch` | Approve the pending patch proposal; records approval only — no files are written (PR17) |
+| `/approve patch` | Approve the pending patch proposal; records approval only — no files are written by this command |
 | `/reject patch` | Reject the pending patch proposal |
+| `/apply patch [patch_id]` | Apply an approved patch with checkpoint protection |
+| `/rollback checkpoint <checkpoint_id>` | Roll back a Muse Checkpoint created before patch application |
 | `/events` | Print the event log |
 | `/workspace` | Print current workspace path |
 | `/reload` | Force a dev hot-reload |
 | `/rollback` | Roll back to last good code generation |
 | `/reload-status` | Show reload generation and last error |
+| `/auth status` | Show redacted provider/auth configuration status |
+| `/session` | Show Muse session status, active plan, and pending patch |
+| `/memory` | Show session memory summary |
+| `/memory compact` | Compact session context into safe durable memory |
+| `/memory clear` | Clear session memory |
+| `/handoff <muse_id>` | Request an explicit handoff to another allowed Muse |
+| `/checkpoints` | List Muse Checkpoints available for the current session |
+| `/restore <checkpoint_id>` | Show a Restoration Muse checkpoint restore request; no files are modified without approval |
 | `/quit` | Stop Muse (`:quit` also works) |
 
 Approval commands are lifecycle-only. `/approve plan` prints the plan id,
@@ -199,11 +215,11 @@ version, any available approval id/hash, and an explicit "no implementation
 started" line. `/reject plan` prints the plan id/version, any available rejection
 record, and tells you to ask Planning Muse for a revised plan. `/approve patch`
 records the patch approval decision but does **not** apply the patch, create
-checkpoints, or modify any files — patch apply is a separate step reserved
-for a future release (PR18). `/plan status` includes approval/rejection audit
-status and id/hash details when the active plan has them. Approval of a plan
-does not start Coding Muse, shell commands, file writes, patch application, or
-network execution.
+checkpoints, or modify any files by itself — `/apply patch` is the separate
+PR18 application step. `/plan status` includes approval/rejection audit status
+and id/hash details when the active plan has them. Approval of a plan does not
+start shell commands, arbitrary file writes, remote execution, or network
+execution.
 
 ---
 
@@ -377,6 +393,15 @@ cd ~/projects/muse
       Muse.submit/2        ← single entry point for all input
              │
              ▼
+      SessionRouter
+             │
+             ▼
+      SessionServer        ← per-session GenServer state/persistence
+             │
+             ▼
+      Conductor/TurnRunner ← Muse selection, prompt assembly, tool loop
+             │
+             ▼
        Muse.State          ← ordered event log (GenServer)
              │
        Muse.PubSub         ← broadcasts every event to subscribers
@@ -390,7 +415,10 @@ cd ~/projects/muse
 
 | Module | Role |
 |---|---|
-| `Muse.submit/2` | Public API — accepts `(source, text)`, returns `{:ok, response}` |
+| `Muse.submit/2` | Public API — accepts `(source, text)`, delegates to `SessionRouter` |
+| `Muse.SessionRouter` | Starts/looks up per-session `SessionServer` processes |
+| `Muse.SessionServer` | Per-session GenServer for state, persistence, approvals, patch/checkpoint/memory state |
+| `Muse.Conductor` / `Muse.Conductor.TurnRunner` | Selects Muse profile, assembles prompts, runs provider/tool loop outside the GenServer |
 | `Muse.State` | GenServer holding the event log; broadcasts via PubSub |
 | `Muse.Event` | Struct — `%{id, source, type, data, timestamp}` |
 | `Muse.BootOptions` | Parses CLI flags into a typed struct |
@@ -427,10 +455,11 @@ update through the lifecycle: `In progress`, `Already fixed`, `Self-healing fail
 On the next `Muse.submit/2` call (from the CLI or web), queued self-healing
 issues are atomically claimed and attached as an event in the state log.
 
-> **⚠️ Current limitation** — Full auto-fixing requires a real coding Muse
-> integration.  Currently, `Muse.submit/2` is still a placeholder; queued
-> issues are recorded and attached to the next turn, but no automatic
-> resolution happens.  This is a **bridge** until a real coding Muse is wired in.
+> **⚠️ Current limitation** — Full autonomous auto-fixing is not enabled.
+> `Muse.submit/2` now routes through sessions and the Conductor, and queued
+> issues are recorded and attached to the next turn, but diagnostics do not
+> trigger an unsupervised repair loop. This remains a **bridge** for explicit,
+> approval-gated Muse workflows.
 
 ---
 
@@ -466,7 +495,7 @@ For non-LiveView clients (CLI integrations, automation tools, IDE extensions),
 an optional WebSocket channel is available at `ws://127.0.0.1:4000/socket`.
 This channel is **disabled by default** and read-only (no tool/write/shell/network
 permissions). See [`docs/architecture.md` §8.5](docs/architecture.md#85-optional-external-phoenix-websocket-channel-pr16)
-and [`docs/security.md` §9](docs/security.md#9-external-websocket-channel-security-pr16) for details.
+and [`docs/security.md` §13](docs/security.md#13-external-websocket-channel-security-pr16) for details.
 
 ---
 
@@ -507,7 +536,7 @@ mix muse
 | Tests pass | `mix test` |
 | No formatting violations | `mix format --check-formatted` |
 | Clean compile with strict warnings | `mix compile --warnings-as-errors` |
-| Muse-first terminology grep check | No "Active Agent", "Agent Plan", or "Bot" in user-facing surfaces (see [`docs/testing.md`](docs/testing.md#8-product-language-tests)) |
+| Muse-first terminology grep check | No "Active Agent", "Agent Plan", or "Bot" in user-facing surfaces (see [`docs/testing.md`](docs/testing.md#9-product-language-tests)) |
 
 All CI gates run offline with the fake provider. External/network-dependent tests are opt-in via the `@tag :external` mechanism.
 

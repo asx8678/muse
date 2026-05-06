@@ -79,20 +79,26 @@ broadcast via PubSub to CLI REPL and LiveView web interfaces. The Conductor
 orchestrates turns: it selects a Muse profile (Planning, Coding, Memory,
 Restoration), assembles a layered prompt (core invariants → mode policy →
 Muse profile → workspace rules → memory → plan state → history), runs the
-LLM provider, and manages the tool-call loop (read-only tools only in PR09;
-write/shell/network tools blocked).
+LLM provider, and manages the tool-call loop. Planning remains read-only;
+patch application is checkpoint-gated, test execution is preset-limited, and
+generic write/shell/network/remote tools remain blocked.
 
 **Muse profiles:**
 - **Planning Muse** — Reads the repo, produces structured plans for user
   approval. Tools: `list_files`, `read_file`, `repo_search`, `git_status`,
   `git_diff_readonly`, `ask_user_question`.
-- **Coding Muse** — Proposes patches after plan approval (PR17).
+- **Coding Muse** — Proposes patches after plan approval and applies approved
+  patches through checkpoint-gated `/apply patch` (PR17/PR18).
+- **Reviewing Muse** (PR19) — Reviews diffs and reports findings.
+- **Testing Muse** (PR19) — Runs preset safe verification commands.
 - **Memory Muse** (PR21) — Compacts session history into durable memory.
-- **Restoration Muse** (PR21) — Recovers state from checkpoints and memory.
+- **Restoration Muse** (PR21) — Inspects checkpoints/session state and guides
+  recovery without unapproved writes.
 
-**Approval lifecycle:** `/approve plan` / `/reject plan` (lifecycle-only),
-`/approve patch` / `/reject patch` (PR17, lifecycle-only). Patch apply with
-checkpoint/rollback is future scope (PR18).
+**Approval lifecycle:** `/approve plan` / `/reject plan` are lifecycle-only.
+`/approve patch` / `/reject patch` are also lifecycle-only; `/apply patch` is
+the separate checkpoint-gated PR18 application step, and `/rollback checkpoint
+<id>` restores checkpointed files when explicitly requested.
 
 **Provider model:** Fake provider (offline, deterministic) is the default.
 OpenAI-compatible provider is available via env vars. Auth handled by
@@ -105,7 +111,7 @@ See `docs/README.md` for full documentation index.
 
 - **Muse-first terminology**: Use "Muse Plan" not "Agent Plan", "Planning
   Muse" not "Planning Agent", "Active Muse" not "Active Agent", "Patch
-  Proposal" not "Bot Patch". See `docs/testing.md §8` for grep check.
+  Proposal" not "Bot Patch". See `docs/testing.md §9` for grep check.
 - **Tabs over spaces** in Elixir code (`.ex`, `.exs`).
 - **Single-API entry point**: All user input flows through `Muse.submit/2`.
 - **Offline-first testing**: `mix test` never calls live providers.

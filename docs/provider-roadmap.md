@@ -17,9 +17,9 @@
    - 3.2 [Scriptable Test API](#32-scriptable-test-api)
 4. [Provider Environment Variables](#4-provider-environment-variables)
    - 4.1 [Initial (Fake)](#41-initial-fake)
-   - 4.2 [OpenAI-Compatible](#42-openai-compatible)
+   - 4.2 [OpenAI-Compatible Config](#42-openai-compatible-config)
    - 4.3 [App Config Example](#43-app-config-example)
-5. [Configuration Validation at Startup](#5-configuration-validation-at-startup)
+5. [Configuration Validation](#5-configuration-validation)
 6. [OpenAI-Compatible Non-Streaming Provider](#6-openai-compatible-non-streaming-provider)
 7. [OpenAI Responses Request Mapper](#7-openai-responses-request-mapper)
 8. [Chat Completions Request Mapper](#8-chat-completions-request-mapper)
@@ -55,7 +55,7 @@ PR09 approval boundary reminder:
 
 - `/approve plan` and `/reject plan` are lifecycle-only and auditable.
 - They do not execute patch/file/shell/network actions.
-- Provider work in this document must preserve that boundary until PR18/PR19 gates land (patch apply, shell/network approval).
+- Provider work in this document must preserve that boundary: patch apply is a separate PR18 checkpoint-gated command, PR19 test execution is preset-limited, and generic shell/network/remote execution remains blocked or future scope.
 
 ---
 
@@ -81,7 +81,7 @@ This section summarizes what is implemented through PR21 and what remains future
 |---|---|---|
 | Additional providers | PR23 | Anthropic, Azure OpenAI, Ollama, OpenRouter adapters |
 | Model routing | PR23+ | Per-session model selection, fallback routing, cost/performance optimization |
-| Responses HTTP execution | Future | Provider dispatch to `{base_url}/responses` (mapper exists) |
+| Responses non-streaming HTTP execution | Future | Non-streaming `complete/2` dispatch to `{base_url}/responses`; Responses SSE/WebSocket streaming paths are implemented |
 | Native OAuth | Future | Browser-based sign-in without Codex CLI bridge |
 | Codex CLI bridge | Future | `codex login` shelling-out for auth flows |
 
@@ -114,14 +114,14 @@ The fake provider must cover every event shape the runtime will encounter from r
 | `:mid_stream_error` | Emits several assistant deltas, then fails mid-stream. Tests error handling during active streaming — the runtime must emit a `:provider_error` event and not hang. |
 | `:cancellation` | Streams slowly (with deliberate delays), and checks for a cancellation signal on each step. Tests the TurnRunner's ability to cancel an in-flight provider call. |
 | Coding Muse proposes a patch (PR17) | Emits a `patch_propose` tool call with structured patch arguments. `patch_propose` is available to Coding Muse after plan approval; `:patch` approval kind and content-bound patch identity are defined. |
-| Coding Muse requests `patch_apply` (PR18) | Emits a `patch_apply` tool call. Planned for PR18 approval-gated write flow with checkpoint orchestration. |
-| Testing Muse requests `test_runner` (PR19) | Emits a `test_runner` tool call. Planned for PR19 verification workflow. |
+| Coding Muse requests `patch_apply` (PR18) | Emits a `patch_apply` tool call. Implemented as a checkpoint-gated apply flow that requires approved plan + approved patch context. |
+| Testing Muse requests `test_runner` (PR19) | Emits a `test_runner` tool call. Implemented for preset safe verification commands only; arbitrary shell remains blocked. |
 | Provider streams partial response | Emits a sequence of `:assistant_delta` events without completing. Tests the runtime's handling of incomplete responses. |
 | Provider fails and runtime retries or fails safely | Emits a `:provider_error` event. Tests retry logic and safe failure propagation — the runtime must not silently swallow errors. |
 
 ### 3.2 Scriptable Test API
 
-Each test gets its own script process — **NOT a global `Application.put_env` override**. This avoids the classic Elixir test concurrency trap where one test's `Application.put_env` leaks into another.
+Each test passes fake-provider scripts through request-local options — **NOT a global `Application.put_env` override**. This avoids the classic Elixir test concurrency trap where one test's global config leaks into another.
 
 **Test setup:**
 
@@ -129,29 +129,31 @@ Each test gets its own script process — **NOT a global `Application.put_env` o
 defmodule Muse.Conductor.PlanningTurnTest do
   use ExUnit.Case, async: true
 
-  setup do
-    {:ok, script_server} = Muse.LLM.Providers.Fake.TestScriptServer.start_link()
-    Muse.LLM.Providers.Fake.TestScriptServer.set_script(script_server, [
-      {:assistant_delta, "I'll inspect the workspace structure first."},
-      {:tool_call, "list_files", %{"path" => "."}},
-      {:assistant_delta, "Based on the file listing, here is my plan:"},
-      {:assistant_delta, "1. Locate CLI command routing."},
-      {:assistant_delta, "2. Add /version handling."},
-      {:assistant_delta, "3. Source version from mix.exs."},
-      {:assistant_delta, "4. Add tests."},
-      {:assistant_completed, nil}
-    ])
-    %{script_server: script_server}
-  end
+  alias Muse.{Conductor, Session, Turn}
+  alias Muse.LLM.ProviderConfig
 
-  test "planning turn with tool call and plan", %{script_server: script_server} do
-    {:ok, session} = Muse.Session.create("test-session")
-    Muse.Conductor.run_turn(session, "add a /version command",
-      fake_script_server: script_server
-    )
+  @fake_events [
+    {:assistant_delta, "I'll inspect the workspace structure first."},
+    {:tool_call, "list_files", %{"path" => "."}},
+    {:assistant_delta, "Based on the file listing, here is my plan:"},
+    {:assistant_delta, "1. Locate CLI command routing."},
+    {:assistant_delta, "2. Add /version handling."},
+    {:assistant_delta, "3. Source version from mix.exs."},
+    {:assistant_delta, "4. Add tests."},
+    {:assistant_completed, nil}
+  ]
 
-    assert session.status == :awaiting_plan_approval
-    assert length(session.events) > 0
+  test "planning turn with deterministic fake events" do
+    session = Session.new(id: "test-session", workspace: File.cwd!())
+    turn = Turn.new(session_id: "test-session", source: :user, user_text: "add /version", id: "turn-1")
+
+    assert {:ok, result} =
+             Conductor.run(session, turn,
+               provider_config: ProviderConfig.fake(),
+               request_options: [options: %{fake_events: @fake_events}]
+             )
+
+    assert result.assistant_text =~ "Based on the file listing"
   end
 end
 ```
@@ -166,11 +168,11 @@ end
 | `{:error, reason}` | `:provider_error` | Simulates provider failure |
 | `{:delay, ms}` | _(internal)_ | Pauses emission for `ms` milliseconds (for cancellation tests) |
 
-**Why per-test `TestScriptServer` instead of `Application.put_env`:**
+**Why request-local fake events instead of `Application.put_env`:**
 
 - `Application.put_env` is **global mutable state**. In `async: true` tests, Test A's config overwrites Test B's config, causing flaky failures.
-- `TestScriptServer` is a per-test GenServer with a unique PID. Each test passes its own `script_server` reference, ensuring zero cross-contamination.
-- The fake provider looks up the script server from the turn's options, not from global application env. This is the same pattern used by `Mox` for per-test mocks.
+- `request_options: [options: %{fake_events: events}]` is scoped to the single turn under test, ensuring zero cross-contamination.
+- Real providers ignore `:fake_events`, so tests can exercise Conductor behavior without introducing provider-specific global state.
 
 ---
 
@@ -186,11 +188,11 @@ MUSE_PROVIDER=fake
 MUSE_MODEL=fake-planning-model
 ```
 
-This is the zero-config Muse-first experience. Running `muse` out of the box uses deterministic offline responses suitable for local development and CI.
+This is the zero-config Muse-first experience. Running `mix muse` out of the box uses deterministic offline responses suitable for local development and CI.
 
 ### 4.2 OpenAI-Compatible Config
 
-PR12 reads the OpenAI-compatible provider **configuration** and uses it to perform real HTTP calls against a configured `base_url` for non-streaming Chat Completions. The auth layer (PR13, implemented) resolves credentials via `Muse.Auth.Resolver` and injects the `Authorization` header.
+The OpenAI-compatible provider reads explicit **configuration** and uses it to perform real HTTP calls against a configured `base_url` for Chat Completions and Responses streaming paths. The auth layer (PR13, implemented) resolves credentials via `Muse.Auth.Resolver` and injects the `Authorization` header at HTTP/WebSocket dispatch time.
 
 Example config values for an OpenAI-compatible provider:
 
@@ -211,9 +213,11 @@ MUSE_LLM_MAX_RETRIES=2
 | `MUSE_OPENAI_BASE_URL` | No for `openai_compatible` defaults | `https://api.openai.com/v1` for `openai_compatible` | Base URL for HTTP calls; PR12 posts non-streaming Chat Completions to `{base_url}/chat/completions` |
 | `MUSE_LLM_TIMEOUT_MS` | No | `120000` | Per-request timeout in milliseconds |
 | `MUSE_LLM_MAX_RETRIES` | No | `0` for fake; `2` for openai-compatible | Maximum retry attempts (carried as Req option) |
-| `MUSE_WIRE_API` | No (`Muse.Config` only) | `responses` for openai-compatible | `responses` or `chat_completions`; PR12 only supports `nil`/`:chat_completions`; `:responses` returns an unsupported error |
+| `MUSE_WIRE_API` | No (`Muse.Config` only) | `responses` for openai-compatible | `responses` or `chat_completions`; Chat Completions uses the OpenAI-compatible POST path, while Responses is supported for SSE/WebSocket streaming transports |
 | `MUSE_TRANSPORT` | No (`Muse.Config` only) | `sse` for openai-compatible; `none` for fake | `none`, `sse`, or `websocket`; unknown values resolve to `nil` |
-| `MUSE_OPENAI_API_KEY` | Not read in PR12 | — | Auth/API-key loading is in the auth layer (PR13, now implemented); caller-provided headers may be sent via `request.options[:headers]` but are redacted in errors/events |
+| `MUSE_OPENAI_API_KEY` | Required only for real provider calls using `:api_key` auth | — | Read by the PR13 auth layer (`Muse.Auth.Resolver`/`ApiKey`) at HTTP/WebSocket-dispatch time; never read by pure request mappers. Caller-provided headers may be sent via `request.options[:headers]` and are redacted in errors/events. |
+
+Setting these variables defines the provider config contract; it does not by itself grant broad shell/network authority. The default supervised CLI/LiveView turn path stays fake-provider/offline unless an integration path resolves this config and passes the resulting `ProviderConfig` into turn execution. `/auth status` is read-only and may inspect the config without running bearer commands or reading Codex cache files.
 
 ### 4.3 App Config Example
 
@@ -230,7 +234,7 @@ config :muse, :llm,
   max_retries: 2
 ```
 
-Do **not** put `api_key` in this config for PR11. The config may record which env var should be checked later (`env_key`), but it must not read, validate, log, or store the secret value.
+Prefer environment variables or an explicit runtime secret source for API keys. If `app_config[:api_key]` is used, it is handled only by the auth resolver at HTTP-dispatch time and must never be logged, persisted, or exposed in events. Pure request mappers and provider config validation still do not read or validate raw secret values.
 
 **Current config source priority (highest first):**
 
@@ -1032,7 +1036,7 @@ in the current implementation.
 
 ---
 
-## 11. External API References to Verify
+## 12. External API References to Verify
 
 All provider PRs must re-check official documentation immediately before implementation. The source plans referenced OpenAI Responses streaming, Responses WebSocket mode, function/tool calling, Codex auth, and Codex device auth. **Treat docs as the source of truth for wire formats.** The items below are the topics that must be verified against current official docs before each provider PR is coded:
 

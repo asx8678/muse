@@ -4,7 +4,7 @@
 >
 > **Canonical source:** Workspace safety, secret handling, redaction, approval/security rules, and MVP security checklist.
 >
-> **Status (PR21):** Plan approval, patch proposal approval, auth layer, external channel, memory compaction, and handoff safety are implemented. Patch apply, test runner, and shell/network approval gates are PR18/PR19+.
+> **Status (PR21):** Plan approval, patch proposal approval, patch apply/checkpoint/rollback, preset-only test runner, Reviewing/Testing Muses, auth layer, external channel, memory compaction, restoration support, and handoff safety are implemented. Generic shell/network/remote execution remains blocked or future scope.
 
 ---
 
@@ -45,9 +45,9 @@ Every item must be verified before the Muse Runtime reaches MVP. Status reflects
 ### Workspace Safety
 
 - [x] Workspace path checks are symlink-aware (enforced by `Workspace.safe_resolve!`)
-- [ ] Patch apply blocks outside-workspace paths (PR18)
-- [ ] Patch apply blocks secret file paths (PR18)
-- [ ] Patch apply creates checkpoint first (PR18)
+- [x] Patch apply blocks outside-workspace paths (PR18)
+- [x] Patch apply blocks secret file paths (PR18)
+- [x] Patch apply creates checkpoint first (PR18)
 
 ### Approval Lifecycle
 
@@ -57,10 +57,10 @@ Every item must be verified before the Muse Runtime reaches MVP. Status reflects
 
 ### Execution Gates
 
-- [ ] Shell commands are approval-gated (PR19)
-- [ ] Network calls are approval-gated or disabled (PR19)
+- [x] Arbitrary shell commands remain blocked; only preset `test_runner` commands are executable (PR19)
+- [x] Network calls are disabled/blocked by default
 - [x] Remote execution is disabled (no remote execution tool)
-- [ ] Test runner is approval-gated (PR19)
+- [x] Test runner is preset-limited, timeout-bounded, output-capped, and Testing-Muse-only (PR19)
 
 ### Network & Channels
 
@@ -235,16 +235,20 @@ PR09 runtime enforcement uses both `Muse.Tool.Registry` + `Muse.Tool.Runner` and
 
 ### Registered runtime tools (available)
 
-| Tool | Planning Muse | Coding Muse | Notes |
-|---|:---:|:---:|---|
-| `list_files` | ✅ | ✅ | Workspace-scoped directory listing |
-| `read_file` | ✅ | ✅ | Workspace + secret/ignored checks |
-| `repo_search` | ✅ | ✅ | Workspace-scoped content search |
-| `git_status` | ✅ | ✅ | Read-only git command |
-| `git_diff_readonly` | ✅ | ✅ | Read-only git diff |
-| `ask_user_question` | ✅ | ✅ | Interactive prompt back to user |
-| `list_muses` | ✅ | ✅ | Profile summaries |
-| `list_skills` | ✅ | ✅ | Deterministic skills listing |
+| Tool | Planning Muse | Coding Muse | Testing Muse | Notes |
+|---|:---:|:---:|:---:|---|
+| `list_files` | ✅ | ✅ | 🚫 | Workspace-scoped directory listing |
+| `read_file` | ✅ | ✅ | ✅ | Workspace + secret/ignored checks |
+| `repo_search` | ✅ | ✅ | ✅ | Workspace-scoped content search |
+| `git_status` | ✅ | ✅ | ✅ | Read-only git command |
+| `git_diff_readonly` | ✅ | ✅ | 🚫 | Read-only git diff |
+| `ask_user_question` | ✅ | ✅ | 🚫 | Interactive prompt back to user |
+| `list_muses` | ✅ | ✅ | 🚫 | Profile summaries |
+| `list_skills` | ✅ | ✅ | 🚫 | Deterministic skills listing |
+| `patch_propose` | 🚫 | ✅ after approved plan | 🚫 | Stores diff proposal only; no file writes |
+| `patch_apply` | 🚫 | ✅ after approved plan + approved patch | 🚫 | Creates checkpoint before applying |
+| `rollback_checkpoint` | 🚫 | ✅ with approved plan/checkpoint context | 🚫 | Checkpoint-scoped rollback |
+| `test_runner` | 🚫 | 🚫 | ✅ preset-only | Safe verification presets only; no arbitrary shell |
 
 ### Known blocked tool names (hard deny)
 
@@ -253,7 +257,6 @@ PR09 runtime enforcement uses both `Muse.Tool.Registry` + `Muse.Tool.Runner` and
 | `write_file` | blocked as dangerous |
 | `replace_in_file` | blocked as dangerous |
 | `delete_file` | blocked as dangerous |
-| `patch_apply` | blocked as dangerous |
 | `shell_command` | blocked as dangerous |
 | `network_call` | blocked as dangerous |
 | `remote_execution` | blocked as dangerous |
@@ -261,9 +264,9 @@ PR09 runtime enforcement uses both `Muse.Tool.Registry` + `Muse.Tool.Runner` and
 Runner behavior:
 
 - blocked tool name → `:tool_call_blocked`
-- destructive unknown tool-name shapes (write/patch/shell/network/remote-like names) → blocked
+- destructive unknown tool-name shapes (write/patch/shell/network/remote-like names) → blocked unless they are registered tools with explicit authorization policy
 - unknown tool → error result
-- `requires_approval: true` tool spec → blocked (PR09 deny-by-default behavior until later approval categories are implemented)
+- approval-scoped tools execute only when `Muse.ApprovalGate.authorize_tool/2` confirms the current approved-plan/approved-patch/test policy context
 
 ---
 
@@ -307,7 +310,7 @@ The hash is deterministic over stable plan content, so stale approvals are rejec
 
 Plan approval in PR09 is lifecycle-only. It does **not** apply patches, write files, run shell/network operations, or hand off execution to Coding Muse.
 
-Future scope (PR18/PR19): patch apply with checkpoint, checkpoint restore approvals, shell/test/network approval categories.
+Current later-gate status: PR18 implements patch apply with checkpoint/rollback as a separate `/apply patch` and `/rollback checkpoint <id>` flow; PR19 implements preset-only safe test execution. Generic shell/network approval categories remain future scope.
 
 ---
 
@@ -326,9 +329,9 @@ PR17 introduces patch approval as a lifecycle-only gate, extending the PR09 plan
 - **Coding Muse can propose patches only after an approved plan.** Conductor routes to Coding Muse when the session is `:idle` with an approved plan. The `patch_propose` tool is blocked for Planning Muse and only available to Coding Muse after plan approval.
 - **Patch proposals are content-hashed.** Hash is deterministic over stable patch content; stale patch approvals are rejected by `Muse.ApprovalGate` binding checks (session_id, patch_id, patch_hash, plan_id).
 - **Diff is displayed and approval requested.** The user sees the unified diff and affected files before approving.
-- **`/approve patch` records approval only — no apply authority in PR17.** Patch approval does not trigger `patch_apply`, checkpoint creation, or file writes. That authority is reserved for PR18.
-- **No file modifications occur before patch approval.** `patch_propose` generates/stores a diff only. `patch_apply` remains blocked in `Muse.Tool.Registry` for all roles.
-- **Shell/network remain blocked/approval-gated future scope.** No shell execution, network calls, or remote execution is enabled in PR17.
+- **`/approve patch` records approval only.** Patch approval does not itself trigger `patch_apply`, checkpoint creation, or file writes. `/apply patch` is the separate PR18 command/tool that performs checkpoint-protected application.
+- **No file modifications occur before patch approval.** `patch_propose` generates/stores a diff only. `patch_apply` is registered but requires Coding Muse, approved-plan context, and an approved patch binding.
+- **Shell/network remain blocked or future scope.** PR19 adds a preset-only test runner; it does not enable arbitrary shell commands, network calls, or remote execution.
 
 ### Explicit PR17 boundary
 
@@ -340,20 +343,21 @@ Patch approval in PR17 is **lifecycle-only**. It does **not**:
 - perform network calls,
 - or trigger automatic execution of any kind.
 
-Future scope (PR18/PR19): patch apply with checkpoint, checkpoint restore approvals, shell/test/network approval categories.
+Current later-gate status: PR18 implements patch apply with checkpoint/rollback as a separate explicit flow; PR19 implements preset-only test execution. Generic shell/network approval categories remain future scope.
 
 ---
 
 ## 8. Patch Apply, Checkpoint, and Rollback Security (PR18)
 
-**PR18 scope (not yet implemented).** The patch apply workflow will introduce approval-gated file modification with checkpoint/rollback support.
+**Implemented in PR18.** The patch apply workflow introduces explicit file modification with checkpoint/rollback support.
 
-### Planned security properties
+### Implemented security properties
 
-- **Patch apply requires prior patch approval.** A patch must be approved (`/approve patch`) before `patch_apply` is available.
-- **Checkpoint created before apply.** The `patch_apply` tool creates a checkpoint (git stash or file copy) before modifying any files.
+- **Patch apply requires prior patch approval.** A patch must be approved (`/approve patch`) before `patch_apply` is authorized.
+- **Patch apply is a separate command.** `/approve patch` records approval only; `/apply patch` performs application.
+- **Checkpoint created before apply.** The `patch_apply` tool creates a checkpoint before modifying any files.
 - **Checkpoint metadata includes integrity hashes.** File hashes and branch/head state are recorded for verification.
-- **Rollback available on failure.** If patch apply fails, the checkpoint can be restored.
+- **Rollback available on failure.** If patch apply fails, the checkpoint can be restored via `/rollback checkpoint <id>`.
 - **Outside-workspace paths blocked.** `patch_apply` only operates on files inside the workspace root.
 - **Secret file paths blocked.** The denylist from §3 is enforced for patch targets.
 
@@ -361,28 +365,28 @@ Future scope (PR18/PR19): patch apply with checkpoint, checkpoint restore approv
 
 Patch apply in PR18 is **approval-gated**. It does **not**:
 
-- execute shell commands (that's PR19),
-- perform network calls (that's PR19),
+- execute arbitrary shell commands (PR19 only adds preset test commands),
+- perform network calls,
 - or bypass the checkpoint requirement.
 
 ---
 
 ## 9. Test Runner Security (PR19)
 
-**PR19 scope (not yet implemented).** The test runner workflow will introduce approval-gated shell execution for verification.
+**Implemented in PR19 for preset verification.** The test runner workflow allows Testing Muse to run bounded, predefined verification commands without granting arbitrary shell access.
 
-### Planned security properties
+### Implemented security properties
 
-- **Test runner requires approval.** `test_runner` tool is blocked by default; requires explicit approval.
-- **Safe command allowlist.** Only known-safe test commands (e.g., `mix test`, `npm test`) are allowed without shell approval.
-- **No arbitrary shell.** The test runner does not accept arbitrary shell commands; only configured test commands.
+- **Testing-Muse-only.** `test_runner` is registered only for the Testing Muse profile.
+- **Safe command presets.** Allowed presets are limited to `mix_format_check`, `mix_compile`, `mix_test`, and `mix_test_file` with strict test-file path validation.
+- **No arbitrary shell.** The test runner does not accept arbitrary shell commands; it maps presets to fixed argv lists.
 - **Workspace-scoped execution.** Commands run in the workspace directory only.
 - **Timeout enforced.** Test commands have a maximum execution time.
-- **Output capped.** Test output is truncated to prevent memory exhaustion.
+- **Output capped and redacted.** Test output is truncated and sanitized before events/reports.
 
 ### Explicit PR19 boundary
 
-Test runner in PR19 is **approval-gated and restricted**. It does **not**:
+Test runner in PR19 is **preset-gated and restricted**. It does **not**:
 
 - grant general shell execution (use `shell_command` approval category, future),
 - perform network calls beyond what the test command itself does,

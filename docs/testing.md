@@ -58,8 +58,9 @@ External tests are **disabled by default** and never run in CI. They are for man
 5. [Unit Tests](#5-unit-tests)
 6. [Integration Tests](#6-integration-tests)
 7. [Safety Tests](#7-safety-tests)
-8. [Product-Language Tests](#8-product-language-tests)
-9. [First Demo Fake Provider Script](#9-first-demo-fake-provider-script)
+8. [PR16 External WebSocket Channel Testing](#8-pr16--external-websocket-channel-testing)
+9. [Product-Language Tests](#9-product-language-tests)
+10. [First Demo Fake Provider Script](#10-first-demo-fake-provider-script)
 
 ---
 
@@ -200,16 +201,53 @@ Primary coverage areas:
 - `test/muse/session_server_test.exs` (extended)
   - patch creation/approval/rejection lifecycle via SessionServer
   - session transition to `:awaiting_patch_approval` is valid
-  - `patch_apply` remains blocked for all roles
+  - patch approval does not apply files by itself
 - `test/muse/muse_registry_test.exs` and `test/muse/tool/registry_test.exs` (extended)
   - `patch_propose` blocked for Planning Muse; available to Coding Muse after plan approval
-  - `patch_apply` blocked for all roles in PR17
+  - `patch_apply` requires separate PR18 approved-plan/approved-patch context
 
-**Gaps:** Full end-to-end patch proposal flow with a live Coding Muse turn (Conductor → `patch_propose` tool → `:awaiting_patch_approval` → `/approve patch`) requires provider-driven Coding Muse execution, which is exercised at the unit/integration layer but not as a single fake-provider E2E script. The PR17 test coverage validates each layer independently; a full E2E script is a future enhancement.
+**Gaps:** Full end-to-end patch proposal flow with a live Coding Muse turn (Conductor → `patch_propose` tool → `:awaiting_patch_approval` → `/approve patch`) is covered across unit/integration layers. Keep future regressions focused on behavior and event/state transitions rather than provider implementation details.
 
 ---
 
-## 4.6 PR21 Memory & Restoration Muse Coverage
+## 4.6 PR18 Patch Apply, Checkpoint, and Rollback Coverage
+
+PR18 coverage focuses on explicit patch application, checkpoint creation before writes, rollback, and failure recovery.
+
+Primary coverage areas:
+
+- `test/muse/tools/patch_apply_test.exs`
+  - approved patch application with checkpoint protection
+  - path, secret, and hash validation before writes
+  - safe failure behavior and redacted reports
+- `test/muse/tools/rollback_checkpoint_test.exs`
+  - checkpoint-scoped rollback and workspace restoration
+  - invalid/mismatched checkpoint rejection
+- `test/muse/checkpoint/store_test.exs`
+  - checkpoint persistence, load/update, path traversal rejection, tamper detection
+- `test/muse/session_server_test.exs` and `test/muse/command_dispatcher_test.exs`
+  - `/apply patch` and `/rollback checkpoint <id>` command/session integration
+  - events and session state remain auditable
+
+## 4.7 PR19 Test Runner, Reviewing Muse, and Testing Muse Coverage
+
+PR19 coverage focuses on preset-only verification commands, bounded repair/review behavior, and non-arbitrary-shell safety.
+
+Primary coverage areas:
+
+- `test/muse/tools/test_runner_test.exs`
+  - allowed presets (`mix_format_check`, `mix_compile`, `mix_test`, `mix_test_file`)
+  - strict test-file path validation for `mix_test_file`
+  - timeout/exit handling, output capping, and redaction
+- `test/muse/tool/registry_test.exs` and `test/muse/tool/runner_test.exs`
+  - `test_runner` is Testing-Muse-only
+  - arbitrary shell-like or network-like tool names remain blocked
+- `test/muse/reports/*_test.exs`
+  - verification/review report structure and safe rendering
+- `test/muse/repair_policy_test.exs`
+  - bounded repair attempts; no autonomous infinite shell loops
+
+## 4.8 PR21 Memory & Restoration Muse Coverage
 
 PR21 adds memory compaction, session handoffs, and restoration support.
 
@@ -328,7 +366,7 @@ Unit tests cover individual modules and functions. Key test files and their focu
 
 ## 6. Integration Tests
 
-Current PR09 integration happy path (fake provider only):
+Current fake-provider integration happy path:
 
 | Step | Action | Expected State |
 |------|--------|----------------|
@@ -339,7 +377,7 @@ Current PR09 integration happy path (fake provider only):
 | 5 | Session enters `:awaiting_plan_approval` | Active plan id, pending approval record, and approval binding are set |
 | 6 | User runs `/approve plan` or `/reject plan` | Plan status updates; approval record is persisted; session returns to `:idle` |
 
-> Out of scope for current PR17 integration: patch apply execution, checkpoint orchestration, and shell/test/network execution gates (PR18/PR19). Patch approval in PR17 is lifecycle-only and does not apply files.
+> Patch approval remains lifecycle-only: `/approve patch` does not apply files. Patch application, checkpoint orchestration, rollback, and preset verification are covered by the PR18/PR19 test areas above and by focused command/session tests.
 
 ### Integration Test Principles
 
@@ -371,11 +409,11 @@ Blocked operations:
 **Key files:** `test/muse/approval_gate_test.exs`, `test/muse/tool/registry_test.exs`, `test/muse/tool/runner_test.exs`
 
 Blocked operations:
-- Dangerous tool names (`write_file`, `patch_apply`, `shell_command`, etc.)
+- Dangerous tool names (`write_file`, `shell_command`, `network_call`, `remote_execution`, etc.)
 - Destructive unknown tool-name shapes (write/patch/shell/network/remote-like)
 - Tools not available to active Muse role
 - Unknown tool names return safe error result
-- `requires_approval: true` tool specs cannot execute yet
+- Approval-scoped tools cannot execute unless their current approval policy/context matches
 - `/approve plan` or `/reject plan` when no active plan awaiting approval
 - Stale/mismatched plan approval binding
 
@@ -384,7 +422,7 @@ Blocked operations:
 **Key files:** `test/muse/patch_test.exs`, `test/muse/tool/registry_test.exs`, `test/muse/session_server_test.exs`
 
 Blocked operations:
-- `patch_apply` for all roles in PR17 (no apply authority)
+- `patch_apply` without approved-plan and approved-patch context
 - `patch_propose` for Planning Muse (Coding Muse only, after plan approval)
 
 Valid transitions:
@@ -406,7 +444,7 @@ Rejections:
 
 ---
 
-## 10. PR16 — External WebSocket Channel Testing
+## 8. PR16 — External WebSocket Channel Testing
 
 The external WebSocket channel (`MuseWeb.SessionChannel`) is tested through:
 
@@ -421,7 +459,7 @@ The external WebSocket channel (`MuseWeb.SessionChannel`) is tested through:
 
 ---
 
-## 8. Product-Language Tests
+## 9. Product-Language Tests
 
 Muse-first naming is a product commitment. These tests verify that user-facing surfaces do not use "Agent," "Bot," mascot names, or Code Puppy branding. Technical LLM protocol roles and internal event names such as `role: :assistant`, `:assistant_delta`, and `:assistant_message` are allowed where they are implementation details rather than product labels.
 
@@ -459,17 +497,17 @@ These internal identifiers are intentionally preserved and are not user-facing:
 
 ---
 
-## 9. First Demo Fake Provider Script
+## 10. First Demo Fake Provider Script
 
 This section defines the complete scripted demo for the **first milestone**: adding a `/version` command to Muse using the Planning Muse flow.
 
-### 9.1 Test Request
+### 10.1 Test Request
 
 ```
 add a /version command
 ```
 
-### 9.2 Fake Model Step 1 — Search
+### 10.2 Fake Model Step 1 — Search
 
 The model's first response asks to search the codebase:
 
@@ -492,7 +530,7 @@ The model's first response asks to search the codebase:
 
 The fake provider returns search results containing references to `commands.ex` and `command_dispatcher.ex`.
 
-### 9.3 Fake Model Step 2 — Read Files
+### 10.3 Fake Model Step 2 — Read Files
 
 After receiving search results, the model asks to read the relevant files:
 
@@ -515,7 +553,7 @@ After receiving search results, the model asks to read the relevant files:
 
 The fake provider returns the contents of both files (from fixtures).
 
-### 9.4 Fake Model Final — Structured Plan
+### 10.4 Fake Model Final — Structured Plan
 
 After reading the files, the model produces the structured plan:
 
@@ -556,7 +594,7 @@ After reading the files, the model produces the structured plan:
 }
 ```
 
-### 9.5 Expected Output
+### 10.5 Expected Output
 
 The CLI renders the plan for user approval:
 

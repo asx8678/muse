@@ -33,23 +33,25 @@ New to the Muse codebase? Start here:
 | Coding Muse routing | ✅ Implemented | Conductor routes to Coding Muse after plan approval |
 | Plan approval lifecycle | ✅ Implemented | `/approve plan`, `/reject plan`, content-bound binding |
 | Patch proposal | ✅ Implemented | `patch_propose` tool, hash, `/approve patch`, `/reject patch` |
+| Patch apply and rollback | ✅ Implemented (PR18) | `/apply patch`, `patch_apply`, checkpoints, `/rollback checkpoint <id>` |
+| Test runner | ✅ Implemented (PR19) | Preset-only safe commands with bounded output/timeouts |
+| Reviewing/Testing Muses | ✅ Implemented (PR19) | Registered profiles, review findings, verification reporting |
 | Memory compaction | ✅ Implemented (PR21) | Memory Muse, `memory.md`, handoff support |
+| Restoration support | ✅ Implemented (PR21) | Checkpoint listing/restore request commands and Restoration Muse profile |
 | Auth layer | ✅ Implemented | API key, bearer command, Codex cache bridge |
 | SSE provider | ✅ Implemented | HTTP SSE streaming for OpenAI-compatible |
 | Responses WebSocket | ✅ Implemented | OpenAI Responses API with previous_response_id |
 | External WS channel | ✅ Implemented | Phoenix channel for non-LiveView clients |
 | CLI/TUI/LiveView | ✅ Implemented | Unified commands, Muse-first strings |
 
-### What's Roadmap (PR22+)
+### What's Roadmap (PR23+)
 
 | Feature | Status | Notes |
 |---|---|---|
-| Patch apply | 🗓️ PR18 | `patch_apply`, checkpoint, rollback |
-| Test runner | 🗓️ PR19 | Safe test commands, bounded repair |
-| Reviewing Muse | 🗓️ PR19 | Diff review, risk assessment |
 | Additional providers | 🗓️ PR23 | OpenRouter, Ollama, Anthropic |
+| Model routing | 🗓️ PR23+ | Per-Muse model pinning and fallback routing |
+| Generic shell/network approvals | 🗓️ Future | Beyond PR19 preset test runner; arbitrary shell/network remain blocked |
 | Remote execution | 🗓️ PR24+ | SSH/remote runners, strict approvals |
-| Shell approval flows | 🗓️ PR19 | `/approve shell`, command allowlists |
 
 ### Key Files by Area
 
@@ -152,21 +154,23 @@ Plan approval in PR09 is **lifecycle-only**. It does **not**:
 - run arbitrary network calls,
 - or hand off automatically to Coding Muse execution.
 
-### Future scope (PR18/PR19)
+### Later gates implemented after PR09
 
-- Patch apply with checkpoint/rollback (`patch_apply`, checkpoint/rollback orchestration).
-- Shell/test/network explicit approval paths.
+- PR17 added Coding Muse patch proposals and patch approval lifecycle.
+- PR18 added explicit patch apply with checkpoint/rollback (`patch_apply`, `/apply patch`, `/rollback checkpoint <id>`).
+- PR19 added preset-only safe test execution and Reviewing/Testing Muse profiles.
+- PR21 added memory compaction, Restoration Muse support, and explicit handoff commands.
 
 ### PR17 additions (implemented alongside PR09 contract)
 
 - `Muse.Conductor.select_muse/2` routes to **Coding Muse** when the session is `:idle` with an approved plan.
 - `patch_propose` is a registered tool available to Coding Muse after plan approval.
 - Patch approval lifecycle (`/approve patch`, `/reject patch`) is wired through CommandDispatcher and SessionServer.
-- Patch approval is lifecycle-only in PR17: no `patch_apply`, no checkpoint, no file modification.
+- Patch approval remains lifecycle-only: it records approval but does not itself call `patch_apply`, create a checkpoint, or modify files. `/apply patch` is the separate PR18 application command.
 - Session supports `:awaiting_patch_approval` status and `pending_patch` field.
-- Event types `:patch_proposed`, `:patch_approval_requested`, `:patch_approved`, `:patch_rejected` are emitted and forwarded on the external WS channel.
+- Event types `:patch_proposed`, `:patch_approval_requested`, `:patch_approved`, `:patch_rejected`, `:patch_applied`, and `:checkpoint_created` are emitted and forwarded on the external WS channel when allowed by visibility filtering.
 
-Use the remaining sections in this document as architecture context; where they diverge, this PR09+PR17 section and code are authoritative.
+Use the remaining sections in this document as architecture context; where they diverge, the current code is authoritative.
 
 ---
 
@@ -413,8 +417,8 @@ end
 | `:executing` | An approved plan is being executed |
 | `:awaiting_patch_approval` | A patch has been proposed and is waiting for approval |
 | `:awaiting_shell_approval` | A shell/test command is waiting for approval |
-| `:verifying` | Reserved status for future verification workflow (not active in PR09 turn loop) |
-| `:reviewing` | Reserved status for future review workflow (not active in PR09 turn loop) |
+| `:verifying` | Verification workflow status used by Testing Muse / test-runner flows when active |
+| `:reviewing` | Review workflow status used by Reviewing Muse flows when active |
 | `:repairing` | Reserved status for future recovery workflow |
 | `:done` | Session has completed its objective |
 | `:failed` | Session has encountered an unrecoverable failure |
@@ -1565,26 +1569,31 @@ list_muses
 list_skills
 ```
 
-### 6.2 Write/Execution Tools (Later)
+### 6.2 Write/Execution Tools
 
-Add after Planning Muse works:
+Current registered non-read-only tools are deliberately narrow and approval/context gated:
 
 ```text
-patch_propose
-patch_apply
+patch_propose        # Coding Muse after approved plan; stores a proposal only
+patch_apply          # Coding Muse after approved plan + approved patch; checkpoint first
+rollback_checkpoint  # Coding Muse with approved plan context; checkpoint-scoped rollback
+test_runner          # Testing Muse only; preset verification commands only
+```
+
+The following names remain hard-denied or future scope:
+
+```text
 write_file
 replace_in_file
 delete_file
-test_runner
 shell_command
-checkpoint_create
-checkpoint_restore
-rollback_checkpoint
+network_call
+remote_execution
 ```
 
 ### 6.3 Tool Permissions Matrix
 
-> PR09+PR17 scope: the first eight read-only tools plus `patch_propose` are registered in `Muse.Tool.Registry`. `patch_propose` is available to Coding Muse after plan approval. The write/shell rows below remain roadmap intent and are currently blocked or unavailable (`patch_apply` is explicitly blocked for all roles in PR17).
+> Current scope: the first eight read-only tools plus `patch_propose`, `patch_apply`, `rollback_checkpoint`, and `test_runner` are registered in `Muse.Tool.Registry`. `patch_propose` is available to Coding Muse after plan approval. `patch_apply` and `rollback_checkpoint` require approved-plan/approved-patch or checkpoint context. `test_runner` is Testing-Muse-only and preset-limited. Generic write/shell/network/remote tools remain blocked.
 
 | Tool | Planning Muse (before approval) | Coding Muse (after plan approval) | Patch approval required | Notes |
 |---|:---:|:---:|:---:|---|
@@ -1598,13 +1607,14 @@ rollback_checkpoint
 | `list_skills` | ✅ allow | ✅ allow | no | Optional later |
 | `patch_propose` | 🚫 block | ✅ allow after approved plan | no | Generates/stores diff only |
 | `patch_apply` | 🚫 block | ✅ allow only after patch approval | yes | Checkpoint first |
-| `write_file` | 🚫 block | ⚠️ approval-gated | yes | Prefer patch workflow |
-| `replace_in_file` | 🚫 block | ⚠️ approval-gated | yes | Checkpoint first |
-| `delete_file` | 🚫 block | ⚠️ explicit delete approval | explicit delete approval | High risk |
-| `test_runner` | 🚫 block | ⚠️ conditional | command approval unless configured safe | No arbitrary shell |
-| `shell_command` | 🚫 block | ⚠️ conditional | yes | Command allowlist recommended |
-| `network_call` | 🚫 block | ⚠️ conditional | yes | Default block |
-| `remote_execution` | 🚫 block | 🚫 later only | yes | Implement late |
+| `write_file` | 🚫 block | 🚫 block | n/a | Prefer patch workflow; not registered |
+| `replace_in_file` | 🚫 block | 🚫 block | n/a | Prefer patch workflow; not registered |
+| `delete_file` | 🚫 block | 🚫 block | explicit future approval | High risk; hard-denied |
+| `rollback_checkpoint` | 🚫 block | ✅ with approved plan/checkpoint context | restore checkpoint approval/context | Checkpoint-scoped rollback |
+| `test_runner` | 🚫 block | 🚫 block | preset policy | Testing Muse only; no arbitrary shell |
+| `shell_command` | 🚫 block | 🚫 block | future | Hard-denied |
+| `network_call` | 🚫 block | 🚫 block | future | Hard-denied |
+| `remote_execution` | 🚫 block | 🚫 block | future | Implement late |
 
 ### 6.4 Read-Only Tool Schemas and Behavior
 
@@ -1775,7 +1785,7 @@ Muse.Tool.Runner.run(tool_name, args, context)
 }
 ```
 
-#### Validation Sequence (10 Steps)
+#### Validation Sequence (9 Steps)
 
 ```text
 1. Block known dangerous tool names (write/shell/network/delete/remote).
@@ -2259,7 +2269,7 @@ turn_completed, turn_failed, session_status_changed
 - Events with `:internal` or `:sensitive` visibility are never forwarded.
 - Events with `nil` visibility are denied unless explicitly allowlisted.
 - All payloads are redacted/summarized before forwarding.
-- See [`docs/security.md`](security.md#9-external-websocket-channel-security-pr16) for the full security rules.
+- See [`docs/security.md`](security.md#13-external-websocket-channel-security-pr16) for the full security rules.
 
 ---
 
@@ -2311,7 +2321,7 @@ All telemetry events use `:telemetry.execute/3`. Attach handlers in `Muse.Applic
 - Patch is persisted and displayed.
 ```
 
-**PR17 scope:** `patch_propose` creates and stores a diff proposal only. No files are written. The session transitions to `:awaiting_patch_approval`. `/approve patch` records the approval decision but does **not** apply the patch, create a checkpoint, or modify any file. Patch apply is PR18 scope.
+**Patch proposal scope:** `patch_propose` creates and stores a diff proposal only. No files are written. The session transitions to `:awaiting_patch_approval`. `/approve patch` records the approval decision but does **not** apply the patch, create a checkpoint, or modify any file. `/apply patch` is the separate PR18 application command/tool and requires approved patch context.
 
 **Display format:**
 
@@ -2459,13 +2469,14 @@ Stop after bounded repair attempts. Failures should produce a repair plan, not u
 - Lifecycle commands do not run shell/network actions.
 - Lifecycle commands do not trigger automatic Coding Muse handoff.
 
-### Future Approval Flows (PR18/PR19)
+### Approval Flows Added After PR17
 
-The following remain future scope beyond PR17:
+The following are implemented as separate gates after patch approval:
 
-- Patch apply with checkpoint/rollback (`patch_apply`, checkpoint/rollback orchestration) — PR18.
-- Shell/test command approval (`/approve shell`, `/approve command`) — PR19.
-- Restore/checkpoint approval workflows — PR18.
+- Patch apply with checkpoint/rollback (`patch_apply`, `/apply patch`, `/rollback checkpoint <id>`) — PR18.
+- Preset-only safe verification through `test_runner` for Testing Muse — PR19.
+
+Generic shell/network approval commands remain future scope; PR19 does not grant arbitrary shell or network execution.
 
 ### PR17 Patch Approval Flow
 
@@ -2491,4 +2502,4 @@ The following remain future scope beyond PR17:
 - Patch approval/rejection is explicit and auditable.
 - Stale approval attempts are rejected via content-bound binding checks.
 - Patch approval is lifecycle-only — does **not** apply files, create checkpoints, run shell/network, or trigger automatic execution.
-- No file modifications occur before or after patch approval in PR17.
+- No file modifications occur before patch approval. After patch approval, `/apply patch` is still required as a separate explicit PR18 command.

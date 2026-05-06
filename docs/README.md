@@ -19,13 +19,13 @@ Documentation directory for the Muse Universal Runtime. Start with [../README.md
 1. [../README.md](../README.md) — Quick start, run modes, provider setup
 2. [architecture.md](architecture.md) — High-level architecture §1–§4
 3. [provider-roadmap.md](provider-roadmap.md) — Provider setup deep-dive §3–§5
-4. [testing.md](testing.md) — Offline-first testing strategy and demo flow §1, §9
+4. [testing.md](testing.md) — Offline-first testing strategy and demo flow §1, §10
 
 ### 🔑 Provider setup
 
 1. [provider-roadmap.md](provider-roadmap.md) — Full provider config reference, env vars, wire mappings, transports
 2. [../README.md#provider-configuration](../README.md#provider-configuration) — Quick-start provider env vars
-3. [security.md](security.md) — Auth security rules §8, redaction rules §4
+3. [security.md](security.md) — Auth security rules §11, redaction rules §4
 
 ### 🛡️ Safety & security reviewers
 
@@ -45,8 +45,8 @@ Documentation directory for the Muse Universal Runtime. Start with [../README.md
 
 1. [../PLAN.md](../PLAN.md) — Executive summary and full PR roadmap
 2. [provider-roadmap.md](provider-roadmap.md) — Provider sequencing (PR03 → PR11–15 → PR23)
-3. [architecture.md](architecture.md) — PR09/PR17/PR18 boundaries documented inline
-4. [security.md](security.md) — MVP checklist and future-scope items
+3. [architecture.md](architecture.md) — PR09/PR17/PR18/PR19/PR21 boundaries documented inline
+4. [security.md](security.md) — MVP checklist and current/future safety gates
 
 ## Canonical ownership
 
