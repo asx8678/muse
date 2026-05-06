@@ -136,7 +136,8 @@ defmodule Muse.CLI.Repl do
       log_filter: "all",
       log_search: "",
       session_id: "default",
-      source: :cli
+      source: :cli,
+      session_status: safe_session_status()
     }
   end
 
@@ -157,6 +158,19 @@ defmodule Muse.CLI.Repl do
       _ -> []
     catch
       :exit, _ -> []
+    end
+  end
+
+  defp safe_session_status do
+    try do
+      case Muse.SessionRouter.status("default") do
+        {:ok, status} -> status
+        {:error, _} -> nil
+      end
+    rescue
+      _ -> nil
+    catch
+      :exit, _ -> nil
     end
   end
 

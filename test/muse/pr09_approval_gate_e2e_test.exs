@@ -184,7 +184,7 @@ defmodule Muse.PR09ApprovalGateE2ETest do
       assert approve_output =~ "- Approval record: id="
       assert approve_output =~ "- No implementation started:"
 
-      assert approve_effects == [{:refresh, :events}]
+      assert approve_effects == [{:refresh, :events}, {:refresh, :session}]
 
       approved_status = SessionServer.status(pid)
       assert approved_status.status == :idle
@@ -246,7 +246,7 @@ defmodule Muse.PR09ApprovalGateE2ETest do
       assert reject_output =~ "- Rejection record: id="
       assert reject_output =~ "- No implementation started:"
 
-      assert reject_effects == [{:refresh, :events}]
+      assert reject_effects == [{:refresh, :events}, {:refresh, :session}]
 
       rejected_status = SessionServer.status(pid)
       assert rejected_status.status == :idle

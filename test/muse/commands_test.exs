@@ -228,6 +228,14 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/auth status extra") == {:command, :auth_status, "extra"}
     end
 
+    test "parses /session" do
+      assert Commands.parse("/session") == {:command, :session_status}
+    end
+
+    test "/session with args is still parsed with args" do
+      assert Commands.parse("/session extra") == {:command, :session_status, "extra"}
+    end
+
     test "returns :empty for blank input" do
       assert Commands.parse("") == :empty
       assert Commands.parse("   ") == :empty
@@ -315,6 +323,7 @@ defmodule Muse.CommandsTest do
       assert text =~ "/prompt preview"
       assert text =~ "/prompt-preview"
       assert text =~ "/auth status"
+      assert text =~ "/session"
     end
 
     test "includes /muses but not /agents legacy alias" do
@@ -337,7 +346,7 @@ defmodule Muse.CommandsTest do
     test "returns list of {command, description} tuples" do
       cmds = Commands.slash_commands()
       assert is_list(cmds)
-      assert length(cmds) == 45
+      assert length(cmds) == 46
 
       for {cmd, desc} <- cmds do
         assert is_binary(cmd)
@@ -368,7 +377,7 @@ defmodule Muse.CommandsTest do
     test "returns list of maps with command and description keys" do
       cmds = Commands.slash_commands_json()
       assert is_list(cmds)
-      assert length(cmds) == 45
+      assert length(cmds) == 46
 
       for cmd <- cmds do
         assert Map.has_key?(cmd, :command)

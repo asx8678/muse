@@ -732,6 +732,7 @@ defmodule MuseWeb.ConsoleComponents do
   attr(:sidebar_state, :atom, default: :expanded)
   attr(:diagnostic_issue_statuses, :map, default: %{})
   attr(:self_healing_issues, :list, default: [])
+  attr(:session_status, :any, default: nil)
 
   def context_panel(assigns) do
     ~H"""
@@ -774,6 +775,8 @@ defmodule MuseWeb.ConsoleComponents do
               <div class="mini-card-row"><span class="mini-card-label">Muses</span> <span><%= agent_count(runtime) %></span></div>
             <% end %>
           </.mini_card>
+
+          <.session_status_card session_status={@session_status} />
 
           <.mini_card title="workspace">
             <div class="mini-card-row"><span class="mini-card-label">path</span> <span class="mini-card-path"><%= short_path(@workspace) %></span></div>
@@ -1236,6 +1239,85 @@ defmodule MuseWeb.ConsoleComponents do
   defp runtime_status_label(:error), do: "Error"
   defp runtime_status_label(:disconnected), do: "Disconnected"
   defp runtime_status_label(other), do: String.capitalize(to_string(other))
+
+  # -- Session status card (PR20) ------------------------------------------
+
+  attr(:session_status, :any, default: nil)
+
+  def session_status_card(assigns) do
+    ~H"""
+    <%= if @session_status do %>
+      <.mini_card title="session">
+        <div class="mini-card-row">
+          <span class={"status-dot #{session_status_dot(@session_status.status)}"}></span>
+          <span><%= session_status_label(@session_status.status) %></span>
+        </div>
+        <%= if @session_status[:active_muse] do %>
+          <div class="mini-card-row">
+            <span class="mini-card-label">Muse</span>
+            <span><%= @session_status.active_muse %></span>
+          </div>
+        <% end %>
+        <%= if @session_status[:active_plan_id] do %>
+          <div class="mini-card-row">
+            <span class="mini-card-label">plan</span>
+            <span><%= short_plan_id(@session_status) %> <%= plan_status_badge(@session_status) %></span>
+          </div>
+        <% end %>
+        <%= if @session_status[:pending_patch] do %>
+          <div class="mini-card-row">
+            <span class="mini-card-label">patch</span>
+            <span class="mini-card-pending">pending</span>
+          </div>
+        <% end %>
+        <%= if @session_status[:active_turn_id] do %>
+          <div class="mini-card-row">
+            <span class="mini-card-label">turn</span>
+            <span>running</span>
+          </div>
+        <% end %>
+      </.mini_card>
+    <% end %>
+    """
+  end
+
+  defp session_status_dot(:idle), do: "status-dot-gray"
+  defp session_status_dot(:running), do: "status-dot-green"
+  defp session_status_dot(:planning), do: "status-dot-yellow"
+  defp session_status_dot(:awaiting_plan_approval), do: "status-dot-yellow"
+  defp session_status_dot(:executing), do: "status-dot-green"
+  defp session_status_dot(:awaiting_patch_approval), do: "status-dot-yellow"
+  defp session_status_dot(:verifying), do: "status-dot-green"
+  defp session_status_dot(:reviewing), do: "status-dot-blue"
+  defp session_status_dot(:done), do: "status-dot-green"
+  defp session_status_dot(:failed), do: "status-dot-red"
+  defp session_status_dot(:error), do: "status-dot-red"
+  defp session_status_dot(:cancelled), do: "status-dot-gray"
+  defp session_status_dot(_), do: "status-dot-gray"
+
+  defp session_status_label(:idle), do: "Idle"
+  defp session_status_label(:running), do: "Running"
+  defp session_status_label(:planning), do: "Planning"
+  defp session_status_label(:awaiting_plan_approval), do: "Plan awaiting approval"
+  defp session_status_label(:executing), do: "Executing"
+  defp session_status_label(:awaiting_patch_approval), do: "Patch awaiting approval"
+  defp session_status_label(:verifying), do: "Verifying"
+  defp session_status_label(:reviewing), do: "Reviewing"
+  defp session_status_label(:done), do: "Done"
+  defp session_status_label(:failed), do: "Failed"
+  defp session_status_label(:error), do: "Error"
+  defp session_status_label(:cancelled), do: "Cancelled"
+  defp session_status_label(other), do: String.capitalize(to_string(other))
+
+  defp short_plan_id(%{plan: %Muse.Plan{} = p}), do: Muse.PlanHistory.display_plan_id(p)
+  defp short_plan_id(%{active_plan_id: id}) when is_binary(id), do: id
+  defp short_plan_id(_), do: ""
+
+  defp plan_status_badge(%{plan: %Muse.Plan{status: status}}) do
+    "(#{status})"
+  end
+
+  defp plan_status_badge(_), do: ""
 
   # -- Patch proposal panel (PR17) ------------------------------------------
 

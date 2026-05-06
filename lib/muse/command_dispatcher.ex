@@ -606,6 +606,29 @@ defmodule Muse.CommandDispatcher do
     e -> {:error, "Prompt preview error: #{Exception.message(e)}", []}
   end
 
+  # -- Session status ----------------------------------------------------------
+
+  # dispatch(:session_status, args, context)
+  # Shows the current Muse session status, active plan, and pending patch.
+  # Returns `{:ok, summary, effects}` where effects include `{:refresh, :session}`
+  # so callers can update their session state panel.
+  def dispatch(:session_status, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /session", []}
+    else
+      session_id = context_session_id(context)
+
+      case Muse.SessionRouter.status(session_id) do
+        {:ok, status} ->
+          output = format_session_status(status)
+          {:ok, output, [{:refresh, :session}]}
+
+        {:error, :not_found} ->
+          {:ok, "No active Muse session. Start a conversation to create one.", []}
+      end
+    end
+  end
+
   # -- Catch-all ---------------------------------------------------------------
 
   def dispatch(action, _args, _context) do
@@ -1001,11 +1024,11 @@ defmodule Muse.CommandDispatcher do
   end
 
   defp format_plan_lifecycle_result({:ok, %Muse.Plan{} = plan}, :approve_plan) do
-    {:ok, Muse.ApprovalAudit.approval_message(plan), [{:refresh, :events}]}
+    {:ok, Muse.ApprovalAudit.approval_message(plan), [{:refresh, :events}, {:refresh, :session}]}
   end
 
   defp format_plan_lifecycle_result({:ok, %Muse.Plan{} = plan}, :reject_plan) do
-    {:ok, Muse.ApprovalAudit.rejection_message(plan), [{:refresh, :events}]}
+    {:ok, Muse.ApprovalAudit.rejection_message(plan), [{:refresh, :events}, {:refresh, :session}]}
   end
 
   defp format_plan_lifecycle_result({:error, :turn_running}, action) do
@@ -1111,11 +1134,11 @@ defmodule Muse.CommandDispatcher do
   end
 
   defp format_patch_lifecycle_result({:ok, patch}, :approve_patch) do
-    {:ok, format_patch_approval_message(patch), [{:refresh, :events}]}
+    {:ok, format_patch_approval_message(patch), [{:refresh, :events}, {:refresh, :session}]}
   end
 
   defp format_patch_lifecycle_result({:ok, patch}, :reject_patch) do
-    {:ok, format_patch_rejection_message(patch), [{:refresh, :events}]}
+    {:ok, format_patch_rejection_message(patch), [{:refresh, :events}, {:refresh, :session}]}
   end
 
   defp format_patch_lifecycle_result({:error, :turn_running}, action) do
@@ -1207,6 +1230,74 @@ defmodule Muse.CommandDispatcher do
     end
   end
 
+  # -- Session status formatting ------------------------------------------------
+
+  defp format_session_status(status) when is_map(status) do
+    session_id = Map.get(status, :session_id, "default")
+    session_status = Map.get(status, :status, :idle)
+    active_muse = Map.get(status, :active_muse)
+    active_plan_id = Map.get(status, :active_plan_id)
+    plan = Map.get(status, :plan)
+    pending_patch = Map.get(status, :pending_patch)
+    active_turn_id = Map.get(status, :active_turn_id)
+    event_count = Map.get(status, :event_count, 0)
+
+    lines = [
+      "Muse Session: #{session_id}",
+      "Status: #{format_session_state(session_status)}"
+    ]
+
+    lines =
+      if active_muse do
+        lines ++ ["Active Muse: #{active_muse}"]
+      else
+        lines
+      end
+
+    lines =
+      if active_turn_id do
+        lines ++ ["Turn: #{active_turn_id}"]
+      else
+        lines
+      end
+
+    lines =
+      case plan do
+        %Muse.Plan{} = p ->
+          plan_line =
+            "Active plan: #{Muse.PlanHistory.display_plan_id(p)} (v#{p.version}, #{p.status})"
+
+          lines ++ [plan_line]
+
+        %{"id" => id, "version" => v, "status" => s} ->
+          lines ++ ["Active plan: #{id} (v#{v}, #{s})"]
+
+        _ ->
+          if active_plan_id do
+            lines ++ ["Active plan: #{active_plan_id}"]
+          else
+            lines
+          end
+      end
+
+    lines =
+      case pending_patch do
+        %Muse.Patch{} = patch ->
+          lines ++ ["Pending patch: #{patch.id} (#{patch.status})"]
+
+        %{"id" => id, "status" => s} ->
+          lines ++ ["Pending patch: #{id} (#{s})"]
+
+        _ ->
+          lines
+      end
+
+    lines ++ ["Events: #{event_count}"]
+  end
+
+  defp format_session_state(status) when is_atom(status), do: Atom.to_string(status)
+  defp format_session_state(status), do: to_string(status)
+
   defp render_plan_with_identity(%Muse.Plan{} = plan) do
     plan_show_heading(plan) <> "\n\n" <> Muse.Plan.render(plan)
   end
@@ -1262,7 +1353,7 @@ defmodule Muse.CommandDispatcher do
     case Muse.SessionRouter.apply_patch(session_id, patch_id) do
       {:ok, result} ->
         message = format_apply_patch_result(result)
-        {:ok, message, [{:refresh, :events}]}
+        {:ok, message, [{:refresh, :events}, {:refresh, :session}]}
 
       {:error, reason} ->
         {:error, format_apply_patch_error(reason), []}
@@ -1333,7 +1424,7 @@ defmodule Muse.CommandDispatcher do
         case Muse.SessionRouter.rollback_checkpoint(session_id, checkpoint_id) do
           {:ok, result} ->
             message = format_rollback_result(result)
-            {:ok, message, [{:refresh, :events}]}
+            {:ok, message, [{:refresh, :events}, {:refresh, :session}]}
 
           {:error, reason} ->
             {:error, format_rollback_error(reason), []}

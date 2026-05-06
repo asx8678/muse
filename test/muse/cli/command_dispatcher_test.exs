@@ -26,7 +26,8 @@ defmodule Muse.CLI.CommandDispatcherTest do
       assert plan_output =~ "Planning Muse prepared a plan."
       assert State.events() |> length() == event_count
 
-      assert {:ok, approve_output, [{:refresh, :events}]} = run_command("/approve plan", context)
+      assert {:ok, approve_output, [{:refresh, :events}, {:refresh, :session}]} =
+               run_command("/approve plan", context)
 
       assert approve_output =~ "Plan approved."
       assert approve_output =~ "- Plan id: #{plan.id}"
@@ -71,7 +72,8 @@ defmodule Muse.CLI.CommandDispatcherTest do
       context = %{session_id: session_id, source: :cli}
       event_count = State.events() |> length()
 
-      assert {:ok, reject_output, [{:refresh, :events}]} = run_command("/reject plan", context)
+      assert {:ok, reject_output, [{:refresh, :events}, {:refresh, :session}]} =
+               run_command("/reject plan", context)
 
       assert reject_output =~ "Plan rejected."
       assert reject_output =~ "- Plan id: #{plan.id}"

@@ -35,7 +35,8 @@ defmodule MuseWeb.ConsoleCommand do
       command_history: socket.assigns.command_history,
       session_id: "default",
       source: :web,
-      state: socket.assigns.state
+      state: socket.assigns.state,
+      session_status: socket.assigns.session_status
     }
   end
 
@@ -95,6 +96,13 @@ defmodule MuseWeb.ConsoleCommand do
 
   defp apply_effect(socket, {:refresh, :agents}) do
     assign(socket, agent_snapshot: BackendBridge.safe_agent_snapshot())
+  end
+
+  defp apply_effect(socket, {:refresh, :session}) do
+    case Muse.SessionRouter.status("default") do
+      {:ok, status} -> assign(socket, session_status: status)
+      {:error, _} -> socket
+    end
   end
 
   defp apply_effect(socket, {:refresh, _unknown}) do

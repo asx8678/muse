@@ -32,6 +32,7 @@ defmodule Muse.CLI.Tui do
             agent_snapshot: :unavailable,
             agent_runtime: nil,
             beam_stats: %{},
+            session_status: nil,
             status: "Ready",
             halt?: true,
             workspace: nil,
@@ -60,6 +61,7 @@ defmodule Muse.CLI.Tui do
           agent_snapshot: :unavailable | %{agents: [map()]},
           agent_runtime: map() | nil,
           beam_stats: map(),
+          session_status: map() | nil,
           status: String.t(),
           halt?: boolean(),
           workspace: String.t() | nil,
@@ -95,6 +97,7 @@ defmodule Muse.CLI.Tui do
     agent_snapshot = Muse.Backend.safe_agent_snapshot()
     agent_runtime = Muse.Backend.safe_agent_runtime_snapshot()
     beam_stats = safe_beam_stats()
+    session_status = safe_session_status()
 
     {:ok,
      %__MODULE__{
@@ -105,6 +108,7 @@ defmodule Muse.CLI.Tui do
        agent_snapshot: agent_snapshot,
        agent_runtime: agent_runtime,
        beam_stats: beam_stats,
+       session_status: session_status,
        halt?: halt?,
        workspace: workspace,
        web_url: web_url
@@ -373,7 +377,8 @@ defmodule Muse.CLI.Tui do
       log_filter: state.log_filter,
       log_search: state.log_search,
       session_id: "default",
-      source: :tui
+      source: :tui,
+      session_status: state.session_status
     }
   end
 
@@ -419,6 +424,9 @@ defmodule Muse.CLI.Tui do
 
   defp apply_effect(state, {:refresh, :agents}),
     do: %{state | agent_snapshot: Muse.Backend.safe_agent_snapshot()}
+
+  defp apply_effect(state, {:refresh, :session}),
+    do: %{state | session_status: safe_session_status()}
 
   defp apply_effect(state, {:refresh, _}), do: state
   defp apply_effect(state, {:copy_to_clipboard, _text, _label}), do: state
@@ -737,31 +745,82 @@ defmodule Muse.CLI.Tui do
   end
 
   defp render_tab(state, "settings") do
-    lines = [
-      "  Muse Settings",
-      "",
-      "  Workspace:   #{state.workspace || "unknown"}",
-      "  Web URL:     #{state.web_url || "off"}",
-      "  Event filter: #{state.event_filter}",
-      "  Event search: #{state.event_search || "—"}",
-      "  Log filter:   #{state.log_filter}",
-      "  Log search:   #{state.log_search || "—"}",
-      "",
-      "  Key bindings:",
-      "    Tab / Shift+Tab   cycle tabs (always)",
-      "    Esc               INPUT→main / MAIN→quit",
-      "    i                 focus input (from MAIN)",
-      "    /                 focus input with / (from MAIN)",
-      "    Ctrl+E/L/D/A/S/,  jump to tab",
-      "    Ctrl+R             reload",
-      "    ?                  toggle help (MAIN only)",
-      "    j/k ↑/↓            scroll (MAIN only)",
-      "    PgUp/PgDn          scroll 10",
-      "    Home/End            scroll to edge",
-      "    Ctrl+Q / Ctrl+C    quit",
-      "",
-      "  Distribution: Muse runs as a single BEAM node."
-    ]
+    session_lines =
+      case state.session_status do
+        nil ->
+          ["  Session: No active session"]
+
+        status ->
+          session_status = Map.get(status, :status, :idle)
+          active_muse = Map.get(status, :active_muse)
+          plan_id = Map.get(status, :active_plan_id)
+          pending = Map.get(status, :pending_patch)
+          turn = Map.get(status, :active_turn_id)
+
+          lines = ["  Session: #{session_status}"]
+
+          lines =
+            if active_muse do
+              lines ++ ["  Active Muse: #{active_muse}"]
+            else
+              lines
+            end
+
+          lines =
+            if plan_id do
+              plan_status =
+                case Map.get(status, :plan) do
+                  %{status: s} -> " (#{s})"
+                  _ -> ""
+                end
+
+              lines ++ ["  Plan: #{plan_id}#{plan_status}"]
+            else
+              lines
+            end
+
+          lines =
+            if pending do
+              lines ++ ["  Patch: pending approval"]
+            else
+              lines
+            end
+
+          if turn do
+            lines ++ ["  Turn: running"]
+          else
+            lines
+          end
+      end
+
+    lines =
+      session_lines ++
+        [
+          "",
+          "  Muse Settings",
+          "",
+          "  Workspace:   #{state.workspace || "unknown"}",
+          "  Web URL:     #{state.web_url || "off"}",
+          "  Event filter: #{state.event_filter}",
+          "  Event search: #{state.event_search || "—"}",
+          "  Log filter:   #{state.log_filter}",
+          "  Log search:   #{state.log_search || "—"}",
+          "",
+          "  Key bindings:",
+          "    Tab / Shift+Tab   cycle tabs (always)",
+          "    Esc               INPUT→main / MAIN→quit",
+          "    i                 focus input (from MAIN)",
+          "    /                 focus input with / (from MAIN)",
+          "    Ctrl+E/L/D/A/S/,  jump to tab",
+          "    Ctrl+R             reload",
+          "    ?                  toggle help (MAIN only)",
+          "    j/k ↑/↓            scroll (MAIN only)",
+          "    PgUp/PgDn          scroll 10",
+          "    Home/End            scroll to edge",
+          "    Ctrl+Q / Ctrl+C    quit",
+          "",
+          "  Distribution: Muse runs as a single BEAM node."
+        ]
 
     scroll_y = Map.get(state.scroll, "settings", 0)
 
@@ -1098,6 +1157,19 @@ defmodule Muse.CLI.Tui do
       _ -> %{}
     catch
       :exit, _ -> %{}
+    end
+  end
+
+  defp safe_session_status do
+    try do
+      case Muse.SessionRouter.status("default") do
+        {:ok, status} -> status
+        {:error, _} -> nil
+      end
+    rescue
+      _ -> nil
+    catch
+      :exit, _ -> nil
     end
   end
 end
