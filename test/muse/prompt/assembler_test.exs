@@ -861,4 +861,180 @@ defmodule Muse.Prompt.AssemblerTest do
       assert "read_file" in tool_names
     end
   end
+
+  # -- muse-zgm: Memory layer safety for malformed canonical memory -------------
+
+  describe "build/4 memory_layer — malformed canonical memory safety" do
+    setup do
+      session =
+        Session.new(
+          workspace: "/tmp/test_project",
+          id: "sess_zgm",
+          status: :idle,
+          created_at: ~U[2025-01-01 00:00:00Z],
+          updated_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      profile = Muse.MuseRegistry.get(:planning)
+
+      %{session: session, profile: profile}
+    end
+
+    test "canonical memory with malformed tuple field does not crash assembler", %{
+      session: session,
+      profile: profile
+    } do
+      # Canonical memory with :project_facts as a tuple instead of a list
+      canonical_memory = %{
+        user_goal: "Build app",
+        project_facts: {:password, "sentinel-assembler-tuple"},
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm_assembler"
+      }
+
+      session_with_malformed = %{session | memory: canonical_memory}
+
+      # Should not raise
+      bundle =
+        Assembler.build(session_with_malformed, profile, "hello",
+          id: "pb_zgm_tuple",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      # Sentinel should be redacted in provider-bound content
+      refute memory_layer.content =~ "sentinel-assembler-tuple"
+    end
+
+    test "canonical memory with malformed map field does not crash assembler", %{
+      session: session,
+      profile: profile
+    } do
+      canonical_memory = %{
+        user_goal: "Build app",
+        project_facts: [],
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: %{password: "sentinel-assembler-map", safe: "ok"},
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm_map"
+      }
+
+      session_with_malformed = %{session | memory: canonical_memory}
+
+      bundle =
+        Assembler.build(session_with_malformed, profile, "hello",
+          id: "pb_zgm_map",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      refute memory_layer.content =~ "sentinel-assembler-map"
+    end
+
+    test "canonical memory with nil field does not crash assembler", %{
+      session: session,
+      profile: profile
+    } do
+      canonical_memory = %{
+        user_goal: "Build app",
+        project_facts: nil,
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm_nil"
+      }
+
+      session_with_nil = %{session | memory: canonical_memory}
+
+      bundle =
+        Assembler.build(session_with_nil, profile, "hello",
+          id: "pb_zgm_nil",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      assert is_binary(memory_layer.content)
+    end
+
+    test "canonical memory with charlist field renders safely", %{
+      session: session,
+      profile: profile
+    } do
+      # Whole field as charlist containing a secret pattern
+      canonical_memory = %{
+        user_goal: "Build app",
+        project_facts: 'sk-sentinel-charlist-field',
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm_charlist"
+      }
+
+      session_with_charlist = %{session | memory: canonical_memory}
+
+      bundle =
+        Assembler.build(session_with_charlist, profile, "hello",
+          id: "pb_zgm_charlist",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      refute memory_layer.content =~ "sentinel-charlist-field"
+    end
+
+    test "safe canonical memory still renders usefully", %{session: session, profile: profile} do
+      canonical_memory = %{
+        user_goal: "Build REST API",
+        project_facts: ["Elixir project", "Uses Phoenix"],
+        decisions_made: ["Use PostgreSQL"],
+        approved_plans: [],
+        changes_completed: ["Created user schema"],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_safe"
+      }
+
+      session_with_safe = %{session | memory: canonical_memory}
+
+      bundle =
+        Assembler.build(session_with_safe, profile, "hello",
+          id: "pb_safe_memory",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      assert memory_layer.content =~ "REST API"
+      assert memory_layer.content =~ "Elixir"
+    end
+  end
 end

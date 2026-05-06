@@ -416,47 +416,53 @@ defmodule Muse.Prompt.Assembler do
         # then render safely. For canonical memory_artifacts (with :user_goal etc.),
         # use Memory.render/1. For arbitrary maps, use redacted inspect.
         # Never use raw inspect/1 on untrusted memory.
-        # muse-zgm: Add defense-in-depth rescue to handle any render failures
-        # and ensure no raw secrets leak via provider-bound messages.
-        safe_content =
-          if Muse.Memory.memory_artifact?(memory) do
-            Muse.Memory.render(memory)
-          else
-            memory
-            |> Muse.EventPayloadRedactor.redact()
-            |> Muse.Prompt.Redactor.redact_term()
-            |> inspect(limit: 20, printable_limit: 500)
-            |> Muse.Prompt.Redactor.redact_text()
-          end
-
-        Layer.new!(
-          id: :memory_summary,
-          priority: 12,
-          source: :muse_profile,
-          content: safe_content,
-          title: "Session Memory Summary",
-          visibility: :debug_preview,
-          kind: :context,
-          redaction: :standard
-        )
-      rescue
-        _ ->
-          # Defense-in-depth: if rendering fails, use a safe withheld message
-          # without exposing any raw terms or exception details.
-          Layer.new!(
-            id: :memory_summary,
-            priority: 12,
-            source: :muse_profile,
-            content: "Memory unavailable (render error). Content withheld.",
-            title: "Session Memory Summary",
-            visibility: :debug_preview,
-            kind: :context,
-            redaction: :standard
-          )
+        # muse-zgm: Delegate to helper for rescue handling.
+        render_map_memory_layer(memory)
 
       _ ->
         nil
     end
+  end
+
+  # muse-zgm: Helper function with rescue for defense-in-depth.
+  # Ensures that any render failures are handled safely without leaking
+  # raw secrets via provider-bound messages.
+  defp render_map_memory_layer(memory) do
+    safe_content =
+      if Muse.Memory.memory_artifact?(memory) do
+        Muse.Memory.render(memory)
+      else
+        memory
+        |> Muse.EventPayloadRedactor.redact()
+        |> Muse.Prompt.Redactor.redact_term()
+        |> inspect(limit: 20, printable_limit: 500)
+        |> Muse.Prompt.Redactor.redact_text()
+      end
+
+    Layer.new!(
+      id: :memory_summary,
+      priority: 12,
+      source: :muse_profile,
+      content: safe_content,
+      title: "Session Memory Summary",
+      visibility: :debug_preview,
+      kind: :context,
+      redaction: :standard
+    )
+  rescue
+    _ ->
+      # Defense-in-depth: if rendering fails, use a safe withheld message
+      # without exposing any raw terms or exception details.
+      Layer.new!(
+        id: :memory_summary,
+        priority: 12,
+        source: :muse_profile,
+        content: "Memory unavailable (render error). Content withheld.",
+        title: "Session Memory Summary",
+        visibility: :debug_preview,
+        kind: :context,
+        redaction: :standard
+      )
   end
 
   defp active_plan_layer(session) do

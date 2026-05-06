@@ -1526,7 +1526,8 @@ defmodule Muse.CommandDispatcherTest do
       # Memory.render is for maps, but we verify the overall safety philosophy:
       # malformed data should not crash and should not leak secrets
       # For tuples, the system uses different code paths but should still be safe
-      rendered = malformed_memory
+      rendered =
+        malformed_memory
         |> Muse.EventPayloadRedactor.redact()
         |> Muse.Prompt.Redactor.redact_term()
         |> inspect(limit: 20, printable_limit: 500)
