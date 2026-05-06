@@ -59,8 +59,11 @@ Every item must be verified before the Muse Runtime reaches MVP. Status reflects
 
 - [x] Arbitrary shell commands remain blocked; only preset `test_runner` commands are executable (PR19)
 - [x] Network calls are disabled/blocked by default
-- [x] Remote execution is disabled (no remote execution tool)
+- [x] Remote execution is disabled (no remote execution tool; PR24 explicitly denies remote targets)
 - [x] Test runner is preset-limited, timeout-bounded, output-capped, and Testing-Muse-only (PR19)
+- [x] Local execution uses argv-vector `Port.open` (no shell interpolation) via `Muse.Execution.LocalRunner` (PR24)
+- [x] Remote execution targets (`:remote`, `:ssh`, string hostnames) are denied by `Muse.Execution.Policy` (PR24)
+- [x] Execution output is capped and redacted; secrets never leak in results (PR24)
 
 ### Network & Channels
 

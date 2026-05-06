@@ -3,9 +3,8 @@ defmodule Muse.Tools.TestRunner do
   Safe, bounded test command runner for Testing Muse.
 
   Only predefined safe command presets are executable. Arbitrary shell
-  strings are blocked. Commands execute as executable + argv vectors,
-  never through a shell. Execution is bounded by timeout and max output
-  bytes; orphan processes are killed on timeout via Port-based execution.
+  strings are blocked. Commands execute via the Execution.LocalRunner
+  abstraction (PR24) which enforces argv-vector-only execution.
 
   ## Safe presets
 
@@ -34,9 +33,11 @@ defmodule Muse.Tools.TestRunner do
   executing. This tool cannot become a generic shell escape hatch.
   """
 
-  alias Muse.Tool.Result
+  alias Muse.Execution.{Command, LocalRunner}
+  alias Muse.Execution.Result, as: ExecutionResult
   alias Muse.Prompt.Redactor
   alias Muse.Workspace
+  alias Muse.Tool.Result
 
   @max_output_bytes 50_000
   @default_timeout_ms 120_000
@@ -127,102 +128,61 @@ defmodule Muse.Tools.TestRunner do
     Result.blocked("test_runner", "unknown file preset: #{command}")
   end
 
-  # -- Bounded command execution via Port ---------------------------------------
+  # -- Bounded command execution via LocalRunner (PR24) ------------------------
 
   defp run_bounded_command(command, executable, argv, workspace, env, timeout) do
     start_time = System.monotonic_time(:millisecond)
 
-    result =
-      try do
-        execute_with_port(executable, argv, workspace, env, timeout)
-      rescue
-        e ->
-          {:error, "execution error: #{Exception.message(e)}"}
-      catch
-        :exit, :timeout ->
-          {:timed_out, ""}
-      end
+    # Build Command struct for the LocalRunner
+    case Command.new(executable,
+           args: argv,
+           cwd: workspace,
+           env: env_to_map(env),
+           timeout_ms: timeout,
+           max_output_bytes: @max_output_bytes
+         ) do
+      {:ok, cmd} ->
+        result =
+          case LocalRunner.run(cmd) do
+            {:ok, %ExecutionResult{} = res} -> res
+            {:error, %ExecutionResult{} = res} -> res
+            {:error, reason} -> Result.error("test_runner", inspect(reason))
+          end
 
-    duration_ms = System.monotonic_time(:millisecond) - start_time
+        duration_ms = System.monotonic_time(:millisecond) - start_time
+        build_result(command, executable, argv, result, duration_ms)
 
-    build_result(command, executable, argv, result, duration_ms)
-  end
-
-  # Port-based execution: starts the OS process, collects output with timeout,
-  # and kills the process if the timeout fires. This avoids orphan shell/test
-  # processes that a plain `Task.await(System.cmd(...))` timeout would leave.
-  defp execute_with_port(executable, argv, workspace, env, timeout) do
-    # Build the full command with args for Port
-    port_opts = [
-      {:args, argv},
-      {:cd, workspace},
-      {:env, env},
-      :use_stdio,
-      :stderr_to_stdout,
-      :binary,
-      :exit_status
-    ]
-
-    port = Port.open({:spawn_executable, find_executable(executable)}, port_opts)
-
-    try do
-      deadline = System.monotonic_time(:millisecond) + timeout
-      collect_port_output(port, deadline, "")
-    after
-      # Ensure the port (and its OS process) is always closed. On timeout this
-      # terminates the spawned executable instead of leaving an orphaned test run.
-      if Port.info(port) != nil do
-        Port.close(port)
-      end
+      {:error, reason} ->
+        Result.error("test_runner", "command validation failed: #{reason}")
     end
   end
 
-  defp find_executable(executable) do
-    case System.find_executable(executable) do
-      nil -> raise "executable not found: #{executable}"
-      path -> path
-    end
+  defp env_to_map(env) when is_list(env) do
+    # Handle both charlist and binary key/value pairs from Port-style env
+    Map.new(env, fn
+      {k, v} when is_list(k) and is_list(v) ->
+        # Convert charlist pairs to strings
+        {List.to_string(k), List.to_string(v)}
+
+      {k, v} when is_binary(k) and is_binary(v) ->
+        {k, v}
+
+      {k, v} ->
+        {to_string(k), to_string(v)}
+    end)
   end
 
-  defp collect_port_output(port, deadline, acc) do
-    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
-
-    if remaining == 0 do
-      {:timed_out, acc}
-    else
-      receive do
-        {^port, {:data, data}} ->
-          collect_port_output(port, deadline, append_capped_output(acc, data))
-
-        {^port, {:exit_status, exit_status}} ->
-          {:ok, acc, exit_status}
-      after
-        remaining ->
-          # Timeout: the OS process is still running. Port.close in the
-          # after block will terminate the OS process on Unix.
-          {:timed_out, acc}
-      end
-    end
-  end
-
-  defp append_capped_output(acc, data) do
-    max_collected = @max_output_bytes * 2
-    combined = acc <> data
-
-    if byte_size(combined) > max_collected do
-      binary_part(combined, 0, max_collected)
-    else
-      combined
-    end
-  end
+  defp env_to_map(env) when is_map(env), do: env
+  defp env_to_map(_), do: %{}
 
   # -- Result construction -------------------------------------------------------
 
-  defp build_result(command, executable, argv, result, duration_ms) do
+  defp build_result(command, executable, argv, %ExecutionResult{} = exec_result, duration_ms) do
     argv_display = redact_argv_display(executable, argv)
 
-    case result do
-      {:ok, output, exit_status} ->
+    case exec_result.status do
+      :ok ->
+        exit_status = exec_result.exit_status || 0
         status = if exit_status == 0, do: :passed, else: :failed
 
         Result.ok("test_runner", %{
@@ -232,11 +192,11 @@ defmodule Muse.Tools.TestRunner do
           duration_ms: duration_ms,
           timed_out: false,
           status: status,
-          output_preview: cap_and_redact(output),
+          output_preview: cap_and_redact(exec_result.output || ""),
           next_action: next_action(status)
         })
 
-      {:timed_out, partial_output} ->
+      :timed_out ->
         Result.ok("test_runner", %{
           command: command,
           argv_display: argv_display,
@@ -244,12 +204,12 @@ defmodule Muse.Tools.TestRunner do
           duration_ms: duration_ms,
           timed_out: true,
           status: :timed_out,
-          output_preview: cap_and_redact(partial_output || ""),
+          output_preview: cap_and_redact(exec_result.output || ""),
           next_action: "increase_timeout_or_simplify_command"
         })
 
-      {:error, reason} ->
-        Result.error("test_runner", reason)
+      status when status in [:error, :blocked] ->
+        Result.error("test_runner", exec_result.error || "execution failed")
     end
   end
 

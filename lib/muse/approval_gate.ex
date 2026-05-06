@@ -26,6 +26,9 @@ defmodule Muse.ApprovalGate do
                    :unknown
                  ])
 
+  # PR09: Remote execution is ALWAYS denied regardless of approval data.
+  # This is enforced by Execution.Policy and cannot be overridden by approvals.
+
   # PR18: :patch and :restore_checkpoint scopes are now gated by
   # patch_apply_allowed?/2 and rollback_checkpoint_allowed?/2 above,
   # so they are removed from the blanket deny set.
@@ -419,6 +422,10 @@ defmodule Muse.ApprovalGate do
   @spec authorize_tool(Spec.t(), map()) :: tool_decision()
   def authorize_tool(%Spec{} = spec, context) when is_map(context) do
     cond do
+      # PR24: Always block remote execution tools regardless of approval context
+      remote_execution_tool?(spec, context) ->
+        {:blocked, "remote execution is denied by policy (PR24)"}
+
       safe_without_approval?(spec) ->
         :ok
 
@@ -1050,6 +1057,13 @@ defmodule Muse.ApprovalGate do
 
   defp unmatched_policy_reason(%Spec{} = spec) do
     "#{spec.name} is denied by default because no approval policy matches #{format_scope(tool_scope(spec))} permission"
+  end
+
+  # PR24: Remote execution is ALWAYS denied regardless of approval data.
+  # This check runs before any other authorization logic.
+  defp remote_execution_tool?(%Spec{name: name}, _context) do
+    name == "remote_execution" or
+      Muse.Execution.Policy.remote_tool_blocked?(name)
   end
 
   # -- Generic data helpers -----------------------------------------------------

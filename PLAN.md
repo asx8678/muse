@@ -42,6 +42,74 @@ Planned exceptions (internal identifiers, not user-facing):
 
 ---
 
+## PR 24 — Remote Execution Foundation
+
+**Status:** ✅ Complete
+
+Introduced a local execution runner abstraction with remote execution explicitly denied.
+
+### Acceptance Criteria
+
+- [x] Runner abstraction and local runner foundation for possible future SSH/remote execution
+- [x] Remote execution is denied by default (`:remote`, `:ssh`, string targets blocked)
+- [x] Existing fake-provider-first/offline behavior preserved
+- [x] Existing approvals, tool safety, workspace safety, redaction, Muse-first terminology intact
+- [x] `remote_execution` remains blocked in `Tool.Registry`/`Tool.Runner`
+- [x] No `String.to_atom/1` on runner/target/provider/tool strings
+
+### Implementation
+
+Core modules under `lib/muse/execution/`:
+
+1. **`Muse.Execution.Command`** — Struct for execution requests with validation:
+   - `executable` must be non-empty, no path traversal/control chars
+   - `args` must be binaries, no control chars
+   - `timeout_ms` bounded (default 60_000, max 300_000)
+   - `max_output_bytes` bounded (default 50_000, max 500_000)
+   - Safe display helpers redact args/env
+
+2. **`Muse.Execution.Result`** — Struct for execution results:
+   - Status: `:ok`, `:error`, `:timed_out`, `:denied`, `:blocked`
+   - Safe summary for events/logs (never leaks secrets)
+   - Output capped and redacted
+
+3. **`Muse.Execution.Runner`** — Behaviour for execution runners:
+   - `run(Command.t(), keyword()) :: {:ok, Result.t()} | {:error, Result.t() | term()}`
+   - Routes to `LocalRunner` for local, `RemoteDeniedRunner` for remote
+
+4. **`Muse.Execution.LocalRunner`** — Local argv-vector execution:
+   - `Port.open({:spawn_executable, path}, ...)` — no shell, no command strings
+   - `System.find_executable/1` for bare names
+   - Timeout enforced by closing port (no orphan processes)
+   - Output capped at `max_output_bytes` and redacted
+   - Safe env (only explicitly passed; no inherited secrets)
+
+5. **`Muse.Execution.RemoteDeniedRunner`** — Always denies remote execution:
+   - Returns `:denied` status for any non-local target
+   - Clear error messages without leaking hostnames
+
+6. **`Muse.Execution.Policy`** — Execution policy resolver:
+   - `:local` and `nil` targets allowed
+   - `:remote`, `:ssh`, string targets denied
+   - No atom conversion from user input
+
+### Integration
+
+- `Muse.Tools.TestRunner` uses `LocalRunner` for preset commands
+- `Muse.Tools.GitStatus` uses `LocalRunner` for `git status`
+- `Muse.Tools.GitDiffReadonly` uses `LocalRunner` for `git diff`
+- `Muse.Tools.PatchApply` uses `LocalRunner` for `git apply --check` and `git apply`
+- `ApprovalGate.authorize_tool/2` blocks `remote_execution` tools regardless of approval context
+
+### Tests
+
+- `test/muse/execution/command_test.exs` — Command validation
+- `test/muse/execution/result_test.exs` — Result construction
+- `test/muse/execution/local_runner_test.exs` — LocalRunner execution, timeout, capping, redaction
+- `test/muse/execution/policy_test.exs` — Policy routing, remote denied, no `String.to_atom/1`
+
+---
+
 ## 1. Mission
 
 Turn Muse from a placeholder CLI/Web shell into a **safe local Muse coding runtime** with Muse-first product language, session-aware turns, layered internal prompting, read-only repository inspection, model/tool-call orchestration, streaming events, stateful approvals, patch proposal/application with checkpoints, and CLI/TUI/LiveView visibility.
@@ -170,7 +238,7 @@ Each turn → TurnRunner (Task):
 | 21 | Memory & Restoration Muse, handoffs | Compaction, memory layer, specialist handoffs via Conductor ✓ |
 | 22 | Documentation & developer onboarding | README, provider setup, safety model, architecture, prompt profiles, developer docs ✓ |
 | 23 | Additional providers & model routing | OpenRouter, Ollama, Anthropic, per-Muse model pinning ✓ |
-| 24 | Remote execution (later) | Runner abstraction, local runner, future SSH/remote, strict approvals |
+| 24 | Remote execution (later) | Runner abstraction, local runner, future SSH/remote, strict approvals ✓ |
 
 **Critical path:** `00 → 01a/01b/01c → 02 → 03 → 04 → 05 → 06 → 07a/07b → 08 → 09 → 10` (Milestone 1) `→ 11-15` (Providers) `→ 17-19` (Patch/Test/Review) `→ 20-24` (Polish/Extensions)
 

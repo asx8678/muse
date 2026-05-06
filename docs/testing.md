@@ -327,6 +327,17 @@ Unit tests cover individual modules and functions. Key test files and their focu
 - Role-based tool access (Planning vs Coding Muse)
 - Individual tool behavior (list_files, read_file, repo_search, git_*, etc.)
 
+### Execution (PR24)
+
+**Key files:** `test/muse/execution/*_test.exs`
+
+- Command validation (executable, args, timeout, output bounds)
+- Result construction and safe summaries
+- LocalRunner execution (argv-vector, no shell, timeout, output capping)
+- Policy routing (local allowed, remote/ssh denied)
+- No `String.to_atom/1` on user input
+- Secret redaction in output and errors
+
 ### Memory & Handoff
 
 **Key files:** `test/muse/memory_test.exs`

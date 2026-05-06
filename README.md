@@ -157,6 +157,12 @@ enforced at the runtime level, not at the prompt level.
 - PR19 adds a preset-only `test_runner` for bounded verification commands such
   as `mix test`, `mix test <test-file>`, `mix format --check-formatted`, and
   `mix compile --warnings-as-errors`; it does not grant arbitrary shell access.
+- **PR24** introduces a local execution runner abstraction (`Muse.Execution.LocalRunner`):
+  - Local commands execute via argv-vector `Port.open`, never through a shell.
+  - Remote execution (`:remote`, `:ssh`, any string target) is explicitly denied.
+  - `ApprovalGate` blocks `remote_execution` tools regardless of approval context.
+  - Git tools (`git_status`, `git_diff_readonly`, `patch_apply`) use the local runner.
+  - Output is capped and redacted; secrets never leak in results or logs.
 
 ### Memory, handoff & restoration safety
 

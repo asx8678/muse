@@ -11,7 +11,7 @@ defmodule Muse.Tools.PatchApply do
        raw diff for apply).
     4. Re-validates the patch with `Muse.Patch.Validator`.
     5. Creates a `Muse.Checkpoint` BEFORE any write.
-    6. Applies via `git apply --check` then `git apply`.
+    6. Applies via `git apply --check` then `git apply` using LocalRunner (PR24).
     7. On failure, leaves checkpoint with failure metadata; no partial writes.
     8. On success, marks patch `:applied` and returns bounded git diff preview.
 
@@ -41,6 +41,8 @@ defmodule Muse.Tools.PatchApply do
   """
 
   alias Muse.{Approval, Checkpoint, Checkpoint.Store, Patch, Patch.Validator, SessionStore}
+  alias Muse.Execution.{Command, LocalRunner}
+  alias Muse.Execution.Result, as: ExecutionResult
   alias Muse.Patch.DiffParser
   alias Muse.Tool.Result
 
@@ -400,22 +402,19 @@ defmodule Muse.Tools.PatchApply do
     # Resolve to absolute path so git apply works regardless of workspace CWD
     diff_file_abs = Path.expand(diff_file)
 
-    # Step 1: git apply --check (dry run)
-    case System.cmd("git", ["apply", "--check", diff_file_abs],
-           cd: workspace,
-           stderr_to_stdout: true
-         ) do
-      {_output, 0} ->
+    # Step 1: git apply --check (dry run) using LocalRunner (PR24)
+    case run_git_command(workspace, ["apply", "--check", diff_file_abs]) do
+      {:ok, _} ->
         # Step 2: git apply (actual)
-        case System.cmd("git", ["apply", diff_file_abs], cd: workspace, stderr_to_stdout: true) do
-          {_output, 0} ->
+        case run_git_command(workspace, ["apply", diff_file_abs]) do
+          {:ok, _} ->
             :ok
 
-          {error_output, _} ->
+          {:error, error_output} ->
             {:error, {:apply_failed, String.slice(error_output, 0, 500), checkpoint}}
         end
 
-      {error_output, _} ->
+      {:error, error_output} ->
         {:error, {:apply_check_failed, String.slice(error_output, 0, 500)}}
     end
   rescue
@@ -423,12 +422,37 @@ defmodule Muse.Tools.PatchApply do
       {:error, {:apply_failed, Exception.message(e), checkpoint}}
   end
 
+  defp run_git_command(workspace, args) do
+    case Command.new("git", args: args, cwd: workspace, timeout_ms: 60_000) do
+      {:ok, cmd} ->
+        case LocalRunner.run(cmd) do
+          {:ok, %ExecutionResult{status: :ok}} -> {:ok, ""}
+          {:ok, %ExecutionResult{output: output}} -> {:ok, output || ""}
+          {:ok, %ExecutionResult{error: error}} -> {:error, to_string(error)}
+          {:error, %ExecutionResult{error: error}} -> {:error, to_string(error)}
+          {:error, reason} -> {:error, inspect(reason)}
+        end
+
+      {:error, reason} ->
+        {:error, "command validation failed: #{reason}"}
+    end
+  end
+
   # -- Post-apply diff ----------------------------------------------------------
 
   defp bounded_git_diff(workspace) do
-    case System.cmd("git", ["diff", "--stat"], cd: workspace, stderr_to_stdout: true) do
-      {output, 0} when is_binary(output) -> String.slice(output, 0, @max_git_diff_output)
-      _ -> nil
+    case Command.new("git", args: ["diff", "--stat"], cwd: workspace, timeout_ms: 30_000) do
+      {:ok, cmd} ->
+        case LocalRunner.run(cmd) do
+          {:ok, %ExecutionResult{status: :ok, output: output}} when is_binary(output) ->
+            String.slice(output, 0, @max_git_diff_output)
+
+          _ ->
+            nil
+        end
+
+      {:error, _} ->
+        nil
     end
   rescue
     _ -> nil

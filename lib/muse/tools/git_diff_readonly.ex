@@ -3,10 +3,12 @@ defmodule Muse.Tools.GitDiffReadonly do
   Read-only tool: show git diff output.
 
   Supports an optional workspace-relative path and cached flag.
-  No write commands; output is capped and redacted. The git command
-  uses fixed args with validated path input — no shell interpolation.
+  No write commands; output is capped and redacted. Uses
+  Execution.LocalRunner (PR24) for safe argv-vector execution.
   """
 
+  alias Muse.Execution.{Command, LocalRunner}
+  alias Muse.Execution.Result, as: ExecutionResult
   alias Muse.Tool.Result
 
   @max_output_bytes 100_000
@@ -73,16 +75,30 @@ defmodule Muse.Tools.GitDiffReadonly do
   end
 
   defp run_cmd(workspace, args) do
-    try do
-      case System.cmd("git", args, cd: workspace, stderr_to_stdout: true) do
-        {output, 0} ->
-          {:ok, output}
+    # Use Execution.LocalRunner (PR24) for safe argv-vector execution
+    case Command.new("git",
+           args: args,
+           cwd: workspace,
+           timeout_ms: 60_000,
+           max_output_bytes: @max_output_bytes
+         ) do
+      {:ok, cmd} ->
+        case LocalRunner.run(cmd) do
+          {:ok, %ExecutionResult{status: :ok, output: output}} ->
+            {:ok, output}
 
-        {error_output, _code} ->
-          {:error, "git diff failed: #{String.slice(error_output, 0, 200)}"}
-      end
-    rescue
-      e -> {:error, "git command error: #{inspect(e)}"}
+          {:ok, %ExecutionResult{status: status, error: error}} ->
+            {:error, "git diff failed (#{status}): #{String.slice(to_string(error), 0, 200)}"}
+
+          {:error, %ExecutionResult{error: error}} ->
+            {:error, "git diff failed: #{String.slice(to_string(error), 0, 200)}"}
+
+          {:error, reason} ->
+            {:error, "git command error: #{inspect(reason)}"}
+        end
+
+      {:error, reason} ->
+        {:error, "command validation failed: #{reason}"}
     end
   end
 

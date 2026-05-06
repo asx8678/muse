@@ -2,11 +2,13 @@ defmodule Muse.Tools.GitStatus do
   @moduledoc """
   Read-only tool: show working tree status via git status.
 
-  Uses fixed `System.cmd("git", ["status", "--short", "--branch"], cd: workspace)`
-  — no model-controlled arguments. Reports branch, clean/dirty state,
+  Uses fixed git command via Execution.LocalRunner (PR24) —
+  no model-controlled arguments. Reports branch, clean/dirty state,
   and changed files. Output is capped and redacted.
   """
 
+  alias Muse.Execution.{Command, LocalRunner}
+  alias Muse.Execution.Result, as: ExecutionResult
   alias Muse.Tool.Result
 
   @max_output_bytes 20_000
@@ -30,23 +32,30 @@ defmodule Muse.Tools.GitStatus do
   end
 
   defp run_git_status(workspace) do
-    try do
-      case System.cmd("git", ["status", "--short", "--branch"],
-             cd: workspace,
-             stderr_to_stdout: true
-           ) do
-        {output, 0} ->
-          if byte_size(output) > @max_output_bytes do
-            {:ok, String.slice(output, 0, @max_output_bytes)}
-          else
+    # Use Execution.LocalRunner (PR24) for safe argv-vector execution
+    case Command.new("git",
+           args: ["status", "--short", "--branch"],
+           cwd: workspace,
+           timeout_ms: 30_000,
+           max_output_bytes: @max_output_bytes
+         ) do
+      {:ok, cmd} ->
+        case LocalRunner.run(cmd) do
+          {:ok, %ExecutionResult{status: :ok, output: output}} ->
             {:ok, output}
-          end
 
-        {error_output, _code} ->
-          {:error, "git status failed: #{String.slice(error_output, 0, 200)}"}
-      end
-    rescue
-      e -> {:error, "git command error: #{inspect(e)}"}
+          {:ok, %ExecutionResult{status: status, error: error}} ->
+            {:error, "git status failed (#{status}): #{error}"}
+
+          {:error, %ExecutionResult{error: error}} ->
+            {:error, "git status failed: #{error}"}
+
+          {:error, reason} ->
+            {:error, "git command error: #{inspect(reason)}"}
+        end
+
+      {:error, reason} ->
+        {:error, "command validation failed: #{reason}"}
     end
   end
 
