@@ -697,6 +697,10 @@ defmodule Muse.CommandDispatcher do
       {:error, :usage} ->
         {:error, "Error: usage: /handoff <muse_id> (e.g., /handoff coding)", []}
 
+      {:error, :not_found} ->
+        {:error,
+         "Error: unknown Muse target. Available: #{Enum.join(Muse.MuseRegistry.ids(), ", ")}", []}
+
       {:ok, target_muse_id} ->
         session_id = context_session_id(context)
 
@@ -1659,9 +1663,12 @@ defmodule Muse.CommandDispatcher do
     if muse_id_str == "" do
       {:error, :usage}
     else
-      case String.to_atom(muse_id_str) do
-        muse_id when is_atom(muse_id) -> {:ok, muse_id}
-        _ -> {:error, :usage}
+      # Security: resolve via registry only — never String.to_atom on user input.
+      # Muse.MuseRegistry.fetch/1 uses String.to_existing_atom/1 internally,
+      # so unknown targets cannot create new atoms in the BEAM atom table.
+      case Muse.MuseRegistry.fetch(muse_id_str) do
+        {:ok, profile} -> {:ok, profile.id}
+        {:error, :not_found} -> {:error, :not_found}
       end
     end
   end
