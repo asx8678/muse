@@ -737,4 +737,4 @@ MIX_ENV=smoke MUSE_PROVIDER=fake mix muse --web-only --port 4101 --no-watch
    - Assert no unhandled exceptions
    - Verify interactive elements are keyboard-focusable
 
-This Playwright integration is **opt-in** and not required for the default quality gates. A follow-up issue should track full Playwright smoke test implementation.
+This Playwright integration is **opt-in** and not required for the default quality gates. Full Playwright smoke test implementation is tracked by **muse-3pq** (`Add real-browser LiveView smoke with console-error detection`, P2).
