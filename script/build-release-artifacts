@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# script/build-release-artifacts
+#
+# Build Muse release artifacts (escript + Mix release), copy them to
+# a dist/ directory, and generate SHA256 checksums.
+#
+# Usage:
+#   ./script/build-release-artifacts          # build escript + release
+#   ./script/build-release-artifacts --escript-only
+#   ./script/build-release-artifacts --release-only
+#
+# Environment:
+#   MUSE_SECRET_KEY_BASE  — required for release startup, but the release
+#                           build itself does not need it at compile time.
+#                           Only set it if you plan to smoke-test the release
+#                           after building.
+#
+# Output directory (gitignored):
+#   dist/
+#
+# Output files (example for v0.1.0):
+#   dist/muse                  — escript (executable)
+#   dist/muse-0.1.0.tar.gz     — Mix release tar
+#   dist/SHA256SUMS            — checksums for both files
+#
+# This script is designed for CI/non-interactive use. All cp/mv commands
+# use -f to avoid prompts.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+ROOT="$(pwd)"
+DIST="${ROOT}/dist"
+ESCRIPT_BIN="${ROOT}/muse"
+BUILD_ESCRIPT=true
+BUILD_RELEASE=true
+
+# ---- Argument parsing -------------------------------------------------------
+
+for arg in "$@"; do
+  case "$arg" in
+    --escript-only) BUILD_RELEASE=false ;;
+    --release-only) BUILD_ESCRIPT=false ;;
+    *)
+      echo "Usage: $0 [--escript-only | --release-only]" >&2
+      exit 1
+      ;;
+  esac
+done
+
+echo "==> Building Muse release artifacts"
+echo "    Root:  ${ROOT}"
+echo "    Dist:  ${DIST}"
+
+# ---- Clean dist/ ------------------------------------------------------------
+
+rm -rf "${DIST}"
+mkdir -p "${DIST}"
+
+# ---- Build escript ----------------------------------------------------------
+
+if [ "$BUILD_ESCRIPT" = true ]; then
+  echo ""
+  echo "==> Building escript (MIX_ENV=prod)..."
+  MIX_ENV=prod mix escript.build
+
+  if [ ! -f "${ESCRIPT_BIN}" ]; then
+    echo "ERROR: escript build failed — ${ESCRIPT_BIN} not found" >&2
+    exit 1
+  fi
+
+  cp -f "${ESCRIPT_BIN}" "${DIST}/muse"
+  echo "    Copied escript → ${DIST}/muse"
+fi
+
+# ---- Build Mix release ------------------------------------------------------
+
+if [ "$BUILD_RELEASE" = true ]; then
+  echo ""
+  echo "==> Building Mix release (MIX_ENV=prod)..."
+  MIX_ENV=prod mix release --overwrite
+
+  # Find the tarball — it's named muse-<version>.tar.gz in _build/prod/
+  TARBALL="$(find "${ROOT}/_build/prod" -maxdepth 1 -name 'muse-*.tar.gz' -print | head -1)"
+
+  if [ -z "${TARBALL}" ]; then
+    echo "WARNING: No tarball found in _build/prod/ — release tar step may not have run." >&2
+    echo "         The release directory ${ROOT}/_build/prod/rel/muse/ may still be usable." >&2
+  else
+    cp -f "${TARBALL}" "${DIST}/"
+    echo "    Copied tarball → ${DIST}/$(basename "${TARBALL}")"
+  fi
+fi
+
+# ---- Generate checksums -----------------------------------------------------
+
+echo ""
+echo "==> Generating SHA256 checksums..."
+cd "${DIST}"
+
+if command -v sha256sum &>/dev/null; then
+  sha256sum ./* > SHA256SUMS
+elif command -v shasum &>/dev/null; then
+  shasum -a 256 ./* > SHA256SUMS
+else
+  echo "ERROR: No sha256sum or shasum found on PATH" >&2
+  exit 1
+fi
+
+echo ""
+echo "    Checksums written to ${DIST}/SHA256SUMS:"
+cat SHA256SUMS
+
+# ---- Summary ----------------------------------------------------------------
+
+echo ""
+echo "==> Done. Artifacts in ${DIST}/:"
+ls -lh "${DIST}"

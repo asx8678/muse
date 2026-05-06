@@ -16,6 +16,7 @@ defmodule Muse.CLI.ReleaseCommandTest do
       assert help =~ "--no-watch"
       assert help =~ "--verbose"
       assert help =~ "--help"
+      assert help =~ "--version"
     end
   end
 

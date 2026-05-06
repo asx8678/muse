@@ -28,6 +28,11 @@ defmodule Muse.Application do
         halt_fun().(0)
       end
 
+      if opts.version? do
+        IO.puts("muse #{version_string()}")
+        halt_fun().(0)
+      end
+
       Logging.configure(if opts.verbose?, do: :verbose, else: opts.cli_ui)
       maybe_configure_endpoint(opts)
       children = runtime_children(opts)
@@ -173,6 +178,7 @@ defmodule Muse.Application do
       --no-watch        Disable hot reload
       --verbose         Enable debug-level console logging (overrides TUI silence)
       --help, -h        Show this help
+      --version, -v     Show version and exit
     """
   end
 
@@ -220,5 +226,15 @@ defmodule Muse.Application do
 
   defp halt_fun do
     Application.get_env(:muse, :halt_fun, &System.halt/1)
+  end
+
+  @doc false
+  @spec version_string() :: String.t()
+  def version_string do
+    case Application.spec(:muse, :vsn) do
+      nil -> Application.get_env(:muse, :version, "0.1.0")
+      charlist when is_list(charlist) -> List.to_string(charlist)
+      other -> to_string(other)
+    end
   end
 end

@@ -46,6 +46,13 @@ defmodule Muse.CLI.ReleaseCommand do
     Application.put_env(:muse, :boot_args, args)
     Application.put_env(:muse, :source_mode?, false)
 
+    # Handle --version / -v before starting the application to avoid
+    # unnecessary dependency startup warnings.
+    if Muse.CLI.Main.is_version_request?(args) do
+      IO.puts("muse #{Muse.Application.version_string()}")
+      System.halt(0)
+    end
+
     result = Application.ensure_all_started(:muse)
     Process.sleep(:infinity)
     # Unreachable — keeps type spec honest

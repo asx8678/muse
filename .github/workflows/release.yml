@@ -1,0 +1,68 @@
+# .github/workflows/release.yml
+#
+# Muse release workflow.
+#
+# Triggered when a tag matching v*.*.* is pushed, or manually via
+# workflow_dispatch.
+#
+# Builds the escript and Mix release artifacts, generates SHA256
+# checksums, and uploads everything to the GitHub Release.
+#
+# Uses only default GITHUB_TOKEN with least-privilege permissions.
+# No external provider calls, no secrets, no API keys.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and upload release artifacts
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        otp: ["27"]
+        elixir: ["1.17"]
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Erlang/OTP and Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+
+      - name: Cache Mix dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-
+
+      - name: Install Mix dependencies
+        run: mix deps.get --only prod
+
+      - name: Build release artifacts
+        run: ./script/build-release-artifacts
+
+      - name: Upload artifacts to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

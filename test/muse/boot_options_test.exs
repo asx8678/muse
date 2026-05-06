@@ -275,6 +275,36 @@ defmodule Muse.BootOptionsTest do
       opts = BootOptions.parse!(["--help"])
       assert opts.help? == true
     end
+
+    test "-h is alias for --help" do
+      opts = BootOptions.parse!(["-h"])
+      assert opts.help? == true
+    end
+  end
+
+  # -- Version flag --------------------------------------------------------------
+
+  describe "--version" do
+    test "sets version? to true" do
+      opts = BootOptions.parse!(["--version"])
+      assert opts.version? == true
+    end
+
+    test "version defaults to false" do
+      opts = BootOptions.parse!([])
+      assert opts.version? == false
+    end
+
+    test "-v is alias for --version" do
+      opts = BootOptions.parse!(["-v"])
+      assert opts.version? == true
+    end
+
+    test "--version and --no-web can be combined" do
+      opts = BootOptions.parse!(["--version", "--no-web"])
+      assert opts.version? == true
+      assert opts.web? == false
+    end
   end
 
   # -- Error cases ---------------------------------------------------------------

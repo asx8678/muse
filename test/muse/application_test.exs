@@ -18,6 +18,7 @@ defmodule Muse.ApplicationTest do
       port: 4000,
       watch?: true,
       help?: false,
+      version?: false,
       verbose?: false
     ]
 
@@ -295,12 +296,36 @@ defmodule Muse.ApplicationTest do
       assert @app_mod.help_text() =~ "--help"
     end
 
+    test "lists --version flag" do
+      assert @app_mod.help_text() =~ "--version"
+    end
+
+    test "lists -v short flag" do
+      assert @app_mod.help_text() =~ "-v"
+    end
+
     test "lists --tui flag" do
       assert @app_mod.help_text() =~ "--tui"
     end
 
     test "lists --verbose flag" do
       assert @app_mod.help_text() =~ "--verbose"
+    end
+  end
+
+  # -- version_string/0 -----------------------------------------------------------
+
+  describe "version_string/0" do
+    test "returns a non-empty string" do
+      vsn = @app_mod.version_string()
+      assert is_binary(vsn)
+      assert vsn != ""
+    end
+
+    test "returns version matching mix.exs" do
+      # Application.spec(:muse, :vsn) returns the version from the .app file
+      vsn = @app_mod.version_string()
+      assert vsn =~ ~r/^\d+\.\d+\.\d+/
     end
   end
 

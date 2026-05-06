@@ -16,6 +16,7 @@ defmodule Muse.BootOptions do
             workspace: nil,
             watch?: true,
             help?: false,
+            version?: false,
             verbose?: false
 
   @type cli_ui :: :repl | :tui | :none
@@ -29,6 +30,7 @@ defmodule Muse.BootOptions do
           workspace: String.t() | nil,
           watch?: boolean(),
           help?: boolean(),
+          version?: boolean(),
           verbose?: boolean()
         }
 
@@ -47,11 +49,13 @@ defmodule Muse.BootOptions do
     workspace: :string,
     verbose: :boolean,
     watch: :boolean,
-    help: :boolean
+    help: :boolean,
+    version: :boolean
   ]
 
   @aliases [
     h: :help,
+    v: :version,
     p: :port,
     w: :workspace
   ]
@@ -83,6 +87,7 @@ defmodule Muse.BootOptions do
     |> apply_watch(parsed)
     |> apply_verbose(parsed)
     |> apply_help(parsed)
+    |> apply_version(parsed)
     |> resolve_workspace!()
   end
 
@@ -204,6 +209,10 @@ defmodule Muse.BootOptions do
 
   defp apply_help(opts, parsed) do
     if parsed[:help], do: %{opts | help?: true}, else: opts
+  end
+
+  defp apply_version(opts, parsed) do
+    if parsed[:version], do: %{opts | version?: true}, else: opts
   end
 
   # -- Workspace resolution -----------------------------------------------------

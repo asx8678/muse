@@ -15,6 +15,9 @@
 # Runtime logs
 .muse/
 
+# Build artifacts directory (release build script output)
+/dist/
+
 # Editor / OS
 *.swp
 *.swo

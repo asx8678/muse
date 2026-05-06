@@ -25,6 +25,13 @@
 ### Phase 1 — Release/distribution and CI polish
 Package artifacts with checksums, install docs for all platforms, CI/CD release automation. No secrets in CI.
 
+Delivered:
+- `--version`/`-v` boot flag prints `muse <version>` and exits 0 without starting runtime children
+- `script/build-release-artifacts` builds escript + Mix release tarball, copies to `dist/`, generates SHA256SUMS
+- `.github/workflows/release.yml` — triggered on `v*.*.*` tags or `workflow_dispatch`, builds artifacts, uploads to GitHub Release using least-privilege `contents: write` permission
+- `docs/install.md` covers source, escript download (Linux/macOS), Mix release (TUI), Homebrew planned, WSL2 for Windows, and upgrade pathways
+- Release pipeline is secret-minimal: uses default `GITHUB_TOKEN`, no API keys or provider secrets
+
 ### Phase 2 — LiveView/TUI/CLI UX and browser QA hardening
 Browser QA suite (QA Kitten/Playwright), command discoverability, accessibility review, session panel polish.
 

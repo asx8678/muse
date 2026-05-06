@@ -263,6 +263,20 @@ execution.
 
 ---
 
+## Installation
+
+See the [Installation Guide](docs/install.md) for detailed instructions covering:
+
+- **Source/development install** — `git clone && mix deps.get && mix muse`
+- **Direct escript download** from GitHub Releases (Linux/macOS) with SHA256 verification
+- **Mix release** for TUI and native NIF support
+- **Homebrew** (planned; see [roadmap](docs/roadmap-v0.2.0.md))
+- **Windows** via WSL2
+- **Upgrade** instructions for escript, release, and source modes
+- **Smoke checks** to verify installation
+
+---
+
 ## Building an Escript
 
 Compile a self-contained executable:

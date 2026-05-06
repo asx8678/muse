@@ -39,6 +39,13 @@ defmodule Muse.CLI.Main do
     Application.put_env(:muse, :boot_args, args)
     Application.put_env(:muse, :source_mode?, source_mode?)
 
+    # Handle --version / -v before starting the application to avoid
+    # unnecessary dependency startup warnings.
+    if is_version_request?(args) do
+      IO.puts("muse #{Muse.Application.version_string()}")
+      System.halt(0)
+    end
+
     result = Application.ensure_all_started(:muse)
 
     sleep_fun.(:infinity)
@@ -46,5 +53,11 @@ defmodule Muse.CLI.Main do
     # Unreachable — sleep_fun(:infinity) never returns — but keeps the
     # type spec honest for callers that pattern-match on the result.
     result
+  end
+
+  @doc false
+  @spec is_version_request?([String.t()]) :: boolean()
+  def is_version_request?(args) do
+    "--version" in args or "-v" in args
   end
 end
