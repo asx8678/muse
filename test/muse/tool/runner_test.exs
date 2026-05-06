@@ -248,7 +248,8 @@ defmodule Muse.Tool.RunnerTest do
     test "list_muses returns muses", %{context: context} do
       result = Runner.run("list_muses", %{}, context)
       assert result.success
-      assert result.output.count == 4
+      # PR21: 6 Muses - memory, planning, coding, restoration, reviewing, testing
+      assert result.output.count == 6
     end
 
     test "list_skills returns empty list", %{context: context} do

@@ -346,7 +346,8 @@ defmodule Muse.CommandsTest do
     test "returns list of {command, description} tuples" do
       cmds = Commands.slash_commands()
       assert is_list(cmds)
-      assert length(cmds) == 46
+      # PR21: Added /memory, /memory compact, /memory clear, /handoff, /checkpoints, /restore
+      assert length(cmds) == 52
 
       for {cmd, desc} <- cmds do
         assert is_binary(cmd)
@@ -377,7 +378,8 @@ defmodule Muse.CommandsTest do
     test "returns list of maps with command and description keys" do
       cmds = Commands.slash_commands_json()
       assert is_list(cmds)
-      assert length(cmds) == 46
+      # PR21: Added /memory, /memory compact, /memory clear, /handoff, /checkpoints, /restore
+      assert length(cmds) == 52
 
       for cmd <- cmds do
         assert Map.has_key?(cmd, :command)

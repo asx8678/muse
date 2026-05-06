@@ -8,14 +8,16 @@ defmodule Muse.MuseRegistryTest do
     test "returns all registered profiles" do
       profiles = MuseRegistry.all()
 
-      assert length(profiles) == 4
+      # PR21: 6 profiles - memory, planning, coding, restoration, reviewing, testing
+      assert length(profiles) == 6
       assert Enum.all?(profiles, &(%MuseProfile{} = &1))
     end
 
     test "returns profiles in deterministic order" do
       ids = MuseRegistry.all() |> Enum.map(& &1.id)
 
-      assert ids == [:planning, :coding, :reviewing, :testing]
+      # PR21: includes memory and restoration
+      assert ids == [:memory, :planning, :coding, :restoration, :reviewing, :testing]
     end
 
     test "calling all/0 multiple times returns same order" do
@@ -28,7 +30,15 @@ defmodule Muse.MuseRegistryTest do
 
   describe "ids/0" do
     test "returns profile id atoms in deterministic order" do
-      assert MuseRegistry.ids() == [:planning, :coding, :reviewing, :testing]
+      # PR21: includes memory and restoration
+      assert MuseRegistry.ids() == [
+               :memory,
+               :planning,
+               :coding,
+               :restoration,
+               :reviewing,
+               :testing
+             ]
     end
   end
 
@@ -94,14 +104,16 @@ defmodule Muse.MuseRegistryTest do
       summaries = MuseRegistry.summaries()
 
       assert is_list(summaries)
-      assert length(summaries) == 4
+      # PR21: 6 profiles
+      assert length(summaries) == 6
       assert Enum.all?(summaries, &is_map/1)
     end
 
     test "summaries are in deterministic order" do
       ids = MuseRegistry.summaries() |> Enum.map(& &1.id)
 
-      assert ids == [:planning, :coding, :reviewing, :testing]
+      # PR21: includes memory and restoration
+      assert ids == [:memory, :planning, :coding, :restoration, :reviewing, :testing]
     end
 
     test "summaries contain expected keys" do
@@ -439,6 +451,115 @@ defmodule Muse.MuseRegistryTest do
     end
   end
 
+  describe "Memory Muse profile (PR21)" do
+    setup do
+      {:ok, memory: MuseRegistry.get(:memory)}
+    end
+
+    test "has correct identity fields", %{memory: memory} do
+      assert memory.id == :memory
+      assert memory.display_name == "Memory Muse"
+      assert memory.role == :memory
+      assert memory.description =~ ~r/compact|summarize|context/i
+    end
+
+    test "has no tools (compaction is internal)", %{memory: memory} do
+      assert memory.tools == []
+    end
+
+    test "has no permissions (cannot read/write/shell/network)", %{memory: memory} do
+      assert memory.permissions.read == false
+      assert memory.permissions.write == false
+      assert memory.permissions.shell == false
+      assert memory.permissions.network == false
+    end
+
+    test "cannot write", %{memory: memory} do
+      assert memory.can_write? == false
+    end
+
+    test "has no handoff targets", %{memory: memory} do
+      assert memory.handoff_targets == []
+    end
+
+    test "response mode is :memory", %{memory: memory} do
+      assert memory.response_mode == :memory
+    end
+
+    test "prompt mentions memory/summarize/secrets", %{memory: memory} do
+      assert memory.prompt =~ ~r/memory|summarize|context/i
+      assert memory.prompt =~ ~r/secret/i
+    end
+
+    test "display name uses Muse-first language", %{memory: memory} do
+      assert memory.display_name =~ "Muse"
+      refute memory.display_name =~ ~r/\bAgent\b/i
+      refute memory.display_name =~ ~r/\bBot\b/i
+    end
+  end
+
+  describe "Restoration Muse profile (PR21)" do
+    setup do
+      {:ok, restoration: MuseRegistry.get(:restoration)}
+    end
+
+    test "has correct identity fields", %{restoration: restoration} do
+      assert restoration.id == :restoration
+      assert restoration.display_name == "Restoration Muse"
+      assert restoration.role == :restoration
+      assert restoration.description =~ ~r/diagnose|restore|checkpoint/i
+    end
+
+    test "has read-only tools for diagnosis", %{restoration: restoration} do
+      assert "read_file" in restoration.tools
+      assert "repo_search" in restoration.tools
+      assert "git_status" in restoration.tools
+      assert "git_diff_readonly" in restoration.tools
+    end
+
+    test "has no write/patch tools", %{restoration: restoration} do
+      refute "patch_propose" in restoration.tools
+      refute "patch_apply" in restoration.tools
+      refute "write_file" in restoration.tools
+    end
+
+    test "has read-only permissions", %{restoration: restoration} do
+      assert restoration.permissions.read == true
+      assert restoration.permissions.write == false
+      assert restoration.permissions.shell == false
+      assert restoration.permissions.network == false
+    end
+
+    test "cannot write", %{restoration: restoration} do
+      assert restoration.can_write? == false
+    end
+
+    test "can handoff to planning", %{restoration: restoration} do
+      assert :planning in restoration.handoff_targets
+    end
+
+    test "response mode is :text", %{restoration: restoration} do
+      assert restoration.response_mode == :text
+    end
+
+    test "prompt mentions recovery/restore/approval", %{restoration: restoration} do
+      assert restoration.prompt =~ ~r/recover|restore|diagnose/i
+      assert restoration.prompt =~ ~r/approval/i
+    end
+
+    test "display name uses Muse-first language", %{restoration: restoration} do
+      assert restoration.display_name =~ "Muse"
+      refute restoration.display_name =~ ~r/\bAgent\b/i
+      refute restoration.display_name =~ ~r/\bBot\b/i
+    end
+
+    test "handoff targets are valid muse ids", %{restoration: restoration} do
+      for target <- restoration.handoff_targets do
+        assert MuseRegistry.get(target) != nil
+      end
+    end
+  end
+
   describe "profile isolation" do
     test "no profile has a :name field" do
       for profile <- MuseRegistry.all() do
@@ -460,11 +581,17 @@ defmodule Muse.MuseRegistryTest do
       end
     end
 
-    test "all profiles have non-empty tools list" do
-      for profile <- MuseRegistry.all() do
+    # Memory Muse has no tools - skip the tools check for it
+    test "non-memory profiles have non-empty tools list" do
+      for profile <- MuseRegistry.all(), profile.id != :memory do
         assert is_list(profile.tools)
         assert length(profile.tools) > 0
       end
+    end
+
+    test "memory profile has empty tools list" do
+      memory = MuseRegistry.get(:memory)
+      assert memory.tools == []
     end
 
     test "all profiles have permissions map" do
@@ -472,6 +599,15 @@ defmodule Muse.MuseRegistryTest do
         assert is_map(profile.permissions)
         assert Map.has_key?(profile.permissions, :read)
         assert Map.has_key?(profile.permissions, :write)
+      end
+    end
+
+    test "all handoff targets are valid muse ids" do
+      for profile <- MuseRegistry.all() do
+        for target <- profile.handoff_targets || [] do
+          assert MuseRegistry.get(target) != nil,
+                 "#{profile.display_name} handoff target #{target} not registered"
+        end
       end
     end
   end

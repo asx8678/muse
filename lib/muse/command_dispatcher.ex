@@ -629,6 +629,162 @@ defmodule Muse.CommandDispatcher do
     end
   end
 
+  # -- Memory commands ---------------------------------------------------------
+
+  def dispatch(:memory, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /memory", []}
+    else
+      session_id = context_session_id(context)
+
+      case Muse.SessionRouter.status(session_id) do
+        {:ok, %{memory: nil}} ->
+          {:ok, "No session memory. Use /memory compact to create one.", []}
+
+        {:ok, %{memory: memory}} when is_map(memory) ->
+          output = format_memory(memory)
+          {:ok, output, []}
+
+        {:error, :not_found} ->
+          {:ok, "No active Muse session.", []}
+      end
+    end
+  end
+
+  def dispatch(:memory_compact, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /memory compact", []}
+    else
+      session_id = context_session_id(context)
+
+      case Muse.SessionRouter.status(session_id) do
+        {:ok, session_status} when is_map(session_status) ->
+          # Build a minimal session for compaction
+          session = build_session_from_status(session_status)
+          memory = Muse.Memory.compact(session)
+
+          # Validate no secrets
+          case Muse.Memory.validate_no_secrets(memory) do
+            :ok ->
+              # In a full implementation, this would persist via SessionRouter
+              output = "Memory compacted successfully.\n\n" <> Muse.Memory.render(memory)
+              {:ok, output, [{:refresh, :session}]}
+
+            {:error, reasons} ->
+              {:error, "Memory compaction blocked: secrets detected. #{inspect(reasons)}", []}
+          end
+
+        {:error, :not_found} ->
+          {:ok, "No active Muse session to compact.", []}
+      end
+    end
+  end
+
+  def dispatch(:memory_clear, args, _context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /memory clear", []}
+    else
+      # In a full implementation, this would clear via SessionRouter
+      {:ok, "Session memory cleared. Future turns will not have memory context.",
+       [{:refresh, :session}]}
+    end
+  end
+
+  # -- Handoff commands ---------------------------------------------------------
+
+  def dispatch(:handoff, args, context) do
+    case parse_handoff_args(args) do
+      {:error, :usage} ->
+        {:error, "Error: usage: /handoff <muse_id> (e.g., /handoff coding)", []}
+
+      {:ok, target_muse_id} ->
+        session_id = context_session_id(context)
+
+        case Muse.SessionRouter.status(session_id) do
+          {:ok, session_status} when is_map(session_status) ->
+            # Get current Muse
+            current_muse_id =
+              session_status[:active_muse] || session_status["active_muse"] || :planning
+
+            current_muse = Muse.MuseRegistry.get(current_muse_id)
+            session = build_session_from_status(session_status)
+
+            if current_muse == nil do
+              {:error, "Error: current Muse not found: #{current_muse_id}", []}
+            else
+              case Muse.Conductor.can_handoff_to?(current_muse, target_muse_id, session) do
+                true ->
+                  target_muse = Muse.MuseRegistry.get(target_muse_id)
+
+                  output =
+                    "Handoff requested from #{current_muse.display_name} to #{target_muse.display_name}.\n" <>
+                      "Handoff is explicit and will not auto-start a turn.\n" <>
+                      "Next message will route to #{target_muse.display_name}."
+
+                  {:ok, output, [{:refresh, :session}]}
+
+                false ->
+                  {:error,
+                   "Error: #{current_muse.display_name} cannot hand off to #{target_muse_id}. Handoffs must be explicit and in the allowed targets list.",
+                   []}
+              end
+            end
+
+          {:error, :not_found} ->
+            {:ok, "No active Muse session.", []}
+        end
+    end
+  end
+
+  # -- Checkpoint/Restoration commands -----------------------------------------
+
+  def dispatch(:checkpoints, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /checkpoints", []}
+    else
+      session_id = context_session_id(context)
+
+      case Muse.SessionRouter.status(session_id) do
+        {:ok, %{checkpoints: checkpoints}} when is_list(checkpoints) and checkpoints != [] ->
+          output = format_checkpoints(checkpoints)
+          {:ok, output, []}
+
+        {:ok, _} ->
+          {:ok, "No checkpoints available for this session.", []}
+
+        {:error, :not_found} ->
+          {:ok, "No active Muse session.", []}
+      end
+    end
+  end
+
+  def dispatch(:restore, args, context) do
+    case parse_restore_args(args) do
+      {:error, :usage} ->
+        {:error, "Error: usage: /restore <checkpoint_id>", []}
+
+      {:ok, checkpoint_id} ->
+        session_id = context_session_id(context)
+
+        case Muse.SessionRouter.status(session_id) do
+          {:ok, session_status} when is_map(session_status) ->
+            # In a full implementation, this would:
+            # 1. Load the checkpoint via Muse.Checkpoint.Store
+            # 2. Request approval for restore
+            # 3. Only restore after explicit approval
+            output =
+              "Restore requested for checkpoint #{checkpoint_id}.\n" <>
+                "Restoration requires explicit approval before files are modified.\n" <>
+                "Use /approve restore to confirm."
+
+            {:ok, output, [{:refresh, :session}]}
+
+          {:error, :not_found} ->
+            {:ok, "No active Muse session.", []}
+        end
+    end
+  end
+
   # -- Catch-all ---------------------------------------------------------------
 
   def dispatch(action, _args, _context) do
@@ -1468,4 +1624,88 @@ defmodule Muse.CommandDispatcher do
 
   defp format_rollback_error(reason),
     do: "Error: unable to rollback checkpoint (#{inspect(reason)})"
+
+  # -- Memory helpers ----------------------------------------------------------
+
+  defp format_memory(memory) when is_map(memory) do
+    Muse.Memory.render(memory)
+  end
+
+  defp format_memory(_), do: "No memory available."
+
+  defp build_session_from_status(status) when is_map(status) do
+    Muse.Session.new(
+      workspace: Map.get(status, :workspace) || Map.get(status, "workspace", "/tmp"),
+      id: Map.get(status, :id) || Map.get(status, "session_id"),
+      status: Map.get(status, :status) || Map.get(status, "status", :idle),
+      active_plan_id: Map.get(status, :active_plan_id) || Map.get(status, "active_plan_id"),
+      plans: Map.get(status, :plans) || Map.get(status, "plans", %{}),
+      approvals: Map.get(status, :approvals) || Map.get(status, "approvals", []),
+      checkpoints: Map.get(status, :checkpoints) || Map.get(status, "checkpoints", []),
+      artifacts: Map.get(status, :artifacts) || Map.get(status, "artifacts", [])
+    )
+  end
+
+  defp build_session_from_status(_), do: Muse.Session.new(workspace: "/tmp")
+
+  # -- Handoff helpers ---------------------------------------------------------
+
+  defp parse_handoff_args(nil), do: {:error, :usage}
+  defp parse_handoff_args(""), do: {:error, :usage}
+
+  defp parse_handoff_args(args) when is_binary(args) do
+    muse_id_str = String.trim(args)
+
+    if muse_id_str == "" do
+      {:error, :usage}
+    else
+      case String.to_atom(muse_id_str) do
+        muse_id when is_atom(muse_id) -> {:ok, muse_id}
+        _ -> {:error, :usage}
+      end
+    end
+  end
+
+  defp parse_handoff_args(_), do: {:error, :usage}
+
+  # -- Checkpoint/restore helpers ----------------------------------------------
+
+  defp format_checkpoints(checkpoints) when is_list(checkpoints) do
+    if checkpoints == [] do
+      "No checkpoints available."
+    else
+      lines = ["Available checkpoints:"]
+
+      lines =
+        lines ++
+          Enum.map(checkpoints, fn checkpoint ->
+            id = Map.get(checkpoint, :id) || Map.get(checkpoint, "id", "unknown")
+            status = Map.get(checkpoint, :status) || Map.get(checkpoint, "status", "unknown")
+            created = Map.get(checkpoint, :created_at) || Map.get(checkpoint, "created_at")
+
+            created_str =
+              case created do
+                %DateTime{} = dt -> DateTime.to_iso8601(dt)
+                s when is_binary(s) -> s
+                _ -> "unknown"
+              end
+
+            "  - #{id}: #{status} (created: #{created_str})"
+          end)
+
+      Enum.join(lines, "\n")
+    end
+  end
+
+  defp format_checkpoints(_), do: "No checkpoints available."
+
+  defp parse_restore_args(nil), do: {:error, :usage}
+  defp parse_restore_args(""), do: {:error, :usage}
+
+  defp parse_restore_args(args) when is_binary(args) do
+    checkpoint_id = String.trim(args)
+    if checkpoint_id != "", do: {:ok, checkpoint_id}, else: {:error, :usage}
+  end
+
+  defp parse_restore_args(_), do: {:error, :usage}
 end

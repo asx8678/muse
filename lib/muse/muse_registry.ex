@@ -14,8 +14,10 @@ defmodule Muse.MuseRegistry do
 
   ## Registered profiles
 
+    * **Memory Muse** (`:memory`) — compacts session context safely without secrets
     * **Planning Muse** (`:planning`) — read-only, creates approval-gated plans
     * **Coding Muse** (`:coding`)    — implements approved plans via patches
+    * **Restoration Muse** (`:restoration`) — diagnoses failures and restores checkpoints
     * **Reviewing Muse** (`:reviewing`) — inspects diffs and reports findings/recommendations
     * **Testing Muse** (`:testing`)    — runs safe test commands and reports verification results
 
@@ -151,13 +153,73 @@ defmodule Muse.MuseRegistry do
     style: %{}
   }
 
+  @memory %MuseProfile{
+    id: :memory,
+    display_name: "Memory Muse",
+    role: :memory,
+    description:
+      "Summarizes session context into compact, durable memory without exposing secrets.",
+    prompt:
+      "You are the Memory Muse, the context preservation specialist inside Muse. " <>
+        "Your job is to summarize long sessions into compact, durable memory that helps " <>
+        "future turns without exposing hidden reasoning or secrets. " <>
+        "You must not preserve secrets, API keys, tokens, credentials, or sensitive file contents. " <>
+        "Preserve user goals, decisions, constraints, approved plans, changed files, and validation results. " <>
+        "Output a structured memory summary.",
+    tools: [],
+    permissions: %{
+      read: false,
+      write: false,
+      shell: false,
+      network: false
+    },
+    response_mode: :memory,
+    can_write?: false,
+    requires_plan_approval?: false,
+    handoff_targets: [],
+    style: %{}
+  }
+
+  @restoration %MuseProfile{
+    id: :restoration,
+    display_name: "Restoration Muse",
+    role: :restoration,
+    description: "Diagnoses failures and restores checkpoints to recover session state.",
+    prompt:
+      "You are the Restoration Muse, the recovery specialist inside Muse. " <>
+        "Your job is to help when Muse fails, crashes, applies a bad patch, or reaches " <>
+        "an inconsistent session state. " <>
+        "You may inspect session events, checkpoints, git status, and diffs. " <>
+        "You must not restore or modify files without explicit approval. " <>
+        "Explain recovery options and request approval before restore or rollback.",
+    tools: [
+      "read_file",
+      "repo_search",
+      "git_status",
+      "git_diff_readonly"
+    ],
+    permissions: %{
+      read: true,
+      write: false,
+      shell: false,
+      network: false
+    },
+    response_mode: :text,
+    can_write?: false,
+    requires_plan_approval?: false,
+    handoff_targets: [:planning],
+    style: %{}
+  }
+
   # Ordered by id for deterministic listing.  Add new profiles here and
   # in @profiles_by_id below.
-  @ordered_ids [:planning, :coding, :reviewing, :testing]
+  @ordered_ids [:memory, :planning, :coding, :restoration, :reviewing, :testing]
 
   @profiles_by_id %{
+    memory: @memory,
     planning: @planning,
     coding: @coding,
+    restoration: @restoration,
     reviewing: @reviewing,
     testing: @testing
   }

@@ -163,6 +163,117 @@ defmodule Muse.Conductor do
       end
   end
 
+  # -- Handoff API --------------------------------------------------------------
+
+  @doc """
+  Check if the current Muse can hand off to the target Muse.
+
+  Handoffs are explicit and controlled. A Muse may only hand off to
+  Muses listed in its `handoff_targets` field.
+
+  ## Safety
+
+  Handoffs are validated:
+  - Target Muse must be registered in MuseRegistry
+  - Source Muse must list target in its `handoff_targets`
+  - Session must be in a valid state for the handoff
+
+  ## Examples
+
+      iex> session = Muse.Session.new(workspace: "/tmp", status: :idle)
+      iex> planning = Muse.MuseRegistry.get(:planning)
+      iex> Muse.Conductor.can_handoff_to?(planning, :coding, session)
+      true
+
+      iex> memory = Muse.MuseRegistry.get(:memory)
+      iex> Muse.Conductor.can_handoff_to?(memory, :coding, session)
+      false
+  """
+  @spec can_handoff_to?(Muse.MuseProfile.t(), atom(), Session.t()) :: boolean()
+  def can_handoff_to?(source_muse, target_muse_id, _session) do
+    valid_muse_id?(target_muse_id) and
+      target_in_handoff_targets?(source_muse, target_muse_id)
+  end
+
+  @doc """
+  Request a handoff from the current Muse to a target Muse.
+
+  Returns `{:ok, handoff_event_spec}` if the handoff is valid,
+  or `{:error, reason}` if the handoff is not allowed.
+
+  The handoff event spec should be emitted by the SessionServer.
+  The handoff is explicit — it does not automatically start a turn
+  with the target Muse.
+
+  ## Options
+
+    * `:reason` — human-readable reason for the handoff
+    * `:context` — additional context data (sanitized)
+
+  ## Examples
+
+      iex> session = Muse.Session.new(workspace: "/tmp", status: :idle)
+      iex> planning = Muse.MuseRegistry.get(:planning)
+      iex> {:ok, spec} = Muse.Conductor.request_handoff(planning, :coding, session)
+      iex> spec
+      {:conductor, :muse_handoff_requested, %{...}, [...]}
+  """
+  @spec request_handoff(Muse.MuseProfile.t(), atom(), Session.t(), keyword()) ::
+          {:ok, event_spec()} | {:error, term()}
+  def request_handoff(source_muse, target_muse_id, session, opts \\ []) do
+    if can_handoff_to?(source_muse, target_muse_id, session) do
+      target_muse = MuseRegistry.get(target_muse_id)
+      reason = Keyword.get(opts, :reason, "explicit handoff request")
+      context = Keyword.get(opts, :context, %{})
+
+      sanitized_context = MetadataSanitizer.sanitize(context)
+
+      spec =
+        {:conductor, :muse_handoff_requested,
+         %{
+           source_muse_id: source_muse.id,
+           target_muse_id: target_muse_id,
+           target_muse_name: target_muse.display_name,
+           reason: reason,
+           context: sanitized_context,
+           session_status: session.status
+         }, [visibility: :user]}
+
+      {:ok, spec}
+    else
+      {:error, {:handoff_not_allowed, source_muse.id, target_muse_id}}
+    end
+  end
+
+  @doc """
+  Complete a handoff by updating the session's active Muse.
+
+  This is called by the SessionServer after the handoff is approved.
+  Returns `{:ok, session}` with the updated session or `{:error, reason}`.
+  """
+  @spec complete_handoff(Session.t(), atom()) :: {:ok, Session.t()} | {:error, term()}
+  def complete_handoff(session, target_muse_id) do
+    if valid_muse_id?(target_muse_id) do
+      session = %{session | active_muse: Atom.to_string(target_muse_id)}
+      {:ok, session}
+    else
+      {:error, {:invalid_target_muse, target_muse_id}}
+    end
+  end
+
+  # -- Handoff validation helpers ------------------------------------------------
+
+  defp valid_muse_id?(muse_id) when is_atom(muse_id) do
+    MuseRegistry.get(muse_id) != nil
+  end
+
+  defp valid_muse_id?(_), do: false
+
+  defp target_in_handoff_targets?(source_muse, target_muse_id) do
+    targets = source_muse.handoff_targets || []
+    target_muse_id in targets
+  end
+
   # -- Turn execution -----------------------------------------------------------
 
   defp execute_turn(session, turn, opts, start_time) do

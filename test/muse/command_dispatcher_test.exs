@@ -648,7 +648,8 @@ defmodule Muse.CommandDispatcherTest do
       {:ok, output, _effects} = CommandDispatcher.dispatch(:muses, nil, %{})
 
       assert output =~ "Muse registry"
-      assert output =~ "4 Muses available"
+      # PR21: 6 Muses - memory, planning, coding, restoration, reviewing, testing
+      assert output =~ "6 Muses available"
     end
 
     test "includes Planning Muse with registry description" do

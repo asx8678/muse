@@ -57,7 +57,13 @@ defmodule Muse.Commands do
     {"/reload", :reload, "Force dev reload"},
     {"/rollback", :rollback, "Roll back to last good generation"},
     {"/auth status", :auth_status, "Show auth credential status (redacted, read-only)"},
-    {"/session", :session_status, "Show Muse session status, active plan, and pending patch"}
+    {"/session", :session_status, "Show Muse session status, active plan, and pending patch"},
+    {"/memory", :memory, "Show session memory summary"},
+    {"/memory compact", :memory_compact, "Compact session context into memory (Memory Muse)"},
+    {"/memory clear", :memory_clear, "Clear session memory"},
+    {"/handoff", :handoff, "Request handoff to another Muse (e.g., /handoff coding)"},
+    {"/checkpoints", :checkpoints, "List available checkpoints for restoration"},
+    {"/restore", :restore, "Restore from a checkpoint (Restoration Muse)"}
   ]
 
   # Sort longest-prefix-first so "/simulate backend-error" matches before "/simulate"
