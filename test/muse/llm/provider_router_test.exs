@@ -25,9 +25,47 @@ defmodule Muse.LLM.ProviderRouterTest do
       assert ProviderRouter.resolve(config) == {:ok, OpenAICompatibleProvider}
     end
 
+    test "maps openrouter atom and string to OpenAICompatibleProvider" do
+      assert ProviderRouter.resolve(:openrouter) == {:ok, OpenAICompatibleProvider}
+      assert ProviderRouter.resolve("openrouter") == {:ok, OpenAICompatibleProvider}
+    end
+
+    test "maps openrouter ProviderConfig to OpenAICompatibleProvider" do
+      config = %ProviderConfig{id: "openrouter"}
+      assert ProviderRouter.resolve(config) == {:ok, OpenAICompatibleProvider}
+    end
+
+    test "maps ollama atom and string to OpenAICompatibleProvider" do
+      assert ProviderRouter.resolve(:ollama) == {:ok, OpenAICompatibleProvider}
+      assert ProviderRouter.resolve("ollama") == {:ok, OpenAICompatibleProvider}
+    end
+
+    test "maps ollama ProviderConfig to OpenAICompatibleProvider" do
+      config = %ProviderConfig{id: "ollama"}
+      assert ProviderRouter.resolve(config) == {:ok, OpenAICompatibleProvider}
+    end
+
+    test "maps anthropic atom and string to AnthropicProvider" do
+      anthropic_mod = Module.concat(Muse.LLM, AnthropicProvider)
+
+      assert ProviderRouter.resolve(:anthropic) == {:ok, anthropic_mod}
+      assert ProviderRouter.resolve("anthropic") == {:ok, anthropic_mod}
+    end
+
+    test "maps anthropic ProviderConfig to AnthropicProvider" do
+      anthropic_mod = Module.concat(Muse.LLM, AnthropicProvider)
+      config = %ProviderConfig{id: "anthropic"}
+
+      assert ProviderRouter.resolve(config) == {:ok, anthropic_mod}
+    end
+
     test "returns explicit errors for unknown providers" do
-      assert ProviderRouter.resolve(:anthropic) == {:error, {:unknown_provider, :anthropic}}
-      assert ProviderRouter.resolve("anthropic") == {:error, {:unknown_provider, "anthropic"}}
+      assert ProviderRouter.resolve(:totally_unknown_xyz) ==
+               {:error, {:unknown_provider, :totally_unknown_xyz}}
+
+      assert ProviderRouter.resolve("totally_unknown_xyz") ==
+               {:error, {:unknown_provider, "totally_unknown_xyz"}}
+
       assert ProviderRouter.resolve(nil) == {:error, {:unknown_provider, nil}}
     end
 

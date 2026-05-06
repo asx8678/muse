@@ -3,8 +3,8 @@ defmodule Muse.LLM.ProviderConfig do
   Provider configuration struct with validation, defaults, and redacted inspect.
 
   Supports configuration for all provider types — fake, OpenAI-compatible,
-  OpenRouter, Ollama — with safe validation that rejects unknown providers,
-  wire APIs, and transports.
+  OpenRouter, Ollama, Anthropic — with safe validation that rejects unknown
+  providers, wire APIs, and transports.
 
   ## Fields
 
@@ -13,7 +13,7 @@ defmodule Muse.LLM.ProviderConfig do
     * `id`                      — unique provider identifier (e.g. `"openai"`, `"fake"`)
     * `name`                    — human-readable name
     * `base_url`                — API base URL (nil for fake/no-network providers)
-    * `wire_api`                — `:responses` | `:chat_completions` | `nil`
+    * `wire_api`                — `:responses` | `:chat_completions` | `:anthropic_messages` | `nil`
     * `transport`               — `:none` | `:sse` | `:websocket` | `nil`
 
   The `wire_api` and `transport` fields can be overridden via `MUSE_WIRE_API`
@@ -46,8 +46,8 @@ defmodule Muse.LLM.ProviderConfig do
 
   `validate/1` returns `:ok` or `{:error, reason}`. It checks:
 
-    * Provider is a known atom (`:fake`, `:openai_compatible`)
-    * Wire API is known (`:responses`, `:chat_completions`, or nil)
+    * Provider is a known atom (`:fake`, `:openai_compatible`, `:openrouter`, `:ollama`, `:anthropic`)
+    * Wire API is known (`:responses`, `:chat_completions`, `:anthropic_messages`, or nil)
     * Transport is known (`:none`, `:sse`, `:websocket`, or nil)
     * Model is present when provider is not `:fake`
     * Base URL is valid HTTP(S) when provider is not `:fake`
@@ -69,7 +69,7 @@ defmodule Muse.LLM.ProviderConfig do
   """
 
   @type auth_mode :: :none | :api_key | :bearer_command | :codex_cache | :openai_oauth
-  @type wire_api :: :responses | :chat_completions | nil
+  @type wire_api :: :responses | :chat_completions | :anthropic_messages | nil
   @type transport :: :none | :sse | :websocket | nil
 
   @type t :: %__MODULE__{
@@ -118,15 +118,18 @@ defmodule Muse.LLM.ProviderConfig do
     max_retries: 2
   ]
 
-  @known_providers [:fake, :openai_compatible]
-  @known_wire_apis [:responses, :chat_completions]
+  @known_providers [:fake, :openai_compatible, :openrouter, :ollama, :anthropic]
+  @known_wire_apis [:responses, :chat_completions, :anthropic_messages]
   @known_transports [:none, :sse, :websocket]
 
   # Safe lookup from known provider strings to atoms — never creates new atoms
   # from user-controlled input, preventing atom-table exhaustion attacks.
   @known_provider_strings %{
     "fake" => :fake,
-    "openai_compatible" => :openai_compatible
+    "openai_compatible" => :openai_compatible,
+    "openrouter" => :openrouter,
+    "ollama" => :ollama,
+    "anthropic" => :anthropic
   }
 
   # ---------------------------------------------------------------------------
@@ -168,14 +171,21 @@ defmodule Muse.LLM.ProviderConfig do
   Passing an env map keeps the function pure and deterministic for tests and
   callers that already have configuration data.
 
-  Reads:
+  Reads (common):
     * `MUSE_PROVIDER` — provider identifier (default: `"fake"`)
     * `MUSE_MODEL` — model identifier (default: `"fake-planning-model"` for fake)
-    * `MUSE_OPENAI_BASE_URL` — required base URL for OpenAI-compatible providers
-    * `MUSE_WIRE_API` — wire API for OpenAI-compatible providers (default: `"responses"`)
-    * `MUSE_TRANSPORT` — transport for OpenAI-compatible providers (default: `"sse"`)
+    * `MUSE_WIRE_API` — wire API override (provider-specific defaults apply)
+    * `MUSE_TRANSPORT` — transport override (provider-specific defaults apply)
     * `MUSE_LLM_TIMEOUT_MS` — per-request timeout in ms (default: `120_000`)
     * `MUSE_LLM_MAX_RETRIES` — max retries (default: `2`, `0` for fake)
+
+  Provider-specific env vars:
+    * OpenAI: `MUSE_OPENAI_BASE_URL` (required for openai_compatible)
+    * OpenRouter: `MUSE_OPENROUTER_BASE_URL`, `MUSE_OPENROUTER_MODEL`,
+      `MUSE_OPENROUTER_API_KEY`
+    * Ollama: `MUSE_OLLAMA_BASE_URL`, `MUSE_OLLAMA_MODEL`
+    * Anthropic: `MUSE_ANTHROPIC_BASE_URL`, `MUSE_ANTHROPIC_MODEL`,
+      `MUSE_ANTHROPIC_API_KEY`
 
   Unknown `MUSE_WIRE_API` or `MUSE_TRANSPORT` values fall back to their defaults
   (`:responses` and `:sse` respectively) rather than raising — this mirrors
@@ -442,6 +452,7 @@ defmodule Muse.LLM.ProviderConfig do
   @spec parse_wire_api(String.t() | atom() | nil) :: wire_api() | nil
   def parse_wire_api("responses"), do: :responses
   def parse_wire_api("chat_completions"), do: :chat_completions
+  def parse_wire_api("anthropic_messages"), do: :anthropic_messages
   def parse_wire_api(atom) when atom in @known_wire_apis, do: atom
   def parse_wire_api(_), do: nil
 
@@ -468,6 +479,18 @@ defmodule Muse.LLM.ProviderConfig do
     openai_compatible_defaults(env_map, strict?)
   end
 
+  defp base_config(:openrouter, _provider_str, env_map, strict?) do
+    openrouter_defaults(env_map, strict?)
+  end
+
+  defp base_config(:ollama, _provider_str, env_map, strict?) do
+    ollama_defaults(env_map, strict?)
+  end
+
+  defp base_config(:anthropic, _provider_str, env_map, strict?) do
+    anthropic_defaults(env_map, strict?)
+  end
+
   defp base_config(:unknown, provider_str, _env_map, _strict?) do
     %__MODULE__{id: provider_str, name: provider_str}
   end
@@ -483,6 +506,15 @@ defmodule Muse.LLM.ProviderConfig do
 
   defp resolve_model(:fake, env_map),
     do: env_value(env_map, "MUSE_MODEL") || "fake-planning-model"
+
+  defp resolve_model(:openrouter, env_map),
+    do: env_value(env_map, "MUSE_MODEL") || env_value(env_map, "MUSE_OPENROUTER_MODEL")
+
+  defp resolve_model(:ollama, env_map),
+    do: env_value(env_map, "MUSE_MODEL") || env_value(env_map, "MUSE_OLLAMA_MODEL") || "llama3.1"
+
+  defp resolve_model(:anthropic, env_map),
+    do: env_value(env_map, "MUSE_MODEL") || env_value(env_map, "MUSE_ANTHROPIC_MODEL")
 
   defp resolve_model(_provider, env_map), do: env_value(env_map, "MUSE_MODEL")
 
@@ -512,6 +544,96 @@ defmodule Muse.LLM.ProviderConfig do
       env_key: "MUSE_OPENAI_API_KEY",
       supports_streaming: true,
       supports_websockets: true,
+      supports_tools: true,
+      max_tokens_per_session: 100_000,
+      max_api_calls_per_minute: 60
+    }
+  end
+
+  defp openrouter_defaults(env_map, _strict?) do
+    base_url = env_value(env_map, "MUSE_OPENROUTER_BASE_URL") || "https://openrouter.ai/api/v1"
+
+    wire_api =
+      case env_value(env_map, "MUSE_WIRE_API") do
+        nil -> :chat_completions
+        value -> parse_wire_api(value) || :chat_completions
+      end
+
+    transport =
+      case env_value(env_map, "MUSE_TRANSPORT") do
+        nil -> :sse
+        value -> parse_transport(value) || :sse
+      end
+
+    %__MODULE__{
+      id: "openrouter",
+      name: "OpenRouter",
+      base_url: base_url,
+      wire_api: wire_api,
+      transport: transport,
+      auth: :api_key,
+      env_key: "MUSE_OPENROUTER_API_KEY",
+      supports_streaming: true,
+      supports_websockets: false,
+      supports_tools: true,
+      max_tokens_per_session: 100_000,
+      max_api_calls_per_minute: 60
+    }
+  end
+
+  defp ollama_defaults(env_map, _strict?) do
+    base_url = env_value(env_map, "MUSE_OLLAMA_BASE_URL") || "http://127.0.0.1:11434/v1"
+
+    wire_api =
+      case env_value(env_map, "MUSE_WIRE_API") do
+        nil -> :chat_completions
+        value -> parse_wire_api(value) || :chat_completions
+      end
+
+    transport =
+      case env_value(env_map, "MUSE_TRANSPORT") do
+        nil -> :sse
+        value -> parse_transport(value) || :sse
+      end
+
+    %__MODULE__{
+      id: "ollama",
+      name: "Ollama",
+      base_url: base_url,
+      wire_api: wire_api,
+      transport: transport,
+      auth: :none,
+      supports_streaming: true,
+      supports_websockets: false,
+      supports_tools: true
+    }
+  end
+
+  defp anthropic_defaults(env_map, _strict?) do
+    base_url = env_value(env_map, "MUSE_ANTHROPIC_BASE_URL") || "https://api.anthropic.com/v1"
+
+    wire_api =
+      case env_value(env_map, "MUSE_WIRE_API") do
+        nil -> :anthropic_messages
+        value -> parse_wire_api(value) || :anthropic_messages
+      end
+
+    transport =
+      case env_value(env_map, "MUSE_TRANSPORT") do
+        nil -> :none
+        value -> parse_transport(value) || :none
+      end
+
+    %__MODULE__{
+      id: "anthropic",
+      name: "Anthropic",
+      base_url: base_url,
+      wire_api: wire_api,
+      transport: transport,
+      auth: :api_key,
+      env_key: "MUSE_ANTHROPIC_API_KEY",
+      supports_streaming: true,
+      supports_websockets: false,
       supports_tools: true,
       max_tokens_per_session: 100_000,
       max_api_calls_per_minute: 60

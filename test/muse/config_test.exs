@@ -52,6 +52,53 @@ defmodule Muse.ConfigTest do
       assert config.base_url == "https://api.openai.com/v1"
     end
 
+    test "MUSE_PROVIDER=openrouter resolves with defaults" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_MODEL" => "anthropic/claude-3.5-sonnet"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.id == "openrouter"
+      assert config.name == "OpenRouter"
+      assert config.base_url == "https://openrouter.ai/api/v1"
+      assert config.wire_api == :chat_completions
+      assert config.transport == :sse
+      assert config.auth == :api_key
+      assert config.env_key == "MUSE_OPENROUTER_API_KEY"
+      assert config.model == "anthropic/claude-3.5-sonnet"
+    end
+
+    test "MUSE_PROVIDER=ollama resolves with defaults and default model" do
+      env = %{"MUSE_PROVIDER" => "ollama"}
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.id == "ollama"
+      assert config.name == "Ollama"
+      assert config.base_url == "http://127.0.0.1:11434/v1"
+      assert config.wire_api == :chat_completions
+      assert config.transport == :sse
+      assert config.auth == :none
+      assert config.model == "llama3.1"
+    end
+
+    test "MUSE_PROVIDER=anthropic resolves with defaults" do
+      env = %{
+        "MUSE_PROVIDER" => "anthropic",
+        "MUSE_MODEL" => "claude-sonnet-4-20250514"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.id == "anthropic"
+      assert config.name == "Anthropic"
+      assert config.base_url == "https://api.anthropic.com/v1"
+      assert config.wire_api == :anthropic_messages
+      assert config.transport == :none
+      assert config.auth == :api_key
+      assert config.env_key == "MUSE_ANTHROPIC_API_KEY"
+      assert config.model == "claude-sonnet-4-20250514"
+    end
+
     test "MUSE_MODEL overrides model for fake provider" do
       env = %{"MUSE_MODEL" => "custom-fake-model"}
       assert {:ok, config} = Config.llm_provider_config(env)
@@ -67,6 +114,38 @@ defmodule Muse.ConfigTest do
 
       assert {:ok, config} = Config.llm_provider_config(env)
       assert config.base_url == "https://custom.api.example.com/v1"
+    end
+
+    test "MUSE_OPENROUTER_BASE_URL overrides OpenRouter base URL" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_MODEL" => "test",
+        "MUSE_OPENROUTER_BASE_URL" => "https://custom.openrouter.test/api/v1"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.base_url == "https://custom.openrouter.test/api/v1"
+    end
+
+    test "MUSE_OLLAMA_BASE_URL overrides Ollama base URL" do
+      env = %{
+        "MUSE_PROVIDER" => "ollama",
+        "MUSE_OLLAMA_BASE_URL" => "http://my-ollama:11434/v1"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.base_url == "http://my-ollama:11434/v1"
+    end
+
+    test "MUSE_ANTHROPIC_BASE_URL overrides Anthropic base URL" do
+      env = %{
+        "MUSE_PROVIDER" => "anthropic",
+        "MUSE_MODEL" => "test",
+        "MUSE_ANTHROPIC_BASE_URL" => "https://custom.anthropic.test/v1"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.base_url == "https://custom.anthropic.test/v1"
     end
 
     test "MUSE_LLM_TIMEOUT_MS overrides timeout" do
@@ -154,6 +233,68 @@ defmodule Muse.ConfigTest do
 
       assert {:error, reason} = Config.llm_provider_config(env)
       assert reason =~ "model is required"
+    end
+
+    test "openrouter without model returns error" do
+      env = %{"MUSE_PROVIDER" => "openrouter"}
+
+      assert {:error, reason} = Config.llm_provider_config(env)
+      assert reason =~ "model is required"
+    end
+
+    test "anthropic without model returns error" do
+      env = %{"MUSE_PROVIDER" => "anthropic"}
+
+      assert {:error, reason} = Config.llm_provider_config(env)
+      assert reason =~ "model is required"
+    end
+
+    test "ollama defaults to llama3.1 model when no model specified" do
+      env = %{"MUSE_PROVIDER" => "ollama"}
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.model == "llama3.1"
+    end
+
+    test "openrouter model from MUSE_OPENROUTER_MODEL" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_OPENROUTER_MODEL" => "google/gemini-pro"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.model == "google/gemini-pro"
+    end
+
+    test "ollama model from MUSE_OLLAMA_MODEL" do
+      env = %{
+        "MUSE_PROVIDER" => "ollama",
+        "MUSE_OLLAMA_MODEL" => "codellama"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.model == "codellama"
+    end
+
+    test "anthropic model from MUSE_ANTHROPIC_MODEL" do
+      env = %{
+        "MUSE_PROVIDER" => "anthropic",
+        "MUSE_ANTHROPIC_MODEL" => "claude-haiku-4-20250414"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.model == "claude-haiku-4-20250414"
+    end
+
+    test "MUSE_MODEL takes precedence over provider-specific model vars" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_MODEL" => "from-generic",
+        "MUSE_OPENROUTER_MODEL" => "from-specific"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.model == "from-generic"
     end
 
     test "openai_compatible with nil base_url (transport != :none) returns error" do

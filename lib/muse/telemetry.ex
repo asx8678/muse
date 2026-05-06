@@ -152,6 +152,17 @@ defmodule Muse.Telemetry do
   def provider_error, do: [:muse, :provider, :error]
 
   @doc """
+  Measurements for `[:muse, :provider, :error]`.
+
+  Accepts `duration_ms` and returns a measurements map.
+  """
+  @spec provider_error_measurements(duration_ms :: non_neg_integer()) :: :telemetry.measurements()
+  def provider_error_measurements(duration_ms)
+      when is_integer(duration_ms) and duration_ms >= 0 do
+    %{duration_ms: duration_ms}
+  end
+
+  @doc """
   Measurements for `[:muse, :provider, :stop]`.
 
   Accepts `duration_ms` and an optional map of token usage counts

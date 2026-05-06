@@ -6,9 +6,21 @@ defmodule Muse.LLM.ProviderRouter do
   clients, reads environment variables, performs network calls, or creates atoms
   from strings. Runtime code can use it after `Muse.Prompt.ModelPreparer` has
   converted configuration into a provider-neutral `Muse.LLM.Request`.
+
+  ## Known providers
+
+    * `fake`              → `Muse.LLM.FakeProvider`
+    * `openai_compatible` → `Muse.LLM.OpenAICompatibleProvider`
+    * `openrouter`        → `Muse.LLM.OpenAICompatibleProvider`
+    * `ollama`            → `Muse.LLM.OpenAICompatibleProvider`
+    * `anthropic`         → `Muse.LLM.AnthropicProvider`
   """
 
   alias Muse.LLM.{FakeProvider, OpenAICompatibleProvider, ProviderConfig}
+
+  # AnthropicProvider may not be compiled yet (parallel adapter), so resolve
+  # via Module.concat/2 to avoid compile-time dependency.
+  @anthropic_provider Module.concat(Muse.LLM, AnthropicProvider)
 
   @type provider_ref :: atom() | String.t() | ProviderConfig.t()
   @type error_reason :: {:unknown_provider, term()}
@@ -16,12 +28,18 @@ defmodule Muse.LLM.ProviderRouter do
 
   @provider_modules %{
     fake: FakeProvider,
-    openai_compatible: OpenAICompatibleProvider
+    openai_compatible: OpenAICompatibleProvider,
+    openrouter: OpenAICompatibleProvider,
+    ollama: OpenAICompatibleProvider,
+    anthropic: @anthropic_provider
   }
 
   @provider_strings %{
     "fake" => :fake,
-    "openai_compatible" => :openai_compatible
+    "openai_compatible" => :openai_compatible,
+    "openrouter" => :openrouter,
+    "ollama" => :ollama,
+    "anthropic" => :anthropic
   }
 
   @doc """

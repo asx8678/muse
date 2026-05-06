@@ -556,16 +556,339 @@ defmodule Muse.LLM.ProviderConfigTest do
   end
 
   # ---------------------------------------------------------------------------
+  # OpenRouter provider
+  # ---------------------------------------------------------------------------
+
+  describe "load/1 — openrouter provider" do
+    test "openrouter config succeeds with model" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_MODEL" => "anthropic/claude-3.5-sonnet"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.id == "openrouter"
+      assert config.name == "OpenRouter"
+      assert config.base_url == "https://openrouter.ai/api/v1"
+      assert config.wire_api == :chat_completions
+      assert config.transport == :sse
+      assert config.auth == :api_key
+      assert config.env_key == "MUSE_OPENROUTER_API_KEY"
+      assert config.model == "anthropic/claude-3.5-sonnet"
+      assert config.supports_streaming == true
+      assert config.supports_websockets == false
+      assert config.supports_tools == true
+    end
+
+    test "openrouter model from MUSE_OPENROUTER_MODEL" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_OPENROUTER_MODEL" => "google/gemini-pro"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.model == "google/gemini-pro"
+    end
+
+    test "MUSE_MODEL takes precedence over MUSE_OPENROUTER_MODEL" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_MODEL" => "anthropic/claude-3.5-sonnet",
+        "MUSE_OPENROUTER_MODEL" => "google/gemini-pro"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.model == "anthropic/claude-3.5-sonnet"
+    end
+
+    test "openrouter without model returns validation error" do
+      env = %{"MUSE_PROVIDER" => "openrouter"}
+
+      assert {:error, {:validation_error, reason}} = ProviderConfig.load(env)
+      assert reason =~ "model is required"
+    end
+
+    test "MUSE_OPENROUTER_BASE_URL overrides default base URL" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_MODEL" => "test-model",
+        "MUSE_OPENROUTER_BASE_URL" => "https://custom.openrouter.test/api/v1"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.base_url == "https://custom.openrouter.test/api/v1"
+    end
+
+    test "MUSE_WIRE_API and MUSE_TRANSPORT override defaults" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_MODEL" => "test-model",
+        "MUSE_WIRE_API" => "responses",
+        "MUSE_TRANSPORT" => "websocket"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.wire_api == :responses
+      assert config.transport == :websocket
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Ollama provider
+  # ---------------------------------------------------------------------------
+
+  describe "load/1 — ollama provider" do
+    test "ollama config succeeds with default model llama3.1" do
+      env = %{"MUSE_PROVIDER" => "ollama"}
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.id == "ollama"
+      assert config.name == "Ollama"
+      assert config.base_url == "http://127.0.0.1:11434/v1"
+      assert config.wire_api == :chat_completions
+      assert config.transport == :sse
+      assert config.auth == :none
+      assert config.model == "llama3.1"
+      assert config.supports_streaming == true
+      assert config.supports_websockets == false
+      assert config.supports_tools == true
+    end
+
+    test "ollama model from MUSE_OLLAMA_MODEL" do
+      env = %{
+        "MUSE_PROVIDER" => "ollama",
+        "MUSE_OLLAMA_MODEL" => "codellama"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.model == "codellama"
+    end
+
+    test "MUSE_MODEL takes precedence over MUSE_OLLAMA_MODEL" do
+      env = %{
+        "MUSE_PROVIDER" => "ollama",
+        "MUSE_MODEL" => "mistral",
+        "MUSE_OLLAMA_MODEL" => "codellama"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.model == "mistral"
+    end
+
+    test "MUSE_OLLAMA_BASE_URL overrides default base URL" do
+      env = %{
+        "MUSE_PROVIDER" => "ollama",
+        "MUSE_OLLAMA_BASE_URL" => "http://ollama-host:11434/v1"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.base_url == "http://ollama-host:11434/v1"
+    end
+
+    test "ollama has no auth (no API key needed)" do
+      env = %{"MUSE_PROVIDER" => "ollama"}
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.auth == :none
+      assert config.env_key == nil
+    end
+
+    test "ollama MUSE_WIRE_API and MUSE_TRANSPORT overrides" do
+      env = %{
+        "MUSE_PROVIDER" => "ollama",
+        "MUSE_WIRE_API" => "responses",
+        "MUSE_TRANSPORT" => "none"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.wire_api == :responses
+      assert config.transport == :none
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Anthropic provider
+  # ---------------------------------------------------------------------------
+
+  describe "load/1 — anthropic provider" do
+    test "anthropic config succeeds with model" do
+      env = %{
+        "MUSE_PROVIDER" => "anthropic",
+        "MUSE_MODEL" => "claude-sonnet-4-20250514"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.id == "anthropic"
+      assert config.name == "Anthropic"
+      assert config.base_url == "https://api.anthropic.com/v1"
+      assert config.wire_api == :anthropic_messages
+      assert config.transport == :none
+      assert config.auth == :api_key
+      assert config.env_key == "MUSE_ANTHROPIC_API_KEY"
+      assert config.model == "claude-sonnet-4-20250514"
+      assert config.supports_streaming == true
+      assert config.supports_websockets == false
+      assert config.supports_tools == true
+    end
+
+    test "anthropic model from MUSE_ANTHROPIC_MODEL" do
+      env = %{
+        "MUSE_PROVIDER" => "anthropic",
+        "MUSE_ANTHROPIC_MODEL" => "claude-haiku-4-20250414"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.model == "claude-haiku-4-20250414"
+    end
+
+    test "MUSE_MODEL takes precedence over MUSE_ANTHROPIC_MODEL" do
+      env = %{
+        "MUSE_PROVIDER" => "anthropic",
+        "MUSE_MODEL" => "claude-sonnet-4-20250514",
+        "MUSE_ANTHROPIC_MODEL" => "claude-haiku-4-20250414"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.model == "claude-sonnet-4-20250514"
+    end
+
+    test "anthropic without model returns validation error" do
+      env = %{"MUSE_PROVIDER" => "anthropic"}
+
+      assert {:error, {:validation_error, reason}} = ProviderConfig.load(env)
+      assert reason =~ "model is required"
+    end
+
+    test "MUSE_ANTHROPIC_BASE_URL overrides default base URL" do
+      env = %{
+        "MUSE_PROVIDER" => "anthropic",
+        "MUSE_MODEL" => "claude-sonnet-4-20250514",
+        "MUSE_ANTHROPIC_BASE_URL" => "https://custom.anthropic.test/v1"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.base_url == "https://custom.anthropic.test/v1"
+    end
+
+    test "anthropic wire_api defaults to :anthropic_messages" do
+      env = %{
+        "MUSE_PROVIDER" => "anthropic",
+        "MUSE_MODEL" => "claude-sonnet-4-20250514"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.wire_api == :anthropic_messages
+    end
+
+    test "MUSE_WIRE_API can override anthropic wire_api" do
+      env = %{
+        "MUSE_PROVIDER" => "anthropic",
+        "MUSE_MODEL" => "claude-sonnet-4-20250514",
+        "MUSE_WIRE_API" => "chat_completions"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.wire_api == :chat_completions
+    end
+
+    test "anthropic transport defaults to :none" do
+      env = %{
+        "MUSE_PROVIDER" => "anthropic",
+        "MUSE_MODEL" => "claude-sonnet-4-20250514"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.transport == :none
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # parse_wire_api with anthropic_messages
+  # ---------------------------------------------------------------------------
+
+  describe "parse_wire_api/1 — anthropic_messages" do
+    test "parses string \"anthropic_messages\"" do
+      assert ProviderConfig.parse_wire_api("anthropic_messages") == :anthropic_messages
+    end
+
+    test "passes through atom :anthropic_messages" do
+      assert ProviderConfig.parse_wire_api(:anthropic_messages) == :anthropic_messages
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # API key env values not stored/leaked
+  # ---------------------------------------------------------------------------
+
+  describe "API key safety for new providers" do
+    test "openrouter does not store API key value in config" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_MODEL" => "test-model",
+        "MUSE_OPENROUTER_API_KEY" => "sk-or-secret-should-not-appear"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.env_key == "MUSE_OPENROUTER_API_KEY"
+      refute inspect(Map.from_struct(config)) =~ "sk-or-secret-should-not-appear"
+    end
+
+    test "anthropic does not store API key value in config" do
+      env = %{
+        "MUSE_PROVIDER" => "anthropic",
+        "MUSE_MODEL" => "test-model",
+        "MUSE_ANTHROPIC_API_KEY" => "sk-ant-secret-should-not-appear"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.env_key == "MUSE_ANTHROPIC_API_KEY"
+      refute inspect(Map.from_struct(config)) =~ "sk-ant-secret-should-not-appear"
+    end
+
+    test "redacted_inspect does not leak API keys for openrouter" do
+      config = %ProviderConfig{
+        id: "openrouter",
+        name: "OpenRouter",
+        env_key: "MUSE_OPENROUTER_API_KEY",
+        headers: %{"Authorization" => "Bearer sk-or-redacted-test"}
+      }
+
+      safe = ProviderConfig.redacted_inspect(config)
+      refute safe =~ "sk-or-redacted-test"
+      assert safe =~ "REDACTED"
+    end
+
+    test "redacted_inspect does not leak API keys for anthropic" do
+      config = %ProviderConfig{
+        id: "anthropic",
+        name: "Anthropic",
+        env_key: "MUSE_ANTHROPIC_API_KEY",
+        headers: %{"x-api-key" => "sk-ant-redacted-test"}
+      }
+
+      safe = ProviderConfig.redacted_inspect(config)
+      refute safe =~ "sk-ant-redacted-test"
+      assert safe =~ "REDACTED"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
 
   describe "helper functions" do
-    test "known_providers/0 returns [:fake, :openai_compatible]" do
-      assert ProviderConfig.known_providers() == [:fake, :openai_compatible]
+    test "known_providers/0 returns all known provider atoms" do
+      assert :fake in ProviderConfig.known_providers()
+      assert :openai_compatible in ProviderConfig.known_providers()
+      assert :openrouter in ProviderConfig.known_providers()
+      assert :ollama in ProviderConfig.known_providers()
+      assert :anthropic in ProviderConfig.known_providers()
     end
 
-    test "known_wire_apis/0 returns [:responses, :chat_completions]" do
-      assert ProviderConfig.known_wire_apis() == [:responses, :chat_completions]
+    test "known_wire_apis/0 returns all known wire API atoms" do
+      assert :responses in ProviderConfig.known_wire_apis()
+      assert :chat_completions in ProviderConfig.known_wire_apis()
+      assert :anthropic_messages in ProviderConfig.known_wire_apis()
     end
 
     test "known_transports/0 returns [:none, :sse, :websocket]" do
