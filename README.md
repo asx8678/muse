@@ -54,7 +54,11 @@ Available providers:
 | `ollama` | `MUSE_PROVIDER=ollama` | Local Ollama (no auth) |
 | `anthropic` | `MUSE_PROVIDER=anthropic` | Anthropic Messages API |
 
-The default CLI/LiveView turn path stays on the fake provider unless execution is explicitly given a resolved provider config. For integration code, tests, or lower-level Conductor/SessionServer calls that opt into the real provider, use the environment/app-config contract below and pass the resolved `ProviderConfig` into turn execution; `/auth status` can inspect the same config read-only.
+The default CLI/LiveView turn path stays on the fake provider unless a non-fake `MUSE_PROVIDER` is set in the environment. When `MUSE_PROVIDER` is set to a non-fake provider (e.g. `openai_compatible`, `openrouter`, `ollama`, `anthropic`), LiveView chat submissions automatically route through the configured provider. In `MIX_ENV=test` and `MIX_ENV=smoke`, the fake provider is always used regardless of environment variables — no network calls are made.
+
+If a non-fake provider is configured but the configuration is invalid (e.g. missing model), an actionable error is shown in the UI instead of a silent fallback to the placeholder response.
+
+For integration code, tests, or lower-level Conductor/SessionServer calls that opt into the real provider, use the environment/app-config contract below and pass the resolved `ProviderConfig` into turn execution; `/auth status` can inspect the same config read-only.
 
 ```bash
 MUSE_PROVIDER=openai_compatible \

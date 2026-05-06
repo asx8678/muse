@@ -29,6 +29,7 @@ defmodule MuseWeb.HomeLive do
   import MuseWeb.ExportJSON, only: [json_safe: 1, build_diagnostics_payload: 1]
 
   alias Muse.EventStream
+  alias Muse.RuntimeProvider
   alias MuseWeb.BackendBridge
   alias MuseWeb.ConsoleCommand
 
@@ -123,13 +124,30 @@ defmodule MuseWeb.HomeLive do
           {:noreply, socket}
 
         {:message, msg} ->
-          try do
-            Muse.submit(:web, msg)
-            state = Muse.State.get()
-            {:noreply, socket |> assign(state: state, input: "") |> push_clear_command_input()}
-          rescue
-            e ->
-              socket = socket |> assign(input: text) |> add_toast(Exception.message(e), :error)
+          case RuntimeProvider.resolve_opts() do
+            {:ok, opts} ->
+              try do
+                Muse.submit(:web, msg, opts)
+                state = Muse.State.get()
+
+                {:noreply,
+                 socket
+                 |> assign(state: state, input: "")
+                 |> push_clear_command_input()}
+              rescue
+                e ->
+                  socket =
+                    socket |> assign(input: text) |> add_toast(Exception.message(e), :error)
+
+                  {:noreply, socket}
+              end
+
+            {:error, reason} ->
+              socket =
+                socket
+                |> assign(input: text)
+                |> add_toast("Provider config error: #{reason}", :error)
+
               {:noreply, socket}
           end
 

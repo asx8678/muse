@@ -29,12 +29,50 @@ defmodule Muse.SessionRouter do
   @doc """
   Submits user input to the session identified by `session_id`.
 
-  Returns `{:ok, assistant_text}` — the same shape as `Muse.submit/2`.
+  Returns `{:ok, assistant_text}` — the same shape as `Muse.submit/3`.
+
+  The `opts` keyword list is forwarded to `Muse.SessionServer.submit/4`
+  and ultimately to `Muse.Conductor.run/3`. Supported keys include
+  `:provider_env`, `:provider_config`, `:model_router_opts`,
+  `:provider_module`, and `:workspace`.
+
+  ## Calling conventions
+
+      # 2-arg: default session, source and text (backward compatible)
+      SessionRouter.submit(:web, "hello")  # session_id = "default"
+
+      # 3-arg: explicit session_id, source and text (backward compatible)
+      SessionRouter.submit("my-session", :web, "hello")
+
+      # 4-arg: explicit session_id, source, text, and opts
+      SessionRouter.submit("my-session", :web, "hello", provider_env: env)
   """
+
+  # 2-arg: source, text — uses default session id
+  @spec submit(atom(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def submit(source, text) when is_atom(source) and is_binary(text) do
+    submit(@default_session_id, source, text, [])
+  end
+
+  # 3-arg with string session_id: session_id, source, text (backward compatible)
   @spec submit(String.t(), atom(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def submit(session_id \\ @default_session_id, source, text) do
+  def submit(session_id, source, text)
+      when is_binary(session_id) and is_atom(source) and is_binary(text) do
+    submit(session_id, source, text, [])
+  end
+
+  # 3-arg with atom source: source, text, opts — uses default session id
+  @spec submit(atom(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def submit(source, text, opts) when is_atom(source) and is_binary(text) and is_list(opts) do
+    submit(@default_session_id, source, text, opts)
+  end
+
+  # 4-arg: session_id, source, text, opts
+  @spec submit(String.t(), atom(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def submit(session_id, source, text, opts)
+      when is_binary(session_id) and is_atom(source) and is_binary(text) and is_list(opts) do
     with {:ok, pid} <- find_or_start_session(session_id) do
-      Muse.SessionServer.submit(pid, source, text)
+      Muse.SessionServer.submit(pid, source, text, opts)
     end
   end
 

@@ -78,6 +78,7 @@ This section summarizes what is implemented through PR23 and what remains future
 | OpenRouter preset | PR23 | OpenRouter provider preset via OpenAI-compatible adapter |
 | Ollama preset | PR23 | Ollama local provider preset (no auth) |
 | Per-Muse model routing | PR23 | `ModelRouter` for per-Muse model/provider pinning via env or explicit opts |
+| Web runtime provider wiring | PR23 | `Muse.RuntimeProvider` routes LiveView submits through configured provider in dev/prod; fake in test/smoke |
 
 ### Not Yet Implemented (PR24+)
 

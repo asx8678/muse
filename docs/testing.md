@@ -20,6 +20,19 @@ mix test  # Full test suite, runs offline with fake provider
 
 All three must pass. CI enforces these gates automatically.
 
+### Runtime Provider Safety
+
+`Muse.RuntimeProvider` routes LiveView submits through the configured
+LLM provider in dev/prod. In `MIX_ENV=test` and `MIX_ENV=smoke`, it
+always returns empty opts, so the fake provider is used regardless of
+`MUSE_*` environment variables. This ensures `mix test` never makes
+network calls even if the developer's shell has provider env vars set.
+
+The `RuntimeProvider` test suite explicitly enables runtime provider
+resolution via `config :muse, :runtime_provider_enabled, true` to test
+the provider routing logic without network calls, using `MUSE_PROVIDER=fake`
+where needed.
+
 ### LiveView Browser Smoke (Optional)
 
 For HTTP-level verification of the running web interface:
