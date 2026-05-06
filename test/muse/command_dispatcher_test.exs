@@ -1442,4 +1442,53 @@ defmodule Muse.CommandDispatcherTest do
       assert {:error, "invalid"} = CommandDispatcher.normalize_log_filter("invalid")
     end
   end
+
+  # -- muse-avz: /memory display safety via Memory.render ----------------------
+  # The /memory command delegates to Memory.render/1 for map memory and
+  # format_memory_safely for non-map memory. Both now use key-aware
+  # structural redaction. These tests verify the end-to-end safety of
+  # the /memory display path by exercising Memory.render/1 directly,
+  # which is the same code path used by format_memory/1.
+
+  describe "/memory display — tuple-pair safety via Memory.render" do
+    test "/memory path: tuple-pair secret in canonical memory is redacted" do
+      # format_memory/1 calls Memory.render/1 for map memory
+      memory = %{
+        user_goal: "Build app",
+        project_facts: [{:password, "dispatcher-leak"}],
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [{"api_key", "plain-dispatcher-leak"}],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_avz_disp"
+      }
+
+      rendered = Muse.Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "dispatcher-leak"
+      refute rendered =~ "plain-dispatcher-leak"
+    end
+
+    test "/memory path: map with sensitive keys in canonical memory is redacted" do
+      memory = %{
+        user_goal: "Build app",
+        project_facts: [%{password: "map-dispatcher-leak"}],
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_avz_disp2"
+      }
+
+      rendered = Muse.Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "map-dispatcher-leak"
+    end
+  end
 end

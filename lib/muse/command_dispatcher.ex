@@ -1659,8 +1659,12 @@ defmodule Muse.CommandDispatcher do
   end
 
   defp format_memory_safely(memory) do
-    # Non-map, non-binary memory (lists, tuples, etc.) — inspect + redact.
+    # Non-map, non-binary memory (lists, tuples, etc.) — apply structural
+    # redaction first to catch sensitive-key values in nested terms, then
+    # convert to string and apply string-level pattern redaction.
     memory
+    |> Muse.EventPayloadRedactor.redact()
+    |> Muse.Prompt.Redactor.redact_term()
     |> inspect(limit: 20, printable_limit: 500)
     |> Muse.EventPayloadRedactor.redact_string()
     |> Muse.Prompt.Redactor.redact_text()

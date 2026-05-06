@@ -397,10 +397,24 @@ defmodule Muse.Memory do
     sensitive_key_reasons(full_path) ++ kw_reasons
   end
 
-  # 2-tuples: treat as key-value pair if first element is an atom.
-  # This catches {:password, "hunter2"} where the first element is a
-  # sensitive key.
+  # 2-tuples: treat as key-value pair if first element is an atom or binary.
+  # This catches {:password, "hunter2"} and {"api_key", "plain"} where the
+  # first element is a sensitive key.
   defp check_for_secrets(key, {k, v}, path) when is_atom(k) do
+    full_path = path ++ [key]
+
+    key_reasons =
+      if sensitive_key?(k) do
+        ["Sensitive key #{format_path(full_path ++ [k])} with value present"]
+      else
+        []
+      end
+
+    value_reasons = check_for_secrets(k, v, full_path)
+    sensitive_key_reasons(full_path) ++ key_reasons ++ value_reasons
+  end
+
+  defp check_for_secrets(key, {k, v}, path) when is_binary(k) do
     full_path = path ++ [key]
 
     key_reasons =
@@ -423,7 +437,7 @@ defmodule Muse.Memory do
       |> Tuple.to_list()
       |> Enum.with_index()
       |> Enum.flat_map(fn {elem, idx} ->
-        check_for_secrets(:"[#{idx}]", elem, full_path)
+        check_for_secrets("[#{idx}]", elem, full_path)
       end)
 
     sensitive_key_reasons(full_path) ++ tuple_reasons
@@ -471,7 +485,7 @@ defmodule Muse.Memory do
     list_reasons =
       Enum.with_index(value)
       |> Enum.flat_map(fn {elem, idx} ->
-        check_for_secrets(:"[#{idx}]", elem, full_path)
+        check_for_secrets("[#{idx}]", elem, full_path)
       end)
 
     sensitive_key_reasons(full_path) ++ charlist_reasons ++ list_reasons
@@ -609,20 +623,15 @@ defmodule Muse.Memory do
 
   # -- Private: Memory redaction --------------------------------------------------
 
-  # Redact all string values in the memory artifact through the full
-  # redaction pipeline (EventPayloadRedactor + Prompt.Redactor) before
-  # rendering. This ensures that even if secrets were somehow stored,
-  # they are never rendered raw.
+  # Redact all values in the memory artifact through the full redaction
+  # pipeline before rendering. Applies key-aware structural redaction
+  # (EventPayloadRedactor + Prompt.Redactor) to ALL artifact fields — not
+  # just :open_issues — then converts to strings and applies string-level
+  # pattern redaction as a final pass. This ensures that even malformed
+  # nested terms (maps, tuples with sensitive keys, etc.) cannot leak
+  # secret values through rendering.
   defp redact_memory(memory) do
-    memory
-    |> redact_memory_strings()
-    |> redact_memory_maps()
-  end
-
-  # Redact top-level string fields and list-of-strings fields.
-  # Works with both canonical memory_artifact maps and arbitrary maps.
-  defp redact_memory_strings(memory) do
-    list_of_strings_keys =
+    list_keys =
       [
         :project_facts,
         :decisions_made,
@@ -636,22 +645,10 @@ defmodule Muse.Memory do
     memory
     |> safe_update(:user_goal, &redact_optional_string/1)
     |> then(fn mem ->
-      Enum.reduce(list_of_strings_keys, mem, fn key, acc ->
+      Enum.reduce(list_keys, mem, fn key, acc ->
         safe_update(acc, key, fn list ->
-          Enum.map(list, &redact_string_value/1)
+          Enum.map(list, &redact_term_value/1)
         end)
-      end)
-    end)
-  end
-
-  # Redact map values in list fields (e.g., open_issues containing maps).
-  # Works with both canonical memory_artifact maps and arbitrary maps.
-  defp redact_memory_maps(memory) do
-    map_list_keys = [:open_issues]
-
-    Enum.reduce(map_list_keys, memory, fn key, acc ->
-      safe_update(acc, key, fn list ->
-        Enum.map(list, &redact_term_value/1)
       end)
     end)
   end
@@ -672,8 +669,10 @@ defmodule Muse.Memory do
   defp redact_optional_string(nil), do: nil
   defp redact_optional_string(str) when is_binary(str), do: redact_string_value(str)
 
-  defp redact_optional_string(other),
-    do: redact_string_value(inspect(other, limit: 10, printable_limit: 200))
+  # Non-string user_goal: apply key-aware structural redaction before
+  # converting to string, so sensitive-key values in nested terms are
+  # never leaked via raw inspect.
+  defp redact_optional_string(other), do: redact_term_value(other)
 
   # Redact private key headers that don't have the full BEGIN...END block.
   # Prompt.Redactor.redact_text only matches the full block pattern, so
@@ -687,26 +686,29 @@ defmodule Muse.Memory do
     |> redact_private_key_header()
   end
 
-  defp redact_string_value(other),
-    do: redact_string_value(inspect(other, limit: 10, printable_limit: 200))
-
   defp redact_private_key_header(str) when is_binary(str) do
     Regex.replace(@private_key_header_pattern, str, "[REDACTED]")
   end
 
+  # Redact any term value for safe rendering. Always returns a string
+  # so that section rendering functions (which use string concatenation)
+  # cannot crash on non-string elements.
+  #
+  # For complex terms (maps, tuples, lists), applies key-aware structural
+  # redaction first (EventPayloadRedactor + Prompt.Redactor), then converts
+  # to a bounded inspect string, then applies string-level pattern redaction
+  # as a final pass. This two-phase approach catches both:
+  #   - sensitive-key values (e.g. {:password, "hunter2"}) via structural redaction
+  #   - secret patterns in values (e.g. "sk-abc123") via string redaction
   defp redact_term_value(term) when is_binary(term), do: redact_string_value(term)
 
-  defp redact_term_value(term) when is_map(term),
-    do: EventPayloadRedactor.redact(term) |> Redactor.redact_term()
-
-  defp redact_term_value(term) when is_list(term),
-    do: EventPayloadRedactor.redact(term) |> Redactor.redact_term()
-
-  defp redact_term_value(term) when is_tuple(term),
-    do: EventPayloadRedactor.redact(term) |> Redactor.redact_term()
-
-  defp redact_term_value(term),
-    do: redact_string_value(inspect(term, limit: 10, printable_limit: 200))
+  defp redact_term_value(term) do
+    term
+    |> EventPayloadRedactor.redact()
+    |> Redactor.redact_term()
+    |> inspect(limit: 10, printable_limit: 200)
+    |> redact_string_value()
+  end
 
   defp facts_section(%{project_facts: []}), do: nil
 

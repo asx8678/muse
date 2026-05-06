@@ -556,6 +556,113 @@ defmodule Muse.Prompt.AssemblerTest do
       assert memory_layer != nil
       assert memory_layer.content =~ "notes"
     end
+
+    # -- muse-avz: Tuple-pair secret redaction in provider-bound memory ---------
+
+    test "arbitrary map memory with tuple-pair secrets does not leak values", %{
+      session: session,
+      profile: profile
+    } do
+      # Non-canonical map with a sensitive-key tuple value
+      session_with_secret = %{
+        session
+        | memory: %{notes: {:password, "tuple-leak"}}
+      }
+
+      bundle =
+        Assembler.build(session_with_secret, profile, "hello",
+          id: "pb_tuple_secret",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      refute memory_layer.content =~ "tuple-leak"
+    end
+
+    test "arbitrary map memory with string-key tuple secrets does not leak", %{
+      session: session,
+      profile: profile
+    } do
+      session_with_secret = %{
+        session
+        | memory: %{config: {"api_key", "plain-text"}}
+      }
+
+      bundle =
+        Assembler.build(session_with_secret, profile, "hello",
+          id: "pb_str_tuple_secret",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      refute memory_layer.content =~ "plain-text"
+    end
+
+    test "canonical memory with tuple-pair secrets in list fields does not leak", %{
+      session: session,
+      profile: profile
+    } do
+      # Canonical memory artifact with sensitive tuple-pair in :open_issues
+      canonical_memory = %{
+        user_goal: "Build app",
+        project_facts: [],
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [{:password, "canonical-leak"}],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_avz"
+      }
+
+      session_with_canonical = %{session | memory: canonical_memory}
+
+      bundle =
+        Assembler.build(session_with_canonical, profile, "hello",
+          id: "pb_canonical_tuple",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      refute memory_layer.content =~ "canonical-leak"
+    end
+
+    test "canonical memory with tuple-pair secrets in non-open_issues fields does not leak",
+         %{session: session, profile: profile} do
+      canonical_memory = %{
+        user_goal: "Build app",
+        project_facts: [{:secret, "fact-leak"}],
+        decisions_made: [],
+        approved_plans: [{:token, "plan-leak"}],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_avz2"
+      }
+
+      session_with_canonical = %{session | memory: canonical_memory}
+
+      bundle =
+        Assembler.build(session_with_canonical, profile, "hello",
+          id: "pb_canonical_other_fields",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      memory_layer = Enum.find(bundle.layers, &(&1.id == :memory_summary))
+      assert memory_layer != nil
+      refute memory_layer.content =~ "fact-leak"
+      refute memory_layer.content =~ "plan-leak"
+    end
   end
 
   describe "build/4 no dynamic atom creation" do

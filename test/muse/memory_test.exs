@@ -398,4 +398,167 @@ defmodule Muse.MemoryTest do
       assert length(reasons) > 0
     end
   end
+
+  # -- muse-avz: Security regression tests for malformed nested terms -----------
+
+  describe "validate_no_secrets/1 — string-key 2-tuples" do
+    test "rejects string-key 2-tuples with sensitive keys" do
+      # {"api_key", "plain"} must be flagged even though the value
+      # doesn't match a secret pattern.
+      memory = Memory.new(open_issues: [{"api_key", "plain"}])
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "rejects nested string-key 2-tuples with sensitive keys" do
+      memory = Memory.new(open_issues: [{:config, {"private_key", "pem data"}}])
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "rejects deeply nested string-key 2-tuples" do
+      memory =
+        Memory.new(open_issues: [{:layer1, {:layer2, {"secret", "deep-value"}}}])
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "allows string-key 2-tuples with non-sensitive keys" do
+      memory = Memory.new(open_issues: [{"name", "Alice"}])
+
+      assert :ok = Memory.validate_no_secrets(memory)
+    end
+  end
+
+  describe "render/1 — sensitive tuple-pair redaction" do
+    test "does not leak raw value for atom-key tuple {password, hunter2}" do
+      memory = Memory.new(open_issues: [{:password, "hunter2"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "hunter2"
+    end
+
+    test "does not leak raw value for string-key tuple {api_key, plain}" do
+      memory = Memory.new(open_issues: [{"api_key", "plain"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "plain"
+    end
+
+    test "does not leak sensitive values in nested tuples" do
+      memory = Memory.new(open_issues: [{:config, {:token, "secret-value"}}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "secret-value"
+    end
+  end
+
+  describe "render/1 — all artifact fields get structural redaction" do
+    test "redacts sensitive tuple-pair values in :project_facts" do
+      memory = Memory.new(project_facts: [{:password, "leaky"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "leaky"
+    end
+
+    test "redacts sensitive tuple-pair values in :decisions_made" do
+      memory = Memory.new(decisions_made: [{:secret, "decision-value"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "decision-value"
+    end
+
+    test "redacts sensitive tuple-pair values in :approved_plans" do
+      memory = Memory.new(approved_plans: [{:token, "plan-token"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "plan-token"
+    end
+
+    test "redacts sensitive tuple-pair values in :changes_completed" do
+      memory = Memory.new(changes_completed: [{:api_key, "change-key"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "change-key"
+    end
+
+    test "redacts sensitive tuple-pair values in :validation_results" do
+      memory = Memory.new(validation_results: [{:password, "val-pass"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "val-pass"
+    end
+
+    test "redacts sensitive tuple-pair values in :useful_conventions" do
+      memory = Memory.new(useful_conventions: [{:secret, "conv-secret"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "conv-secret"
+    end
+
+    test "redacts sensitive map values in non-open_issues fields" do
+      memory = Memory.new(project_facts: [%{password: "map-leak"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "map-leak"
+    end
+
+    test "redacts sensitive string-key map values in all list fields" do
+      memory = Memory.new(decisions_made: [%{"api_key" => "dec-key"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "dec-key"
+    end
+  end
+
+  describe "render/1 — safe non-sensitive memory renders usefully" do
+    test "safe memory with non-sensitive tuples renders without crash" do
+      memory = Memory.new(open_issues: [{:status, "ok"}, {"name", "test"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      # Non-sensitive values should still appear
+      assert rendered =~ "ok" or rendered =~ "status"
+    end
+
+    test "safe memory with maps renders usefully" do
+      memory = Memory.new(project_facts: [%{name: "Elixir"}, %{name: "OTP"}])
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+    end
+  end
+
+  describe "validate_no_secrets/1 — no dynamic atom creation" do
+    test "validator uses string path segments instead of dynamic atoms" do
+      # Create memory with a list that forces index-based recursion.
+      # The validator should not create atoms like :"[0]", :"[1]" for
+      # path segments. We verify this indirectly by checking that the
+      # error messages use string-style path formatting (e.g. "[0]")
+      # rather than atom-style formatting.
+      memory = Memory.new(open_issues: [[%{password: "nested-list-value"}]])
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      # The path should contain string-style index segments
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+      # Verify path format uses strings, not atoms
+      path_reason = Enum.find(reasons, &String.contains?(&1, "Sensitive key"))
+      # Path segments should be dot-separated strings like "[0]", not atoms
+      refute path_reason =~ ~r/:\"\[/
+    end
+  end
 end
