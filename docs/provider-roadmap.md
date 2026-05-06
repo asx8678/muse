@@ -2,34 +2,37 @@
 
 > **Companion docs:** [Architecture](architecture.md) · [Prompts](prompts.md) · [Testing](testing.md) · [Security](security.md) · [Executive Summary](../PLAN.md)
 >
-> **Canonical source:** Provider sequencing, fake-provider behavior, provider configuration, OpenAI-compatible wire mapping, transports, and auth roadmap.
+> **Canonical source:** Provider sequencing, fake-provider behavior, provider configuration, OpenAI-compatible wire mapping, transports, auth resolution, and streaming implementation status through PR21.
+>
+> **Status (PR21):** Fake provider (default), OpenAI-compatible provider (Chat Completions non-streaming + SSE streaming), Responses WebSocket transport, and auth layer are implemented. Additional providers and model routing are PR23+.
 
 ---
 
 ## Table of Contents
 
 1. [Implementation Principle](#1-implementation-principle)
-2. [Fake Provider](#2-fake-provider)
-   - 2.1 [Scenarios](#21-scenarios)
-   - 2.2 [Scriptable Test API](#22-scriptable-test-api)
-3. [Provider Environment Variables](#3-provider-environment-variables)
-   - 3.1 [Initial (Fake)](#31-initial-fake)
-   - 3.2 [OpenAI-Compatible (Later)](#32-openai-compatible-later)
-   - 3.3 [App Config Example](#33-app-config-example)
-4. [Configuration Validation at Startup](#4-configuration-validation-at-startup)
-5. [OpenAI-Compatible Non-Streaming Provider](#5-openai-compatible-non-streaming-provider)
-6. [OpenAI Responses Request Mapper](#6-openai-responses-request-mapper)
-7. [Chat Completions Request Mapper](#7-chat-completions-request-mapper)
-8. [HTTP SSE Transport](#8-http-sse-transport)
-9. [OpenAI Responses WebSocket Transport](#9-openai-responses-websocket-transport)
-10. [Auth Layer](#10-auth-layer)
-    - 10.1 [Auth Modes](#101-auth-modes)
-    - 10.2 [Implementation Order](#102-implementation-order)
-    - 10.3 [Commands](#103-commands)
-    - 10.4 [Recommended Behavior](#104-recommended-behavior)
-    - 10.5 [Credential Shape](#105-credential-shape)
-    - 10.6 [Security Rules](#106-security-rules)
-11. [External API References to Verify](#11-external-api-references-to-verify)
+2. [Current Implementation Status (PR21)](#2-current-implementation-status-pr21)
+3. [Fake Provider](#3-fake-provider)
+   - 3.1 [Scenarios](#31-scenarios)
+   - 3.2 [Scriptable Test API](#32-scriptable-test-api)
+4. [Provider Environment Variables](#4-provider-environment-variables)
+   - 4.1 [Initial (Fake)](#41-initial-fake)
+   - 4.2 [OpenAI-Compatible](#42-openai-compatible)
+   - 4.3 [App Config Example](#43-app-config-example)
+5. [Configuration Validation at Startup](#5-configuration-validation-at-startup)
+6. [OpenAI-Compatible Non-Streaming Provider](#6-openai-compatible-non-streaming-provider)
+7. [OpenAI Responses Request Mapper](#7-openai-responses-request-mapper)
+8. [Chat Completions Request Mapper](#8-chat-completions-request-mapper)
+9. [HTTP SSE Transport](#9-http-sse-transport)
+10. [OpenAI Responses WebSocket Transport](#10-openai-responses-websocket-transport)
+11. [Auth Layer](#11-auth-layer)
+    - 11.1 [Auth Modes](#111-auth-modes)
+    - 11.2 [Implementation Status](#112-implementation-status)
+    - 11.3 [Commands](#113-commands)
+    - 11.4 [Resolution Behavior](#114-resolution-behavior)
+    - 11.5 [Credential Shape](#115-credential-shape)
+    - 11.6 [Security Rules](#116-security-rules)
+12. [External API References to Verify](#12-external-api-references-to-verify)
 
 ---
 
@@ -56,11 +59,48 @@ PR09 approval boundary reminder:
 
 ---
 
-## 2. Fake Provider
+## 2. Current Implementation Status (PR21)
+
+This section summarizes what is implemented through PR21 and what remains future work.
+
+### Implemented (PR09–PR21)
+
+| Feature | PR | Description |
+|---|---|---|
+| Fake provider | PR09 | Offline, deterministic responses for testing. Default provider. |
+| OpenAI-compatible non-streaming | PR12 | Chat Completions POST via `Req`, `RequestBuilder`, `ChatCompletionsDecoder` |
+| Auth layer | PR13 | `Muse.Auth.Resolver`, `ApiKey`, `BearerCommand`, `CodexCache`, `Credential`, `/auth status` |
+| SSE streaming | PR14 | `SSE.Parser`, `ChatCompletionsStreamDecoder`, `ReqStream`, SSE transport path |
+| Responses WebSocket | PR15 | `ResponsesStreamDecoder`, `ResponsesWebSocket.RequestBuilder`, WebSocket transport lifecycle |
+| External WebSocket channel | PR16 | Optional Phoenix channel for non-LiveView clients, read-only, filtered, disabled by default |
+| Patch proposal approval | PR17 | `patch_propose` tool, patch approval lifecycle (no apply authority) |
+
+### Not Yet Implemented (PR23+)
+
+| Feature | PR | Description |
+|---|---|---|
+| Additional providers | PR23 | Anthropic, Azure OpenAI, Ollama, OpenRouter adapters |
+| Model routing | PR23+ | Per-session model selection, fallback routing, cost/performance optimization |
+| Responses HTTP execution | Future | Provider dispatch to `{base_url}/responses` (mapper exists) |
+| Native OAuth | Future | Browser-based sign-in without Codex CLI bridge |
+| Codex CLI bridge | Future | `codex login` shelling-out for auth flows |
+
+### Default Provider Behavior
+
+```text
+MUSE_PROVIDER unset or "fake" → Muse.LLM.FakeProvider (offline, deterministic)
+MUSE_PROVIDER=openai_compatible → Muse.LLM.OpenAICompatibleProvider (real HTTP)
+```
+
+The fake provider is the **default**. Running `mix muse` or `mix test` without provider env vars uses the fake provider and requires no API key, no network, and no auth configuration. This is the Muse-first offline-by-default experience.
+
+---
+
+## 3. Fake Provider
 
 The fake provider (`Muse.LLM.FakeProvider`) implements the `Muse.LLM.Provider` behavior and produces scripted, deterministic responses for testing and development.
 
-### 2.1 Scenarios
+### 3.1 Scenarios
 
 The fake provider must cover every event shape the runtime will encounter from real providers:
 
@@ -79,7 +119,7 @@ The fake provider must cover every event shape the runtime will encounter from r
 | Provider streams partial response | Emits a sequence of `:assistant_delta` events without completing. Tests the runtime's handling of incomplete responses. |
 | Provider fails and runtime retries or fails safely | Emits a `:provider_error` event. Tests retry logic and safe failure propagation — the runtime must not silently swallow errors. |
 
-### 2.2 Scriptable Test API
+### 3.2 Scriptable Test API
 
 Each test gets its own script process — **NOT a global `Application.put_env` override**. This avoids the classic Elixir test concurrency trap where one test's `Application.put_env` leaks into another.
 
@@ -134,9 +174,9 @@ end
 
 ---
 
-## 3. Provider Environment Variables
+## 4. Provider Environment Variables
 
-### 3.1 Initial (Fake)
+### 4.1 Initial (Fake)
 
 The default provider is the fake provider. It requires **no API key, no auth flow, and no network**:
 
@@ -148,9 +188,9 @@ MUSE_MODEL=fake-planning-model
 
 This is the zero-config Muse-first experience. Running `muse` out of the box uses deterministic offline responses suitable for local development and CI.
 
-### 3.2 OpenAI-Compatible Config
+### 4.2 OpenAI-Compatible Config
 
-PR12 reads the OpenAI-compatible provider **configuration** and uses it to perform real HTTP calls against a configured `base_url` for non-streaming Chat Completions. Auth/API-key loading is in the auth layer (PR13, now implemented); the provider now resolves credentials via `Muse.Auth.Resolver` and injects the `Authorization` header.
+PR12 reads the OpenAI-compatible provider **configuration** and uses it to perform real HTTP calls against a configured `base_url` for non-streaming Chat Completions. The auth layer (PR13, implemented) resolves credentials via `Muse.Auth.Resolver` and injects the `Authorization` header.
 
 Example config values for an OpenAI-compatible provider:
 
@@ -175,7 +215,7 @@ MUSE_LLM_MAX_RETRIES=2
 | `MUSE_TRANSPORT` | No (`Muse.Config` only) | `sse` for openai-compatible; `none` for fake | `none`, `sse`, or `websocket`; unknown values resolve to `nil` |
 | `MUSE_OPENAI_API_KEY` | Not read in PR12 | — | Auth/API-key loading is in the auth layer (PR13, now implemented); caller-provided headers may be sent via `request.options[:headers]` but are redacted in errors/events |
 
-### 3.3 App Config Example
+### 4.3 App Config Example
 
 For application-level configuration (e.g., `config/runtime.exs`), keep secrets out of the provider config:
 
@@ -202,15 +242,15 @@ Workspace/user TOML config remains future work. Do not add TOML parsing until it
 
 ---
 
-## 4. Configuration Validation
+## 5. Configuration Validation
 
-PR11 validation is local and side-effect-free. `Muse.LLM.ProviderConfig.validate/1` returns `:ok` or `{:error, reason}`; `Muse.Config.llm_provider_config/1` returns `{:ok, config}` or `{:error, reason}` after resolving values from an explicit env map/app config.
+Validation is local and side-effect-free. `Muse.LLM.ProviderConfig.validate/1` returns `:ok` or `{:error, reason}`; `Muse.Config.llm_provider_config/1` returns `{:ok, config}` or `{:error, reason}` after resolving values from an explicit env map/app config.
 
 Important boundaries:
 
 - The fake provider always validates and remains the safe default.
 - Validation never starts clients, opens sockets, or calls real provider APIs.
-- Validation does **not** read or require `MUSE_OPENAI_API_KEY`; auth loading is in PR13 (now implemented).
+- Validation does **not** read or require `MUSE_OPENAI_API_KEY`; auth loading is handled by the auth layer at dispatch time.
 - Startup wiring may call this validation before the provider makes its first HTTP call.
 - `ProviderConfig.redacted_inspect/1` and the `Inspect` implementation must be used for safe logging/debugging.
 
@@ -229,7 +269,7 @@ Important boundaries:
 
 ---
 
-## 5. OpenAI-Compatible Non-Streaming Provider
+## 6. OpenAI-Compatible Non-Streaming Provider
 
 PR12 adds `Muse.LLM.OpenAICompatibleProvider`, a real provider adapter that performs HTTP requests against any OpenAI-compatible Chat Completions endpoint. It uses [`Req`](https://hexdocs.pm/req/) (`{:req, "~> 0.5"}`) for the default `POST` call, with an injectable `post_fn` for offline tests.
 
@@ -398,7 +438,7 @@ The full request URL becomes `#{base_url}/chat/completions` (exactly one `/chat/
 
 ---
 
-## 6. OpenAI Responses Request Mapper
+## 7. OpenAI Responses Request Mapper
 
 The OpenAI Responses API uses a different request shape than Chat Completions. `Muse.LLM.OpenAI.ResponsesMapper` is a pure/offline mapper:
 
@@ -454,7 +494,7 @@ The Responses API can maintain conversation state server-side using `previous_re
 
 ---
 
-## 7. Chat Completions Request Mapper
+## 8. Chat Completions Request Mapper
 
 The Chat Completions API is the OpenAI-compatible fallback used by routers and local providers (OpenRouter, Ollama, etc.). In PR11, `Muse.LLM.OpenAI.ChatCompletionsMapper` is a pure/offline mapper:
 
@@ -514,7 +554,7 @@ The Chat Completions mapper includes the full message history (system prompt + a
 
 ---
 
-## 8. HTTP SSE Transport
+## 9. HTTP SSE Transport
 
 **Implemented in PR14.** The SSE transport is now live with the following modules:
 
@@ -621,9 +661,9 @@ streaming accumulator shape.
 
 ---
 
-## 9. OpenAI Responses WebSocket Transport
+## 10. OpenAI Responses WebSocket Transport
 
-**PR15 MVP — implemented.** The Responses WebSocket path is now available alongside the SSE transport. The architecture is dependency-free at the transport layer: callers inject a `ws_stream_fn` for both production use and offline testing.
+**Implemented in PR15.** The Responses WebSocket path is now available alongside the SSE transport. The architecture is dependency-free at the transport layer: callers inject a `ws_stream_fn` for both production use and offline testing.
 
 ### Modules
 
@@ -653,11 +693,12 @@ When WebSocket setup fails **before any inbound provider frame**, callers can en
 - `Conductor.merge_provider_state/2` merges safe keys (`:previous_response_id`) back from `response.provider_state` into `session.provider_state`.
 - `ToolLoop.advance_provider_state/2` carries `provider_state` between iterations for Responses API conversation continuity.
 
-### Limitations (PR16 scope)
+### Limitations
 
 - No built-in low-level WebSocket client dependency — callers must provide `ws_stream_fn` or configure a `:websocket_client`. The `default_stream/3` returns `{:error, {:transport_error, :websocket_client_not_configured}}` without one.
-- External Phoenix WebSocket channel is **PR16 — implemented**. See [`architecture.md` §8.5](architecture.md#85-optional-external-phoenix-websocket-channel-pr16) and [`security.md` §9](security.md#9-external-websocket-channel-security-pr16).
+- External Phoenix WebSocket channel is **implemented (PR16)**. See [`architecture.md` §8.5](architecture.md#85-optional-external-phoenix-websocket-channel-pr16) and [`security.md` §13](security.md#13-external-websocket-channel-security-pr16).
 - No automatic reconnection or subscription-style persistent connections.
+- Responses HTTP execution (POSTing to `{base_url}/responses`) remains future work — the mapper exists but the provider dispatch path is not yet wired.
 
 ### Responsibilities
 
@@ -770,9 +811,9 @@ Reconnection:
 
 ---
 
-## 10. Auth Layer
+## 11. Auth Layer
 
-**PR13 (implemented).** The auth layer (`Muse.Auth`) provides credential resolution
+**Implemented in PR13.** The auth layer (`Muse.Auth`) provides credential resolution
 via API key (`ApiKey`), bearer command (`BearerCommand`), Codex cache bridge
 (`CodexCache`), and a common facade (`Resolver`). All values are redacted in
 inspect, events, logs, and debug output.
@@ -781,7 +822,7 @@ inspect, events, logs, and debug output.
 executes commands, or inspects caches — auth resolution is deferred to the
 `Resolver`/provider layer at HTTP-dispatch time.
 
-### 10.1 Auth Modes
+### 11.1 Auth Modes
 
 The supported authentication strategies (selected via provider config `auth` field):
 
@@ -793,7 +834,7 @@ The supported authentication strategies (selected via provider config `auth` fie
 | `:codex_cache` | ✅ Implemented | Read token from `~/.codex/auth.json` | Reuse Codex CLI authentication |
 | `:openai_oauth` | 🔜 Future | Native OAuth flow | Browser sign-in without Codex |
 
-### 10.2 Implementation Status
+### 11.2 Implementation Status
 
 ```text
 1. ✅ API key from env
@@ -820,7 +861,7 @@ The supported authentication strategies (selected via provider config `auth` fie
    need browser-based auth. High complexity — deferred.
 ```
 
-### 10.3 Commands
+### 11.3 Commands
 
 ```text
 /auth status                                      ✅ PR13 MVP implemented
@@ -841,7 +882,7 @@ The supported authentication strategies (selected via provider config `auth` fie
   Clears stored credentials. Does not revoke server-side.
 ```
 
-### 10.4 Resolution Behavior (Implemented)
+### 11.4 Resolution Behavior (Implemented)
 
 Auth is resolved at HTTP-dispatch time by the provider, **not** by
 `RequestBuilder` or any pre-request mapper. `RequestBuilder.build_chat_completions/1`
@@ -870,7 +911,7 @@ commands or reads Codex cache files.
 `Authorization` header in `request.options[:headers]`, the auth layer does not
 overwrite or duplicate it.
 
-### 10.4b Future Behavior (Not Implemented)
+### 11.4b Future Behavior (Not Implemented)
 
 ```text
 /auth login openai:
@@ -884,7 +925,7 @@ overwrite or duplicate it.
   → Falls back to manual API key entry if no Codex.
 ```
 
-### 10.5 Credential Shape
+### 11.5 Credential Shape
 
 All credentials are represented as a structured `Muse.Auth.Credential`:
 
@@ -950,7 +991,7 @@ end
 
 The `redacted` field is always populated and is the only field that may appear in logs, events, or debug output. The `value` field is **never** emitted into `Muse.Event`, prompt previews, or log output.
 
-### 10.6 Security Rules (Enforced in PR13)
+### 11.6 Security Rules (Enforced in PR13)
 
 These rules are non-negotiable. Violations are security bugs. All are enforced
 in the current implementation.

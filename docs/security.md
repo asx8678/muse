@@ -3,6 +3,8 @@
 > **Companion docs:** [Architecture](architecture.md) · [Prompts](prompts.md) · [Provider Roadmap](provider-roadmap.md) · [Testing](testing.md) · [Executive Summary](../PLAN.md)
 >
 > **Canonical source:** Workspace safety, secret handling, redaction, approval/security rules, and MVP security checklist.
+>
+> **Status (PR21):** Plan approval, patch proposal approval, auth layer, external channel, memory compaction, and handoff safety are implemented. Patch apply, test runner, and shell/network approval gates are PR18/PR19+.
 
 ---
 
@@ -17,38 +19,67 @@
 5. [Tool Permissions Matrix](#5-tool-permissions-matrix)
 6. [Plan Approval Lifecycle Security (PR09)](#6-plan-approval-lifecycle-security-pr09)
 7. [Patch Approval Lifecycle Security (PR17)](#7-patch-approval-lifecycle-security-pr17)
-8. [Auth Security Rules](#8-auth-security-rules)
-9. [Prompt Security](#9-prompt-security)
-10. [External WebSocket Channel Security (PR16)](#10-external-websocket-channel-security-pr16)
+8. [Patch Apply, Checkpoint, and Rollback Security (PR18)](#8-patch-apply-checkpoint-and-rollback-security-pr18)
+9. [Test Runner Security (PR19)](#9-test-runner-security-pr19)
+10. [Memory Compaction and Handoff Safety (PR21)](#10-memory-compaction-and-handoff-safety-pr21)
+11. [Auth Security Rules](#11-auth-security-rules)
+12. [Prompt Security](#12-prompt-security)
+13. [External WebSocket Channel Security (PR16)](#13-external-websocket-channel-security-pr16)
 
 ---
 
 ## 1. Security Checklist Before MVP
 
-Every item must be verified before the Muse Runtime reaches MVP. No exceptions.
+Every item must be verified before the Muse Runtime reaches MVP. Status reflects implementation through PR21.
 
-- [ ] No API keys in events
-- [ ] No bearer tokens in logs
-- [ ] No Codex auth tokens in prompt preview
-- [ ] Authorization headers redacted from provider debug output
-- [ ] Secret-like files blocked or redacted
-- [ ] Workspace path checks are symlink-aware
-- [ ] Patch apply blocks outside-workspace paths
-- [ ] Patch apply blocks secret file paths
-- [ ] Patch apply creates checkpoint first
-- [ ] Patch approval is lifecycle-only and does not apply files (PR17)
-- [ ] Patch proposals are content-hashed and stale approvals rejected (PR17)
-- [ ] Shell commands are approval-gated
-- [ ] Network calls are approval-gated or disabled
-- [ ] Remote execution is disabled
-- [ ] Web server defaults to localhost
-- [ ] External WebSocket channel does not forward internal/sensitive events
-- [ ] Prompt preview is redacted and does not show full hidden prompt
-- [ ] Tool outputs are capped
-- [ ] Provider errors do not leak secrets
-- [ ] Configuration validated at startup
-- [ ] All processes are supervised
-- [ ] No orphan processes on turn crash
+### Secrets & Redaction
+
+- [x] No API keys in events (enforced by `Muse.Event` struct, `EventPayloadRedactor`)
+- [x] No bearer tokens in logs (enforced by `MetadataSanitizer`, redaction helpers)
+- [x] No Codex auth tokens in prompt preview (enforced by `Prompt.Redactor`)
+- [x] Authorization headers redacted from provider debug output (enforced by `ProviderConfig.redacted_inspect/1`)
+- [x] Secret-like files blocked or redacted (enforced by `Workspace.safe_resolve!` denylist)
+- [x] Secrets not in memory artifacts (enforced by memory compaction redaction)
+- [x] Secrets not in handoff specs (enforced by handoff restoration safety checks)
+
+### Workspace Safety
+
+- [x] Workspace path checks are symlink-aware (enforced by `Workspace.safe_resolve!`)
+- [ ] Patch apply blocks outside-workspace paths (PR18)
+- [ ] Patch apply blocks secret file paths (PR18)
+- [ ] Patch apply creates checkpoint first (PR18)
+
+### Approval Lifecycle
+
+- [x] Plan approval is lifecycle-only and does not execute tools (PR09)
+- [x] Patch approval is lifecycle-only and does not apply files (PR17)
+- [x] Patch proposals are content-hashed and stale approvals rejected (PR17)
+
+### Execution Gates
+
+- [ ] Shell commands are approval-gated (PR19)
+- [ ] Network calls are approval-gated or disabled (PR19)
+- [x] Remote execution is disabled (no remote execution tool)
+- [ ] Test runner is approval-gated (PR19)
+
+### Network & Channels
+
+- [x] Web server defaults to localhost (Phoenix endpoint config)
+- [x] External WebSocket channel does not forward internal/sensitive events (PR16, `ExternalEventFilter`)
+- [x] External WebSocket channel is read-only (PR16, no mutation authority)
+- [x] External WebSocket channel is disabled by default (PR16, `config :muse, :external_ws, enabled: false`)
+
+### Provider & Prompt
+
+- [x] Prompt preview is redacted and does not show full hidden prompt
+- [x] Tool outputs are capped (enforced by `EventDisplay.safe_data/1`)
+- [x] Provider errors do not leak secrets (enforced by error payload redaction)
+- [x] Configuration validated at startup (enforced by `ProviderConfig.validate/1`)
+
+### Process Safety
+
+- [x] All processes are supervised (`Muse.Application` supervision tree)
+- [x] No orphan processes on turn crash (supervised `SessionSupervisor`, `Tool.Runner` cleanup)
 
 ---
 
@@ -313,7 +344,87 @@ Future scope (PR18/PR19): patch apply with checkpoint, checkpoint restore approv
 
 ---
 
-## 8. Auth Security Rules
+## 8. Patch Apply, Checkpoint, and Rollback Security (PR18)
+
+**PR18 scope (not yet implemented).** The patch apply workflow will introduce approval-gated file modification with checkpoint/rollback support.
+
+### Planned security properties
+
+- **Patch apply requires prior patch approval.** A patch must be approved (`/approve patch`) before `patch_apply` is available.
+- **Checkpoint created before apply.** The `patch_apply` tool creates a checkpoint (git stash or file copy) before modifying any files.
+- **Checkpoint metadata includes integrity hashes.** File hashes and branch/head state are recorded for verification.
+- **Rollback available on failure.** If patch apply fails, the checkpoint can be restored.
+- **Outside-workspace paths blocked.** `patch_apply` only operates on files inside the workspace root.
+- **Secret file paths blocked.** The denylist from §3 is enforced for patch targets.
+
+### Explicit PR18 boundary
+
+Patch apply in PR18 is **approval-gated**. It does **not**:
+
+- execute shell commands (that's PR19),
+- perform network calls (that's PR19),
+- or bypass the checkpoint requirement.
+
+---
+
+## 9. Test Runner Security (PR19)
+
+**PR19 scope (not yet implemented).** The test runner workflow will introduce approval-gated shell execution for verification.
+
+### Planned security properties
+
+- **Test runner requires approval.** `test_runner` tool is blocked by default; requires explicit approval.
+- **Safe command allowlist.** Only known-safe test commands (e.g., `mix test`, `npm test`) are allowed without shell approval.
+- **No arbitrary shell.** The test runner does not accept arbitrary shell commands; only configured test commands.
+- **Workspace-scoped execution.** Commands run in the workspace directory only.
+- **Timeout enforced.** Test commands have a maximum execution time.
+- **Output capped.** Test output is truncated to prevent memory exhaustion.
+
+### Explicit PR19 boundary
+
+Test runner in PR19 is **approval-gated and restricted**. It does **not**:
+
+- grant general shell execution (use `shell_command` approval category, future),
+- perform network calls beyond what the test command itself does,
+- or bypass workspace isolation.
+
+---
+
+## 10. Memory Compaction and Handoff Safety (PR21)
+
+**Implemented in PR21.** Memory compaction and Muse handoff introduce additional safety considerations for secret handling.
+
+### Memory compaction security
+
+Memory compaction summarizes and truncates session history to fit within context limits. The compaction process:
+
+- **Redacts secrets from memory summaries.** `Muse.Memory.Compactor` applies the same redaction rules as `EventPayloadRedactor`.
+- **Never stores raw credentials.** Memory artifacts contain redacted summaries only.
+- **Preserves audit trail.** Compaction events (`:memory_compacted`) record what was summarized without including secret content.
+- **Compact artifacts are workspace-safe.** Memory files under `.muse/sessions/<id>/memory/` do not contain secrets.
+
+### Handoff and restoration safety
+
+Muse handoff (transferring context between Planning/Coding/Testing Muse) follows these rules:
+
+- **Handoff specs do not include credentials.** The handoff payload contains session state, plan, patches, and memory — no auth tokens.
+- **Restoration preserves approval state.** When a handoff is restored, approval bindings are validated against the current session.
+- **Handoff events are redacted.** `:muse_handoff_requested` and `:muse_handoff_completed` events contain no secrets.
+- **Cross-Muse credential isolation.** Each Muse process resolves auth independently; credentials are not passed between Muse processes.
+
+### Security rules for memory and handoff
+
+```text
+✓ Secrets must not appear in memory artifacts.
+✓ Secrets must not appear in handoff specs.
+✓ Memory summaries use the same redaction as events.
+✓ Handoff events are redacted before emission.
+✓ Restoration validates approval bindings.
+```
+
+---
+
+## 11. Auth Security Rules
 
 Authentication tokens and credentials are among the most sensitive data in the Muse Runtime. The following rules are absolute — no exceptions, no convenience shortcuts.
 
@@ -353,7 +464,7 @@ The `redacted` field is the **only** value that may appear in events, logs, or d
 
 ---
 
-## 9. Prompt Security
+## 12. Prompt Security
 
 The internal prompt system is assembled from multiple layers (core invariants, mode policies, Muse profiles, workspace policies, project rules, memory, plan state, history). Users and developers must **not** see the full raw internal prompt.
 
@@ -409,11 +520,11 @@ These restrictions apply regardless of the user's intent. Even in `--debug` mode
 
 ---
 
-## 10. External WebSocket Channel Security (PR16)
+## 13. External WebSocket Channel Security (PR16)
 
 The optional external Phoenix WebSocket channel (documented in [`architecture.md` §8.5](architecture.md#85-optional-external-phoenix-websocket-channel-pr16)) exposes session events to non-LiveView clients. The following security rules are **mandatory** — they are enforced in `MuseWeb.ExternalEventFilter` and cannot be bypassed by client configuration.
 
-### 10.1 Network Binding
+### 13.1 Network Binding
 
 ```text
 ✓ Server binds to 127.0.0.1 (localhost) by default.
@@ -422,7 +533,7 @@ The optional external Phoenix WebSocket channel (documented in [`architecture.md
 ✓ Do NOT bind to 0.0.0.0 without explicit authentication and transport encryption.
 ```
 
-### 10.2 Disabled by Default
+### 13.2 Disabled by Default
 
 The external WebSocket channel is **disabled by default** (`config :muse, :external_ws, enabled: false`). When disabled:
 
@@ -430,7 +541,7 @@ The external WebSocket channel is **disabled by default** (`config :muse, :exter
 - No channel processes start; no resources consumed.
 - Opt-in via `MUSE_EXTERNAL_WS` env var in production (accepted values: `true`, `1`, `yes`, `on`), or explicit config in dev/test.
 
-### 10.3 Visibility Filtering
+### 13.3 Visibility Filtering
 
 The channel enforces strict visibility-based filtering before forwarding any event:
 
@@ -456,7 +567,7 @@ patch_proposed, patch_approval_requested, patch_approved, patch_rejected
 
 Any event type **not** on this allowlist and without `:user` visibility is silently dropped.
 
-### 10.4 Session Isolation
+### 13.4 Session Isolation
 
 - A client must join topic `session:<session_id>` explicitly.
 - Only events with an **exact** `session_id` match are forwarded.
@@ -464,7 +575,7 @@ Any event type **not** on this allowlist and without `:user` visibility is silen
 - Cross-session events are never forwarded.
 - Session IDs are validated: empty, `.`, `..`, and path-traversal characters (`/`, `\`, NUL) are rejected.
 
-### 10.5 Payload Redaction
+### 13.5 Payload Redaction
 
 Even for allowed events, payloads are redacted before forwarding:
 
@@ -478,7 +589,7 @@ Even for allowed events, payloads are redacted before forwarding:
 ✓ No String.to_atom/1 on client input.
 ```
 
-### 10.6 No Secrets Exposed
+### 13.6 No Secrets Exposed
 
 The external channel must **never** expose:
 
@@ -490,7 +601,7 @@ The external channel must **never** expose:
 ✗ Internal event types (approval_state_change, secret_read_attempt, etc.)
 ```
 
-### 10.7 Read-Only Channel
+### 13.7 Read-Only Channel
 
 The external WebSocket channel is **read-only**. It does **not** grant:
 
