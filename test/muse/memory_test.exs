@@ -561,4 +561,311 @@ defmodule Muse.MemoryTest do
       refute path_reason =~ ~r/:\"\[/
     end
   end
+
+  # -- muse-zgm: Security regression tests for malformed whole-field values -----
+  # When a canonical list field is replaced by a non-list term (tuple, map,
+  # scalar), Memory.render/1 must not crash and must not leak secrets.
+
+  describe "render/1 — malformed whole-field values (tuples)" do
+    test "renders safely when :project_facts is a tuple with sentinel" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: {:password, "sentinel-project-facts"},
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "sentinel-project-facts"
+    end
+
+    test "renders safely when :decisions_made is a tuple with sentinel" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: [],
+        decisions_made: {:secret, "sentinel-decisions"},
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "sentinel-decisions"
+    end
+
+    test "renders safely when :approved_plans is a tuple with sentinel" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: [],
+        decisions_made: [],
+        approved_plans: {:token, "sentinel-plans"},
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "sentinel-plans"
+    end
+
+    test "renders safely when :changes_completed is a tuple with sentinel" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: [],
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: {:api_key, "sentinel-changes"},
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "sentinel-changes"
+    end
+
+    test "renders safely when :validation_results is a tuple with sentinel" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: [],
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: {:password, "sentinel-validation"},
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "sentinel-validation"
+    end
+
+    test "renders safely when :open_issues is a tuple with sentinel" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: [],
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: {:secret, "sentinel-issues"},
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "sentinel-issues"
+    end
+
+    test "renders safely when :useful_conventions is a tuple with sentinel" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: [],
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: {:token, "sentinel-conventions"},
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "sentinel-conventions"
+    end
+  end
+
+  describe "render/1 — malformed whole-field values (maps)" do
+    test "renders safely when :project_facts is a map with sentinel" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: %{"secret" => "sentinel-map-facts"},
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "sentinel-map-facts"
+    end
+
+    test "renders safely when :open_issues is a map with sensitive key" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: [],
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: %{password: "sentinel-map-issues"},
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "sentinel-map-issues"
+    end
+  end
+
+  describe "render/1 — malformed whole-field values (scalars)" do
+    test "renders safely when :project_facts is an atom" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: :not_a_list,
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+    end
+
+    test "renders safely when :decisions_made is an integer" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: [],
+        decisions_made: 42,
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+    end
+  end
+
+  describe "render/1 — nil list fields" do
+    test "renders safely when list field is nil" do
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: nil,
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "nil"
+    end
+  end
+
+  describe "render/1 — charlist handling" do
+    test "renders charlist field as single string, not list of codepoints" do
+      # A charlist containing a secret should be treated as a single string
+      # and redacted, not iterated as individual codepoints.
+      charlist = 'key=sk-sentinel-charlist'
+
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: [charlist],
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      # The secret pattern should be redacted
+      refute rendered =~ "sk-sentinel-charlist"
+    end
+
+    test "renders whole-field charlist safely" do
+      # When the whole field is a charlist (not in a list), treat as single value
+      memory = %{
+        user_goal: "Test goal",
+        project_facts: 'password=sentinel-charlist-field',
+        decisions_made: [],
+        approved_plans: [],
+        changes_completed: [],
+        validation_results: [],
+        open_issues: [],
+        useful_conventions: [],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_zgm"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      refute rendered =~ "sentinel-charlist-field"
+    end
+  end
+
+  describe "render/1 — safe memory still renders usefully after fix" do
+    test "safe canonical memory with proper lists renders correctly" do
+      memory = %{
+        user_goal: "Build an app",
+        project_facts: ["Uses Elixir", "PostgreSQL DB"],
+        decisions_made: ["Use Phoenix framework"],
+        approved_plans: ["Add authentication"],
+        changes_completed: ["Created user schema"],
+        validation_results: ["Tests pass"],
+        open_issues: ["Need to add tests"],
+        useful_conventions: ["Prefer small functions"],
+        compacted_at: DateTime.utc_now(),
+        source_session_id: "session_safe"
+      }
+
+      rendered = Memory.render(memory)
+      assert is_binary(rendered)
+      assert rendered =~ "Build an app"
+      assert rendered =~ "Elixir"
+      assert rendered =~ "Phoenix"
+    end
+  end
 end

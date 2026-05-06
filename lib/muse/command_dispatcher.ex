@@ -1677,10 +1677,13 @@ defmodule Muse.CommandDispatcher do
   defp format_memory(memory) when is_map(memory) do
     # Memory.render/1 redacts secrets by default; additionally wrap in
     # rescue for malformed structures that might crash rendering.
+    # muse-zgm: Do NOT include Exception.message(e) in user-visible output
+    # to avoid leaking raw terms from malformed memory.
     Muse.Memory.render(memory)
   rescue
-    e ->
-      "Memory display unavailable (render error: #{Exception.message(e)}). " <>
+    _ ->
+      # Generic withheld message; do not expose exception details
+      "Memory display unavailable (render error). " <>
         "Stored memory may contain unsafe data and has been withheld."
   end
 

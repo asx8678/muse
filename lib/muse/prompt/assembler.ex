@@ -416,6 +416,8 @@ defmodule Muse.Prompt.Assembler do
         # then render safely. For canonical memory_artifacts (with :user_goal etc.),
         # use Memory.render/1. For arbitrary maps, use redacted inspect.
         # Never use raw inspect/1 on untrusted memory.
+        # muse-zgm: Add defense-in-depth rescue to handle any render failures
+        # and ensure no raw secrets leak via provider-bound messages.
         safe_content =
           if Muse.Memory.memory_artifact?(memory) do
             Muse.Memory.render(memory)
@@ -437,6 +439,20 @@ defmodule Muse.Prompt.Assembler do
           kind: :context,
           redaction: :standard
         )
+      rescue
+        _ ->
+          # Defense-in-depth: if rendering fails, use a safe withheld message
+          # without exposing any raw terms or exception details.
+          Layer.new!(
+            id: :memory_summary,
+            priority: 12,
+            source: :muse_profile,
+            content: "Memory unavailable (render error). Content withheld.",
+            title: "Session Memory Summary",
+            visibility: :debug_preview,
+            kind: :context,
+            redaction: :standard
+          )
 
       _ ->
         nil

@@ -244,9 +244,10 @@ defmodule Muse.Conductor do
       # SECURITY: Redact reason and context before returning event spec.
       # Both are treated as untrusted input that may contain secrets.
       # - reason: redact secret patterns (Bearer tokens, API keys, passwords, private keys)
+      #   Non-binary reason terms are structurally redacted then stringified safely.
       # - context: redact sensitive keys AND secret patterns in string values
       # Use Prompt.Redactor for comprehensive coverage including private key blocks.
-      redacted_reason = Redactor.redact_text(reason)
+      redacted_reason = redact_handoff_reason(reason)
       redacted_context = Redactor.redact_term(context)
 
       # Defense-in-depth: build the data map, then redact it wholesale to ensure
@@ -284,6 +285,32 @@ defmodule Muse.Conductor do
     else
       {:error, {:invalid_target_muse, target_muse_id}}
     end
+  end
+
+  # -- Handoff reason redaction --------------------------------------------------
+
+  # Redacts the handoff reason safely for both binary and non-binary terms.
+  #
+  # * Binary reason — passes through `Redactor.redact_text/1` for pattern-based
+  #   secret redaction, preserving the original string semantics.
+  # * Non-binary reason — structurally redacts via `Redactor.redact_term/1`
+  #   (handles sensitive-key values in tuples/maps/kw-lists, plus string
+  #   pattern redaction), converts the result to a *bounded* inspect string
+  #   (limit + printable_limit), then applies text redaction as
+  #   defense-in-depth so no raw secret survives stringification.
+  #
+  # Non-binary reasons are always stored as strings in the event spec so that
+  # `data.reason` remains consistent and safe to inspect/log.
+  @spec redact_handoff_reason(binary() | term()) :: String.t()
+  defp redact_handoff_reason(reason) when is_binary(reason) do
+    Redactor.redact_text(reason)
+  end
+
+  defp redact_handoff_reason(reason) do
+    reason
+    |> Redactor.redact_term()
+    |> then(&inspect(&1, limit: 10, printable_limit: 200))
+    |> Redactor.redact_text()
   end
 
   # -- Handoff validation helpers ------------------------------------------------

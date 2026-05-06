@@ -630,6 +630,11 @@ defmodule Muse.Memory do
   # pattern redaction as a final pass. This ensures that even malformed
   # nested terms (maps, tuples with sensitive keys, etc.) cannot leak
   # secret values through rendering.
+  #
+  # muse-zgm: Normalize each expected list field before Enum.map/2 to handle
+  # malformed canonical memory where a list field is replaced by a tuple,
+  # scalar, or other non-list term. This prevents crashes and ensures
+  # secrets are still redacted even when the memory structure is unexpected.
   defp redact_memory(memory) do
     list_keys =
       [
@@ -646,11 +651,56 @@ defmodule Muse.Memory do
     |> safe_update(:user_goal, &redact_optional_string/1)
     |> then(fn mem ->
       Enum.reduce(list_keys, mem, fn key, acc ->
-        safe_update(acc, key, fn list ->
-          Enum.map(list, &redact_term_value/1)
+        safe_update(acc, key, fn list_field ->
+          redact_list_field(list_field)
         end)
       end)
     end)
+  end
+
+  # Normalize and redact an expected list field value.
+  #
+  # Handles malformed canonical memory safely:
+  #   - Proper list: map entries through structural + string redaction
+  #   - Nil: treat as empty list (omit section)
+  #   - Printable charlist: treat as single string value, redact safely
+  #   - Non-list (tuple, map, scalar, etc.): treat as single item, redact
+  #
+  # This ensures that secrets in malformed fields are still redacted and
+  # rendering does not crash.
+  defp redact_list_field(nil), do: []
+
+  defp redact_list_field(list) when is_list(list) do
+    # Check if this is a charlist (list of integers representing a string)
+    if charlist?(list) do
+      # Charlist: treat as single string value, not as list of codepoints
+      [redact_charlist(list)]
+    else
+      # Normal list: redact each entry
+      Enum.map(list, &redact_term_value/1)
+    end
+  end
+
+  # Non-list values: treat as single malformed item and redact
+  # This catches tuples like {:password, "sentinel"} that replace whole fields
+  defp redact_list_field(non_list) do
+    [redact_term_value(non_list)]
+  end
+
+  # Redact a charlist as a single string value.
+  # Converts to string first, then applies full redaction pipeline.
+  defp redact_charlist(charlist) do
+    try do
+      charlist
+      |> List.to_string()
+      |> redact_string_value()
+    rescue
+      ArgumentError ->
+        # Invalid charlist: inspect and redact the inspected form
+        charlist
+        |> inspect(limit: 10, printable_limit: 200)
+        |> redact_string_value()
+    end
   end
 
   # Safe version of Map.update!/3 that handles missing keys gracefully.

@@ -320,6 +320,92 @@ defmodule Muse.ConductorHandoffTest do
     end
   end
 
+  describe "request_handoff/4 — security: non-binary reason redaction (muse-7lo)" do
+    test "tuple reason {:password, \"tuple-sentinel\"} does not raise and excludes sentinel" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          reason: {:password, "tuple-sentinel"}
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      refute data.reason =~ "tuple-sentinel"
+      assert is_binary(data.reason)
+      refute inspect(spec) =~ "tuple-sentinel"
+    end
+
+    test "keyword list reason [password: \"kw-sentinel\"] excludes sentinel" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session, reason: [password: "kw-sentinel"])
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      refute data.reason =~ "kw-sentinel"
+      assert is_binary(data.reason)
+      refute inspect(spec) =~ "kw-sentinel"
+    end
+
+    test "map reason %{nested: %{api_key: \"map-sentinel\"}} excludes sentinel" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          reason: %{nested: %{api_key: "map-sentinel"}}
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      refute data.reason =~ "map-sentinel"
+      assert is_binary(data.reason)
+      refute inspect(spec) =~ "map-sentinel"
+    end
+
+    test "deep non-binary reason excludes sentinel" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      deep_reason = %{
+        level1: [
+          {:password, "deep-sentinel"},
+          {:safe, "ok"},
+          %{token: "sk-proj-deep123456abc"}
+        ]
+      }
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session, reason: deep_reason)
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      refute data.reason =~ "deep-sentinel"
+      refute data.reason =~ "sk-proj-deep123456abc"
+      assert is_binary(data.reason)
+      refute inspect(spec) =~ "deep-sentinel"
+      refute inspect(spec) =~ "sk-proj-deep123456abc"
+    end
+
+    test "safe binary reason remains useful" do
+      planning = MuseRegistry.get(:planning)
+      session = Session.new(workspace: "/tmp", id: "session_1", status: :idle)
+
+      {:ok, spec} =
+        Conductor.request_handoff(planning, :coding, session,
+          reason: "Plan approved, ready for implementation"
+        )
+
+      {:conductor, :muse_handoff_requested, data, _opts} = spec
+
+      assert data.reason == "Plan approved, ready for implementation"
+    end
+  end
+
   describe "request_handoff/4 — security: safe fields preserved" do
     test "safe context fields survive redaction" do
       planning = MuseRegistry.get(:planning)
