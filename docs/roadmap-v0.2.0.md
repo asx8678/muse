@@ -63,6 +63,9 @@ Not yet implemented (deferred to follow-up issues):
 - Cross-browser Playwright automation (requires infrastructure setup)
 - Full WCAG 2.1 AA audit (manual testing required)
 
+Delivered (follow-up `muse-po4`):
+- **Executable LiveView browser smoke**: `script/liveview-browser-smoke` starts Muse with fake provider on a non-default port, waits for HTTP readiness, and runs `mix muse.smoke` assertions against the running server. Checks: page load, accessibility markers, command discoverability, session/context panel, no visible secrets, keyboard focus indicators. Non-interactive, suitable for CI. Default `mix test` unchanged. Real-browser console-error detection remains opt-in Playwright (see `docs/testing.md` §11).
+
 ### Phase 3 — Provider/model routing UX and resilience
 Provider health/status commands, actionable error messages, safe retry/backoff, model listing/config validation. External tests opt-in only; fake remains default.
 

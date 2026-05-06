@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# script/liveview-browser-smoke
+#
+# Executable LiveView browser QA smoke test.
+#
+# Starts Muse with fake provider on a non-default port, waits for HTTP
+# readiness, runs HTTP/HTML accessibility and discoverability assertions,
+# and tears down cleanly. Non-interactive — suitable for CI and dev use.
+#
+# Usage:
+#   ./script/liveview-browser-smoke
+#   MUSE_BROWSER_SMOKE_PORT=4200 ./script/liveview-browser-smoke
+#
+# Environment:
+#   MUSE_BROWSER_SMOKE_PORT    — HTTP port (default: 4101)
+#   MUSE_BROWSER_SMOKE_HOST    — HTTP host (default: 127.0.0.1)
+#   MUSE_BROWSER_SMOKE_TIMEOUT — Server readiness timeout in seconds (default: 60)
+#
+# Prerequisites:
+#   - Elixir/Erlang installed
+#   - mix deps.get has been run
+#
+# This script does NOT require a real browser (Playwright/QA Kitten).
+# For browser console-error detection, see docs/testing.md for the
+# optional Playwright integration path.
+#
+# Exit codes:
+#   0 — all smoke checks passed
+#   1 — one or more smoke checks failed, or server failed to start
+
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+ROOT="$(pwd)"
+
+PORT="${MUSE_BROWSER_SMOKE_PORT:-4101}"
+HOST="${MUSE_BROWSER_SMOKE_HOST:-127.0.0.1}"
+TIMEOUT="${MUSE_BROWSER_SMOKE_TIMEOUT:-60}"
+MUSE_PROVIDER="fake"
+MIX_ENV="smoke"
+
+SERVER_PID=""
+SMOKE_LOG=""
+
+cleanup() {
+    if [ -n "${SERVER_PID:-}" ] && kill -0 "${SERVER_PID}" 2>/dev/null; then
+        echo "==> Stopping Muse server (PID ${SERVER_PID})"
+        kill "${SERVER_PID}" 2>/dev/null || true
+        # Give the BEAM a few seconds to shut down gracefully
+        local wait_count=0
+        while kill -0 "${SERVER_PID}" 2>/dev/null && [ $wait_count -lt 5 ]; do
+            sleep 1
+            wait_count=$((wait_count + 1))
+        done
+        # Force kill if still alive
+        if kill -0 "${SERVER_PID}" 2>/dev/null; then
+            kill -9 "${SERVER_PID}" 2>/dev/null || true
+        fi
+    fi
+    # Clean up temp log file
+    if [ -n "${SMOKE_LOG:-}" ] && [ -f "${SMOKE_LOG}" ]; then
+        rm -f "${SMOKE_LOG}"
+    fi
+}
+trap cleanup EXIT
+
+echo "==> Muse LiveView Browser Smoke"
+echo "    Port:    ${PORT}"
+echo "    Host:    ${HOST}"
+echo "    Timeout: ${TIMEOUT}s"
+echo "    Env:     ${MIX_ENV}"
+echo "    Provider: ${MUSE_PROVIDER}"
+echo ""
+
+# Compile in the smoke environment first so readiness wait
+# doesn't race with compilation.
+echo "==> Compiling (MIX_ENV=${MIX_ENV})..."
+MIX_ENV="${MIX_ENV}" mix compile 2>&1
+
+# Start Muse server in background, capturing output to a temp log.
+SMOKE_LOG="$(mktemp /tmp/muse-smoke-server.XXXXXX.log)"
+echo "==> Starting Muse on http://${HOST}:${PORT}/ (fake provider)..."
+MIX_ENV="${MIX_ENV}" MUSE_PROVIDER="${MUSE_PROVIDER}" \
+    mix muse --web-only --port "${PORT}" --no-watch \
+    > "${SMOKE_LOG}" 2>&1 &
+SERVER_PID=$!
+
+# Wait for HTTP readiness
+echo "==> Waiting for server readiness..."
+elapsed=0
+while [ "${elapsed}" -lt "${TIMEOUT}" ]; do
+    if curl -sf -o /dev/null "http://${HOST}:${PORT}/" 2>/dev/null; then
+        echo "==> Server ready after ${elapsed}s"
+        break
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+
+if [ "${elapsed}" -ge "${TIMEOUT}" ]; then
+    echo "ERROR: Muse did not become ready within ${TIMEOUT}s" >&2
+    echo "       Server log (last 20 lines):" >&2
+    tail -20 "${SMOKE_LOG}" >&2 2>/dev/null || true
+    exit 1
+fi
+
+# Run smoke assertions via the Mix task.
+echo "==> Running smoke assertions..."
+MIX_ENV="${MIX_ENV}" mix muse.smoke --port "${PORT}" --host "${HOST}"
+
+echo ""
+echo "==> LiveView browser smoke complete!"

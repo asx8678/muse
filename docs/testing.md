@@ -20,6 +20,16 @@ mix test  # Full test suite, runs offline with fake provider
 
 All three must pass. CI enforces these gates automatically.
 
+### LiveView Browser Smoke (Optional)
+
+For HTTP-level verification of the running web interface:
+
+```bash
+./script/liveview-browser-smoke  # Starts server + runs assertions, non-interactive
+```
+
+See [§11 LiveView Browser Smoke](#11-liveview-browser-smoke) for details.
+
 ### Running Focused Tests
 
 For faster iteration during development:
@@ -61,6 +71,7 @@ External tests are **disabled by default** and never run in CI. They are for man
 8. [PR16 External WebSocket Channel Testing](#8-pr16--external-websocket-channel-testing)
 9. [Product-Language Tests](#9-product-language-tests)
 10. [First Demo Fake Provider Script](#10-first-demo-fake-provider-script)
+11. [LiveView Browser Smoke](#11-liveview-browser-smoke)
 
 ---
 
@@ -633,3 +644,97 @@ The integration test asserts:
 4. The session entered `awaiting_plan_approval` state.
 5. The rendered output matches the expected CLI display above (exact or normalized whitespace).
 6. No write operations were performed — files are unchanged on disk.
+
+---
+
+## 11. LiveView Browser Smoke
+
+An executable QA smoke that starts the Muse web interface on a non-default port with the fake provider and verifies the home page renders correctly with proper accessibility markers, command discoverability, and no leaked secrets.
+
+### 11.1 Quick Start
+
+```bash
+./script/liveview-browser-smoke
+```
+
+This single command:
+
+1. Compiles the project in the `smoke` Mix environment
+2. Starts Muse with `MUSE_PROVIDER=fake` on port 4101
+3. Waits for HTTP readiness
+4. Runs `mix muse.smoke` — HTTP/HTML assertions against the running server
+5. Tears down the server cleanly (trap-based cleanup)
+6. Exits 0 on success, 1 on failure
+
+### 11.2 Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MUSE_BROWSER_SMOKE_PORT` | 4101 | HTTP port for the smoke server |
+| `MUSE_BROWSER_SMOKE_HOST` | 127.0.0.1 | HTTP host |
+| `MUSE_BROWSER_SMOKE_TIMEOUT` | 60 | Server readiness timeout (seconds) |
+
+### 11.3 Manual / Standalone Usage
+
+If the server is already running, assertions can be run independently:
+
+```bash
+# Start the server manually
+MIX_ENV=smoke MUSE_PROVIDER=fake mix muse --web-only --port 4101 --no-watch
+
+# In another terminal, run just the assertions
+mix muse.smoke --port 4101
+```
+
+### 11.4 What the Smoke Checks
+
+| Check | What it verifies |
+|-------|-----------------|
+| Home page loads | HTTP GET `/` returns 200 with substantial HTML body |
+| Accessibility markers | ARIA roles (`region`, `log`, `complementary`, `status`), `aria-label` attributes, `aria-live` regions on chat panel, context panel, toast container, and composer |
+| Command discoverability | `/help` hints visible, `data-slash-commands` attribute, placeholder text, descriptive ARIA labels on input and buttons |
+| Session/context panel | Context sidebar renders, session labels present, `role="complementary"`, `aria-label` for workspace context and session status |
+| No visible secrets | HTML does not contain `sk-` prefixes, `Bearer` tokens, API key env var names, or `secret_key_base` |
+| Keyboard focus indicators | Visible `<label>` on chat input, `aria-describedby` for help text, `role="form"` on composer, submit button, `.sr-only` class |
+
+### 11.5 Mix Environment
+
+The `smoke` Mix environment (`config/smoke.exs`) is a minimal variant of `dev` with:
+
+- `code_reloader: false` — no file watching or live reload
+- `watchers: []` — no esbuild watcher
+- `debug_errors: false` — no Phoenix debug error pages
+- Quiet logging (`:error` level)
+- `start_runtime_children?: true` — full application starts, including the endpoint
+
+This environment does NOT interfere with the default `mix test` suite.
+
+### 11.6 No-Network Invariant Preserved
+
+The browser smoke uses `MUSE_PROVIDER=fake` (the project default). No real API keys, no network calls to LLM providers, no browser downloads required. Running `mix test` (the default test suite) is unchanged.
+
+### 11.7 Optional: Playwright / Real Browser QA
+
+The HTTP-based smoke verifies server-rendered HTML content but **cannot detect JavaScript runtime errors** in the browser. For full browser console-error detection:
+
+1. Install Playwright in the project:
+
+```bash
+npm init -y
+npm install --save-dev @playwright/test
+npx playwright install
+```
+
+2. Start the smoke server:
+
+```bash
+MIX_ENV=smoke MUSE_PROVIDER=fake mix muse --web-only --port 4101 --no-watch
+```
+
+3. Run Playwright tests against `http://127.0.0.1:4101/` that:
+   - Open the page in a headless browser
+   - Listen for `console.error` / `window.onerror`
+   - Assert no unhandled exceptions
+   - Verify interactive elements are keyboard-focusable
+
+This Playwright integration is **opt-in** and not required for the default quality gates. A follow-up issue should track full Playwright smoke test implementation.
