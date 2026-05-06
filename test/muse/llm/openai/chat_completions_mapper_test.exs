@@ -230,6 +230,76 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsMapperTest do
              }
     end
 
+    test "wraps raw JSON Schema (type: object) into json_schema envelope" do
+      # Simulates what ModelPreparer attaches for Planning Muse (PlanSchema)
+      raw_schema = %{
+        type: "object",
+        required: ["objective", "tasks"],
+        properties: %{
+          objective: %{type: "string", description: "Goal"},
+          tasks: %{
+            type: "array",
+            minItems: 1,
+            items: %{
+              type: "object",
+              required: ["title"],
+              properties: %{title: %{type: "string"}}
+            }
+          }
+        }
+      }
+
+      payload = build_payload(response_format: raw_schema)
+
+      rf = payload["response_format"]
+      assert rf["type"] == "json_schema"
+      assert rf["json_schema"]["name"] == "response"
+      assert rf["json_schema"]["strict"] == true
+
+      # The inner schema should be strict-compatible
+      inner = rf["json_schema"]["schema"]
+      assert inner["type"] == "object"
+      assert inner["additionalProperties"] == false
+      # All properties should be required (not just the original required list)
+      assert "objective" in inner["required"]
+      assert "tasks" in inner["required"]
+
+      # Nested objects should also be strict-compatible
+      task_item = inner["properties"]["tasks"]["items"]
+      assert task_item["additionalProperties"] == false
+      assert "title" in task_item["required"]
+    end
+
+    test "raw JSON Schema with string keys wraps into json_schema envelope" do
+      raw_schema = %{
+        "type" => "object",
+        "required" => ["name"],
+        "properties" => %{"name" => %{"type" => "string"}}
+      }
+
+      payload = build_payload(response_format: raw_schema)
+
+      rf = payload["response_format"]
+      assert rf["type"] == "json_schema"
+      assert rf["json_schema"]["strict"] == true
+      assert rf["json_schema"]["schema"]["additionalProperties"] == false
+    end
+
+    test "json_object response_format passes through unchanged" do
+      rf = %{type: "json_object"}
+      payload = build_payload(response_format: rf)
+
+      assert payload["response_format"] == %{"type" => "json_object"}
+    end
+
+    test "json_schema response_format passes through unchanged" do
+      rf = %{type: "json_schema", json_schema: %{name: "test", schema: %{type: "object"}}}
+      payload = build_payload(response_format: rf)
+
+      assert payload["response_format"]["type"] == "json_schema"
+      assert payload["response_format"]["json_schema"]["name"] == "test"
+    end
+
     test "omits response_format when nil" do
       payload = build_payload(response_format: nil)
       refute Map.has_key?(payload, "response_format")
@@ -250,6 +320,49 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsMapperTest do
       refute Map.has_key?(payload, "max_tokens")
       refute Map.has_key?(payload, "response_format")
       assert payload["stream"] == true
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # to_payload/1 — PlanSchema integration
+  # ---------------------------------------------------------------------------
+
+  describe "to_payload/1 — PlanSchema response_format" do
+    test "PlanSchema.schema() is wrapped into json_schema envelope" do
+      # This is the exact path that Planning Muse takes:
+      # ModelPreparer sets request.response_format = PlanSchema.schema()
+      # ChatCompletionsMapper should wrap it into json_schema format
+      raw_schema = Muse.PlanSchema.schema()
+
+      payload = build_payload(response_format: raw_schema)
+
+      rf = payload["response_format"]
+      assert rf["type"] == "json_schema"
+      assert rf["json_schema"]["name"] == "response"
+      assert rf["json_schema"]["strict"] == true
+
+      inner = rf["json_schema"]["schema"]
+      assert inner["type"] == "object"
+      assert inner["additionalProperties"] == false
+      assert "objective" in inner["required"]
+      assert "tasks" in inner["required"]
+
+      # Nested task items should also be strict-compatible
+      task_item = inner["properties"]["tasks"]["items"]
+      assert task_item["additionalProperties"] == false
+    end
+
+    test "PlanSchema response_format produces valid JSON" do
+      raw_schema = Muse.PlanSchema.schema()
+      payload = build_payload(response_format: raw_schema)
+
+      # Must be JSON-encodable (tests the full serialization path)
+      json = Jason.encode!(payload)
+      assert is_binary(json)
+
+      decoded = Jason.decode!(json)
+      assert decoded["response_format"]["type"] == "json_schema"
+      assert decoded["response_format"]["json_schema"]["strict"] == true
     end
   end
 

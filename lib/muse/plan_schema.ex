@@ -535,6 +535,13 @@ defmodule Muse.PlanSchema do
   end
 
   defp delete_atom_key(data, field) do
-    Map.delete(data, String.to_existing_atom(field))
+    atom_key =
+      try do
+        String.to_existing_atom(field)
+      rescue
+        ArgumentError -> nil
+      end
+
+    if atom_key, do: Map.delete(data, atom_key), else: data
   end
 end
