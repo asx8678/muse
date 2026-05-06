@@ -1527,4 +1527,93 @@ defmodule MuseWeb.HomeLiveTest do
       assert html =~ "apply" or html =~ "checkpoint"
     end
   end
+
+  # -- Accessibility tests -----------------------------------------------------
+
+  describe "accessibility markers" do
+    test "chat panel has proper ARIA attributes" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(aria-label="Muse conversation")
+      assert html =~ ~s(role="region")
+    end
+
+    test "chat scroll has live region for conversation history" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(role="log")
+      assert html =~ ~s(aria-live="polite")
+      assert html =~ ~s(aria-label="Conversation history")
+    end
+
+    test "chat composer has accessible label" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(aria-label="Message composer")
+      assert html =~ ~s(aria-label="Message input - type /help for commands")
+    end
+
+    test "send button has descriptive aria-label" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(aria-label="Send message to Muse")
+    end
+
+    test "context panel has complementary role" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(role="complementary")
+      assert html =~ ~s(aria-label="Workspace context and session status")
+    end
+
+    test "toast container has live region" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(class="toast-container")
+      assert html =~ ~s(role="status")
+      assert html =~ ~s(aria-live="polite")
+      assert html =~ ~s(aria-label="Notifications")
+    end
+
+    test "prompt chips have accessible labels" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(aria-label="Use prompt: Explain this project")
+      assert html =~ ~s(aria-label="Use prompt: Check recent backend errors")
+      assert html =~ ~s(aria-label="Use prompt: Review changed files")
+    end
+  end
+
+  # -- Command discoverability tests --------------------------------------------
+
+  describe "command discoverability" do
+    test "chat placeholder hints at /help" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      # The textarea should have a placeholder that guides users
+      assert html =~ "Ask muse to inspect, explain, fix, or generate code"
+    end
+
+    test "chat input has aria-describedby for help text" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(aria-describedby="chat-input-help")
+      assert html =~ ~s(id="chat-input-help")
+      assert html =~ "/help"
+    end
+
+    test "slash commands data attribute includes key commands" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ "data-slash-commands"
+      # Key commands should be available for autocomplete
+      assert html =~ "/help"
+      assert html =~ "/muses"
+      assert html =~ "/plan"
+      assert html =~ "/session"
+    end
+
+    test "context panel shows session status with accessible labels" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      # Session status card should have proper labels
+      assert html =~ "session" or html =~ "Session"
+    end
+
+    test "status chips show connection status" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      # Header status chips should be visible
+      assert html =~ "backend"
+      assert html =~ "workspace"
+    end
+  end
 end

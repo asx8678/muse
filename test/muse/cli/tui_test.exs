@@ -1098,4 +1098,89 @@ defmodule Muse.CLI.TuiTest do
       assert footer.text =~ "i: type"
     end
   end
+
+  # -- Help and command discoverability ------------------------------------------
+
+  describe "render/2 — help popup" do
+    test "help popup includes key reference" do
+      {:ok, state} = mount_tui()
+      state = %{state | show_help?: true}
+      {popup, _} = List.last(Tui.render(state, frame()))
+      assert %ExRatatui.Widgets.Popup{} = popup
+      assert popup.content.text =~ "Key Reference"
+    end
+
+    test "help popup includes tab shortcuts" do
+      {:ok, state} = mount_tui()
+      state = %{state | show_help?: true}
+      {popup, _} = List.last(Tui.render(state, frame()))
+      assert popup.content.text =~ "Ctrl+E"
+      assert popup.content.text =~ "Ctrl+L"
+      assert popup.content.text =~ "Ctrl+D"
+      assert popup.content.text =~ "Ctrl+A"
+      assert popup.content.text =~ "Ctrl+S"
+    end
+
+    test "help popup includes navigation hints" do
+      {:ok, state} = mount_tui()
+      state = %{state | show_help?: true}
+      {popup, _} = List.last(Tui.render(state, frame()))
+      assert popup.content.text =~ "Esc"
+      assert popup.content.text =~ "INPUT focus"
+      assert popup.content.text =~ "MAIN focus"
+    end
+
+    test "help popup includes quit instructions" do
+      {:ok, state} = mount_tui()
+      state = %{state | show_help?: true}
+      {popup, _} = List.last(Tui.render(state, frame()))
+      assert popup.content.text =~ "Ctrl+Q"
+      assert popup.content.text =~ "Ctrl+C"
+    end
+  end
+
+  describe "settings tab discoverability" do
+    test "settings tab shows key bindings" do
+      {:ok, state} = mount_tui()
+      main = main_widget(%{state | active_tab: "settings"})
+      assert main.text =~ "Key bindings"
+      assert main.text =~ "Tab / Shift+Tab"
+      assert main.text =~ "Ctrl+E/L/D/A/S/"
+      assert main.text =~ "Ctrl+R"
+    end
+
+    test "settings tab shows session status" do
+      {:ok, state} = mount_tui()
+      main = main_widget(%{state | active_tab: "settings"})
+      assert main.text =~ "Session:" or main.text =~ "session"
+    end
+
+    test "settings tab shows workspace and web URL" do
+      {:ok, state} = mount_tui()
+      main = main_widget(%{state | active_tab: "settings"})
+      assert main.text =~ "Workspace"
+      assert main.text =~ "Web URL"
+    end
+  end
+
+  describe "/help command" do
+    test "/help dispatches through CommandDispatcher" do
+      start_supervised!({Muse.State, []})
+      {:ok, state} = mount_tui()
+      ExRatatui.text_input_set_value(state.input_state, "/help")
+      {:noreply, new} = Tui.handle_event(key("enter"), state)
+      assert new.status =~ "Available commands"
+    end
+
+    test "/help output includes key commands" do
+      start_supervised!({Muse.State, []})
+      {:ok, state} = mount_tui()
+      ExRatatui.text_input_set_value(state.input_state, "/help")
+      {:noreply, new} = Tui.handle_event(key("enter"), state)
+      # Key commands should appear in help output
+      assert new.status =~ "/muses" or new.status =~ "muses"
+      assert new.status =~ "/plan" or new.status =~ "plan"
+      assert new.status =~ "/session" or new.status =~ "session"
+    end
+  end
 end

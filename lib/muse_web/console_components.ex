@@ -648,18 +648,18 @@ defmodule MuseWeb.ConsoleComponents do
 
   def chat_panel(assigns) do
     ~H"""
-    <section class="chat-panel" aria-label="muse conversation">
+    <section class="chat-panel" aria-label="Muse conversation" role="region">
       <div class="muse-bg muse-bg--main" aria-hidden="true"></div>
-      <div class="chat-scroll" id="chat-scroll">
+      <div class="chat-scroll" id="chat-scroll" role="log" aria-live="polite" aria-label="Conversation history">
         <%= if @messages == [] do %>
-          <div class="chat-empty">
+          <div class="chat-empty" role="status">
             <h1>muse</h1>
             <p>Ask muse to inspect, explain, fix, or generate code in this workspace.</p>
-            <div class="prompt-chips">
-              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Explain this project">Explain this project</button>
-              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Check recent backend errors">Check recent backend errors</button>
-              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Review changed files">Review changed files</button>
-              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Help me connect the Muse runtime">Help me connect the Muse runtime</button>
+            <div class="prompt-chips" role="group" aria-label="Suggested prompts">
+              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Explain this project" aria-label="Use prompt: Explain this project">Explain this project</button>
+              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Check recent backend errors" aria-label="Use prompt: Check recent backend errors">Check recent backend errors</button>
+              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Review changed files" aria-label="Use prompt: Review changed files">Review changed files</button>
+              <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Help me connect the Muse runtime" aria-label="Use prompt: Help me connect the Muse runtime">Help me connect the Muse runtime</button>
             </div>
           </div>
         <% else %>
@@ -706,16 +706,20 @@ defmodule MuseWeb.ConsoleComponents do
 
   def chat_composer(assigns) do
     ~H"""
-    <div id="input-form" class="chat-composer" phx-hook="CommandConsole" data-slash-commands={Jason.encode!(Muse.Commands.slash_commands_json())}>
+    <div id="input-form" class="chat-composer" phx-hook="CommandConsole" data-slash-commands={Jason.encode!(Muse.Commands.slash_commands_json())} role="form" aria-label="Message composer">
       <form id="command-form" phx-submit="submit" class="chat-composer-form">
+        <label for="chat-input-textarea" class="sr-only">Message to Muse</label>
         <textarea
+          id="chat-input-textarea"
           name="text"
           class="chat-input command-input"
           placeholder="Ask muse to inspect, explain, fix, or generate code..."
           rows="1"
-          aria-label="Chat input"
+          aria-label="Message input - type /help for commands"
+          aria-describedby="chat-input-help"
         ><%= @input %></textarea>
-        <button type="submit" class="primary-button chat-send-button" aria-label="Send message">Send</button>
+        <span id="chat-input-help" class="sr-only">Type a message or use /help to see available commands</span>
+        <button type="submit" class="primary-button chat-send-button" aria-label="Send message to Muse">Send</button>
       </form>
     </div>
     """
@@ -736,7 +740,7 @@ defmodule MuseWeb.ConsoleComponents do
 
   def context_panel(assigns) do
     ~H"""
-    <aside class={"context-sidebar context-panel context-sidebar-#{@sidebar_state}"} aria-label="Workspace context">
+    <aside class={"context-sidebar context-panel context-sidebar-#{@sidebar_state}"} aria-label="Workspace context and session status" role="complementary">
       <div class="muse-bg muse-bg--sidebar" aria-hidden="true"></div>
       <%= case @sidebar_state do %>
         <% :rail -> %>
@@ -852,6 +856,7 @@ defmodule MuseWeb.ConsoleComponents do
 
   attr(:title, :string, required: true)
   attr(:class, :string, default: nil)
+  attr(:aria_label, :string, default: nil)
   slot(:inner_block, required: true)
 
   def mini_card(assigns) do
@@ -861,7 +866,7 @@ defmodule MuseWeb.ConsoleComponents do
     assigns = assign(assigns, :card_class, card_class)
 
     ~H"""
-    <div class={@card_class}>
+    <div class={@card_class} aria-label={Map.get(assigns, :aria_label)}>
       <h3 class="mini-card-title"><%= @title %></h3>
       <div class="mini-card-body"><%= render_slot(@inner_block) %></div>
     </div>
@@ -1112,11 +1117,11 @@ defmodule MuseWeb.ConsoleComponents do
 
   def toast_container(assigns) do
     ~H"""
-    <div class="toast-container" aria-live="polite" aria-atomic="true">
+    <div class="toast-container" aria-live="polite" aria-atomic="true" role="status" aria-label="Notifications">
       <%= for toast <- @toasts do %>
-        <div class={"toast toast-#{toast.type}"} id={"toast-#{toast.id}"} phx-hook="ToastAutoDismiss">
+        <div class={"toast toast-#{toast.type}"} id={"toast-#{toast.id}"} phx-hook="ToastAutoDismiss" role="alert">
           <span class="toast-message"><%= toast.message %></span>
-          <button type="button" class="toast-dismiss" phx-click="dismiss_toast" phx-value-id={toast.id} aria-label="Dismiss notification">✕</button>
+          <button type="button" class="toast-dismiss" phx-click="dismiss_toast" phx-value-id={toast.id} aria-label={"Dismiss #{toast.type} notification: #{toast.message}"}>✕</button>
         </div>
       <% end %>
     </div>
@@ -1247,31 +1252,31 @@ defmodule MuseWeb.ConsoleComponents do
   def session_status_card(assigns) do
     ~H"""
     <%= if @session_status do %>
-      <.mini_card title="session">
-        <div class="mini-card-row">
-          <span class={"status-dot #{session_status_dot(@session_status.status)}"}></span>
+      <.mini_card title="session" aria_label="Session status">
+        <div class="mini-card-row" role="status" aria-label={"Session status: #{session_status_label(@session_status.status)}"}>
+          <span class={"status-dot #{session_status_dot(@session_status.status)}"} aria-hidden="true"></span>
           <span><%= session_status_label(@session_status.status) %></span>
         </div>
         <%= if @session_status[:active_muse] do %>
-          <div class="mini-card-row">
+          <div class="mini-card-row" aria-label={"Active Muse: #{@session_status.active_muse}"}>
             <span class="mini-card-label">Muse</span>
             <span><%= @session_status.active_muse %></span>
           </div>
         <% end %>
         <%= if @session_status[:active_plan_id] do %>
-          <div class="mini-card-row">
+          <div class="mini-card-row" aria-label={"Active plan: #{short_plan_id(@session_status)}"}>
             <span class="mini-card-label">plan</span>
             <span><%= short_plan_id(@session_status) %> <%= plan_status_badge(@session_status) %></span>
           </div>
         <% end %>
         <%= if @session_status[:pending_patch] do %>
-          <div class="mini-card-row">
+          <div class="mini-card-row" role="alert" aria-label="Patch awaiting approval">
             <span class="mini-card-label">patch</span>
             <span class="mini-card-pending">pending</span>
           </div>
         <% end %>
         <%= if @session_status[:active_turn_id] do %>
-          <div class="mini-card-row">
+          <div class="mini-card-row" aria-live="polite" aria-label="Muse turn running">
             <span class="mini-card-label">turn</span>
             <span>running</span>
           </div>

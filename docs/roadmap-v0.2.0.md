@@ -35,6 +35,34 @@ Delivered:
 ### Phase 2 — LiveView/TUI/CLI UX and browser QA hardening
 Browser QA suite (QA Kitten/Playwright), command discoverability, accessibility review, session panel polish.
 
+Delivered:
+- **CLI help**: `--help` / `-h` / `help` prints usage with all flags and key interface commands
+- **CLI version**: `--version` / `-v` prints `muse <version>` and exits without starting runtime
+- **Help documents version flags**: `--help` output explicitly lists `--version, -v` option
+- **Accessibility hardening**:
+  - Chat panel has `role="region"`, `aria-label`, `role="log"`, `aria-live="polite"`
+  - Chat composer has visible label, `aria-describedby` hint text
+  - Prompt chips have descriptive `aria-label` attributes
+  - Toast container has `role="status"`, `aria-live`, `aria-label`
+  - Context panel has `role="complementary"` and session status uses `role="status"` and `role="alert"`
+  - Screen-reader-only CSS utility class (`.sr-only`) added
+- **Session panel polish**:
+  - Session status card shows status, active Muse, plan, patch, turn with clear labels
+  - ARIA labels indicate pending patches with `role="alert"` for visibility
+- **TUI help**:
+  - Help popup (`?` from MAIN focus) shows complete key reference including tab shortcuts
+  - Settings tab displays key bindings, workspace, web URL, session status
+  - Footer shows context-sensitive hints for INPUT/MAIN modes
+- **Discoverability tests**:
+  - LiveView tests for accessibility markers and command hints
+  - TUI tests for help popup, settings tab key bindings, `/help` command output
+  - CLI tests for `--help`, `-h`, `--version`, `-v` handling
+- **Docs updated**: README documents `--version` and `-v`, escript usage notes
+
+Not yet implemented (deferred to follow-up issues):
+- Cross-browser Playwright automation (requires infrastructure setup)
+- Full WCAG 2.1 AA audit (manual testing required)
+
 ### Phase 3 — Provider/model routing UX and resilience
 Provider health/status commands, actionable error messages, safe retry/backoff, model listing/config validation. External tests opt-in only; fake remains default.
 

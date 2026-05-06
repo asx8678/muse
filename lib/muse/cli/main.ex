@@ -39,6 +39,13 @@ defmodule Muse.CLI.Main do
     Application.put_env(:muse, :boot_args, args)
     Application.put_env(:muse, :source_mode?, source_mode?)
 
+    # Handle --help / -h before starting the application to avoid
+    # unnecessary dependency startup warnings.
+    if is_help_request?(args) do
+      print_help()
+      System.halt(0)
+    end
+
     # Handle --version / -v before starting the application to avoid
     # unnecessary dependency startup warnings.
     if is_version_request?(args) do
@@ -59,5 +66,54 @@ defmodule Muse.CLI.Main do
   @spec is_version_request?([String.t()]) :: boolean()
   def is_version_request?(args) do
     "--version" in args or "-v" in args
+  end
+
+  @doc false
+  @spec is_help_request?([String.t()]) :: boolean()
+  def is_help_request?(args) do
+    "--help" in args or "-h" in args or "help" in args
+  end
+
+  @doc false
+  @spec print_help() :: :ok
+  def print_help do
+    IO.puts("""
+    muse - Local coding runtime for Muse
+
+    USAGE
+        muse [OPTIONS]
+        mix muse [OPTIONS]
+
+    OPTIONS
+        --version, -v    Print version and exit
+        --help, -h       Print this help and exit
+        --repl           Start interactive REPL (default when no TUI)
+        --tui            Start terminal UI (ExRatatui)
+        --no-web         Disable web interface
+        --web-only       Web interface only (no REPL/TUI)
+        --port PORT      Web interface port (default: 4000)
+        --host HOST      Web interface host (default: 127.0.0.1)
+        --workspace DIR  Workspace root directory
+        --verbose        Enable verbose logging
+
+    INTERFACE COMMANDS (in REPL/TUI/Web)
+        /help            Show available slash commands
+        /muses           List available Muses (Planning, Coding, etc.)
+        /plan            Show active Muse Plan
+        /approve plan    Approve the active plan (no implementation starts)
+        /reject plan     Reject the active plan and request revision
+        /session         Show session status, active plan, pending patch
+        /quit            Exit REPL/TUI
+
+    SAFETY
+        All write/shell/network actions require explicit approval.
+        Remote execution is denied by default.
+        Fake provider is the default; no API keys required.
+
+    DOCUMENTATION
+        https://github.com/your-org/muse (update URL)
+    """)
+
+    :ok
   end
 end

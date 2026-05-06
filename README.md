@@ -206,6 +206,14 @@ See [`docs/security.md`](docs/security.md) for the full security model and
 | `mix muse --no-watch` | Disable source hot-reload |
 | `mix muse --watch` | Enable source hot-reload (on by default in source mode) |
 | `mix muse --help` | Print usage (`-h`) |
+| `mix muse --version` | Print version and exit (`-v`) |
+
+For built escripts:
+
+| Command | What it does |
+|---|---|
+| `./muse --help` | Print usage (`-h`) |
+| `./muse --version` | Print version (`-v`) |
 
 Flags can be combined: `mix muse --tui --no-web --workspace ~/my_app`.
 
