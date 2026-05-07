@@ -624,6 +624,214 @@ function showToastNotification(message) {
   }, 2500);
 }
 
+// ─── MobileSidebar hook ─────────────────────────────────────────
+//
+// Implements WCAG modal overlay pattern for the mobile context sidebar.
+// When the sidebar is expanded on a narrow viewport (≤960px):
+//   - Moves focus into the sidebar (ideally the Hide button)
+//   - Makes background elements inert / aria-hidden
+//   - Traps Tab/Shift+Tab within sidebar controls
+//   - Escape closes the sidebar and restores focus to the mobile toggle
+//   - Backdrop click closes the sidebar (via Phoenix phx-click)
+// On resize to desktop or sidebar collapse, reverses all effects.
+
+const MobileSidebar = {
+  mounted() {
+    this._previousFocus = null;
+    this._inerted = [];
+    this._active = false;
+    this._trapHandler = null;
+
+    this._mediaQuery = window.matchMedia("(max-width: 960px)");
+    this._onMediaChangeBound = () => this._update();
+    this._mediaQuery.addEventListener("change", this._onMediaChangeBound);
+
+    // Check initial state (sidebar may already be expanded on mount)
+    this._update();
+  },
+
+  updated() {
+    this._update();
+  },
+
+  destroyed() {
+    this._deactivate();
+    if (this._mediaQuery) {
+      this._mediaQuery.removeEventListener("change", this._onMediaChangeBound);
+    }
+  },
+
+  _update() {
+    const isMobile = this._mediaQuery.matches;
+    const isExpanded = this.el.classList.contains("context-sidebar-expanded");
+
+    if (isMobile && isExpanded) {
+      this._activate();
+    } else {
+      this._deactivate();
+    }
+  },
+
+  _activate() {
+    if (this._active) return;
+    this._active = true;
+
+    // Store previously focused element (the mobile toggle or whatever had focus)
+    if (!this._previousFocus || !document.contains(this._previousFocus)) {
+      this._previousFocus = document.activeElement;
+    }
+
+    // Make background elements inert
+    this._applyInert();
+
+    // Install focus trap on the sidebar
+    this._installTrap();
+
+    // Move focus into the sidebar — prefer the "Hide sidebar" close button
+    const hideBtn = this.el.querySelector(
+      'button[phx-click="set_sidebar_state"][phx-value-state="hidden"]'
+    );
+    if (hideBtn) {
+      // Small delay to let LiveView DOM settle after inert application
+      setTimeout(() => hideBtn.focus(), 0);
+    } else {
+      const first = this._firstFocusable(this.el);
+      if (first) setTimeout(() => first.focus(), 0);
+    }
+  },
+
+  _deactivate() {
+    if (!this._active) return;
+    this._active = false;
+
+    this._removeInert();
+    this._uninstallTrap();
+
+    // Restore focus to the mobile toggle button
+    const toggle = document.querySelector(".mobile-sidebar-toggle");
+    if (toggle && toggle.offsetParent !== null) {
+      toggle.focus();
+    } else if (this._previousFocus && document.contains(this._previousFocus)) {
+      this._previousFocus.focus();
+    }
+    this._previousFocus = null;
+  },
+
+  _applyInert() {
+    this._removeInert();
+
+    const shell = document.getElementById("muse-shell");
+    if (!shell) return;
+
+    const sidebar = this.el;
+
+    // Inert siblings of #main-content under #muse-shell
+    for (const child of shell.children) {
+      if (child === sidebar) continue;
+      // Skip #main-content (it contains the sidebar) — we inert its children separately
+      if (child.id === "main-content") continue;
+      // Skip the backdrop — it must remain clickable for dismissal
+      if (child.classList && child.classList.contains("mobile-sidebar-backdrop")) continue;
+
+      if (!child.hasAttribute("inert")) {
+        child.setAttribute("inert", "");
+        child.setAttribute("aria-hidden", "true");
+        this._inerted.push(child);
+      }
+    }
+
+    // Inert children of #main-content that are NOT the sidebar
+    const mainContent = document.getElementById("main-content");
+    if (mainContent) {
+      for (const child of mainContent.children) {
+        if (child === sidebar) continue;
+        // Skip elements that are ancestors of the sidebar
+        if (child.contains && child.contains(sidebar)) continue;
+
+        if (!child.hasAttribute("inert")) {
+          child.setAttribute("inert", "");
+          child.setAttribute("aria-hidden", "true");
+          this._inerted.push(child);
+        }
+      }
+    }
+  },
+
+  _removeInert() {
+    for (const el of this._inerted) {
+      el.removeAttribute("inert");
+      el.removeAttribute("aria-hidden");
+    }
+    this._inerted = [];
+  },
+
+  _installTrap() {
+    this._uninstallTrap();
+
+    this._trapHandler = (e) => {
+      if (e.key === "Tab") {
+        this._handleTab(e);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        this._closeSidebar();
+      }
+    };
+
+    this.el.addEventListener("keydown", this._trapHandler);
+  },
+
+  _uninstallTrap() {
+    if (this._trapHandler && this.el) {
+      this.el.removeEventListener("keydown", this._trapHandler);
+      this._trapHandler = null;
+    }
+  },
+
+  _handleTab(e) {
+    const focusables = this._focusables(this.el);
+    if (focusables.length === 0) return;
+
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+
+    if (e.shiftKey) {
+      if (document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      if (document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  },
+
+  _closeSidebar() {
+    this.pushEvent("set_sidebar_state", { state: "hidden" });
+  },
+
+  _focusables(el) {
+    const sel = [
+      'a[href]',
+      'button:not([disabled])',
+      'input:not([disabled])',
+      'select:not([disabled])',
+      'textarea:not([disabled])',
+      '[tabindex]:not([tabindex="-1"])'
+    ].join(',');
+    return Array.from(el.querySelectorAll(sel)).filter(
+      (e) => e.offsetParent !== null && !e.hasAttribute('inert')
+    );
+  },
+
+  _firstFocusable(el) {
+    const all = this._focusables(el);
+    return all.length > 0 ? all[0] : null;
+  }
+};
+
 // ─── DiagnosticsDrawer hook ───────────────────────────────────────
 //
 // Implements the WCAG modal dialog pattern for the diagnostics drawer.
@@ -798,6 +1006,7 @@ let Hooks = {
   ToastAutoDismiss,
   KeyboardShortcuts,
   CommandPalette,
+  MobileSidebar,
   DiagnosticsDrawer,
   ClipboardHandler
 };

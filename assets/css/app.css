@@ -2915,11 +2915,16 @@ textarea:focus-visible {
     display: none !important;
   }
 
-  /* Backdrop when sidebar is expanded on mobile */
+  /* Backdrop when sidebar is expanded on mobile.
+     Covers only the area to the right of the sidebar so that clicks
+     reliably target the backdrop and not the sidebar overlay. */
   .mobile-sidebar-backdrop {
     display: block;
     position: fixed;
-    inset: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: min(320px, 85vw);
     z-index: 299;
     background: rgba(0, 0, 0, 0.55);
     -webkit-tap-highlight-color: transparent;

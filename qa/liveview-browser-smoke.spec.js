@@ -330,7 +330,13 @@ test.describe("Muse LiveView mobile viewport smoke", () => {
     expect(scrollWidth).toBeLessThanOrEqual(clientWidth + 2);
   });
 
-  test("composer input is focusable at 320px viewport", async ({ page }) => {
+  test("composer input is focusable at 320px viewport after closing sidebar", async ({ page }) => {
+    // Close the mobile sidebar first — at 320px the sidebar overlay covers
+    // most of the viewport and makes background elements inert.
+    const hideBtn = page.locator('#workspace-context-sidebar button[phx-value-state="hidden"]');
+    await hideBtn.click();
+    await page.waitForTimeout(500);
+
     const input = page.locator("#chat-input-textarea");
     await expect(input).toBeEnabled();
     // Click to focus (mobile touch)
@@ -342,5 +348,221 @@ test.describe("Muse LiveView mobile viewport smoke", () => {
   test("send button is visible and reachable at 320px", async ({ page }) => {
     const sendBtn = page.locator('button[aria-label="Send message to Muse"]');
     await expect(sendBtn).toBeVisible();
+  });
+});
+
+// ─── Mobile sidebar a11y regression ─────────────────────────────────────
+//
+// Verifies WCAG 2.1 AA compliance for the mobile context sidebar overlay:
+//   - Focus is trapped within sidebar when open
+//   - Background controls are inert (not focusable)
+//   - Escape closes sidebar and restores focus to toggle
+//   - Backdrop click closes sidebar
+//   - Existing mobile tests still pass
+//
+// The sidebar starts expanded by default on mount. At mobile viewport, the
+// MobileSidebar hook activates immediately, making background elements inert
+// and trapping focus in the sidebar. Tests must account for this initial
+// state — they close the sidebar first, then perform specific open/close
+// sequences to test the hook behavior.
+
+async function closeMobileSidebar(page) {
+  // Close the mobile sidebar via the "Hide sidebar" button inside the sidebar.
+  // The sidebar overlay blocks clicks on the header toggle, so we use the
+  // sidebar's own close button.
+  const hideBtn = page.locator('#workspace-context-sidebar button[phx-value-state="hidden"]');
+  if (await hideBtn.isVisible()) {
+    await hideBtn.click();
+    await page.waitForTimeout(500);
+  }
+}
+
+async function openMobileSidebar(page) {
+  // Open the mobile sidebar via the toggle button.
+  // The sidebar must be closed first so the toggle is not covered.
+  const toggle = page.locator(".mobile-sidebar-toggle");
+  await toggle.click();
+  await page.waitForTimeout(500);
+}
+
+test.describe("Muse mobile sidebar a11y (390px)", () => {
+  /** @type {Array<{type: string, text: string}>} */
+  let consoleMessages = [];
+  /** @type {Array<{error: Error}>} */
+  let pageErrors = [];
+
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test.beforeEach(async ({ page }) => {
+    consoleMessages = [];
+    pageErrors = [];
+
+    page.on("console", (msg) => {
+      consoleMessages.push({ type: msg.type(), text: msg.text() });
+    });
+
+    page.on("pageerror", (error) => {
+      pageErrors.push({ error });
+    });
+
+    await page.goto("/");
+
+    await page.waitForFunction(() => {
+      return !document.documentElement.classList.contains("phx-loading");
+    }, { timeout: 15_000 });
+  });
+
+  test("mobile sidebar toggle has aria-controls pointing at sidebar", async ({ page }) => {
+    const toggle = page.locator(".mobile-sidebar-toggle");
+    await expect(toggle).toHaveAttribute("aria-controls", "workspace-context-sidebar");
+
+    const sidebar = page.locator("#workspace-context-sidebar");
+    await expect(sidebar).toBeAttached();
+  });
+
+  test("mobile sidebar starts expanded and focus is trapped inside", async ({ page }) => {
+    // Sidebar starts expanded on mount at mobile viewport.
+    // The MobileSidebar hook should activate and move focus into the sidebar.
+    await page.waitForTimeout(500);
+
+    const focusedInSidebar = await page.evaluate(() => {
+      const sidebar = document.getElementById("workspace-context-sidebar");
+      if (!sidebar) return false;
+      return sidebar.contains(document.activeElement);
+    });
+    expect(focusedInSidebar).toBe(true);
+
+    // Tab several times — focus should never leave the sidebar
+    for (let i = 0; i < 10; i++) {
+      await page.keyboard.press("Tab");
+    }
+
+    const stillInSidebar = await page.evaluate(() => {
+      const sidebar = document.getElementById("workspace-context-sidebar");
+      if (!sidebar) return false;
+      return sidebar.contains(document.activeElement);
+    });
+    expect(stillInSidebar).toBe(true);
+
+    // Shift+Tab several times — still in sidebar
+    for (let i = 0; i < 10; i++) {
+      await page.keyboard.press("Shift+Tab");
+    }
+
+    const reverseInSidebar = await page.evaluate(() => {
+      const sidebar = document.getElementById("workspace-context-sidebar");
+      if (!sidebar) return false;
+      return sidebar.contains(document.activeElement);
+    });
+    expect(reverseInSidebar).toBe(true);
+  });
+
+  test("background textarea and send button are not focusable while mobile sidebar is open", async ({ page }) => {
+    // Sidebar starts expanded, so background should already be inert
+    await page.waitForTimeout(500);
+
+    // The chat-input-textarea should have an inert ancestor
+    const textareaInert = await page.evaluate(() => {
+      const textarea = document.getElementById("chat-input-textarea");
+      if (!textarea) return false;
+      let el = textarea;
+      while (el) {
+        if (el.hasAttribute("inert")) return true;
+        el = el.parentElement;
+      }
+      return false;
+    });
+    expect(textareaInert).toBe(true);
+
+    // The send button should also have an inert ancestor
+    const sendBtnInert = await page.evaluate(() => {
+      const btn = document.querySelector('button[aria-label="Send message to Muse"]');
+      if (!btn) return false;
+      let el = btn;
+      while (el) {
+        if (el.hasAttribute("inert")) return true;
+        el = el.parentElement;
+      }
+      return false;
+    });
+    expect(sendBtnInert).toBe(true);
+  });
+
+  test("Escape closes mobile sidebar and focus returns to toggle", async ({ page }) => {
+    // Sidebar starts expanded — press Escape to close
+    await page.waitForTimeout(500);
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(500);
+
+    // Sidebar should be collapsed (context-sidebar-hidden class)
+    const sidebar = page.locator("#workspace-context-sidebar");
+    await expect(sidebar).toHaveClass(/context-sidebar-hidden/);
+
+    // Focus should return to the mobile toggle
+    const focusedClass = await page.evaluate(() => document.activeElement?.className || "");
+    expect(focusedClass).toContain("mobile-sidebar-toggle");
+  });
+
+  test("backdrop click closes mobile sidebar", async ({ page }) => {
+    // Sidebar starts expanded — click the backdrop to close.
+    // We use dispatchEvent rather than Playwright's click because the
+    // backdrop is a thin strip (z-index 299) next to the sidebar (z-index 300)
+    // and Phoenix phx-click requires a proper click event to reach the LV.
+    await page.waitForTimeout(500);
+    const closed = await page.evaluate(() => {
+      const backdrop = document.querySelector(".mobile-sidebar-backdrop");
+      if (!backdrop) return false;
+      backdrop.click();
+      return true;
+    });
+    expect(closed).toBe(true);
+    await page.waitForTimeout(500);
+
+    // Sidebar should be collapsed
+    const sidebar = page.locator("#workspace-context-sidebar");
+    await expect(sidebar).toHaveClass(/context-sidebar-hidden/);
+  });
+
+  test("opening mobile sidebar moves focus into sidebar", async ({ page }) => {
+    // Close the initially-expanded sidebar first
+    await closeMobileSidebar(page);
+
+    // Now open it via the toggle
+    await openMobileSidebar(page);
+
+    // Focus should be inside the sidebar (ideally the Hide sidebar button)
+    const focusedInSidebar = await page.evaluate(() => {
+      const sidebar = document.getElementById("workspace-context-sidebar");
+      if (!sidebar) return false;
+      return sidebar.contains(document.activeElement);
+    });
+    expect(focusedInSidebar).toBe(true);
+  });
+
+  test("background controls are focusable again after closing mobile sidebar", async ({ page }) => {
+    // Close the initially-expanded sidebar
+    await closeMobileSidebar(page);
+
+    // Textarea should no longer have an inert ancestor
+    const textareaNotInert = await page.evaluate(() => {
+      const textarea = document.getElementById("chat-input-textarea");
+      if (!textarea) return false;
+      let el = textarea;
+      while (el) {
+        if (el.hasAttribute("inert")) return false;
+        el = el.parentElement;
+      }
+      return true;
+    });
+    expect(textareaNotInert).toBe(true);
+  });
+
+  test("no console errors during mobile sidebar open/close cycle", () => {
+    const errors = consoleMessages.filter((m) => m.type === "error");
+    if (errors.length > 0) {
+      const detail = errors.map((e) => `  console.error: ${e.text}`).join("\n");
+      throw new Error(`Browser console errors during sidebar cycle:\n${detail}`);
+    }
+    expect(pageErrors).toHaveLength(0);
   });
 });

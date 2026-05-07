@@ -587,7 +587,7 @@ defmodule MuseWeb.ConsoleComponents do
   def app_header(assigns) do
     ~H"""
     <header class="app-header">
-      <button type="button" class="mobile-sidebar-toggle" phx-click="toggle_mobile_sidebar" aria-label="Toggle context sidebar" aria-expanded={to_string(@sidebar_state == :expanded)}>
+      <button type="button" class="mobile-sidebar-toggle" phx-click="toggle_mobile_sidebar" aria-label="Toggle context sidebar" aria-expanded={to_string(@sidebar_state == :expanded)} aria-controls="workspace-context-sidebar">
         <span class="mobile-sidebar-toggle-icon" aria-hidden="true">☰</span>
       </button>
       <div class="app-brand muse-brand">
@@ -744,7 +744,7 @@ defmodule MuseWeb.ConsoleComponents do
 
   def context_panel(assigns) do
     ~H"""
-    <aside class={"context-sidebar context-panel context-sidebar-#{@sidebar_state}"} aria-label="Workspace context and session status" role="complementary">
+    <aside id="workspace-context-sidebar" class={"context-sidebar context-panel context-sidebar-#{@sidebar_state}"} aria-label="Workspace context and session status" role="complementary" phx-hook="MobileSidebar">
       <div class="muse-bg muse-bg--sidebar" aria-hidden="true"></div>
       <%= case @sidebar_state do %>
         <% :rail -> %>
