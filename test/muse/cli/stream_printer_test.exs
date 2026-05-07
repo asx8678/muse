@@ -179,6 +179,20 @@ defmodule Muse.CLI.StreamPrinterTest do
       assert "custom-1" in session_ids
     end
 
+    test "invalid session_id error output does not echo raw value" do
+      canary = "../sk-stream-session-secret"
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          assert {:error, {:invalid_session_id, ^canary}} =
+                   StreamPrinter.stream_submit(:cli, "invalid session", session_id: canary)
+        end)
+
+      refute output =~ canary
+      refute output =~ "sk-stream-session"
+      assert output =~ "Invalid session ID"
+    end
+
     test "unrelated session events do not affect output" do
       # Submit to a different session first to populate State
       {:ok, _} = Muse.SessionRouter.submit("other-session", :cli, "other message")

@@ -889,13 +889,17 @@ defmodule Muse.SessionStore do
       iex> Muse.SessionStore.format_invalid_id_error({:invalid_session_id, :atom_id})
       "Invalid session ID: expected a string, got a non-string value. Session IDs must be non-empty strings (max 255 bytes) without path separators (/, \\), NUL bytes, or reserved names (. ..)."
   """
-  @spec format_invalid_id_error({:invalid_session_id, term()}) :: String.t()
+  @spec format_invalid_id_error(term()) :: String.t()
   def format_invalid_id_error({:invalid_session_id, id}) when is_binary(id) do
     "Invalid session ID. " <> id_requirements_text()
   end
 
   def format_invalid_id_error({:invalid_session_id, _id}) do
     "Invalid session ID: expected a string, got a non-string value. " <> id_requirements_text()
+  end
+
+  def format_invalid_id_error(_unexpected) do
+    "Invalid session ID. " <> id_requirements_text()
   end
 
   defp id_requirements_text do

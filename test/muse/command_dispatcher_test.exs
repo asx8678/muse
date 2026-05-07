@@ -1902,6 +1902,50 @@ defmodule Muse.CommandDispatcherTest do
       refute output =~ "sk-evil-profile"
       assert output =~ "Invalid profile name"
     end
+
+    test "workspace switch with invalid profile name does not echo raw value" do
+      canary = "../sk-evil-profile-switch"
+
+      {:error, output, _effects} = CommandDispatcher.dispatch(:workspace_switch, canary, %{})
+
+      refute output =~ canary
+      refute output =~ "sk-evil-profile"
+      assert output =~ "Invalid profile name"
+    end
+
+    test "session_status with invalid session ID does not echo raw value" do
+      canary = "../sk-session-status-secret"
+
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:session_status, nil, %{session_id: canary})
+
+      refute output =~ canary
+      refute output =~ "sk-session-status"
+      assert output =~ "Invalid session ID"
+    end
+
+    test "session commands handle non-string invalid session IDs safely" do
+      invalid = %{secret: "raw-session-map"}
+
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:apply_patch, nil, %{session_id: invalid})
+
+      refute output =~ "raw-session-map"
+      refute output =~ "secret"
+      assert output =~ "Invalid session ID"
+      assert output =~ "non-string value"
+    end
+
+    test "remote approval commands do not inspect invalid session IDs" do
+      canary = "../sk-remote-session-secret"
+
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:approve_remote, nil, %{session_id: canary})
+
+      refute output =~ canary
+      refute output =~ "sk-remote-session"
+      assert output =~ "Invalid session ID"
+    end
   end
 
   # -- Workspace profile commands ----------------------------------------------

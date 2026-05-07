@@ -636,6 +636,9 @@ defmodule Muse.CommandDispatcher do
 
         {:error, :not_found} ->
           {:ok, "No active Muse session. Start a conversation to create one.", []}
+
+        {:error, {:invalid_session_id, id}} ->
+          {:error, invalid_session_id_error(id), []}
       end
     end
   end
@@ -663,6 +666,9 @@ defmodule Muse.CommandDispatcher do
 
         {:error, :not_found} ->
           {:ok, "No active Muse session.", []}
+
+        {:error, {:invalid_session_id, id}} ->
+          {:error, invalid_session_id_error(id), []}
       end
     end
   end
@@ -691,6 +697,9 @@ defmodule Muse.CommandDispatcher do
                    "Memory compaction blocked: secrets detected in persistence. #{inspect(reasons)}",
                    []}
 
+                {:error, {:invalid_session_id, id}} ->
+                  {:error, invalid_session_id_error(id), []}
+
                 {:error, reason} ->
                   {:error, "Memory compaction failed: persistence error. #{inspect(reason)}", []}
               end
@@ -701,6 +710,9 @@ defmodule Muse.CommandDispatcher do
 
         {:error, :not_found} ->
           {:ok, "No active Muse session to compact.", []}
+
+        {:error, {:invalid_session_id, id}} ->
+          {:error, invalid_session_id_error(id), []}
       end
     end
   end
@@ -718,6 +730,9 @@ defmodule Muse.CommandDispatcher do
 
         {:error, :not_found} ->
           {:ok, "No active Muse session.", []}
+
+        {:error, {:invalid_session_id, id}} ->
+          {:error, invalid_session_id_error(id), []}
       end
     end
   end
@@ -788,6 +803,9 @@ defmodule Muse.CommandDispatcher do
 
           {:error, :not_found} ->
             {:ok, "No active Muse session.", []}
+
+          {:error, {:invalid_session_id, id}} ->
+            {:error, invalid_session_id_error(id), []}
         end
     end
   end
@@ -810,6 +828,9 @@ defmodule Muse.CommandDispatcher do
 
         {:error, :not_found} ->
           {:ok, "No active Muse session.", []}
+
+        {:error, {:invalid_session_id, id}} ->
+          {:error, invalid_session_id_error(id), []}
       end
     end
   end
@@ -848,6 +869,9 @@ defmodule Muse.CommandDispatcher do
 
           {:error, :not_found} ->
             {:ok, "No active Muse session.", []}
+
+          {:error, {:invalid_session_id, id}} ->
+            {:error, invalid_session_id_error(id), []}
         end
     end
   end
@@ -918,7 +942,7 @@ defmodule Muse.CommandDispatcher do
           {:error, "No session data found for session #{session_id}.", []}
 
         {:error, {:invalid_session_id, id}} ->
-          {:error, Muse.SessionStore.format_invalid_id_error({:invalid_session_id, id}), []}
+          {:error, invalid_session_id_error(id), []}
 
         {:error, reason} ->
           {:error, "Export failed: #{inspect(reason)}", []}
@@ -943,8 +967,7 @@ defmodule Muse.CommandDispatcher do
                      [{:refresh, :session}]}
 
                   {:error, {:invalid_session_id, id}} ->
-                    {:error, Muse.SessionStore.format_invalid_id_error({:invalid_session_id, id}),
-                     []}
+                    {:error, invalid_session_id_error(id), []}
 
                   {:error, {:invalid_export, reason}} ->
                     {:error, "Invalid export file: #{reason}", []}
@@ -995,28 +1018,35 @@ defmodule Muse.CommandDispatcher do
   def dispatch(:workspace_switch, args, _context) do
     case parse_workspace_switch_args(args) do
       {:ok, name} ->
-        case Muse.ActiveWorkspace.switch(name) do
-          {:ok, profile} ->
-            root = Map.get(profile, :root_path) || Map.get(profile, "root_path", "unknown")
+        if invalid_workspace_profile_name?(name) do
+          {:error, invalid_workspace_profile_name_error(), []}
+        else
+          case Muse.ActiveWorkspace.switch(name) do
+            {:ok, profile} ->
+              root = Map.get(profile, :root_path) || Map.get(profile, "root_path", "unknown")
 
-            sessions =
-              Map.get(profile, :sessions_dir) || Map.get(profile, "sessions_dir", "unknown")
+              sessions =
+                Map.get(profile, :sessions_dir) || Map.get(profile, "sessions_dir", "unknown")
 
-            msg =
-              "Workspace '#{name}' is now active.\n" <>
-                "  Root: #{root}\n" <>
-                "  Sessions: #{sessions}\n" <>
-                "New sessions will use this workspace's session store."
+              msg =
+                "Workspace '#{name}' is now active.\n" <>
+                  "  Root: #{root}\n" <>
+                  "  Sessions: #{sessions}\n" <>
+                  "New sessions will use this workspace's session store."
 
-            {:ok, msg, [{:toast, :success, "Workspace activated: #{name}"}]}
+              {:ok, msg, [{:toast, :success, "Workspace activated: #{name}"}]}
 
-          {:error, :not_found} ->
-            {:error,
-             "Workspace profile '#{name}' not found. Use /workspace list to see available profiles.",
-             []}
+            {:error, :not_found} ->
+              {:error,
+               "Workspace profile '#{name}' not found. Use /workspace list to see available profiles.",
+               []}
 
-          {:error, reason} ->
-            {:error, "Failed to switch workspace: #{inspect(reason)}", []}
+            {:error, {:invalid_profile_name, _name}} ->
+              {:error, invalid_workspace_profile_name_error(), []}
+
+            {:error, reason} ->
+              {:error, "Failed to switch workspace: #{safe_workspace_switch_error(reason)}", []}
+          end
         end
 
       {:error, :usage} ->
@@ -1035,9 +1065,7 @@ defmodule Muse.CommandDispatcher do
             {:ok, msg, [{:toast, :success, "Workspace created: #{name}"}]}
 
           {:error, {:invalid_profile_name, _n}} ->
-            {:error,
-             "Invalid profile name. Names must be non-empty strings without /, \\, NUL bytes, or reserved values (. ..).",
-             []}
+            {:error, invalid_workspace_profile_name_error(), []}
 
           {:error, :name_required} ->
             {:error, "Profile name is required.", []}
@@ -1516,6 +1544,10 @@ defmodule Muse.CommandDispatcher do
     {:error, "Error: active Muse Plan is #{status}, not awaiting approval.", []}
   end
 
+  defp format_plan_lifecycle_result({:error, {:invalid_session_id, id}}, _action) do
+    {:error, invalid_session_id_error(id), []}
+  end
+
   defp format_plan_lifecycle_result({:error, reason}, _action) do
     {:error, "Error: unable to update Muse Plan (#{safe_plan_lifecycle_reason(reason)}).", []}
   end
@@ -1685,6 +1717,10 @@ defmodule Muse.CommandDispatcher do
     {:error, "Error: pending patch proposal status is #{status}, not awaiting approval.", []}
   end
 
+  defp format_patch_lifecycle_result({:error, {:invalid_session_id, id}}, _action) do
+    {:error, invalid_session_id_error(id), []}
+  end
+
   defp format_patch_lifecycle_result({:error, reason}, _action) do
     {:error, "Error: unable to process patch approval (#{safe_patch_lifecycle_reason(reason)}).",
      []}
@@ -1814,6 +1850,10 @@ defmodule Muse.CommandDispatcher do
     {:error, "Error: remote execution request missing required field: #{field}.", []}
   end
 
+  defp format_remote_lifecycle_result({:error, {:invalid_session_id, id}}, _action) do
+    {:error, invalid_session_id_error(id), []}
+  end
+
   defp format_remote_lifecycle_result({:error, reason}, _action) do
     {:error, "Error: remote approval failed: #{inspect(reason)}.", []}
   end
@@ -1824,9 +1864,31 @@ defmodule Muse.CommandDispatcher do
   defp context_session_id(context) do
     case map_get_any(context, [:session_id, "session_id"]) do
       nil -> "default"
-      session_id -> to_string(session_id)
+      session_id -> session_id
     end
   end
+
+  defp invalid_session_id_error(id) do
+    Muse.SessionStore.format_invalid_id_error({:invalid_session_id, id})
+  end
+
+  defp invalid_workspace_profile_name?(name) when is_binary(name) do
+    name == "" or name in [".", ".."] or String.contains?(name, ["/", "\\", <<0>>])
+  end
+
+  defp invalid_workspace_profile_name?(_name), do: true
+
+  defp invalid_workspace_profile_name_error do
+    "Invalid profile name. Names must be non-empty strings without /, \\, NUL bytes, or reserved values (. ..)."
+  end
+
+  defp safe_workspace_switch_error(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp safe_workspace_switch_error(reason) when is_binary(reason) do
+    Muse.Prompt.Redactor.preview_text(reason, max_length: 120)
+  end
+
+  defp safe_workspace_switch_error(_reason), do: "unexpected workspace error"
 
   defp active_store_base_dir(_context) do
     Backend.safe_active_store_base_dir()
@@ -2044,6 +2106,7 @@ defmodule Muse.CommandDispatcher do
   defp format_apply_patch_error(:apply_failed),
     do: "Error: patch apply failed; checkpoint preserved for rollback"
 
+  defp format_apply_patch_error({:invalid_session_id, id}), do: invalid_session_id_error(id)
   defp format_apply_patch_error(reason) when is_binary(reason), do: "Error: #{reason}"
   defp format_apply_patch_error(reason), do: "Error: unable to apply patch (#{inspect(reason)})"
 
@@ -2097,6 +2160,7 @@ defmodule Muse.CommandDispatcher do
 
   defp format_rollback_error(:not_found), do: "Error: session not found"
   defp format_rollback_error(:turn_running), do: "Error: cannot rollback while a turn is running"
+  defp format_rollback_error({:invalid_session_id, id}), do: invalid_session_id_error(id)
   defp format_rollback_error(reason) when is_binary(reason), do: "Error: #{reason}"
 
   defp format_rollback_error(reason),

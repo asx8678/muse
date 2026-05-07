@@ -103,6 +103,18 @@ defmodule Muse.CLI.StreamPrinter do
     end
   end
 
+  defp format_stream_error({:invalid_session_id, id}) do
+    Muse.SessionStore.format_invalid_id_error({:invalid_session_id, id})
+  end
+
+  defp format_stream_error(reason) when is_atom(reason), do: Atom.to_string(reason)
+
+  defp format_stream_error(reason) when is_binary(reason) do
+    Muse.Prompt.Redactor.preview_text(reason, max_length: 120)
+  end
+
+  defp format_stream_error(_reason), do: "unexpected stream error"
+
   # Collect PubSub messages while the async task runs. We need to handle:
   # - delta events → print them
   # - turn_completed → stop collecting, return text
@@ -209,17 +221,17 @@ defmodule Muse.CLI.StreamPrinter do
             end
 
           {:error, reason} ->
-            IO.puts("[error] #{inspect(reason)}")
+            IO.puts("[error] #{format_stream_error(reason)}")
             drain_mailbox(session_id)
             {:error, reason}
 
           {:exit, reason} ->
-            IO.puts("[error] #{inspect(reason)}")
+            IO.puts("[error] #{format_stream_error(reason)}")
             drain_mailbox(session_id)
             {:error, reason}
 
           other ->
-            IO.puts("[error] unexpected task result: #{inspect(other)}")
+            IO.puts("[error] unexpected task result")
             drain_mailbox(session_id)
             {:error, {:unexpected_result, other}}
         end

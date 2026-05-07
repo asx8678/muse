@@ -205,6 +205,14 @@ defmodule Muse.SessionStoreTest do
       refute msg =~ "leak"
       assert msg =~ "expected a string"
     end
+
+    test "format_invalid_id_error/1 handles unexpected inputs without inspecting them" do
+      msg = SessionStore.format_invalid_id_error({:unexpected, %{secret: "leak"}})
+      assert msg =~ "Invalid session ID"
+      refute msg =~ "unexpected"
+      refute msg =~ "secret"
+      refute msg =~ "leak"
+    end
   end
 
   # ── save_session/3 and load_session/2 ──────────────────────────────────
