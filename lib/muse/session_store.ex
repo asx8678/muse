@@ -9,6 +9,8 @@ defmodule Muse.SessionStore do
           session.json        # Session snapshot (atomic writes)
           events.jsonl        # Append-only event log
           messages.jsonl      # Append-only message log
+          memory.json         # Compacted memory artifact (v0.2.0+)
+          patches.jsonl       # Append-only patch proposal log
 
   ## Atomicity
 
@@ -44,6 +46,27 @@ defmodule Muse.SessionStore do
 
   Session IDs are validated to block path-traversal characters (`/`, `\\`, NUL)
   and reserved names (`.`, `..`, empty string).
+
+  ## Session Retention (v0.2.0+)
+
+  `evict_sessions/3` enforces a retention policy by removing the oldest sessions
+  when the total count exceeds a configurable maximum, and/or by removing sessions
+  older than a configurable TTL. Eviction is based on session directory mtime.
+
+  ## Export/Import (v0.2.0+)
+
+  `export_session/3` bundles a session snapshot, events, messages, patches,
+  and memory into a single portable map suitable for JSON serialization.
+  All data is redacted before export — secrets are never included.
+
+  `import_session/3` writes a portable map back to disk, reconstructing
+  the session directory. Imported session IDs are validated for path traversal.
+
+  ## Memory Persistence (v0.2.0+)
+
+  `save_memory/3` and `load_memory/2` persist compacted memory artifacts
+  alongside the session. Memory survives restarts and is available for
+  the next session init.
   """
 
   @default_base_dir ".muse/sessions"
@@ -235,6 +258,380 @@ defmodule Muse.SessionStore do
           {:ok, list(map()), %{skipped: non_neg_integer()}} | {:error, term()}
   def load_patches(base_dir \\ @default_base_dir, session_id) do
     load_jsonl(base_dir, session_id, "patches.jsonl")
+  end
+
+  # ── Listing and deletion ────────────────────────────────────────────────
+
+  @doc """
+  Lists all session IDs present in the base directory.
+
+  Only top-level directories that pass `validate_session_id/1` are returned.
+  Returns `{:ok, ids}` or `{:error, reason}`.
+
+  ## Examples
+
+      iex> {:ok, ids} = Muse.SessionStore.list_sessions(".muse/sessions")
+      iex> is_list(ids)
+      true
+  """
+  @spec list_sessions(String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def list_sessions(base_dir \\ @default_base_dir) do
+    case File.ls(base_dir) do
+      {:ok, entries} ->
+        ids =
+          entries
+          |> Enum.filter(fn entry ->
+            dir = Path.join(base_dir, entry)
+            File.dir?(dir) and validate_session_id(entry) == :ok
+          end)
+          |> Enum.sort()
+
+        {:ok, ids}
+
+      {:error, :enoent} ->
+        {:ok, []}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Checks whether a session directory exists and contains a `session.json`.
+
+  Returns `true` if the session exists, `false` otherwise.
+  """
+  @spec session_exists?(String.t(), String.t()) :: boolean()
+  def session_exists?(base_dir \\ @default_base_dir, session_id) do
+    with :ok <- validate_session_id(session_id) do
+      path = Path.join(session_dir(base_dir, session_id), "session.json")
+      File.exists?(path)
+    else
+      {:error, _} -> false
+    end
+  end
+
+  @doc """
+  Deletes a session directory and all its contents.
+
+  Returns:
+    - `:ok` on success
+    - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
+    - `{:error, {:delete_failed, reason}}` if the directory cannot be removed
+  """
+  @spec delete_session(String.t(), String.t()) :: :ok | {:error, tuple()}
+  def delete_session(base_dir \\ @default_base_dir, session_id) do
+    with :ok <- validate_session_id(session_id) do
+      dir = session_dir(base_dir, session_id)
+
+      case File.rm_rf(dir) do
+        {:ok, _} -> :ok
+        {:error, reason, _} -> {:error, {:delete_failed, reason}}
+      end
+    end
+  end
+
+  # ── Retention policy ────────────────────────────────────────────────────
+
+  @doc """
+  Enforces a session retention policy by evicting the oldest sessions.
+
+  ## Options
+
+    * `:max_sessions` — maximum number of sessions to retain (default: unlimited)
+    * `:ttl_seconds` — maximum age in seconds for a session directory (default: unlimited)
+
+  Sessions are evicted based on directory modification time (oldest first).
+  TTL-evicted sessions are removed regardless of the total count.
+
+  Returns `{:ok, evicted_ids}` with the list of session IDs that were removed,
+  or `{:error, reason}` on failure.
+
+  ## Examples
+
+      # Keep only the 10 most recent sessions
+      {:ok, evicted} = Muse.SessionStore.evict_sessions(".muse/sessions", max_sessions: 10)
+
+      # Remove sessions older than 7 days
+      {:ok, evicted} = Muse.SessionStore.evict_sessions(".muse/sessions", ttl_seconds: 604_800)
+  """
+  @spec evict_sessions(String.t(), keyword()) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def evict_sessions(base_dir \\ @default_base_dir, opts \\ []) do
+    max_sessions = Keyword.get(opts, :max_sessions)
+    ttl_seconds = Keyword.get(opts, :ttl_seconds)
+
+    with {:ok, ids} <- list_sessions(base_dir) do
+      # Build list of {id, mtime} for age-based eviction
+      id_mtimes =
+        ids
+        |> Enum.map(fn id ->
+          dir = session_dir(base_dir, id)
+
+          mtime =
+            case File.stat(dir) do
+              {:ok, %File.Stat{mtime: mtime}} ->
+                # mtime is an Erlang datetime {{Y,M,D},{H,M,S}};
+                # convert to seconds since epoch for comparison
+                :calendar.datetime_to_gregorian_seconds(mtime)
+
+              _ ->
+                0
+            end
+
+          {id, mtime}
+        end)
+        |> Enum.sort_by(fn {_id, mtime} -> mtime end)
+
+      # TTL eviction: remove sessions older than ttl_seconds
+      # Convert now (seconds since epoch) to gregorian seconds for comparison
+      now_gregorian = :calendar.datetime_to_gregorian_seconds(:calendar.universal_time())
+
+      ttl_evicted =
+        if ttl_seconds do
+          id_mtimes
+          |> Enum.filter(fn {_id, mtime} ->
+            mtime > 0 and now_gregorian - mtime > ttl_seconds
+          end)
+          |> Enum.map(fn {id, _mtime} -> id end)
+        else
+          []
+        end
+
+      # Count eviction: remove oldest sessions exceeding max_sessions
+      remaining_after_ttl =
+        id_mtimes
+        |> Enum.reject(fn {id, _mtime} -> id in ttl_evicted end)
+
+      count_evicted =
+        if max_sessions && length(remaining_after_ttl) > max_sessions do
+          excess = length(remaining_after_ttl) - max_sessions
+
+          remaining_after_ttl
+          |> Enum.take(excess)
+          |> Enum.map(fn {id, _mtime} -> id end)
+        else
+          []
+        end
+
+      evicted = Enum.uniq(ttl_evicted ++ count_evicted)
+
+      # Perform deletions
+      for id <- evicted, reduce: [] do
+        acc ->
+          case delete_session(base_dir, id) do
+            :ok -> [id | acc]
+            {:error, _} -> acc
+          end
+      end
+      |> Enum.reverse()
+      |> then(&{:ok, &1})
+    end
+  end
+
+  # ── Memory persistence ──────────────────────────────────────────────────
+
+  @doc """
+  Saves a memory artifact to `memory.json` inside the session directory.
+
+  The memory map is redacted through the same sensitive-key scrubbing
+  pipeline as session data. Writes are atomic.
+
+  Returns:
+    - `:ok` on success
+    - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
+    - `{:error, reason}` on other failures
+  """
+  @spec save_memory(String.t(), String.t(), map()) :: :ok | {:error, tuple()}
+  def save_memory(base_dir \\ @default_base_dir, session_id, memory) when is_map(memory) do
+    with :ok <- validate_session_id(session_id),
+         {:ok, dir} <- ensure_dir(base_dir, session_id) do
+      path = Path.join(dir, "memory.json")
+
+      data =
+        memory
+        |> encode_for_storage()
+        |> scrub_sensitive_keys()
+        |> Map.put("schema_version", @schema_version)
+
+      case Jason.encode(data) do
+        {:ok, content} -> atomic_write(path, content)
+        {:error, reason} -> {:error, {:encode_failed, reason}}
+      end
+    end
+  end
+
+  @doc """
+  Loads a memory artifact from `memory.json`.
+
+  Returns:
+    - `{:ok, memory}` with the decoded map (the `schema_version` field is stripped)
+    - `{:error, :enoent}` if no memory file exists
+    - `{:error, {:corrupt_json, reason}}` if the file contains invalid JSON
+    - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
+  """
+  @spec load_memory(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def load_memory(base_dir \\ @default_base_dir, session_id) do
+    with :ok <- validate_session_id(session_id) do
+      path = Path.join(session_dir(base_dir, session_id), "memory.json")
+
+      case File.read(path) do
+        {:ok, content} ->
+          case Jason.decode(content) do
+            {:ok, decoded} -> {:ok, Map.delete(decoded, "schema_version")}
+            {:error, reason} -> {:error, {:corrupt_json, reason}}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  # ── Export/Import ──────────────────────────────────────────────────────
+
+  @export_schema_version 1
+
+  @doc """
+  Exports a session to a portable map suitable for JSON serialization.
+
+  Bundles the session snapshot, events, messages, patches, and memory
+  into a single map. All data is redacted through the sensitive-key
+  scrubbing pipeline — secrets are never included in the export.
+
+  Returns:
+    - `{:ok, export_map}` on success
+    - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
+    - `{:error, reason}` on other failures
+  """
+  @spec export_session(String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def export_session(base_dir \\ @default_base_dir, session_id) do
+    with :ok <- validate_session_id(session_id),
+         true <-
+           session_exists?(base_dir, session_id) ||
+             {:error, :enoent} do
+      with {:ok, snapshot} <- load_session(base_dir, session_id),
+           {:ok, events, _} <- load_events(base_dir, session_id),
+           {:ok, messages, _} <- load_messages(base_dir, session_id),
+           {:ok, patches, _} <- load_patches(base_dir, session_id) do
+        memory_result = load_memory(base_dir, session_id)
+
+        # Snapshot was already redacted on save, but apply a final
+        # scrub pass for defense-in-depth (no-op on already-redacted data).
+        export =
+          %{
+            "export_schema_version" => @export_schema_version,
+            "session_id" => session_id,
+            "exported_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+            "snapshot" => scrub_sensitive_keys(snapshot),
+            "events" => Enum.map(events, &scrub_sensitive_keys/1),
+            "messages" => Enum.map(messages, &scrub_sensitive_keys/1),
+            "patches" => Enum.map(patches, &scrub_sensitive_keys/1)
+          }
+          |> maybe_put_memory(memory_result)
+
+        {:ok, export}
+      end
+    end
+  end
+
+  defp maybe_put_memory(export, {:ok, memory}),
+    do: Map.put(export, "memory", scrub_sensitive_keys(memory))
+
+  defp maybe_put_memory(export, _), do: export
+
+  @doc """
+  Imports a session from a portable export map.
+
+  Writes the snapshot, events, messages, patches, and memory back to
+  the session directory. The `session_id` can be overridden via the
+  `:session_id` option to import under a different ID; otherwise the
+  `session_id` from the export map is used.
+
+  All session IDs are validated for path traversal. Imported data is
+  scrubbed before writing as an additional safety measure.
+
+  Returns:
+    - `{:ok, session_id}` on success
+    - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
+    - `{:error, {:invalid_export, reason}}` if the export map is malformed
+    - `{:error, reason}` on other failures
+  """
+  @spec import_session(String.t(), map(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def import_session(base_dir \\ @default_base_dir, export, opts \\ []) do
+    with :ok <- validate_export_map(export) do
+      session_id = Keyword.get(opts, :session_id) || Map.get(export, "session_id")
+
+      with :ok <- validate_session_id(session_id) do
+        snapshot = Map.get(export, "snapshot", %{})
+        events = Map.get(export, "events", [])
+        messages = Map.get(export, "messages", [])
+        patches = Map.get(export, "patches", [])
+        memory = Map.get(export, "memory")
+
+        # Write snapshot
+        with :ok <- save_session(base_dir, session_id, snapshot) do
+          # Write events
+          write_jsonl_bulk(base_dir, session_id, "events.jsonl", events)
+
+          # Write messages
+          write_jsonl_bulk(base_dir, session_id, "messages.jsonl", messages)
+
+          # Write patches
+          write_jsonl_bulk(base_dir, session_id, "patches.jsonl", patches)
+
+          # Write memory if present
+          if memory && is_map(memory) do
+            save_memory(base_dir, session_id, memory)
+          end
+
+          {:ok, session_id}
+        end
+      end
+    end
+  end
+
+  defp validate_export_map(export) when is_map(export) do
+    cond do
+      not Map.has_key?(export, "session_id") ->
+        {:error, {:invalid_export, "missing session_id"}}
+
+      not is_binary(Map.get(export, "session_id")) ->
+        {:error, {:invalid_export, "session_id must be a string"}}
+
+      not Map.has_key?(export, "snapshot") ->
+        {:error, {:invalid_export, "missing snapshot"}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_export_map(_), do: {:error, {:invalid_export, "export must be a map"}}
+
+  # Write a list of maps as JSONL lines (used by import_session)
+  defp write_jsonl_bulk(base_dir, session_id, file_name, entries) when is_list(entries) do
+    with :ok <- validate_session_id(session_id),
+         {:ok, dir} <- ensure_dir(base_dir, session_id) do
+      path = Path.join(dir, file_name)
+
+      lines =
+        entries
+        |> Enum.map(fn entry ->
+          entry
+          |> scrub_sensitive_keys()
+          |> encode_for_storage()
+          |> Jason.encode!()
+        end)
+        |> Enum.join("\n")
+
+      case lines do
+        "" -> :ok
+        _ -> File.write(path, lines <> "\n")
+      end
+    end
   end
 
   # ── Private: Session ID validation ─────────────────────────────────────

@@ -35,6 +35,7 @@ defmodule Muse.CommandDispatcher do
 
   alias Muse.Auth.Status
   alias Muse.Backend
+  alias Muse.WorkspaceProfile
 
   # -- Public API --------------------------------------------------------------
 
@@ -886,6 +887,177 @@ defmodule Muse.CommandDispatcher do
   end
 
   # -- Catch-all ---------------------------------------------------------------
+
+  # -- Export/Import session ---------------------------------------------------
+
+  def dispatch(:export_session, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /export session", []}
+    else
+      session_id = context_session_id(context)
+      workspace = Map.get(context, :workspace) || Backend.safe_workspace_root()
+      base_dir = WorkspaceProfile.sessions_dir_from_root(workspace)
+
+      case Muse.SessionStore.export_session(base_dir, session_id) do
+        {:ok, export_map} ->
+          json = Jason.encode!(export_map, pretty: true)
+
+          {:ok, "Session #{session_id} exported (#{byte_size(json)} bytes, secrets redacted).",
+           [{:copy_to_clipboard, json, "session-export"}]}
+
+        {:error, :enoent} ->
+          {:error, "No session data found for session #{session_id}.", []}
+
+        {:error, {:invalid_session_id, id}} ->
+          {:error, "Invalid session ID: #{inspect(id)}", []}
+
+        {:error, reason} ->
+          {:error, "Export failed: #{inspect(reason)}", []}
+      end
+    end
+  end
+
+  def dispatch(:import_session, args, context) do
+    workspace = Map.get(context, :workspace) || Backend.safe_workspace_root()
+    base_dir = WorkspaceProfile.sessions_dir_from_root(workspace)
+
+    case parse_import_args(args) do
+      {:ok, path} ->
+        path = Path.expand(path)
+
+        case File.read(path) do
+          {:ok, content} ->
+            case Jason.decode(content) do
+              {:ok, export_map} when is_map(export_map) ->
+                case Muse.SessionStore.import_session(base_dir, export_map) do
+                  {:ok, session_id} ->
+                    {:ok, "Session #{session_id} imported successfully from #{path}.",
+                     [{:refresh, :session}]}
+
+                  {:error, {:invalid_session_id, id}} ->
+                    {:error, "Invalid session ID in export: #{inspect(id)}", []}
+
+                  {:error, {:invalid_export, reason}} ->
+                    {:error, "Invalid export file: #{reason}", []}
+
+                  {:error, reason} ->
+                    {:error, "Import failed: #{inspect(reason)}", []}
+                end
+
+              {:error, _reason} ->
+                {:error, "File does not contain valid JSON: #{path}", []}
+            end
+
+          {:error, reason} ->
+            {:error, "Cannot read file #{path}: #{inspect(reason)}", []}
+        end
+
+      {:error, :usage} ->
+        {:error, "Error: usage: /import session <path>", []}
+    end
+  end
+
+  # -- Workspace profile commands ----------------------------------------------
+
+  def dispatch(:workspace_list, _args, _context) do
+    case WorkspaceProfile.list_profiles() do
+      {:ok, []} ->
+        {:ok, "No workspace profiles configured. Use /workspace create <name> <path> to add one.",
+         []}
+
+      {:ok, profiles} ->
+        lines = ["Workspace profiles:"]
+
+        lines =
+          lines ++
+            Enum.map(profiles, fn p ->
+              name = Map.get(p, "name") || Map.get(p, :name, "unknown")
+              root = Map.get(p, "root_path") || Map.get(p, :root_path, "unknown")
+              "  - #{name}: #{root}"
+            end)
+
+        {:ok, Enum.join(lines, "\n"), []}
+
+      {:error, reason} ->
+        {:error, "Failed to list profiles: #{inspect(reason)}", []}
+    end
+  end
+
+  def dispatch(:workspace_switch, args, _context) do
+    case parse_workspace_switch_args(args) do
+      {:ok, name} ->
+        case WorkspaceProfile.get_profile(name) do
+          {:ok, profile} ->
+            root = Map.get(profile, :root_path) || Map.get(profile, "root_path", "unknown")
+
+            sessions =
+              Map.get(profile, :sessions_dir) || Map.get(profile, "sessions_dir", "unknown")
+
+            msg = "Switched to workspace '#{name}'.\n  Root: #{root}\n  Sessions: #{sessions}"
+            {:ok, msg, [{:toast, :info, "Workspace: #{name}"}]}
+
+          {:error, :not_found} ->
+            {:error,
+             "Workspace profile '#{name}' not found. Use /workspace list to see available profiles.",
+             []}
+
+          {:error, reason} ->
+            {:error, "Failed to switch workspace: #{inspect(reason)}", []}
+        end
+
+      {:error, :usage} ->
+        {:error, "Error: usage: /workspace switch <name>", []}
+    end
+  end
+
+  def dispatch(:workspace_create, args, _context) do
+    case parse_workspace_create_args(args) do
+      {:ok, name, root_path} ->
+        case WorkspaceProfile.create(name: name, root_path: root_path) do
+          {:ok, profile} ->
+            msg =
+              "Workspace profile '#{name}' created.\n  Root: #{profile.root_path}\n  Sessions: #{profile.sessions_dir}"
+
+            {:ok, msg, [{:toast, :success, "Workspace created: #{name}"}]}
+
+          {:error, {:invalid_profile_name, n}} ->
+            {:error,
+             "Invalid profile name: #{inspect(n)}. Names must not contain /, \\, or be '.' or '..'.",
+             []}
+
+          {:error, :name_required} ->
+            {:error, "Profile name is required.", []}
+
+          {:error, :root_path_required} ->
+            {:error, "Root path is required.", []}
+
+          {:error, reason} ->
+            {:error, "Failed to create workspace: #{inspect(reason)}", []}
+        end
+
+      {:error, :usage} ->
+        {:error, "Error: usage: /workspace create <name> <root_path>", []}
+    end
+  end
+
+  def dispatch(:workspace_info, _args, context) do
+    workspace = Map.get(context, :workspace) || Backend.safe_workspace_root()
+    sessions_dir = WorkspaceProfile.sessions_dir_from_root(workspace)
+
+    session_count =
+      case Muse.SessionStore.list_sessions(sessions_dir) do
+        {:ok, ids} -> length(ids)
+        _ -> 0
+      end
+
+    msg =
+      "Workspace info:\n" <>
+        "  Root: #{workspace}\n" <>
+        "  Sessions dir: #{sessions_dir}\n" <>
+        "  Stored sessions: #{session_count}"
+
+    {:ok, msg, []}
+  end
 
   def dispatch(action, _args, _context) do
     {:error, "Unknown command action: #{inspect(action)}. Type /help for available commands.", []}
@@ -2006,4 +2178,48 @@ defmodule Muse.CommandDispatcher do
   end
 
   defp parse_restore_args(_), do: {:error, :usage}
+
+  # -- Import/session parse helpers -------------------------------------------
+
+  defp parse_import_args(nil), do: {:error, :usage}
+  defp parse_import_args(""), do: {:error, :usage}
+
+  defp parse_import_args(args) when is_binary(args) do
+    path = String.trim(args)
+    if path != "", do: {:ok, path}, else: {:error, :usage}
+  end
+
+  defp parse_import_args(_), do: {:error, :usage}
+
+  # -- Workspace profile parse helpers ----------------------------------------
+
+  defp parse_workspace_switch_args(nil), do: {:error, :usage}
+  defp parse_workspace_switch_args(""), do: {:error, :usage}
+
+  defp parse_workspace_switch_args(args) when is_binary(args) do
+    name = String.trim(args)
+    if name != "", do: {:ok, name}, else: {:error, :usage}
+  end
+
+  defp parse_workspace_switch_args(_), do: {:error, :usage}
+
+  defp parse_workspace_create_args(nil), do: {:error, :usage}
+  defp parse_workspace_create_args(""), do: {:error, :usage}
+
+  defp parse_workspace_create_args(args) when is_binary(args) do
+    parts = String.split(args, ~r/\s+/, parts: 2)
+
+    case parts do
+      [name, root_path] when name != "" and root_path != "" ->
+        {:ok, String.trim(name), String.trim(root_path)}
+
+      [name] when name != "" ->
+        {:error, :usage}
+
+      _ ->
+        {:error, :usage}
+    end
+  end
+
+  defp parse_workspace_create_args(_), do: {:error, :usage}
 end

@@ -669,4 +669,487 @@ defmodule Muse.SessionStoreTest do
       assert e1 == e2
     end
   end
+
+  # ── list_sessions/1 ───────────────────────────────────────────────────
+
+  describe "list_sessions/1" do
+    test "returns empty list when no sessions exist", %{base_dir: base_dir} do
+      assert {:ok, []} = SessionStore.list_sessions(base_dir)
+    end
+
+    test "returns empty list when base dir does not exist" do
+      assert {:ok, []} = SessionStore.list_sessions("/nonexistent/path/that/does/not/exist")
+    end
+
+    test "lists session IDs in sorted order", %{base_dir: base_dir} do
+      SessionStore.save_session(base_dir, "beta", %{"v" => 1})
+      SessionStore.save_session(base_dir, "alpha", %{"v" => 1})
+      SessionStore.save_session(base_dir, "gamma", %{"v" => 1})
+
+      assert {:ok, ["alpha", "beta", "gamma"]} = SessionStore.list_sessions(base_dir)
+    end
+
+    test "skips directories with invalid session IDs", %{base_dir: base_dir} do
+      # Create a directory that would fail validate_session_id
+      dir = Path.join(base_dir, "../escape")
+      File.mkdir_p!(dir)
+
+      SessionStore.save_session(base_dir, "valid-session", %{"v" => 1})
+
+      # Should only list the valid session
+      assert {:ok, ["valid-session"]} = SessionStore.list_sessions(base_dir)
+    end
+  end
+
+  # ── session_exists?/2 ────────────────────────────────────────────────
+
+  describe "session_exists?/2" do
+    test "returns true for existing session", %{base_dir: base_dir, session_id: session_id} do
+      SessionStore.save_session(base_dir, session_id, %{"v" => 1})
+      assert SessionStore.session_exists?(base_dir, session_id)
+    end
+
+    test "returns false for non-existent session", %{base_dir: base_dir} do
+      refute SessionStore.session_exists?(base_dir, "nonexistent")
+    end
+
+    test "returns false for invalid session ID" do
+      refute SessionStore.session_exists?(".")
+      refute SessionStore.session_exists?("../escape")
+    end
+  end
+
+  # ── delete_session/2 ──────────────────────────────────────────────────
+
+  describe "delete_session/2" do
+    test "removes session directory", %{base_dir: base_dir, session_id: session_id} do
+      SessionStore.save_session(base_dir, session_id, %{"v" => 1})
+      assert SessionStore.session_exists?(base_dir, session_id)
+
+      assert :ok = SessionStore.delete_session(base_dir, session_id)
+      refute SessionStore.session_exists?(base_dir, session_id)
+    end
+
+    test "returns error for non-existent session (still succeeds)", %{base_dir: base_dir} do
+      # rm_rf succeeds even if the dir doesn't exist
+      assert :ok = SessionStore.delete_session(base_dir, "nonexistent")
+    end
+
+    test "rejects invalid session ID", %{base_dir: base_dir} do
+      assert {:error, {:invalid_session_id, "../escape"}} =
+               SessionStore.delete_session(base_dir, "../escape")
+    end
+
+    test "deletes events and messages alongside session", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      SessionStore.save_session(base_dir, session_id, %{"v" => 1})
+      SessionStore.append_event(base_dir, session_id, %{"type" => "test"})
+      SessionStore.append_message(base_dir, session_id, %{"role" => "user"})
+
+      assert :ok = SessionStore.delete_session(base_dir, session_id)
+
+      # Dir should be gone
+      dir = SessionStore.session_dir(base_dir, session_id)
+      refute File.exists?(dir)
+    end
+  end
+
+  # ── evict_sessions/3 ─────────────────────────────────────────────────
+
+  describe "evict_sessions/3" do
+    test "evicts oldest sessions when max_sessions exceeded", %{base_dir: base_dir} do
+      # Create 5 sessions
+      for i <- 1..5 do
+        id = "session-#{i}"
+        SessionStore.save_session(base_dir, id, %{"idx" => i})
+        # Give each a slightly different mtime by sleeping
+        if i < 5, do: Process.sleep(10)
+      end
+
+      # Keep only 3
+      assert {:ok, evicted} = SessionStore.evict_sessions(base_dir, max_sessions: 3)
+      assert length(evicted) == 2
+
+      assert {:ok, remaining} = SessionStore.list_sessions(base_dir)
+      assert length(remaining) == 3
+    end
+
+    test "no eviction when under max_sessions", %{base_dir: base_dir} do
+      SessionStore.save_session(base_dir, "sess-1", %{"v" => 1})
+      SessionStore.save_session(base_dir, "sess-2", %{"v" => 2})
+
+      assert {:ok, []} = SessionStore.evict_sessions(base_dir, max_sessions: 10)
+    end
+
+    test "evicts sessions older than ttl_seconds", %{base_dir: base_dir} do
+      # Create a session and backdate its mtime
+      SessionStore.save_session(base_dir, "old-session", %{"v" => 1})
+      dir = SessionStore.session_dir(base_dir, "old-session")
+
+      # Set mtime to 2 days ago using File.touch with an Erlang datetime
+      old_datetime = {{2020, 1, 1}, {0, 0, 0}}
+      :ok = File.touch(dir, old_datetime)
+
+      # Create a recent session
+      SessionStore.save_session(base_dir, "new-session", %{"v" => 2})
+
+      # TTL of 1 day should evict old-session
+      assert {:ok, evicted} = SessionStore.evict_sessions(base_dir, ttl_seconds: 86_400)
+      assert "old-session" in evicted
+      refute "new-session" in evicted
+    end
+
+    test "no eviction with no options", %{base_dir: base_dir} do
+      SessionStore.save_session(base_dir, "sess-1", %{"v" => 1})
+      assert {:ok, []} = SessionStore.evict_sessions(base_dir)
+    end
+  end
+
+  # ── save_memory/3 and load_memory/2 ──────────────────────────────────
+
+  describe "save_memory/3 and load_memory/2" do
+    test "round-trips a memory artifact", %{base_dir: base_dir, session_id: session_id} do
+      memory = %{"user_goal" => "Build feature", "project_facts" => ["Elixir project"]}
+
+      assert :ok = SessionStore.save_memory(base_dir, session_id, memory)
+      assert {:ok, loaded} = SessionStore.load_memory(base_dir, session_id)
+
+      assert loaded["user_goal"] == "Build feature"
+      assert loaded["project_facts"] == ["Elixir project"]
+      refute Map.has_key?(loaded, "schema_version")
+    end
+
+    test "returns error for non-existent memory", %{base_dir: base_dir, session_id: session_id} do
+      # Session dir doesn't exist yet
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
+    end
+
+    test "scrubs sensitive keys from memory", %{base_dir: base_dir, session_id: session_id} do
+      memory = %{"user_goal" => "Build feature", "api_key" => "sk-test-12345"}
+
+      assert :ok = SessionStore.save_memory(base_dir, session_id, memory)
+
+      # Raw file should not contain the secret
+      {:ok, raw} =
+        File.read(Path.join(SessionStore.session_dir(base_dir, session_id), "memory.json"))
+
+      refute String.contains?(raw, "sk-test-12345")
+      assert String.contains?(raw, "**REDACTED**")
+    end
+
+    test "atomic write cleans up .tmp files", %{base_dir: base_dir, session_id: session_id} do
+      SessionStore.save_memory(base_dir, session_id, %{"data" => "test"})
+
+      dir = SessionStore.session_dir(base_dir, session_id)
+
+      assert [] ==
+               dir
+               |> File.ls!()
+               |> Enum.filter(&String.ends_with?(&1, ".tmp"))
+    end
+
+    test "rejects invalid session ID", %{base_dir: base_dir} do
+      assert {:error, {:invalid_session_id, "../escape"}} =
+               SessionStore.save_memory(base_dir, "../escape", %{"data" => "test"})
+    end
+  end
+
+  # ── export_session/3 and import_session/3 ─────────────────────────────
+
+  describe "export_session/3" do
+    test "exports a complete session with all artifacts",
+         %{base_dir: base_dir, session_id: session_id} do
+      # Create a full session
+      SessionStore.save_session(base_dir, session_id, %{"status" => "idle", "objective" => "Test"})
+
+      SessionStore.append_event(base_dir, session_id, %{"type" => "user_message", "text" => "hi"})
+      SessionStore.append_message(base_dir, session_id, %{"role" => "user", "content" => "hi"})
+
+      SessionStore.append_patch(base_dir, session_id, %{
+        "patch_id" => "p1",
+        "status" => "approved"
+      })
+
+      SessionStore.save_memory(base_dir, session_id, %{"user_goal" => "Test"})
+
+      assert {:ok, export} = SessionStore.export_session(base_dir, session_id)
+
+      assert export["session_id"] == session_id
+      assert export["export_schema_version"] == 1
+      assert is_binary(export["exported_at"])
+      assert export["snapshot"]["status"] == "idle"
+      assert length(export["events"]) == 1
+      assert length(export["messages"]) == 1
+      assert length(export["patches"]) == 1
+      assert export["memory"]["user_goal"] == "Test"
+    end
+
+    test "export redacts secrets even from previously-redacted data",
+         %{base_dir: base_dir, session_id: session_id} do
+      # SessionStore already redacts on save, but export applies a
+      # defense-in-depth scrub pass
+      SessionStore.save_session(base_dir, session_id, %{
+        "objective" => "Test",
+        "api_key" => "sk-test-12345"
+      })
+
+      assert {:ok, export} = SessionStore.export_session(base_dir, session_id)
+
+      # The api_key in the export must be redacted
+      assert export["snapshot"]["api_key"] == "**REDACTED**"
+    end
+
+    test "export works without memory or patches",
+         %{base_dir: base_dir, session_id: session_id} do
+      SessionStore.save_session(base_dir, session_id, %{"status" => "idle"})
+      SessionStore.append_event(base_dir, session_id, %{"type" => "test"})
+
+      assert {:ok, export} = SessionStore.export_session(base_dir, session_id)
+      assert export["session_id"] == session_id
+      assert export["snapshot"]["status"] == "idle"
+      refute Map.has_key?(export, "memory")
+    end
+
+    test "export returns error for non-existent session", %{base_dir: base_dir} do
+      assert {:error, :enoent} = SessionStore.export_session(base_dir, "nonexistent")
+    end
+
+    test "export rejects invalid session ID", %{base_dir: base_dir} do
+      assert {:error, {:invalid_session_id, "../escape"}} =
+               SessionStore.export_session(base_dir, "../escape")
+    end
+  end
+
+  describe "import_session/3" do
+    test "imports a session from an export map",
+         %{base_dir: base_dir, session_id: session_id} do
+      export = %{
+        "session_id" => session_id,
+        "export_schema_version" => 1,
+        "snapshot" => %{"status" => "idle", "objective" => "Imported session"},
+        "events" => [%{"type" => "user_message", "text" => "hello"}],
+        "messages" => [%{"role" => "user", "content" => "hello"}],
+        "patches" => [%{"patch_id" => "p1", "status" => "approved"}],
+        "memory" => %{"user_goal" => "Imported"}
+      }
+
+      assert {:ok, ^session_id} = SessionStore.import_session(base_dir, export)
+
+      # Verify the imported data
+      assert {:ok, snapshot} = SessionStore.load_session(base_dir, session_id)
+      assert snapshot["objective"] == "Imported session"
+
+      assert {:ok, events, %{skipped: 0}} = SessionStore.load_events(base_dir, session_id)
+      assert length(events) == 1
+
+      assert {:ok, messages, %{skipped: 0}} = SessionStore.load_messages(base_dir, session_id)
+      assert length(messages) == 1
+
+      assert {:ok, patches, %{skipped: 0}} = SessionStore.load_patches(base_dir, session_id)
+      assert length(patches) == 1
+
+      assert {:ok, memory} = SessionStore.load_memory(base_dir, session_id)
+      assert memory["user_goal"] == "Imported"
+    end
+
+    test "import with overridden session_id",
+         %{base_dir: base_dir, session_id: session_id} do
+      export = %{
+        "session_id" => "original-id",
+        "export_schema_version" => 1,
+        "snapshot" => %{"status" => "idle"},
+        "events" => [],
+        "messages" => [],
+        "patches" => []
+      }
+
+      assert {:ok, ^session_id} =
+               SessionStore.import_session(base_dir, export, session_id: session_id)
+
+      assert SessionStore.session_exists?(base_dir, session_id)
+    end
+
+    test "import rejects invalid session_id from export map",
+         %{base_dir: base_dir} do
+      export = %{
+        "session_id" => "../escape",
+        "export_schema_version" => 1,
+        "snapshot" => %{"status" => "idle"},
+        "events" => [],
+        "messages" => [],
+        "patches" => []
+      }
+
+      assert {:error, {:invalid_session_id, "../escape"}} =
+               SessionStore.import_session(base_dir, export)
+    end
+
+    test "import rejects invalid session_id from opts",
+         %{base_dir: base_dir} do
+      export = %{
+        "session_id" => "valid-id",
+        "export_schema_version" => 1,
+        "snapshot" => %{"status" => "idle"},
+        "events" => [],
+        "messages" => [],
+        "patches" => []
+      }
+
+      assert {:error, {:invalid_session_id, "../escape"}} =
+               SessionStore.import_session(base_dir, export, session_id: "../escape")
+    end
+
+    test "import validates export map structure",
+         %{base_dir: base_dir} do
+      # Missing session_id
+      assert {:error, {:invalid_export, "missing session_id"}} =
+               SessionStore.import_session(base_dir, %{"snapshot" => %{}})
+
+      # Missing snapshot
+      assert {:error, {:invalid_export, "missing snapshot"}} =
+               SessionStore.import_session(base_dir, %{"session_id" => "test"})
+
+      # Non-map export
+      assert {:error, {:invalid_export, "export must be a map"}} =
+               SessionStore.import_session(base_dir, "not a map")
+    end
+
+    test "import round-trips with export",
+         %{base_dir: base_dir, session_id: session_id} do
+      # Create and export
+      SessionStore.save_session(base_dir, session_id, %{"objective" => "Round-trip test"})
+      SessionStore.append_event(base_dir, session_id, %{"type" => "test", "seq" => 1})
+      SessionStore.append_message(base_dir, session_id, %{"role" => "user", "content" => "hi"})
+
+      assert {:ok, export} = SessionStore.export_session(base_dir, session_id)
+
+      # Delete original
+      SessionStore.delete_session(base_dir, session_id)
+      refute SessionStore.session_exists?(base_dir, session_id)
+
+      # Re-import under a new ID
+      new_id = "restored-#{session_id}"
+
+      assert {:ok, ^new_id} =
+               SessionStore.import_session(base_dir, export, session_id: new_id)
+
+      # Verify data
+      assert {:ok, snapshot} = SessionStore.load_session(base_dir, new_id)
+      assert snapshot["objective"] == "Round-trip test"
+
+      assert {:ok, events, %{skipped: 0}} = SessionStore.load_events(base_dir, new_id)
+      assert length(events) == 1
+    end
+
+    test "import scrubs secrets from imported data",
+         %{base_dir: base_dir} do
+      export = %{
+        "session_id" => "secret-test",
+        "export_schema_version" => 1,
+        "snapshot" => %{"objective" => "Test", "api_key" => "sk-should-be-redacted"},
+        "events" => [%{"type" => "test", "token" => "Bearer should-be-redacted"}],
+        "messages" => [],
+        "patches" => []
+      }
+
+      assert {:ok, "secret-test"} = SessionStore.import_session(base_dir, export)
+
+      # Verify secrets were scrubbed on disk
+      {:ok, snapshot} = SessionStore.load_session(base_dir, "secret-test")
+      assert snapshot["api_key"] == "**REDACTED**"
+
+      {:ok, events, %{skipped: 0}} = SessionStore.load_events(base_dir, "secret-test")
+      assert hd(events)["token"] == "**REDACTED**"
+    end
+  end
+
+  # ── Memory persistence redaction ─────────────────────────────────────
+
+  describe "memory persistence redaction" do
+    test "no secrets in persisted memory file",
+         %{base_dir: base_dir, session_id: session_id} do
+      memory = %{"user_goal" => "Test", "password" => "hunter2", "api_key" => "sk-test-12345"}
+
+      assert :ok = SessionStore.save_memory(base_dir, session_id, memory)
+
+      {:ok, raw} =
+        File.read(Path.join(SessionStore.session_dir(base_dir, session_id), "memory.json"))
+
+      refute String.contains?(raw, "hunter2")
+      refute String.contains?(raw, "sk-test-12345")
+      assert String.contains?(raw, "**REDACTED**")
+    end
+  end
+
+  # ── Workspace isolation ───────────────────────────────────────────────
+
+  describe "workspace isolation" do
+    test "sessions in different base dirs are isolated" do
+      base_dir_a = tmp_dir!()
+      base_dir_b = tmp_dir!()
+
+      on_exit(fn ->
+        File.rm_rf!(base_dir_a)
+        File.rm_rf!(base_dir_b)
+      end)
+
+      SessionStore.save_session(base_dir_a, "shared-id", %{"workspace" => "A"})
+      SessionStore.save_session(base_dir_b, "shared-id", %{"workspace" => "B"})
+
+      assert {:ok, %{"workspace" => "A"}} = SessionStore.load_session(base_dir_a, "shared-id")
+      assert {:ok, %{"workspace" => "B"}} = SessionStore.load_session(base_dir_b, "shared-id")
+    end
+  end
+
+  # ── Session survival across restarts ──────────────────────────────────
+
+  describe "session survival across restarts" do
+    test "session snapshot + memory + events survive simulated restart",
+         %{base_dir: base_dir, session_id: session_id} do
+      # Simulate a running session that persisted data
+      SessionStore.save_session(base_dir, session_id, %{
+        "status" => "awaiting_plan_approval",
+        "active_plan_id" => "plan_1"
+      })
+
+      SessionStore.append_event(base_dir, session_id, %{
+        "type" => "user_message",
+        "text" => "plan this"
+      })
+
+      SessionStore.append_event(base_dir, session_id, %{
+        "type" => "plan_created",
+        "plan_id" => "plan_1"
+      })
+
+      SessionStore.append_message(base_dir, session_id, %{
+        "role" => "user",
+        "content" => "plan this"
+      })
+
+      SessionStore.save_memory(base_dir, session_id, %{
+        "user_goal" => "Build feature X",
+        "project_facts" => ["Elixir project"],
+        "decisions_made" => ["Use GenServer pattern"]
+      })
+
+      # Verify all data is recoverable (simulating a restart)
+      assert {:ok, snapshot} = SessionStore.load_session(base_dir, session_id)
+      assert snapshot["status"] == "awaiting_plan_approval"
+      assert snapshot["active_plan_id"] == "plan_1"
+
+      assert {:ok, events, %{skipped: 0}} = SessionStore.load_events(base_dir, session_id)
+      assert length(events) == 2
+
+      assert {:ok, messages, %{skipped: 0}} = SessionStore.load_messages(base_dir, session_id)
+      assert length(messages) == 1
+
+      assert {:ok, memory} = SessionStore.load_memory(base_dir, session_id)
+      assert memory["user_goal"] == "Build feature X"
+      assert memory["project_facts"] == ["Elixir project"]
+      assert memory["decisions_made"] == ["Use GenServer pattern"]
+    end
+  end
 end

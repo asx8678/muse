@@ -1767,4 +1767,91 @@ defmodule Muse.CommandDispatcherTest do
       assert output =~ "[REDACTED]"
     end
   end
+
+  # -- Export/Import session commands -------------------------------------------
+
+  describe "export session" do
+    test "returns error when no session data exists" do
+      context = %{workspace: "/tmp/nonexistent-workspace-for-export-test"}
+      {:error, output, _effects} = CommandDispatcher.dispatch(:export_session, nil, context)
+      assert is_binary(output)
+    end
+
+    test "rejects extra arguments" do
+      {:error, output, _effects} = CommandDispatcher.dispatch(:export_session, "extra", %{})
+      assert output =~ "usage"
+    end
+  end
+
+  describe "import session" do
+    test "rejects missing path argument" do
+      {:error, output, _effects} = CommandDispatcher.dispatch(:import_session, nil, %{})
+      assert output =~ "usage"
+    end
+
+    test "rejects empty path argument" do
+      {:error, output, _effects} = CommandDispatcher.dispatch(:import_session, "", %{})
+      assert output =~ "usage"
+    end
+
+    test "reports error for non-existent file" do
+      context = %{workspace: "/tmp/muse-import-test"}
+
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:import_session, "/nonexistent/file.muse-session", context)
+
+      assert is_binary(output)
+    end
+  end
+
+  # -- Workspace profile commands ----------------------------------------------
+
+  describe "workspace list" do
+    test "shows message when no profiles exist" do
+      {:ok, output, _effects} = CommandDispatcher.dispatch(:workspace_list, nil, %{})
+      assert is_binary(output)
+    end
+  end
+
+  describe "workspace switch" do
+    test "rejects missing name argument" do
+      {:error, output, _effects} = CommandDispatcher.dispatch(:workspace_switch, nil, %{})
+      assert output =~ "usage"
+    end
+
+    test "reports error for non-existent profile" do
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:workspace_switch, "nonexistent-profile-xyz", %{})
+
+      assert is_binary(output)
+    end
+  end
+
+  describe "workspace create" do
+    test "rejects missing arguments" do
+      {:error, output, _effects} = CommandDispatcher.dispatch(:workspace_create, nil, %{})
+      assert output =~ "usage"
+    end
+
+    test "rejects name-only argument" do
+      {:error, output, _effects} = CommandDispatcher.dispatch(:workspace_create, "myproject", %{})
+      assert output =~ "usage"
+    end
+
+    test "rejects path-traversal name" do
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:workspace_create, "../escape /tmp/test", %{})
+
+      assert is_binary(output)
+    end
+  end
+
+  describe "workspace info" do
+    test "shows workspace info" do
+      context = %{workspace: "/tmp/test-workspace"}
+      {:ok, output, _effects} = CommandDispatcher.dispatch(:workspace_info, nil, context)
+      assert output =~ "Workspace info"
+      assert output =~ "/tmp/test-workspace"
+    end
+  end
 end

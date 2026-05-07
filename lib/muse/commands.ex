@@ -68,7 +68,17 @@ defmodule Muse.Commands do
     {"/checkpoints", :checkpoints, "List available checkpoints for restoration"},
     {"/restore", :restore, "Restore from a checkpoint (Restoration Muse)"},
     {"/provider status", :provider_status, "Show provider configuration and connectivity status"},
-    {"/provider models", :provider_models, "List known models for the configured provider"}
+    {"/provider models", :provider_models, "List known models for the configured provider"},
+    {"/export session", :export_session,
+     "Export current session to a portable .muse-session file (secrets redacted)"},
+    {"/import session", :import_session,
+     "Import a session from a .muse-session file (e.g. /import session path/to/file)"},
+    {"/workspace list", :workspace_list, "List all workspace profiles"},
+    {"/workspace switch", :workspace_switch,
+     "Switch active workspace profile (e.g. /workspace switch myproject)"},
+    {"/workspace create", :workspace_create,
+     "Create a workspace profile (e.g. /workspace create myproject /path/to/root)"},
+    {"/workspace info", :workspace_info, "Show detailed workspace profile and session store info"}
   ]
 
   # Sort longest-prefix-first so "/simulate backend-error" matches before "/simulate"

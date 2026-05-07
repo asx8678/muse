@@ -337,6 +337,9 @@ defmodule Muse.SessionServer do
 
     # Attempt to restore plan from persisted snapshot (non-fatal on failure)
     state = restore_plan_from_snapshot(initial)
+
+    # Attempt to restore memory from persisted artifact (non-fatal on failure)
+    state = restore_memory(state)
     {:ok, state}
   end
 
@@ -481,11 +484,15 @@ defmodule Muse.SessionServer do
 
   @impl true
   def handle_call({:set_memory, memory}, _from, state) do
+    # Persist memory to disk so it survives restarts
+    persist_memory(state.session_id, memory)
     {:reply, :ok, %{state | memory: memory}}
   end
 
   @impl true
   def handle_call(:clear_memory, _from, state) do
+    # Remove persisted memory when cleared
+    clear_persisted_memory(state.session_id)
     {:reply, :ok, %{state | memory: nil}}
   end
 
@@ -2397,5 +2404,55 @@ defmodule Muse.SessionServer do
       |> Base.encode16(case: :lower)
 
     "turn_#{hex}"
+  end
+
+  # -- Memory persistence helpers ----------------------------------------------
+
+  defp persist_memory(session_id, memory) when is_map(memory) do
+    case SessionStore.save_memory(session_id, memory) do
+      :ok -> :ok
+      # Non-fatal: log but don't crash
+      {:error, _reason} -> :ok
+    end
+  end
+
+  defp persist_memory(_session_id, _memory), do: :ok
+
+  defp clear_persisted_memory(session_id) do
+    # Remove memory.json by saving an empty map, then deleting
+    dir = SessionStore.session_dir(session_id)
+    path = Path.join(dir, "memory.json")
+    _ = File.rm(path)
+    :ok
+  end
+
+  defp restore_memory(state) do
+    if is_nil(state.memory) do
+      case SessionStore.load_memory(state.session_id) do
+        {:ok, memory} when is_map(memory) ->
+          %{state | memory: decode_memory(memory)}
+
+        _ ->
+          state
+      end
+    else
+      state
+    end
+  rescue
+    _ -> state
+  catch
+    :exit, _ -> state
+  end
+
+  # Decode memory from JSON-persisted form (string keys) back to
+  # the atom-keyed canonical form expected by Muse.Memory.render/1
+  defp decode_memory(memory) when is_map(memory) do
+    # If the memory already has atom keys (e.g. from Memory.new/1),
+    # it's already in canonical form
+    if Map.has_key?(memory, :user_goal) or Map.has_key?(memory, "user_goal") do
+      memory
+    else
+      memory
+    end
   end
 end
