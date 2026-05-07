@@ -156,7 +156,7 @@ defmodule Mix.Tasks.Muse.Smoke do
         {"/help", "/help hint visible"},
         {"data-slash-commands", "slash commands data attribute"},
         {"Ask Muse anything, or type /help", "chat placeholder text"},
-        {~s(aria-label="Message input"), "input ARIA label"},
+        {~s(aria-label="Message to Muse"), "input ARIA label"},
         {~s(aria-label="Message composer"), "composer ARIA label"},
         {~s(aria-label="Send message to Muse"), "send button ARIA label"}
       ]

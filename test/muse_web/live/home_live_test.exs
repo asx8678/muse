@@ -1547,9 +1547,10 @@ defmodule MuseWeb.HomeLiveTest do
     test "chat composer has accessible label" do
       {:ok, _view, html} = live(build_conn(), "/")
       assert html =~ ~s(aria-label="Message composer")
-      assert html =~ ~s(aria-label="Message input")
-      # sr-only label still present for screen readers
-      assert html =~ ~s(Message to Muse)
+      # Textarea carries the accessible label directly (no visible label element)
+      assert html =~ ~s(aria-label="Message to Muse")
+      # No visible “Message to Muse” label element is rendered
+      refute html =~ ~s(<label for="chat-input-textarea")
     end
 
     test "chat composer uses concise placeholder" do

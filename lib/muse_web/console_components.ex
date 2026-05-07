@@ -708,14 +708,13 @@ defmodule MuseWeb.ConsoleComponents do
     ~H"""
     <div id="input-form" class="chat-composer" phx-hook="CommandConsole" data-slash-commands={Jason.encode!(Muse.Commands.slash_commands_json())} role="form" aria-label="Message composer">
       <form id="command-form" phx-submit="submit" class="chat-composer-form">
-        <label for="chat-input-textarea" class="sr-only">Message to Muse</label>
         <textarea
           id="chat-input-textarea"
           name="text"
           class="chat-input command-input"
           placeholder="Ask Muse anything, or type /help..."
           rows="1"
-          aria-label="Message input"
+          aria-label="Message to Muse"
         ><%= @input %></textarea>
         <button type="submit" class="primary-button chat-send-button" aria-label="Send message to Muse">Send</button>
       </form>
