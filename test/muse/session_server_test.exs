@@ -1919,4 +1919,70 @@ defmodule Muse.SessionServerTest do
       assert Muse.Execution.Policy.remote_tool_blocked?("ssh_exec") == true
     end
   end
+
+  describe "session ID validation at server boundaries" do
+    @invalid_ids [
+      "",
+      ".",
+      "..",
+      "../escape",
+      "sub/../escape",
+      "foo\\bar",
+      "foo\0bar",
+      "/etc/passwd",
+      String.duplicate("a", 256)
+    ]
+
+    test "start_link/1 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionServer.start_link(session_id: id),
+               "Expected start_link to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "DynamicSupervisor.start_child rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 DynamicSupervisor.start_child(
+                   Muse.SessionSupervisor,
+                   {Muse.SessionServer, session_id: id}
+                 ),
+               "Expected DynamicSupervisor.start_child to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "invalid IDs do not appear in Registry" do
+      for id <- @invalid_ids do
+        DynamicSupervisor.start_child(
+          Muse.SessionSupervisor,
+          {Muse.SessionServer, session_id: id}
+        )
+      end
+
+      # None of the invalid IDs should be registered
+      registry_keys =
+        Registry.select(Muse.SessionRegistry, [
+          {{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2"}}]}
+        ])
+        |> Enum.map(fn {key, _pid} -> key end)
+
+      for id <- @invalid_ids do
+        base_dir = Muse.SessionServer.current_store_base_dir()
+        key = Muse.SessionServer.registry_key(id, base_dir)
+
+        refute key in registry_keys,
+               "Invalid session ID #{inspect(id)} should not be registered"
+      end
+    end
+
+    test "valid session IDs still work after validation is added" do
+      # Sanity check: legitimate IDs continue to work
+      pid = start_server("valid-server-session")
+      assert is_pid(pid)
+
+      status = Muse.SessionServer.status(pid)
+      assert status.session_id == "valid-server-session"
+    end
+  end
 end

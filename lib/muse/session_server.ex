@@ -65,10 +65,22 @@ defmodule Muse.SessionServer do
   # -- Public API ---------------------------------------------------------------
 
   @doc false
-  @spec start_link(keyword()) :: GenServer.on_start()
+  @spec start_link(keyword()) :: GenServer.on_start() | {:error, {:invalid_session_id, term()}}
   def start_link(opts) do
     session_id = Keyword.fetch!(opts, :session_id) |> to_string()
 
+    # Validate session ID before attempting GenServer.start_link so invalid
+    # IDs cannot register in the Registry or trigger persistence calls.
+    case SessionStore.validate_session_id(session_id) do
+      :ok ->
+        do_start_link(session_id, opts)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp do_start_link(session_id, opts) do
     runtime_context = current_runtime_context()
     store_base_dir = Keyword.get(opts, :store_base_dir) || runtime_context.store_base_dir
     workspace = Keyword.get(opts, :workspace) || runtime_context.workspace
@@ -361,6 +373,25 @@ defmodule Muse.SessionServer do
 
   @impl true
   def init(%{session_id: session_id, store_base_dir: store_base_dir, workspace: workspace}) do
+    # Defense-in-depth: reject invalid session IDs even if they somehow
+    # bypass start_link validation (e.g. direct DynamicSupervisor use).
+    case SessionStore.validate_session_id(session_id) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:stop, reason}
+    end
+    |> case do
+      :ok ->
+        do_init(session_id, store_base_dir, workspace)
+
+      {:stop, _} = stop ->
+        stop
+    end
+  end
+
+  defp do_init(session_id, store_base_dir, workspace) do
     # Registration is handled atomically by the :via tuple in start_link.
     # If we reach init, the name was successfully registered.
     # `seq` is a session-local monotonic counter starting at 0; each

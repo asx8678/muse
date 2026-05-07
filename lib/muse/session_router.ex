@@ -326,14 +326,17 @@ defmodule Muse.SessionRouter do
   @spec find_or_start_session(String.t()) :: {:ok, pid()} | {:error, term()}
   def find_or_start_session(session_id) do
     session_id = to_string(session_id)
-    context = active_session_context(session_id)
 
-    case Registry.lookup(Muse.SessionRegistry, context.registry_key) do
-      [{pid, _}] ->
-        {:ok, pid}
+    with :ok <- Muse.SessionStore.validate_session_id(session_id) do
+      context = active_session_context(session_id)
 
-      [] ->
-        start_session(context)
+      case Registry.lookup(Muse.SessionRegistry, context.registry_key) do
+        [{pid, _}] ->
+          {:ok, pid}
+
+        [] ->
+          start_session(context)
+      end
     end
   end
 
@@ -341,11 +344,18 @@ defmodule Muse.SessionRouter do
 
   defp lookup_session(session_id) do
     session_id = to_string(session_id)
-    %{registry_key: registry_key} = active_session_context(session_id)
 
-    case Registry.lookup(Muse.SessionRegistry, registry_key) do
-      [{pid, _}] -> {:ok, pid}
-      [] -> {:error, :not_found}
+    case Muse.SessionStore.validate_session_id(session_id) do
+      :ok ->
+        %{registry_key: registry_key} = active_session_context(session_id)
+
+        case Registry.lookup(Muse.SessionRegistry, registry_key) do
+          [{pid, _}] -> {:ok, pid}
+          [] -> {:error, :not_found}
+        end
+
+      {:error, _} = error ->
+        error
     end
   end
 

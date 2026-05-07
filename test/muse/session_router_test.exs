@@ -319,4 +319,148 @@ defmodule Muse.SessionRouterTest do
       assert Muse.SessionRouter.active_sessions() == []
     end
   end
+
+  describe "session ID validation at router boundaries" do
+    @invalid_ids [
+      "",
+      ".",
+      "..",
+      "../escape",
+      "sub/../escape",
+      "foo\\bar",
+      "foo\0bar",
+      "/etc/passwd",
+      String.duplicate("a", 256)
+    ]
+
+    test "find_or_start_session/1 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.find_or_start_session(id),
+               "Expected find_or_start_session to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "find_or_start_session/1 rejects nil (stringifies to empty)" do
+      # to_string(nil) => "", which is invalid
+      assert {:error, {:invalid_session_id, ""}} =
+               Muse.SessionRouter.find_or_start_session(nil)
+    end
+
+    test "find_or_start_session does not register invalid IDs in Registry" do
+      for id <- @invalid_ids do
+        Muse.SessionRouter.find_or_start_session(id)
+      end
+
+      # No processes should be registered for any of the invalid IDs
+      registry_keys =
+        Registry.select(Muse.SessionRegistry, [
+          {{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2"}}]}
+        ])
+        |> Enum.map(fn {key, _pid} -> key end)
+
+      for id <- @invalid_ids do
+        base_dir = Muse.SessionServer.current_store_base_dir()
+        key = Muse.SessionServer.registry_key(id, base_dir)
+
+        refute key in registry_keys,
+               "Invalid session ID #{inspect(id)} should not be registered"
+      end
+    end
+
+    test "submit/4 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.submit(id, :cli, "test"),
+               "Expected submit to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "status/1 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.status(id),
+               "Expected status to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "cancel/1 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.cancel(id),
+               "Expected cancel to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "approve_plan/2 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.approve_plan(id),
+               "Expected approve_plan to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "reject_plan/2 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.reject_plan(id),
+               "Expected reject_plan to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "get_memory/1 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.get_memory(id),
+               "Expected get_memory to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "set_memory/2 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.set_memory(id, %{data: 1}),
+               "Expected set_memory to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "clear_memory/1 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.clear_memory(id),
+               "Expected clear_memory to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "request_remote_execution_approval/2 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.request_remote_execution_approval(id),
+               "Expected request_remote_execution_approval to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "approve_remote/2 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.approve_remote(id),
+               "Expected approve_remote to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "reject_remote/2 rejects invalid session IDs" do
+      for id <- @invalid_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionRouter.reject_remote(id),
+               "Expected reject_remote to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "valid session IDs still work after validation is added" do
+      # Sanity check: legitimate IDs continue to work
+      assert {:ok, _pid} = Muse.SessionRouter.find_or_start_session("valid-session")
+      assert {:ok, _text} = Muse.SessionRouter.submit("valid-session", :cli, "hello")
+      assert {:ok, _status} = Muse.SessionRouter.status("valid-session")
+    end
+  end
 end

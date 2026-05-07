@@ -265,7 +265,7 @@ defmodule Muse.SessionStore do
   @doc """
   Lists all session IDs present in the base directory.
 
-  Only top-level directories that pass `validate_session_id/1` are returned.
+  Only top-level directories that pass `SessionStore.validate_session_id/1` are returned.
   Returns `{:ok, ids}` or `{:error, reason}`.
 
   ## Examples
@@ -749,9 +749,28 @@ defmodule Muse.SessionStore do
     end
   end
 
-  # ── Private: Session ID validation ─────────────────────────────────────
+  # ── Session ID validation ──────────────────────────────────────────
 
-  defp validate_session_id(session_id) when is_binary(session_id) do
+  @max_session_id_length 255
+
+  @doc """
+  Validates a session ID for safe use in file paths and runtime registration.
+
+  Returns `:ok` if the session ID is valid, or
+  `{:error, {:invalid_session_id, id}}` if it is:
+
+    - not a binary
+    - empty (`""`)
+    - `"."` or `".."`
+    - contains path-traversal characters (`/`, `\\`, NUL)
+    - exceeds the maximum length of `#{@max_session_id_length}` characters
+
+  This function is the canonical validator used by `SessionStore`,
+  `SessionRouter`, and `SessionServer` to reject invalid or dangerous
+  session IDs before any Registry lookup, process start, or file I/O.
+  """
+  @spec validate_session_id(term()) :: :ok | {:error, {:invalid_session_id, term()}}
+  def validate_session_id(session_id) when is_binary(session_id) do
     cond do
       session_id == "" ->
         {:error, {:invalid_session_id, session_id}}
@@ -762,12 +781,15 @@ defmodule Muse.SessionStore do
       Regex.match?(@path_traversal_chars, session_id) ->
         {:error, {:invalid_session_id, session_id}}
 
+      byte_size(session_id) > @max_session_id_length ->
+        {:error, {:invalid_session_id, session_id}}
+
       true ->
         :ok
     end
   end
 
-  defp validate_session_id(other) do
+  def validate_session_id(other) do
     {:error, {:invalid_session_id, other}}
   end
 

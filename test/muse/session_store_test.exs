@@ -131,6 +131,25 @@ defmodule Muse.SessionStoreTest do
       assert {:error, {:invalid_session_id, "../escape"}} =
                SessionStore.load_messages(base_dir, "../escape")
     end
+
+    test "rejects overlong session id", %{base_dir: base_dir} do
+      overlong = String.duplicate("a", 256)
+
+      assert {:error, {:invalid_session_id, ^overlong}} =
+               SessionStore.save_session(base_dir, overlong, %{"a" => 1})
+    end
+
+    test "validate_session_id/1 is public and reusable" do
+      assert :ok = SessionStore.validate_session_id("valid-id")
+      assert {:error, {:invalid_session_id, ""}} = SessionStore.validate_session_id("")
+      assert {:error, {:invalid_session_id, ".."}} = SessionStore.validate_session_id("..")
+
+      assert {:error, {:invalid_session_id, "../escape"}} =
+               SessionStore.validate_session_id("../escape")
+
+      assert {:error, {:invalid_session_id, :not_a_string}} =
+               SessionStore.validate_session_id(:not_a_string)
+    end
   end
 
   # ── save_session/3 and load_session/2 ──────────────────────────────────
