@@ -540,7 +540,7 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "Jump to file"
   end
 
-  test "diagnostics drawer has accessibility attributes" do
+  test "diagnostics drawer has accessibility attributes without broad live region" do
     Muse.Diagnostics.emit(:warning, "a11y test")
 
     {:ok, view, _html} = live(build_conn(), "/")
@@ -548,10 +548,15 @@ defmodule MuseWeb.HomeLiveTest do
     open_diagnostics_drawer(view)
     html = render(view)
 
+    assert html =~ ~s(id="diagnostics-drawer")
     assert html =~ ~s(role="region")
     assert html =~ ~s(aria-labelledby="diagnostics-title")
     assert html =~ ~s(id="diagnostics-title")
     assert html =~ ~s(aria-label="Minimize diagnostics panel")
+    # aria-live="polite" was removed from drawer — content is navigable
+    # via region semantics; broad live region caused excessive announcements.
+    refute view |> has_element?("#diagnostics-drawer[aria-live]"),
+           "diagnostics drawer should not have aria-live"
   end
 
   test "diagnostics do NOT auto-open on real-time emit" do
@@ -1146,10 +1151,14 @@ defmodule MuseWeb.HomeLiveTest do
 
   # -- Toast notification tests -----------------------------------------------
 
-  test "toast container renders with aria-live" do
-    {:ok, _view, html} = live(build_conn(), "/")
+  test "toast container does not have redundant live region" do
+    {:ok, view, html} = live(build_conn(), "/")
     assert html =~ "toast-container"
-    assert html =~ ~s(aria-live="polite")
+    assert html =~ ~s(aria-label="Notifications")
+    # Individual toasts use role="alert" (implicit aria-live="assertive")
+    # which is more precise than aria-live="polite" on the container.
+    refute view |> has_element?(".toast-container[aria-live]"),
+           "toast container should not have aria-live"
   end
 
   test "toast dismiss button works" do
@@ -1544,6 +1553,15 @@ defmodule MuseWeb.HomeLiveTest do
       assert html =~ ~s(aria-label="Conversation history")
     end
 
+    test "chat scroll has no nested live regions" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      # role="log" is the only live region in chat scroll; no role="status" inside it
+      assert html =~ ~s(role="log")
+      # The chat-empty div inside role="log" must NOT have role="status"
+      # to avoid nested live-region announcements (WCAG 4.1.2)
+      refute html =~ ~s(class="chat-empty" role="status")
+    end
+
     test "chat composer has accessible label" do
       {:ok, _view, html} = live(build_conn(), "/")
       assert html =~ ~s(aria-label="Message composer")
@@ -1576,12 +1594,17 @@ defmodule MuseWeb.HomeLiveTest do
       assert html =~ ~s(aria-label="Workspace context and session status")
     end
 
-    test "toast container has live region" do
-      {:ok, _view, html} = live(build_conn(), "/")
+    test "toast container has accessible label but no redundant live region" do
+      {:ok, view, html} = live(build_conn(), "/")
       assert html =~ ~s(class="toast-container")
-      assert html =~ ~s(role="status")
-      assert html =~ ~s(aria-live="polite")
       assert html =~ ~s(aria-label="Notifications")
+      # Individual toasts use role="alert" (implicit aria-live="assertive")
+      # for targeted announcements; container does not need its own live region.
+      refute view |> has_element?(".toast-container[aria-live]"),
+             "toast container should not have aria-live"
+
+      refute view |> has_element?(".toast-container[role]"),
+             "toast container should not have role"
     end
 
     test "prompt chips have accessible labels" do

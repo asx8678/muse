@@ -128,11 +128,9 @@ defmodule Mix.Tasks.Muse.Smoke do
         {~s(role="region"), "chat panel region role"},
         {~s(aria-label="Muse conversation"), "chat panel ARIA label"},
         {~s(role="log"), "chat scroll log role"},
-        {~s(aria-live="polite"), "ARIA live region"},
+        {~s(aria-live="polite"), "chat scroll ARIA live region"},
         {~s(role="complementary"), "context panel complementary role"},
-        {~s(aria-label="Workspace context and session status"), "context panel ARIA label"},
-        {~s(role="status"), "status ARIA role"},
-        {~s(aria-label="Notifications"), "toast container ARIA label"}
+        {~s(aria-label="Workspace context and session status"), "context panel ARIA label"}
       ]
 
       missing =
