@@ -955,4 +955,105 @@ defmodule Muse.LLM.ProviderConfigTest do
       assert ProviderConfig.provider_atom(config) == :fake
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Structured outputs support
+  # ---------------------------------------------------------------------------
+
+  describe "supports_structured_outputs/1" do
+    test "defaults to true when nil" do
+      config = ProviderConfig.fake()
+      assert config.supports_structured_outputs == nil
+      assert ProviderConfig.supports_structured_outputs?(config) == true
+    end
+
+    test "returns false when explicitly set to false" do
+      config = %{ProviderConfig.fake() | supports_structured_outputs: false}
+      assert ProviderConfig.supports_structured_outputs?(config) == false
+    end
+
+    test "returns true when explicitly set to true" do
+      config = %{ProviderConfig.fake() | supports_structured_outputs: true}
+      assert ProviderConfig.supports_structured_outputs?(config) == true
+    end
+  end
+
+  describe "parse_structured_outputs/1" do
+    test "parses 'true' string to true" do
+      assert ProviderConfig.parse_structured_outputs("true") == true
+    end
+
+    test "parses 'false' string to false" do
+      assert ProviderConfig.parse_structured_outputs("false") == false
+    end
+
+    test "passes through boolean true" do
+      assert ProviderConfig.parse_structured_outputs(true) == true
+    end
+
+    test "passes through boolean false" do
+      assert ProviderConfig.parse_structured_outputs(false) == false
+    end
+
+    test "returns nil for nil" do
+      assert ProviderConfig.parse_structured_outputs(nil) == nil
+    end
+
+    test "returns nil for unrecognized strings" do
+      assert ProviderConfig.parse_structured_outputs("maybe") == nil
+    end
+  end
+
+  describe "MUSE_STRUCTURED_OUTPUTS env var" do
+    test "load/1 respects MUSE_STRUCTURED_OUTPUTS=false" do
+      assert {:ok, config} =
+               ProviderConfig.load(%{
+                 "MUSE_PROVIDER" => "openai_compatible",
+                 "MUSE_MODEL" => "gpt-4.1",
+                 "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+                 "MUSE_STRUCTURED_OUTPUTS" => "false"
+               })
+
+      assert config.supports_structured_outputs == false
+      assert ProviderConfig.supports_structured_outputs?(config) == false
+    end
+
+    test "load/1 respects MUSE_STRUCTURED_OUTPUTS=true" do
+      assert {:ok, config} =
+               ProviderConfig.load(%{
+                 "MUSE_PROVIDER" => "openai_compatible",
+                 "MUSE_MODEL" => "gpt-4.1",
+                 "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+                 "MUSE_STRUCTURED_OUTPUTS" => "true"
+               })
+
+      assert config.supports_structured_outputs == true
+      assert ProviderConfig.supports_structured_outputs?(config) == true
+    end
+
+    test "load/1 defaults to nil when MUSE_STRUCTURED_OUTPUTS is unset" do
+      assert {:ok, config} =
+               ProviderConfig.load(%{
+                 "MUSE_PROVIDER" => "openai_compatible",
+                 "MUSE_MODEL" => "gpt-4.1",
+                 "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1"
+               })
+
+      assert config.supports_structured_outputs == nil
+      assert ProviderConfig.supports_structured_outputs?(config) == true
+    end
+
+    test "load/1 ignores invalid MUSE_STRUCTURED_OUTPUTS value" do
+      assert {:ok, config} =
+               ProviderConfig.load(%{
+                 "MUSE_PROVIDER" => "openai_compatible",
+                 "MUSE_MODEL" => "gpt-4.1",
+                 "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+                 "MUSE_STRUCTURED_OUTPUTS" => "maybe"
+               })
+
+      # Invalid values are ignored — stays nil (defaults to true)
+      assert config.supports_structured_outputs == nil
+    end
+  end
 end

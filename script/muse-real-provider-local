@@ -279,6 +279,12 @@ elif [ -n "$RESOLUTION_MODEL" ]; then
             if [ -z "${MUSE_MAX_TOKENS:-}" ]; then
               export MUSE_MAX_TOKENS="4096"
             fi
+            # wafer.ai / GLM-5.1 does not support OpenAI strict structured
+            # outputs (response_format type: json_schema). Sending it causes
+            # HTTP 200 with empty content and finish_reason: stop. Disable it.
+            if [ -z "${MUSE_STRUCTURED_OUTPUTS:-}" ]; then
+              export MUSE_STRUCTURED_OUTPUTS="false"
+            fi
             ;;
 
           openrouter)
@@ -516,6 +522,8 @@ echo "  API key env:   $DISPLAY_KEY_ENV (set: $DISPLAY_KEY_SET)"
 echo "  Fake avoided:  $FAKE_AVOIDED"
 DISPLAY_MAX_TOKENS="${MUSE_MAX_TOKENS:-(default)}"
 echo "  Max tokens:    $DISPLAY_MAX_TOKENS"
+DISPLAY_STRUCTURED_OUTPUTS="${MUSE_STRUCTURED_OUTPUTS:-(default)}"
+echo "  Structured outputs: $DISPLAY_STRUCTURED_OUTPUTS"
 
 # ── Verify mode ────────────────────────────────────────────────────────────────
 if [ "$VERIFY_MODE" = true ]; then
@@ -534,6 +542,7 @@ if [ "$VERIFY_MODE" = true ]; then
   echo "    Model source       = $MODEL_SOURCE${MODEL_SOURCE_DETAIL:+ [$MODEL_SOURCE_DETAIL]}"
   echo "    Wire API           = ${MUSE_WIRE_API:-(default for provider)}"
   echo "    Max tokens         = ${MUSE_MAX_TOKENS:-(default)}"
+  echo "    Structured outputs = ${MUSE_STRUCTURED_OUTPUTS:-(default)}"
   echo "    Fake avoided       = $FAKE_AVOIDED"
   echo "    OpenRouter misused = $([ "$MUSE_PROVIDER" = "openrouter" ] && [ -n "$MUSE_MODEL" ] && ! echo "$MUSE_MODEL" | grep -qE '^(openrouter-|openai/|anthropic/|google/|meta-llama/)' && echo 'WARNING: model may not be valid for OpenRouter' || echo 'no')"
 fi

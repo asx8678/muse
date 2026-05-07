@@ -27,6 +27,7 @@ defmodule Muse.LLM.ProviderConfig do
     * `supports_streaming`      — whether the provider supports streaming
     * `supports_websockets`     — whether the provider supports WebSocket transport
     * `supports_tools`          — whether the provider supports tool/function calling
+    * `supports_structured_outputs` — whether the provider supports OpenAI strict structured outputs (default `true`/`nil`)
     * `headers`                 — extra HTTP headers
     * `max_tokens_per_session`  — token budget per session
     * `max_api_calls_per_minute`— rate limit
@@ -85,6 +86,7 @@ defmodule Muse.LLM.ProviderConfig do
           supports_streaming: boolean() | nil,
           supports_websockets: boolean() | nil,
           supports_tools: boolean() | nil,
+          supports_structured_outputs: boolean() | nil,
           headers: map() | nil,
           max_tokens: non_neg_integer() | nil,
           max_tokens_per_session: non_neg_integer() | nil,
@@ -112,6 +114,7 @@ defmodule Muse.LLM.ProviderConfig do
     :supports_streaming,
     :supports_websockets,
     :supports_tools,
+    :supports_structured_outputs,
     :headers,
     :max_tokens,
     :max_tokens_per_session,
@@ -180,6 +183,7 @@ defmodule Muse.LLM.ProviderConfig do
     * `MUSE_TRANSPORT` — transport override (provider-specific defaults apply)
     * `MUSE_LLM_TIMEOUT_MS` — per-request timeout in ms (default: `120_000`)
     * `MUSE_LLM_MAX_RETRIES` — max retries (default: `2`, `0` for fake)
+    * `MUSE_STRUCTURED_OUTPUTS` — `"true"`/`"false"` — whether the provider supports strict structured outputs (default: `true`)
 
   Provider-specific env vars:
     * OpenAI: `MUSE_OPENAI_BASE_URL` (required for openai_compatible)
@@ -411,6 +415,42 @@ defmodule Muse.LLM.ProviderConfig do
   end
 
   def provider_atom(%__MODULE__{}), do: :unknown
+
+  @doc """
+  Return whether the provider supports OpenAI strict structured outputs.
+
+  Defaults to `true` when `supports_structured_outputs` is `nil` (backward
+  compatible — existing providers that don't set the field are assumed to
+  support structured outputs).
+
+  Providers like wafer.ai / GLM-5.1 that do not support strict `json_schema`
+  `response_format` should set this to `false`.
+  """
+  @spec supports_structured_outputs?(t()) :: boolean()
+  def supports_structured_outputs?(%__MODULE__{supports_structured_outputs: nil}), do: true
+  def supports_structured_outputs?(%__MODULE__{supports_structured_outputs: val}), do: val
+
+  @doc """
+  Safely parse a structured outputs flag from a string or boolean.
+
+  Accepts `"true"`, `"false"`, `true`, `false`, or `nil`.
+  Returns `true`, `false`, or `nil` (for unrecognized values).
+
+  ## Examples
+
+      iex> Muse.LLM.ProviderConfig.parse_structured_outputs("false")
+      false
+      iex> Muse.LLM.ProviderConfig.parse_structured_outputs("true")
+      true
+      iex> Muse.LLM.ProviderConfig.parse_structured_outputs(nil)
+      nil
+  """
+  @spec parse_structured_outputs(String.t() | boolean() | nil) :: boolean() | nil
+  def parse_structured_outputs("true"), do: true
+  def parse_structured_outputs("false"), do: false
+  def parse_structured_outputs(true), do: true
+  def parse_structured_outputs(false), do: false
+  def parse_structured_outputs(_), do: nil
 
   @doc """
   Safely parse a transport value from a string or atom to a known transport atom.
@@ -653,7 +693,21 @@ defmodule Muse.LLM.ProviderConfig do
              :non_negative,
              strict?
            ) do
-      {:ok, %{config | timeout_ms: timeout_ms, max_retries: max_retries}}
+      config = %{config | timeout_ms: timeout_ms, max_retries: max_retries}
+      {:ok, maybe_set_structured_outputs(config, env_map)}
+    end
+  end
+
+  defp maybe_set_structured_outputs(config, env_map) do
+    case env_value(env_map, "MUSE_STRUCTURED_OUTPUTS") do
+      nil ->
+        config
+
+      value ->
+        case parse_structured_outputs(value) do
+          nil -> config
+          parsed -> %{config | supports_structured_outputs: parsed}
+        end
     end
   end
 

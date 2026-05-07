@@ -414,6 +414,136 @@ defmodule Muse.Prompt.ModelPreparerTest do
       assert "git_status" in tool_names
       assert "git_diff_readonly" in tool_names
     end
+
+    test "Planning Muse omits PlanSchema response_format when structured outputs disabled" do
+      session =
+        Session.new(
+          workspace: "/tmp/test_project",
+          id: "sess_plan_no_so",
+          status: :idle,
+          created_at: ~U[2025-01-01 00:00:00Z],
+          updated_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      planning_profile = Muse.MuseRegistry.get(:planning)
+
+      bundle =
+        Assembler.build(session, planning_profile, "inspect the project",
+          id: "pb_plan_no_so",
+          turn_id: "turn_plan_no_so",
+          model: "fake-planning-model",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      request =
+        ModelPreparer.to_request(
+          bundle,
+          provider: :fake,
+          supports_structured_outputs: false
+        )
+
+      # When structured outputs are disabled, PlanSchema should NOT be attached
+      assert request.response_format == nil
+    end
+
+    test "Planning Muse respects explicit response_format even when structured outputs disabled" do
+      session =
+        Session.new(
+          workspace: "/tmp/test_project",
+          id: "sess_plan_ex_rf",
+          status: :idle,
+          created_at: ~U[2025-01-01 00:00:00Z],
+          updated_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      planning_profile = Muse.MuseRegistry.get(:planning)
+
+      bundle =
+        Assembler.build(session, planning_profile, "inspect the project",
+          id: "pb_plan_ex_rf",
+          turn_id: "turn_plan_ex_rf",
+          model: "fake-planning-model",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      # Set explicit response_format on the bundle
+      explicit_format = %{type: "json_object"}
+      bundle = %{bundle | response_format: explicit_format}
+
+      request =
+        ModelPreparer.to_request(
+          bundle,
+          provider: :fake,
+          supports_structured_outputs: false
+        )
+
+      # Even with structured outputs disabled, an explicit bundle response_format
+      # should still be respected (the caller explicitly chose this format)
+      assert request.response_format == %{type: "json_object"}
+    end
+
+    test "Planning Muse with structured outputs enabled includes PlanSchema" do
+      session =
+        Session.new(
+          workspace: "/tmp/test_project",
+          id: "sess_plan_so_on",
+          status: :idle,
+          created_at: ~U[2025-01-01 00:00:00Z],
+          updated_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      planning_profile = Muse.MuseRegistry.get(:planning)
+
+      bundle =
+        Assembler.build(session, planning_profile, "inspect the project",
+          id: "pb_plan_so_on",
+          turn_id: "turn_plan_so_on",
+          model: "fake-planning-model",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      request =
+        ModelPreparer.to_request(
+          bundle,
+          provider: :fake,
+          supports_structured_outputs: true
+        )
+
+      # With structured outputs explicitly enabled, PlanSchema should be attached
+      assert request.response_format != nil
+      assert request.response_format[:type] == "object"
+    end
+
+    test "Planning Muse default (nil supports_structured_outputs) includes PlanSchema" do
+      session =
+        Session.new(
+          workspace: "/tmp/test_project",
+          id: "sess_plan_so_nil",
+          status: :idle,
+          created_at: ~U[2025-01-01 00:00:00Z],
+          updated_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      planning_profile = Muse.MuseRegistry.get(:planning)
+
+      bundle =
+        Assembler.build(session, planning_profile, "inspect the project",
+          id: "pb_plan_so_nil",
+          turn_id: "turn_plan_so_nil",
+          model: "fake-planning-model",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      # Not passing supports_structured_outputs at all — defaults to true
+      request = ModelPreparer.to_request(bundle, provider: :fake)
+
+      assert request.response_format != nil
+      assert request.response_format[:type] == "object"
+    end
   end
 
   describe "to_request/3 Coding Muse does not get Planning overrides" do

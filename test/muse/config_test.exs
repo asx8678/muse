@@ -543,4 +543,58 @@ defmodule Muse.ConfigTest do
       assert config.env_key == "MUSE_OPENAI_API_KEY"
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Structured outputs support
+  # ---------------------------------------------------------------------------
+
+  describe "llm_provider_config/1 — MUSE_STRUCTURED_OUTPUTS" do
+    test "MUSE_STRUCTURED_OUTPUTS=false sets supports_structured_outputs to false" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1",
+        "MUSE_STRUCTURED_OUTPUTS" => "false"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.supports_structured_outputs == false
+    end
+
+    test "MUSE_STRUCTURED_OUTPUTS=true sets supports_structured_outputs to true" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1",
+        "MUSE_STRUCTURED_OUTPUTS" => "true"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.supports_structured_outputs == true
+    end
+
+    test "absent MUSE_STRUCTURED_OUTPUTS defaults to nil (implies true)" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.supports_structured_outputs == nil
+      assert ProviderConfig.supports_structured_outputs?(config) == true
+    end
+
+    test "invalid MUSE_STRUCTURED_OUTPUTS value is ignored" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1",
+        "MUSE_STRUCTURED_OUTPUTS" => "maybe"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.supports_structured_outputs == nil
+    end
+  end
 end

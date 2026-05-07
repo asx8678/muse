@@ -132,6 +132,7 @@ defmodule Muse.Config do
     |> maybe_override_timeout(env_map, app_config)
     |> maybe_override_retries(env_map, app_config)
     |> maybe_override_max_tokens(env_map, app_config)
+    |> maybe_override_structured_outputs(env_map, app_config)
   end
 
   defp parse_provider("fake"), do: :fake
@@ -347,6 +348,19 @@ defmodule Muse.Config do
     case resolve(env_map, app_config, "MUSE_MAX_TOKENS", :max_tokens, nil) do
       nil -> config
       val -> %{config | max_tokens: parse_integer(val, config.max_tokens)}
+    end
+  end
+
+  defp maybe_override_structured_outputs(config, env_map, app_config) do
+    case resolve(env_map, app_config, "MUSE_STRUCTURED_OUTPUTS", :structured_outputs, nil) do
+      nil ->
+        config
+
+      val ->
+        case ProviderConfig.parse_structured_outputs(val) do
+          nil -> config
+          parsed -> %{config | supports_structured_outputs: parsed}
+        end
     end
   end
 

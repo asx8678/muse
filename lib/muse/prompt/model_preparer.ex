@@ -122,6 +122,13 @@ defmodule Muse.Prompt.ModelPreparer do
   # When the active muse has response_mode: :plan and output_schema referencing
   # Muse.Plan, filter tools to read-only only from the bundle and attach a
   # structured JSON response format hint derived from Muse.PlanSchema.
+  #
+  # When the provider does not support structured outputs
+  # (supports_structured_outputs: false), omit the response_format to avoid
+  # sending an unsupported json_schema response_format to providers like
+  # wafer.ai / GLM-5.1 that return empty content when strict structured
+  # outputs are requested. The prompt instructions already ask the model to
+  # return JSON, so the PlanParser can still handle plain JSON content.
   defp planning_muse_request_overrides(:plan, Muse.Plan, bundle, opts, provider_map) do
     # Filter tools from the bundle: only keep those that are known, non-blocked tools
     # (read-only enforcement). The Assembler already excluded blocked tools from
@@ -135,11 +142,18 @@ defmodule Muse.Prompt.ModelPreparer do
           ToolRegistry.known_tool?(name)
       end)
 
-    # Use PlanSchema as the response_format hint unless the caller already set one
     plan_response_format =
-      bundle.response_format ||
-        option_or_config(opts, provider_map, :response_format) ||
-        Muse.PlanSchema.schema()
+      if provider_supports_structured_outputs?(provider_map) do
+        # Use PlanSchema as the response_format hint unless the caller already set one
+        bundle.response_format ||
+          option_or_config(opts, provider_map, :response_format) ||
+          Muse.PlanSchema.schema()
+      else
+        # Provider doesn't support strict structured outputs — omit response_format
+        # entirely. Prompt instructions still request JSON format.
+        bundle.response_format ||
+          option_or_config(opts, provider_map, :response_format)
+      end
 
     {read_only_tools, plan_response_format}
   end
@@ -184,6 +198,20 @@ defmodule Muse.Prompt.ModelPreparer do
       Keyword.fetch!(opts, key)
     else
       Map.get(provider_map, key, default)
+    end
+  end
+
+  # Check whether the provider supports OpenAI strict structured outputs
+  # (response_format with type: json_schema). Defaults to true for backward
+  # compatibility — providers that haven't set the flag are assumed to support
+  # structured outputs. Providers like wafer.ai that don't support it should
+  # set MUSE_STRUCTURED_OUTPUTS=false or set supports_structured_outputs: false
+  # in their ProviderConfig.
+  defp provider_supports_structured_outputs?(provider_map) do
+    case Map.get(provider_map, :supports_structured_outputs) do
+      nil -> true
+      false -> false
+      true -> true
     end
   end
 end
