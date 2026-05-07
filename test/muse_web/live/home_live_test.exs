@@ -1722,6 +1722,14 @@ defmodule MuseWeb.HomeLiveTest do
       assert first_index!(html, "skip-link") < first_index!(html, "app-header")
       assert first_index!(html, "skip-link") < first_index!(html, "id=\"main-content\"")
     end
+
+    test "main content target has tabindex=-1 for programmatic focus on skip navigation" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      # tabindex="-1" allows the skip link to move focus to #main-content via
+      # fragment navigation without adding it to the sequential Tab order.
+      # This is required for WCAG 2.4.1 (Bypass Blocks) and 2.4.3 (Focus Order).
+      assert html =~ ~s(id="main-content" tabindex="-1")
+    end
   end
 
   # -- Command discoverability tests --------------------------------------------

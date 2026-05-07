@@ -676,3 +676,81 @@ test.describe("Muse desktop sidebar does not inert background", () => {
     expect(textareaInert).toBe(false);
   });
 });
+
+// ─── Skip link focus regression (desktop) ─────────────────────────────────
+//
+// Verifies WCAG 2.4.1 (Bypass Blocks) and 2.4.3 (Focus Order):
+//   - Tab focuses the skip link (first focusable element)
+//   - Enter activates it and moves focus to #main-content
+//   - After activation, subsequent Tab proceeds into main content area
+//
+// Note: This tests browser-level focus behavior, which requires tabindex="-1"
+// on #main-content for fragment navigation to move programmatic focus.
+// Actual screen-reader behavior (VoiceOver/NVDA) still requires human
+// verification.
+
+test.describe("Skip link focus regression (desktop)", () => {
+  test.use({ viewport: { width: 1200, height: 800 } });
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForFunction(() => {
+      return !document.documentElement.classList.contains("phx-loading");
+    }, { timeout: 15_000 });
+  });
+
+  test("#main-content has tabindex=-1 for programmatic focus", async ({ page }) => {
+    const tabindex = await page.evaluate(() => {
+      const el = document.getElementById("main-content");
+      return el ? el.getAttribute("tabindex") : null;
+    });
+    expect(tabindex).toBe("-1");
+  });
+
+  test("Tab focuses skip link as first focusable element", async ({ page }) => {
+    await page.keyboard.press("Tab");
+    const focusedTag = await page.evaluate(() => document.activeElement?.tagName);
+    const focusedClass = await page.evaluate(() => document.activeElement?.className || "");
+    expect(focusedTag).toBe("A");
+    expect(focusedClass).toContain("skip-link");
+  });
+
+  test("activating skip link moves focus to #main-content", async ({ page }) => {
+    // Tab to focus the skip link
+    await page.keyboard.press("Tab");
+
+    // Verify skip link is focused
+    const skipLinkClass = await page.evaluate(() => document.activeElement?.className || "");
+    expect(skipLinkClass).toContain("skip-link");
+
+    // Activate skip link with Enter
+    await page.keyboard.press("Enter");
+
+    // Wait for fragment navigation and focus to settle
+    await page.waitForTimeout(200);
+
+    // document.activeElement should now be #main-content (not BODY)
+    const activeId = await page.evaluate(() => document.activeElement?.id || "");
+    expect(activeId).toBe("main-content");
+
+    // URL hash should be #main-content
+    const hash = await page.evaluate(() => window.location.hash);
+    expect(hash).toBe("#main-content");
+  });
+
+  test("after skip link activation, next Tab proceeds into main content area", async ({ page }) => {
+    // Tab to skip link, then Enter to activate
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(200);
+
+    // Press Tab again — focus should move into the main content area,
+    // not back to the top of the page / header chrome.
+    await page.keyboard.press("Tab");
+    const focusedInMain = await page.evaluate(() => {
+      const main = document.getElementById("main-content");
+      return main ? main.contains(document.activeElement) : false;
+    });
+    expect(focusedInMain).toBe(true);
+  });
+});
