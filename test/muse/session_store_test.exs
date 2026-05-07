@@ -147,8 +147,9 @@ defmodule Muse.SessionStoreTest do
       assert {:error, {:invalid_session_id, "../escape"}} =
                SessionStore.validate_session_id("../escape")
 
-      assert {:error, {:invalid_session_id, :not_a_string}} =
-               SessionStore.validate_session_id(:not_a_string)
+      for id <- [nil, :not_a_string, 123, ~c"charlist", %{id: "map"}] do
+        assert {:error, {:invalid_session_id, ^id}} = SessionStore.validate_session_id(id)
+      end
     end
   end
 

@@ -67,7 +67,7 @@ defmodule Muse.SessionServer do
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start() | {:error, {:invalid_session_id, term()}}
   def start_link(opts) do
-    session_id = Keyword.fetch!(opts, :session_id) |> to_string()
+    session_id = Keyword.get(opts, :session_id)
 
     # Validate session ID before attempting GenServer.start_link so invalid
     # IDs cannot register in the Registry or trigger persistence calls.

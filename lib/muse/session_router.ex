@@ -57,10 +57,9 @@ defmodule Muse.SessionRouter do
     submit(@default_session_id, source, text, [])
   end
 
-  # 3-arg with string session_id: session_id, source, text (backward compatible)
-  @spec submit(String.t(), atom(), String.t()) :: {:ok, String.t()} | {:error, term()}
-  def submit(session_id, source, text)
-      when is_binary(session_id) and is_atom(source) and is_binary(text) do
+  # 3-arg with explicit session_id: session_id, source, text (backward compatible)
+  @spec submit(term(), atom(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def submit(session_id, source, text) when is_atom(source) and is_binary(text) do
     submit(session_id, source, text, [])
   end
 
@@ -71,9 +70,9 @@ defmodule Muse.SessionRouter do
   end
 
   # 4-arg: session_id, source, text, opts
-  @spec submit(String.t(), atom(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  @spec submit(term(), atom(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def submit(session_id, source, text, opts)
-      when is_binary(session_id) and is_atom(source) and is_binary(text) and is_list(opts) do
+      when is_atom(source) and is_binary(text) and is_list(opts) do
     with {:ok, pid} <- find_or_start_session(session_id) do
       Muse.SessionServer.submit(pid, source, text, opts)
     end
@@ -323,10 +322,8 @@ defmodule Muse.SessionRouter do
   # -- Session lifecycle --------------------------------------------------------
 
   @doc false
-  @spec find_or_start_session(String.t()) :: {:ok, pid()} | {:error, term()}
+  @spec find_or_start_session(term()) :: {:ok, pid()} | {:error, term()}
   def find_or_start_session(session_id) do
-    session_id = to_string(session_id)
-
     with :ok <- Muse.SessionStore.validate_session_id(session_id) do
       context = active_session_context(session_id)
 
@@ -343,8 +340,6 @@ defmodule Muse.SessionRouter do
   # -- Private helpers ----------------------------------------------------------
 
   defp lookup_session(session_id) do
-    session_id = to_string(session_id)
-
     case Muse.SessionStore.validate_session_id(session_id) do
       :ok ->
         %{registry_key: registry_key} = active_session_context(session_id)

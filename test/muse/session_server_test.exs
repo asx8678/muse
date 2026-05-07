@@ -1933,6 +1933,8 @@ defmodule Muse.SessionServerTest do
       String.duplicate("a", 256)
     ]
 
+    @invalid_non_string_ids [nil, :not_a_string, 123, ~c"charlist", %{id: "map"}]
+
     test "start_link/1 rejects invalid session IDs" do
       for id <- @invalid_ids do
         assert {:error, {:invalid_session_id, ^id}} =
@@ -1949,6 +1951,27 @@ defmodule Muse.SessionServerTest do
                    {Muse.SessionServer, session_id: id}
                  ),
                "Expected DynamicSupervisor.start_child to reject session ID: #{inspect(id)}"
+      end
+    end
+
+    test "start_link/1 and DynamicSupervisor reject non-string IDs without stringifying" do
+      for id <- @invalid_non_string_ids do
+        assert {:error, {:invalid_session_id, ^id}} =
+                 Muse.SessionServer.start_link(session_id: id),
+               "Expected start_link to reject session ID: #{inspect(id)}"
+
+        assert {:error, {:invalid_session_id, ^id}} =
+                 DynamicSupervisor.start_child(
+                   Muse.SessionSupervisor,
+                   {Muse.SessionServer, session_id: id}
+                 ),
+               "Expected DynamicSupervisor.start_child to reject session ID: #{inspect(id)}"
+      end
+
+      base_dir = Muse.SessionServer.current_store_base_dir()
+
+      for stringified_id <- ["not_a_string", "123", "charlist"] do
+        assert Registry.lookup(Muse.SessionRegistry, registry_key(stringified_id, base_dir)) == []
       end
     end
 
