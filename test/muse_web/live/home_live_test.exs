@@ -548,10 +548,53 @@ defmodule MuseWeb.HomeLiveTest do
     open_diagnostics_drawer(view)
     html = render(view)
 
-    assert html =~ ~s(role="region")
+    # Modal dialog role
+    assert html =~ ~s(role="dialog")
+    assert html =~ ~s(aria-modal="true")
     assert html =~ ~s(aria-labelledby="diagnostics-title")
     assert html =~ ~s(id="diagnostics-title")
     assert html =~ ~s(aria-label="Minimize diagnostics panel")
+    # phx-hook for focus management
+    assert html =~ ~s(phx-hook="DiagnosticsDrawer")
+  end
+
+  test "diagnostics trigger buttons have aria-expanded and aria-controls" do
+    Muse.Diagnostics.emit(:warning, "trigger a11y")
+
+    {:ok, view, html} = live(build_conn(), "/")
+
+    # Before opening: triggers should have aria-controls pointing to the drawer
+    assert html =~ ~s(aria-controls="diagnostics-drawer")
+
+    # Status chip in header has correct a11y with aria-expanded=false
+    assert html =~ ~s(status-chip-yellow)
+    assert html =~ ~s(aria-expanded="false")
+
+    # Mini-card open details button has correct a11y
+    assert html =~ ~s(phx-click="open_diagnostics")
+
+    # After opening: the drawer is present and status chip reflects expanded state
+    open_diagnostics_drawer(view)
+    html = render(view)
+    # Verify drawer is now open
+    assert html =~ ~s(id="diagnostics-drawer")
+    # The status chip should now show aria-expanded=true
+    assert html =~ ~s(aria-expanded="true")
+  end
+
+  test "diagnostics drawer no longer uses over-broad aria-live" do
+    Muse.Diagnostics.emit(:warning, "no aria-live")
+
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    open_diagnostics_drawer(view)
+    html = render(view)
+
+    # The drawer should NOT have aria-live=polite on itself (audit finding #4)
+    refute html =~ ~s(role="region" aria-labelledby="diagnostics-title" aria-live="polite")
+    # It should have the modal dialog pattern instead
+    assert html =~ ~s(role="dialog")
+    assert html =~ ~s(aria-modal="true")
   end
 
   test "diagnostics do NOT auto-open on real-time emit" do
