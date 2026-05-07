@@ -120,12 +120,21 @@ const CommandConsole = {
       this._historyIndex = -1;
 
       // Create autocomplete dropdown
+      const suggestionBoxId = (textarea.id || "chat-input-textarea") + "-command-suggestions";
+      this._suggestionBoxId = suggestionBoxId;
       this._suggestionBox = document.createElement("div");
       this._suggestionBox.className = "command-suggestions";
+      this._suggestionBox.id = suggestionBoxId;
       this._suggestionBox.setAttribute("role", "listbox");
       this._suggestionBox.setAttribute("aria-label", "Command suggestions");
       this._suggestionBox.style.display = "none";
       textarea.parentNode.insertBefore(this._suggestionBox, textarea.nextSibling);
+
+      // ARIA combobox relationships on the textarea
+      textarea.setAttribute("aria-autocomplete", "list");
+      textarea.setAttribute("aria-controls", suggestionBoxId);
+      textarea.setAttribute("aria-expanded", "false");
+      textarea.removeAttribute("aria-activedescendant");
 
       textarea.addEventListener("keydown", (e) => {
         if (this._suggestionsActive) {
@@ -239,6 +248,7 @@ const CommandConsole = {
     matches.forEach((cmd, i) => {
       const item = document.createElement("div");
       item.className = "command-suggestion-item";
+      item.id = this._suggestionBoxId + "-option-" + i;
       item.setAttribute("role", "option");
       item.setAttribute("aria-selected", "false");
       item.innerHTML = `<span class="suggestion-cmd">${this._escapeHtml(cmd.command)}</span><span class="suggestion-desc">${this._escapeHtml(cmd.description)}</span>`;
@@ -254,6 +264,8 @@ const CommandConsole = {
     this._suggestionBox.style.display = "block";
     this._suggestionsActive = true;
     this._selectedSuggestion = -1;
+    this._textarea.setAttribute("aria-expanded", "true");
+    this._textarea.removeAttribute("aria-activedescendant");
   },
 
   _highlightSuggestion() {
@@ -264,6 +276,9 @@ const CommandConsole = {
     }
     if (this._selectedSuggestion >= 0 && items[this._selectedSuggestion]) {
       items[this._selectedSuggestion].scrollIntoView({ block: "nearest" });
+      this._textarea.setAttribute("aria-activedescendant", items[this._selectedSuggestion].id);
+    } else {
+      this._textarea.removeAttribute("aria-activedescendant");
     }
   },
 
@@ -289,6 +304,10 @@ const CommandConsole = {
     this._suggestionBox.style.display = "none";
     this._suggestionsActive = false;
     this._selectedSuggestion = -1;
+    if (this._textarea) {
+      this._textarea.setAttribute("aria-expanded", "false");
+      this._textarea.removeAttribute("aria-activedescendant");
+    }
   },
 
   _escapeHtml(str) {

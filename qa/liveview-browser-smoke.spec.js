@@ -122,7 +122,131 @@ test.describe("Muse LiveView browser smoke", () => {
     await expect(sendBtn).toBeAttached();
   });
 
-  // ─── 4. Keyboard focusability and tab order ───────────────────────────
+  // ─── 4. Slash-command autocomplete ARIA relationships ────────────────
+  //
+  // Verifies WCAG 4.1.2 (Name, Role, Value) for the WAI-ARIA combobox
+  // pattern: the textarea (combobox input) must expose its relationship
+  // to the autocomplete suggestion list via ARIA attributes.
+
+  test("slash-command autocomplete exposes ARIA relationships to screen readers", async ({ page }) => {
+    const textarea = page.locator("#chat-input-textarea");
+    await expect(textarea).toBeAttached();
+
+    // Wait for the CommandConsole hook to mount and set ARIA attributes
+    await expect(textarea).toHaveAttribute("aria-autocomplete", "list", { timeout: 10_000 });
+
+    // Textarea has aria-autocomplete="list"
+    await expect(textarea).toHaveAttribute("aria-autocomplete", "list");
+
+    // Textarea has aria-controls pointing to the suggestion list
+    const controlsId = await textarea.getAttribute("aria-controls");
+    expect(controlsId).toBeTruthy();
+
+    // Textarea starts with aria-expanded="false"
+    await expect(textarea).toHaveAttribute("aria-expanded", "false");
+
+    // aria-activedescendant should be absent initially
+    const adInitial = await textarea.getAttribute("aria-activedescendant");
+    expect(adInitial).toBeNull();
+
+    // The suggestion list element exists with the correct id
+    const suggestionBox = page.locator("#" + controlsId);
+    await expect(suggestionBox).toBeAttached();
+    await expect(suggestionBox).toHaveAttribute("role", "listbox");
+    await expect(suggestionBox).toHaveAttribute("aria-label", /Command suggestions/i);
+
+    // Focus textarea and type "/" to trigger suggestions
+    await textarea.click();
+    await textarea.fill("/");
+
+    // Suggestion box should become visible
+    await expect(suggestionBox).toBeVisible();
+
+    // Textarea should now have aria-expanded="true"
+    await expect(textarea).toHaveAttribute("aria-expanded", "true");
+
+    // Option elements should have role="option" and stable ids
+    const options = suggestionBox.locator("[role='option']");
+    const optionCount = await options.count();
+    expect(optionCount).toBeGreaterThan(0);
+
+    for (let i = 0; i < optionCount; i++) {
+      const opt = options.nth(i);
+      const optId = await opt.getAttribute("id");
+      expect(optId).toBeTruthy();
+      // Each option id should follow the pattern: <suggestionBoxId>-option-<index>
+      expect(optId).toMatch(new RegExp(`^${controlsId}-option-[0-9]+$`));
+    }
+
+    // Press ArrowDown to highlight the first suggestion
+    await page.keyboard.press("ArrowDown");
+
+    // Textarea should now have aria-activedescendant pointing to the first option
+    const activedescId = await textarea.getAttribute("aria-activedescendant");
+    expect(activedescId).toBeTruthy();
+    expect(activedescId).toBe(controlsId + "-option-0");
+
+    // The selected option should have aria-selected="true"
+    const selectedOpt = suggestionBox.locator("#" + activedescId);
+    await expect(selectedOpt).toHaveAttribute("aria-selected", "true");
+
+    // Press Escape to close suggestions
+    await page.keyboard.press("Escape");
+
+    // Suggestions should be hidden
+    await expect(suggestionBox).toBeHidden();
+
+    // Textarea should have aria-expanded="false"
+    await expect(textarea).toHaveAttribute("aria-expanded", "false");
+
+    // aria-activedescendant should be absent after closing
+    const adAfterClose = await textarea.getAttribute("aria-activedescendant");
+    expect(adAfterClose).toBeNull();
+  });
+
+  test("slash-command autocomplete tracks highlighted option via aria-activedescendant", async ({ page }) => {
+    const textarea = page.locator("#chat-input-textarea");
+
+    // Wait for the CommandConsole hook to mount and set ARIA attributes
+    await expect(textarea).toHaveAttribute("aria-autocomplete", "list", { timeout: 10_000 });
+    const controlsId = await textarea.getAttribute("aria-controls");
+    expect(controlsId).toBeTruthy();
+    const suggestionBox = page.locator("#" + controlsId);
+
+    // Focus and type "/p" to get filtered suggestions
+    await textarea.click();
+    await textarea.fill("/p");
+    await expect(suggestionBox).toBeVisible();
+
+    // Press ArrowDown twice to highlight second option
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("ArrowDown");
+
+    const activedescId = await textarea.getAttribute("aria-activedescendant");
+    expect(activedescId).toBe(controlsId + "-option-1");
+
+    // That option should have aria-selected="true"
+    const secondOpt = suggestionBox.locator("#" + activedescId);
+    await expect(secondOpt).toHaveAttribute("aria-selected", "true");
+
+    // First option should have aria-selected="false"
+    const firstOpt = suggestionBox.locator("#" + controlsId + "-option-0");
+    await expect(firstOpt).toHaveAttribute("aria-selected", "false");
+
+    // ArrowUp should move back to first option
+    await page.keyboard.press("ArrowUp");
+    const adUp = await textarea.getAttribute("aria-activedescendant");
+    expect(adUp).toBe(controlsId + "-option-0");
+
+    // Clear input and verify suggestions close with correct ARIA state
+    await textarea.fill("");
+    await expect(suggestionBox).toBeHidden();
+    await expect(textarea).toHaveAttribute("aria-expanded", "false");
+    const adClear = await textarea.getAttribute("aria-activedescendant");
+    expect(adClear).toBeNull();
+  });
+
+  // ─── 5. Keyboard focusability and tab order ───────────────────────────
 
   test("message composer input is focusable via keyboard Tab", async ({ page }) => {
     // Verify the textarea is focusable
@@ -163,7 +287,7 @@ test.describe("Muse LiveView browser smoke", () => {
     expect(pageErrors).toHaveLength(0);
   });
 
-  // ─── 5. Session / context panel markers ──────────────────────────────
+  // ─── 6. Session / context panel markers ──────────────────────────────
 
   test("session and context panel accessible names in DOM", async ({ page }) => {
     // Context panel has role="complementary" and descriptive aria-label
@@ -187,7 +311,7 @@ test.describe("Muse LiveView browser smoke", () => {
     expect(count).toBeGreaterThanOrEqual(0);
   });
 
-  // ─── 6. No visible secrets or token-like strings ─────────────────────
+  // ─── 7. No visible secrets or token-like strings ─────────────────────
 
   test("no visible secrets in page content", async ({ page }) => {
     // Get all visible text content from the page body.
@@ -239,7 +363,7 @@ test.describe("Muse LiveView browser smoke", () => {
     }
   });
 
-  // ─── 7. Accessibility landmarks present ─────────────────────────────
+  // ─── 8. Accessibility landmarks present ─────────────────────────────
 
   test("ARIA landmarks and live regions present", async ({ page }) => {
     // Chat panel region
@@ -265,7 +389,7 @@ test.describe("Muse LiveView browser smoke", () => {
     await expect(textarea).toHaveAttribute("placeholder", /Ask Muse/);
   });
 
-  // ─── 8. Page load success and no network errors ──────────────────────
+  // ─── 9. Page load success and no network errors ──────────────────────
 
   test("page loads with 200 and substantial content", async ({ page }) => {
     // Verify the main shell element is present
