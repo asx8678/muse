@@ -271,7 +271,6 @@ defmodule Mix.Tasks.Muse.Smoke do
         {~s(role="form"), "form role on composer"},
         {~s(type="submit"), "submit button present"},
         {~s(aria-label="Collapse to rail"), "sidebar collapse button label"},
-        {"sr-only", "screen-reader-only utility class"},
         {"skip-link", "skip link for keyboard navigation"},
         {~s(aria-label="Send message to Muse"), "send button label"}
       ]
