@@ -854,6 +854,30 @@ defmodule Muse.SessionStoreTest do
       assert {:error, {:invalid_session_id, "../escape"}} =
                SessionStore.save_memory(base_dir, "../escape", %{"data" => "test"})
     end
+
+    test "delete_memory removes memory and treats missing files as success", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      assert :ok = SessionStore.save_memory(base_dir, session_id, %{"data" => "test"})
+      assert {:ok, %{"data" => "test"}} = SessionStore.load_memory(base_dir, session_id)
+
+      assert :ok = SessionStore.delete_memory(base_dir, session_id)
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
+      assert :ok = SessionStore.delete_memory(base_dir, session_id)
+    end
+
+    test "delete_memory rejects invalid session IDs before removing files", %{base_dir: base_dir} do
+      outside_dir = Path.expand(Path.join(base_dir, "../escape"))
+      File.mkdir_p!(outside_dir)
+      outside_memory = Path.join(outside_dir, "memory.json")
+      File.write!(outside_memory, "do not delete")
+
+      assert {:error, {:invalid_session_id, "../escape"}} =
+               SessionStore.delete_memory(base_dir, "../escape")
+
+      assert File.exists?(outside_memory)
+    end
   end
 
   # ── export_session/3 and import_session/3 ─────────────────────────────
@@ -1014,6 +1038,102 @@ defmodule Muse.SessionStoreTest do
       # Non-map export
       assert {:error, {:invalid_export, "export must be a map"}} =
                SessionStore.import_session(base_dir, "not a map")
+    end
+
+    test "import validates artifact shapes before writing", %{base_dir: base_dir} do
+      invalid_snapshot = %{
+        "session_id" => "bad-snapshot",
+        "snapshot" => "not-a-map",
+        "events" => [],
+        "messages" => [],
+        "patches" => []
+      }
+
+      assert {:error, {:invalid_export, "snapshot must be a map"}} =
+               SessionStore.import_session(base_dir, invalid_snapshot)
+
+      refute SessionStore.session_exists?(base_dir, "bad-snapshot")
+
+      invalid_events = %{
+        "session_id" => "bad-events",
+        "snapshot" => %{"status" => "idle"},
+        "events" => %{"not" => "a-list"},
+        "messages" => [],
+        "patches" => []
+      }
+
+      assert {:error, {:invalid_export, "events must be a list"}} =
+               SessionStore.import_session(base_dir, invalid_events)
+
+      refute SessionStore.session_exists?(base_dir, "bad-events")
+
+      invalid_entry = %{
+        "session_id" => "bad-entry",
+        "snapshot" => %{"status" => "idle"},
+        "events" => ["not-a-map"],
+        "messages" => [],
+        "patches" => []
+      }
+
+      assert {:error, {:invalid_export, "events entries must be maps"}} =
+               SessionStore.import_session(base_dir, invalid_entry)
+
+      refute SessionStore.session_exists?(base_dir, "bad-entry")
+
+      invalid_memory = %{
+        "session_id" => "bad-memory",
+        "snapshot" => %{"status" => "idle"},
+        "events" => [],
+        "messages" => [],
+        "patches" => [],
+        "memory" => ["not-a-map"]
+      }
+
+      assert {:error, {:invalid_export, "memory must be a map"}} =
+               SessionStore.import_session(base_dir, invalid_memory)
+
+      refute SessionStore.session_exists?(base_dir, "bad-memory")
+    end
+
+    test "import rejects unencodable data before writing", %{base_dir: base_dir} do
+      export = %{
+        "session_id" => "unencodable-entry",
+        "snapshot" => %{"status" => "idle"},
+        "events" => [%{"bad" => fn -> :ok end}],
+        "messages" => [],
+        "patches" => []
+      }
+
+      assert {:error, {:encode_failed, _reason}} = SessionStore.import_session(base_dir, export)
+      refute SessionStore.session_exists?(base_dir, "unencodable-entry")
+    end
+
+    test "import overwrites stale artifacts when lists are empty and memory omitted", %{
+      base_dir: base_dir
+    } do
+      session_id = "overwrite-existing"
+
+      assert :ok = SessionStore.save_session(base_dir, session_id, %{"objective" => "old"})
+      assert :ok = SessionStore.append_event(base_dir, session_id, %{"type" => "old-event"})
+      assert :ok = SessionStore.append_message(base_dir, session_id, %{"role" => "old"})
+      assert :ok = SessionStore.append_patch(base_dir, session_id, %{"patch_id" => "old"})
+      assert :ok = SessionStore.save_memory(base_dir, session_id, %{"user_goal" => "old"})
+
+      export = %{
+        "session_id" => session_id,
+        "snapshot" => %{"objective" => "new"},
+        "events" => [],
+        "messages" => [],
+        "patches" => []
+      }
+
+      assert {:ok, ^session_id} = SessionStore.import_session(base_dir, export)
+
+      assert {:ok, %{"objective" => "new"}} = SessionStore.load_session(base_dir, session_id)
+      assert {:ok, [], %{skipped: 0}} = SessionStore.load_events(base_dir, session_id)
+      assert {:ok, [], %{skipped: 0}} = SessionStore.load_messages(base_dir, session_id)
+      assert {:ok, [], %{skipped: 0}} = SessionStore.load_patches(base_dir, session_id)
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
     end
 
     test "import round-trips with export",

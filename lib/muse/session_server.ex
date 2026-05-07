@@ -2419,10 +2419,7 @@ defmodule Muse.SessionServer do
   defp persist_memory(_session_id, _memory), do: :ok
 
   defp clear_persisted_memory(session_id) do
-    # Remove memory.json by saving an empty map, then deleting
-    dir = SessionStore.session_dir(session_id)
-    path = Path.join(dir, "memory.json")
-    _ = File.rm(path)
+    _ = SessionStore.delete_memory(session_id)
     :ok
   end
 

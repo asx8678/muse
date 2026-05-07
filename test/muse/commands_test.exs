@@ -122,6 +122,25 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/workspace") == {:command, :workspace}
     end
 
+    test "parses workspace profile commands" do
+      assert Commands.parse("/workspace list") == {:command, :workspace_list}
+
+      assert Commands.parse("/workspace switch project-a") ==
+               {:command, :workspace_switch, "project-a"}
+
+      assert Commands.parse("/workspace create project-a /tmp/project-a") ==
+               {:command, :workspace_create, "project-a /tmp/project-a"}
+
+      assert Commands.parse("/workspace info") == {:command, :workspace_info}
+    end
+
+    test "parses session export/import commands" do
+      assert Commands.parse("/export session") == {:command, :export_session}
+
+      assert Commands.parse("/import session /tmp/file.muse-session") ==
+               {:command, :import_session, "/tmp/file.muse-session"}
+    end
+
     test "parses /stats" do
       assert Commands.parse("/stats") == {:command, :stats}
     end
@@ -343,6 +362,8 @@ defmodule Muse.CommandsTest do
       assert text =~ "/reload"
       assert text =~ "/rollback"
       assert text =~ "/workspace"
+      assert text =~ "/workspace switch"
+      assert text =~ "does not change the active runtime workspace yet"
       assert text =~ "/stats"
       assert text =~ "/diagnostics"
       assert text =~ "/copy diagnostics"
@@ -420,6 +441,7 @@ defmodule Muse.CommandsTest do
       assert "/auth status" in cmd_names
       assert "/provider status" in cmd_names
       assert "/provider models" in cmd_names
+      assert "/workspace switch" in cmd_names
     end
   end
 
@@ -456,6 +478,10 @@ defmodule Muse.CommandsTest do
       assert "/auth status" in cmd_names
       assert "/provider status" in cmd_names
       assert "/provider models" in cmd_names
+      assert "/workspace switch" in cmd_names
+
+      workspace_switch = Enum.find(cmds, &(&1.command == "/workspace switch"))
+      assert workspace_switch.description =~ "does not change the active runtime workspace yet"
     end
   end
 end

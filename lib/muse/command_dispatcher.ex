@@ -993,8 +993,13 @@ defmodule Muse.CommandDispatcher do
             sessions =
               Map.get(profile, :sessions_dir) || Map.get(profile, "sessions_dir", "unknown")
 
-            msg = "Switched to workspace '#{name}'.\n  Root: #{root}\n  Sessions: #{sessions}"
-            {:ok, msg, [{:toast, :info, "Workspace: #{name}"}]}
+            msg =
+              "Workspace profile '#{name}' is configured.\n" <>
+                "  Root: #{root}\n" <>
+                "  Sessions: #{sessions}\n" <>
+                "Note: active runtime workspace is unchanged in this version."
+
+            {:ok, msg, [{:toast, :info, "Workspace profile: #{name} (not activated)"}]}
 
           {:error, :not_found} ->
             {:error,

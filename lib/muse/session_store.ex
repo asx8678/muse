@@ -488,6 +488,26 @@ defmodule Muse.SessionStore do
     end
   end
 
+  @doc """
+  Deletes a session's persisted `memory.json` artifact.
+
+  The session ID is validated before constructing the file path so callers
+  cannot remove files outside the session directory via path traversal.
+  Missing memory files are treated as success.
+  """
+  @spec delete_memory(String.t(), String.t()) :: :ok | {:error, term()}
+  def delete_memory(base_dir \\ @default_base_dir, session_id) do
+    with :ok <- validate_session_id(session_id) do
+      path = Path.join(session_dir(base_dir, session_id), "memory.json")
+
+      case File.rm(path) do
+        :ok -> :ok
+        {:error, :enoent} -> :ok
+        {:error, reason} -> {:error, {:delete_failed, reason}}
+      end
+    end
+  end
+
   # ── Export/Import ──────────────────────────────────────────────────────
 
   @export_schema_version 1
@@ -564,29 +584,21 @@ defmodule Muse.SessionStore do
     with :ok <- validate_export_map(export) do
       session_id = Keyword.get(opts, :session_id) || Map.get(export, "session_id")
 
-      with :ok <- validate_session_id(session_id) do
-        snapshot = Map.get(export, "snapshot", %{})
-        events = Map.get(export, "events", [])
-        messages = Map.get(export, "messages", [])
-        patches = Map.get(export, "patches", [])
-        memory = Map.get(export, "memory")
+      with :ok <- validate_session_id(session_id),
+           {:ok, import_data} <- prepare_import_data(export) do
+        %{
+          snapshot: snapshot,
+          events_jsonl: events_jsonl,
+          messages_jsonl: messages_jsonl,
+          patches_jsonl: patches_jsonl,
+          memory: memory
+        } = import_data
 
-        # Write snapshot
-        with :ok <- save_session(base_dir, session_id, snapshot) do
-          # Write events
-          write_jsonl_bulk(base_dir, session_id, "events.jsonl", events)
-
-          # Write messages
-          write_jsonl_bulk(base_dir, session_id, "messages.jsonl", messages)
-
-          # Write patches
-          write_jsonl_bulk(base_dir, session_id, "patches.jsonl", patches)
-
-          # Write memory if present
-          if memory && is_map(memory) do
-            save_memory(base_dir, session_id, memory)
-          end
-
+        with :ok <- save_session(base_dir, session_id, snapshot),
+             :ok <- write_jsonl_content(base_dir, session_id, "events.jsonl", events_jsonl),
+             :ok <- write_jsonl_content(base_dir, session_id, "messages.jsonl", messages_jsonl),
+             :ok <- write_jsonl_content(base_dir, session_id, "patches.jsonl", patches_jsonl),
+             :ok <- write_import_memory(base_dir, session_id, memory) do
           {:ok, session_id}
         end
       end
@@ -611,25 +623,128 @@ defmodule Muse.SessionStore do
 
   defp validate_export_map(_), do: {:error, {:invalid_export, "export must be a map"}}
 
-  # Write a list of maps as JSONL lines (used by import_session)
-  defp write_jsonl_bulk(base_dir, session_id, file_name, entries) when is_list(entries) do
+  defp prepare_import_data(export) do
+    with {:ok, snapshot} <- import_map(export, "snapshot"),
+         {:ok, events_jsonl} <- prepare_import_jsonl(export, "events"),
+         {:ok, messages_jsonl} <- prepare_import_jsonl(export, "messages"),
+         {:ok, patches_jsonl} <- prepare_import_jsonl(export, "patches"),
+         {:ok, memory} <- import_optional_map(export, "memory"),
+         :ok <- validate_session_snapshot(snapshot),
+         :ok <- validate_memory(memory) do
+      {:ok,
+       %{
+         snapshot: snapshot,
+         events_jsonl: events_jsonl,
+         messages_jsonl: messages_jsonl,
+         patches_jsonl: patches_jsonl,
+         memory: memory
+       }}
+    end
+  end
+
+  defp import_map(export, field) do
+    case Map.fetch(export, field) do
+      {:ok, value} when is_map(value) -> {:ok, value}
+      {:ok, _value} -> {:error, {:invalid_export, "#{field} must be a map"}}
+      :error -> {:error, {:invalid_export, "missing #{field}"}}
+    end
+  end
+
+  defp import_optional_map(export, field) do
+    case Map.fetch(export, field) do
+      {:ok, nil} -> {:ok, nil}
+      {:ok, value} when is_map(value) -> {:ok, value}
+      {:ok, _value} -> {:error, {:invalid_export, "#{field} must be a map"}}
+      :error -> {:ok, nil}
+    end
+  end
+
+  defp prepare_import_jsonl(export, field) do
+    entries = Map.get(export, field, [])
+
+    cond do
+      not is_list(entries) ->
+        {:error, {:invalid_export, "#{field} must be a list"}}
+
+      not Enum.all?(entries, &is_map/1) ->
+        {:error, {:invalid_export, "#{field} entries must be maps"}}
+
+      true ->
+        encode_jsonl_entries(entries)
+    end
+  end
+
+  defp validate_session_snapshot(snapshot) do
+    snapshot
+    |> scrub_sensitive_keys()
+    |> Map.put("schema_version", @schema_version)
+    |> Jason.encode()
+    |> case do
+      {:ok, _content} -> :ok
+      {:error, reason} -> {:error, {:encode_failed, reason}}
+    end
+  end
+
+  defp validate_memory(nil), do: :ok
+
+  defp validate_memory(memory) when is_map(memory) do
+    memory
+    |> encode_for_storage()
+    |> scrub_sensitive_keys()
+    |> Map.put("schema_version", @schema_version)
+    |> Jason.encode()
+    |> case do
+      {:ok, _content} -> :ok
+      {:error, reason} -> {:error, {:encode_failed, reason}}
+    end
+  end
+
+  defp encode_jsonl_entries(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
+      entry
+      |> scrub_sensitive_keys()
+      |> encode_for_storage()
+      |> Jason.encode()
+      |> case do
+        {:ok, json} -> {:cont, {:ok, [json | acc]}}
+        {:error, reason} -> {:halt, {:error, {:encode_failed, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, []} -> {:ok, ""}
+      {:ok, encoded} -> {:ok, encoded |> Enum.reverse() |> Enum.join("\n") |> Kernel.<>("\n")}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp write_jsonl_content(base_dir, session_id, file_name, content) when is_binary(content) do
     with :ok <- validate_session_id(session_id),
          {:ok, dir} <- ensure_dir(base_dir, session_id) do
       path = Path.join(dir, file_name)
 
-      lines =
-        entries
-        |> Enum.map(fn entry ->
-          entry
-          |> scrub_sensitive_keys()
-          |> encode_for_storage()
-          |> Jason.encode!()
-        end)
-        |> Enum.join("\n")
+      case File.write(path, content) do
+        :ok -> :ok
+        {:error, reason} -> {:error, {:write_failed, reason}}
+      end
+    end
+  end
 
-      case lines do
-        "" -> :ok
-        _ -> File.write(path, lines <> "\n")
+  defp write_import_memory(base_dir, session_id, nil) do
+    remove_session_file(base_dir, session_id, "memory.json")
+  end
+
+  defp write_import_memory(base_dir, session_id, memory) when is_map(memory) do
+    save_memory(base_dir, session_id, memory)
+  end
+
+  defp remove_session_file(base_dir, session_id, file_name) do
+    with :ok <- validate_session_id(session_id) do
+      path = Path.join(session_dir(base_dir, session_id), file_name)
+
+      case File.rm(path) do
+        :ok -> :ok
+        {:error, :enoent} -> :ok
+        {:error, reason} -> {:error, {:write_failed, reason}}
       end
     end
   end

@@ -85,6 +85,30 @@ defmodule Muse.CommandDispatcherTest do
     |> struct!(overrides)
   end
 
+  defp tmp_dir!(prefix) do
+    suffix = "#{System.system_time(:nanosecond)}-#{:erlang.unique_integer([:positive])}"
+    path = Path.join(System.tmp_dir!(), "#{prefix}-#{suffix}")
+    File.rm_rf!(path)
+    File.mkdir_p!(path)
+    path
+  end
+
+  defp with_muse_dir(fun) do
+    previous = System.get_env("MUSE_DIR")
+    muse_dir = tmp_dir!("muse-command-dispatcher")
+    System.put_env("MUSE_DIR", muse_dir)
+
+    on_exit(fn ->
+      if is_binary(previous),
+        do: System.put_env("MUSE_DIR", previous),
+        else: System.delete_env("MUSE_DIR")
+
+      File.rm_rf!(muse_dir)
+    end)
+
+    fun.(muse_dir)
+  end
+
   # Most dispatch tests are pure — no process dependencies needed
   # because context provides data and Backend is only called for
   # side-effect commands (clear_logs, connect_runtime, etc.)
@@ -1824,6 +1848,28 @@ defmodule Muse.CommandDispatcherTest do
         CommandDispatcher.dispatch(:workspace_switch, "nonexistent-profile-xyz", %{})
 
       assert is_binary(output)
+    end
+
+    test "shows profile details without claiming runtime activation" do
+      with_muse_dir(fn muse_dir ->
+        root = tmp_dir!("muse-workspace-root")
+        on_exit(fn -> File.rm_rf!(root) end)
+
+        assert {:ok, _profile} =
+                 Muse.WorkspaceProfile.create(
+                   name: "review-profile",
+                   root_path: root,
+                   muse_dir: muse_dir
+                 )
+
+        {:ok, output, effects} =
+          CommandDispatcher.dispatch(:workspace_switch, "review-profile", %{})
+
+        assert output =~ "Workspace profile 'review-profile' is configured"
+        assert output =~ "active runtime workspace is unchanged"
+        refute output =~ "Switched to workspace"
+        assert {:toast, :info, "Workspace profile: review-profile (not activated)"} in effects
+      end)
     end
   end
 
