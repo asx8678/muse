@@ -607,6 +607,8 @@ defmodule MuseWeb.ConsoleComponents do
             dot={true}
             value={"#{length(@diagnostics)} issue#{if length(@diagnostics) != 1, do: "s", else: ""}"}
             click="open_diagnostics"
+            aria_expanded={if(@diagnostics_open?, do: "true", else: "false")}
+            aria_controls="diagnostics-drawer"
           />
         <% end %>
         <%= if @sidebar_state == :hidden do %>
@@ -624,11 +626,13 @@ defmodule MuseWeb.ConsoleComponents do
   attr(:dot, :boolean, default: false)
   attr(:value, :string, required: true)
   attr(:click, :string, default: nil)
+  attr(:aria_expanded, :string, default: nil)
+  attr(:aria_controls, :string, default: nil)
 
   def status_chip(assigns) do
     ~H"""
     <%= if @click do %>
-      <button type="button" class={"status-chip status-chip-#{@tone}"} phx-click={@click}>
+      <button type="button" class={"status-chip status-chip-#{@tone}"} phx-click={@click} aria-expanded={@aria_expanded} aria-controls={@aria_controls}>
         <%= if @dot do %><span class={"status-dot #{chip_dot_class(@tone)}"}></span><% end %>
         <span class="status-chip-label"><%= @label %></span>
         <span class="status-chip-value"><%= @value %></span>
@@ -837,7 +841,7 @@ defmodule MuseWeb.ConsoleComponents do
         </div>
         <div class="diagnostic-latest"><%= diagnostic_summary(List.first(@diagnostics)) %></div>
         <div class="diagnostic-card-actions">
-          <button type="button" class="mini-card-btn" phx-click="open_diagnostics">open details</button>
+          <button type="button" class="mini-card-btn" phx-click="open_diagnostics" aria-expanded="false" aria-controls="diagnostics-drawer">open details</button>
           <button type="button" class="mini-card-btn" phx-click="copy_diagnostic" phx-value-diagnostic_id={Integer.to_string(List.first(@diagnostics).id)}>copy latest</button>
           <%= case Map.get(@diagnostic_issue_statuses, List.first(@diagnostics).id) do %>
             <% nil -> %>
@@ -917,6 +921,8 @@ defmodule MuseWeb.ConsoleComponents do
           class="diagnostic-pill"
           phx-click="open_diagnostics"
           aria-label="Open diagnostics panel"
+          aria-expanded="false"
+          aria-controls="diagnostics-drawer"
         >
           ⚠ <%= length(@diagnostics) %> diagnostic<%= if length(@diagnostics) != 1, do: "s", else: "" %>
         </button>
@@ -933,7 +939,7 @@ defmodule MuseWeb.ConsoleComponents do
   def diagnostics_popup(assigns) do
     ~H"""
     <%= if @diagnostics != [] and @diagnostics_open? do %>
-      <aside id="diagnostics-drawer" class="diagnostics-drawer" role="region" aria-labelledby="diagnostics-title">
+      <aside id="diagnostics-drawer" class="diagnostics-drawer" role="dialog" aria-modal="true" aria-labelledby="diagnostics-title" phx-hook="DiagnosticsDrawer">
         <div class="diagnostic-title-bar">
           <span id="diagnostics-title" class="diagnostic-title">Diagnostics</span>
           <button type="button" class="diagnostics-collapse-btn" phx-click="collapse_diagnostics" title="Minimize" aria-label="Minimize diagnostics panel">

@@ -371,17 +371,17 @@ const ToastAutoDismiss = {
 // ─── Keyboard shortcuts hook ────────────────────────────────────────
 //
 // Global keyboard shortcuts shell.
-// Esc closes diagnostics popup. Ctrl+/ focuses command input.
+// Esc closes diagnostics drawer. Ctrl+/ focuses command input.
 // Ctrl/Cmd+K opens command palette.
 
 const KeyboardShortcuts = {
   mounted() {
     this._handler = (e) => {
-      // Esc: close diagnostics if open (and close command palette)
+      // Esc: close diagnostics drawer if open (and close command palette)
       if (e.key === "Escape") {
-        const popup = document.getElementById("diagnostics-popup");
-        if (popup) {
-          const btn = popup.querySelector(".diagnostics-collapse-btn");
+        const drawer = document.getElementById("diagnostics-drawer");
+        if (drawer) {
+          const btn = drawer.querySelector(".diagnostics-collapse-btn");
           if (btn) btn.click();
         }
         // Close command palette
@@ -624,6 +624,172 @@ function showToastNotification(message) {
   }, 2500);
 }
 
+// ─── DiagnosticsDrawer hook ───────────────────────────────────────
+//
+// Implements the WCAG modal dialog pattern for the diagnostics drawer.
+// - Moves focus into the drawer on open
+// - Traps Tab/Shift+Tab within drawer boundaries
+// - Makes the rest of the page inert while the drawer is open
+// - Escape key closes the drawer and restores focus to the trigger
+
+const DiagnosticsDrawer = {
+  mounted() {
+    this._previousFocus = null;
+    this._inerted = [];
+
+    // Activate the drawer: move focus in, make background inert, install trap
+    this._activate();
+  },
+
+  destroyed() {
+    this._deactivate();
+  },
+
+  updated() {
+    // If LiveView re-renders while open, re-activate focus trap
+    this._activate();
+  },
+
+  _activate() {
+    const drawer = this.el;
+    if (!drawer) return;
+
+    // Store the previously focused element (the trigger button)
+    if (!this._previousFocus || !document.contains(this._previousFocus)) {
+      this._previousFocus = document.activeElement;
+    }
+
+    // Make siblings of the drawer inert (everything outside the drawer)
+    this._applyInert(drawer);
+
+    // Install focus trap
+    this._installTrap(drawer);
+
+    // Move focus into the drawer (close button or first focusable)
+    const closeBtn = drawer.querySelector(".diagnostics-collapse-btn");
+    if (closeBtn) {
+      closeBtn.focus();
+    } else {
+      const first = this._firstFocusable(drawer);
+      if (first) first.focus();
+    }
+  },
+
+  _deactivate() {
+    // Remove inert from background elements
+    this._removeInert();
+
+    // Uninstall focus trap
+    this._uninstallTrap();
+
+    // Restore focus to the trigger element
+    if (this._previousFocus && document.contains(this._previousFocus)) {
+      this._previousFocus.focus();
+    }
+    this._previousFocus = null;
+  },
+
+  _applyInert(drawer) {
+    // Remove any previous inert first
+    this._removeInert();
+
+    // Mark all siblings of the drawer's parent as inert
+    // The drawer is typically a direct child of the LiveView root
+    const parent = drawer.parentElement;
+    if (!parent) return;
+
+    for (const child of parent.children) {
+      if (child === drawer) continue;
+      if (!child.hasAttribute("inert")) {
+        child.setAttribute("inert", "");
+        child.setAttribute("aria-hidden", "true");
+        this._inerted.push(child);
+      }
+    }
+  },
+
+  _removeInert() {
+    for (const el of this._inerted) {
+      el.removeAttribute("inert");
+      el.removeAttribute("aria-hidden");
+    }
+    this._inerted = [];
+  },
+
+  _installTrap(drawer) {
+    this._uninstallTrap();
+
+    this._trapHandler = (e) => {
+      if (e.key === "Tab") {
+        this._handleTab(e, drawer);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        // Close the drawer via Phoenix event and restore focus
+        this._closeDrawer();
+      }
+    };
+
+    drawer.addEventListener("keydown", this._trapHandler);
+  },
+
+  _uninstallTrap() {
+    if (this._trapHandler && this.el) {
+      this.el.removeEventListener("keydown", this._trapHandler);
+      this._trapHandler = null;
+    }
+  },
+
+  _handleTab(e, drawer) {
+    const focusables = this._focusables(drawer);
+    if (focusables.length === 0) return;
+
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+
+    if (e.shiftKey) {
+      // Shift+Tab: if on first element, wrap to last
+      if (document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      }
+    } else {
+      // Tab: if on last element, wrap to first
+      if (document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  },
+
+  _closeDrawer() {
+    // Click the close button to trigger the Phoenix collapse_diagnostics event
+    const closeBtn = this.el.querySelector(".diagnostics-collapse-btn");
+    if (closeBtn) {
+      closeBtn.click();
+    }
+  },
+
+  _focusables(el) {
+    const sel = [
+      'a[href]',
+      'button:not([disabled])',
+      'input:not([disabled])',
+      'select:not([disabled])',
+      'textarea:not([disabled])',
+      '[tabindex]:not([tabindex="-1"])'
+    ].join(',');
+    return Array.from(el.querySelectorAll(sel)).filter(
+      (e) => e.offsetParent !== null && !e.hasAttribute('inert')
+    );
+  },
+
+  _firstFocusable(el) {
+    const all = this._focusables(el);
+    return all.length > 0 ? all[0] : null;
+  }
+};
+
 // ─── Hooks & LiveSocket ───────────────────────────────────────────
 
 let Hooks = {
@@ -632,6 +798,7 @@ let Hooks = {
   ToastAutoDismiss,
   KeyboardShortcuts,
   CommandPalette,
+  DiagnosticsDrawer,
   ClipboardHandler
 };
 
