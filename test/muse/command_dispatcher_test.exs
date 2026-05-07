@@ -4,6 +4,16 @@ defmodule Muse.CommandDispatcherTest do
   alias Muse.CommandDispatcher
   alias Muse.LLM.ProviderConfig
 
+  setup_all do
+    # Ensure ActiveWorkspace is in default state (no profile active)
+    # so session persistence uses the default .muse/sessions path.
+    if Process.whereis(Muse.ActiveWorkspace) do
+      Muse.ActiveWorkspace.reset()
+    end
+
+    :ok
+  end
+
   defp start_session_with_awaiting_plan(
          session_id,
          objective \\ "Approve dispatcher plan",
@@ -1796,9 +1806,22 @@ defmodule Muse.CommandDispatcherTest do
 
   describe "export session" do
     test "returns error when no session data exists" do
+      # Point ActiveWorkspace to a non-existent directory to ensure no data
+      if Process.whereis(Muse.ActiveWorkspace) do
+        Muse.ActiveWorkspace.set(
+          "/tmp/nonexistent-workspace-for-export-test",
+          "/tmp/nonexistent-workspace-for-export-test/.muse/sessions"
+        )
+      end
+
       context = %{workspace: "/tmp/nonexistent-workspace-for-export-test"}
       {:error, output, _effects} = CommandDispatcher.dispatch(:export_session, nil, context)
       assert is_binary(output)
+
+      # Clean up
+      if Process.whereis(Muse.ActiveWorkspace) do
+        Muse.ActiveWorkspace.reset()
+      end
     end
 
     test "rejects extra arguments" do
@@ -1850,10 +1873,15 @@ defmodule Muse.CommandDispatcherTest do
       assert is_binary(output)
     end
 
-    test "shows profile details without claiming runtime activation" do
+    test "activates workspace profile and reports new active workspace" do
       with_muse_dir(fn muse_dir ->
         root = tmp_dir!("muse-workspace-root")
         on_exit(fn -> File.rm_rf!(root) end)
+
+        # Reset ActiveWorkspace to default state before this test
+        if Process.whereis(Muse.ActiveWorkspace) do
+          Muse.ActiveWorkspace.reset()
+        end
 
         assert {:ok, _profile} =
                  Muse.WorkspaceProfile.create(
@@ -1865,10 +1893,14 @@ defmodule Muse.CommandDispatcherTest do
         {:ok, output, effects} =
           CommandDispatcher.dispatch(:workspace_switch, "review-profile", %{})
 
-        assert output =~ "Workspace profile 'review-profile' is configured"
-        assert output =~ "active runtime workspace is unchanged"
-        refute output =~ "Switched to workspace"
-        assert {:toast, :info, "Workspace profile: review-profile (not activated)"} in effects
+        assert output =~ "Workspace 'review-profile' is now active"
+        assert output =~ "New sessions will use this workspace's session store"
+        assert {:toast, :success, "Workspace activated: review-profile"} in effects
+
+        # Clean up: reset ActiveWorkspace so subsequent tests aren't affected
+        if Process.whereis(Muse.ActiveWorkspace) do
+          Muse.ActiveWorkspace.reset()
+        end
       end)
     end
   end

@@ -363,7 +363,7 @@ defmodule Muse.CommandsTest do
       assert text =~ "/rollback"
       assert text =~ "/workspace"
       assert text =~ "/workspace switch"
-      assert text =~ "does not change the active runtime workspace yet"
+      assert text =~ "affects new session persistence paths"
       assert text =~ "/stats"
       assert text =~ "/diagnostics"
       assert text =~ "/copy diagnostics"
@@ -481,7 +481,7 @@ defmodule Muse.CommandsTest do
       assert "/workspace switch" in cmd_names
 
       workspace_switch = Enum.find(cmds, &(&1.command == "/workspace switch"))
-      assert workspace_switch.description =~ "does not change the active runtime workspace yet"
+      assert workspace_switch.description =~ "affects new session persistence paths"
     end
   end
 end

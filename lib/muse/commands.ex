@@ -75,7 +75,7 @@ defmodule Muse.Commands do
      "Import a session from a .muse-session file (e.g. /import session path/to/file)"},
     {"/workspace list", :workspace_list, "List all workspace profiles"},
     {"/workspace switch", :workspace_switch,
-     "Show a workspace profile; does not change the active runtime workspace yet"},
+     "Switch active workspace profile (affects new session persistence paths)"},
     {"/workspace create", :workspace_create,
      "Create a workspace profile (e.g. /workspace create myproject /path/to/root)"},
     {"/workspace info", :workspace_info, "Show detailed workspace profile and session store info"}

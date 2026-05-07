@@ -325,6 +325,7 @@ defmodule Muse.SessionServer do
       checkpoints: [],
       artifacts: [],
       workspace: get_workspace(),
+      store_base_dir: get_store_base_dir(),
       # TurnRunner state
       active_turn_id: nil,
       runner_pid: nil,
@@ -375,7 +376,8 @@ defmodule Muse.SessionServer do
       memory: state.memory,
       checkpoints: state.checkpoints,
       artifacts: state.artifacts,
-      workspace: state.workspace
+      workspace: state.workspace,
+      store_base_dir: state.store_base_dir
     }
 
     {:reply, reply, state}
@@ -485,14 +487,14 @@ defmodule Muse.SessionServer do
   @impl true
   def handle_call({:set_memory, memory}, _from, state) do
     # Persist memory to disk so it survives restarts
-    persist_memory(state.session_id, memory)
+    persist_memory(state.store_base_dir, state.session_id, memory)
     {:reply, :ok, %{state | memory: memory}}
   end
 
   @impl true
   def handle_call(:clear_memory, _from, state) do
     # Remove persisted memory when cleared
-    clear_persisted_memory(state.session_id)
+    clear_persisted_memory(state.store_base_dir, state.session_id)
     {:reply, :ok, %{state | memory: nil}}
   end
 
@@ -735,7 +737,13 @@ defmodule Muse.SessionServer do
     state =
       if pending_patch != nil and not had_pending_patch_before and
            match?(%Patch{}, pending_patch) do
-        :ok = SessionStore.append_patch(state.session_id, Patch.to_map(pending_patch))
+        :ok =
+          SessionStore.append_patch(
+            state.store_base_dir,
+            state.session_id,
+            Patch.to_map(pending_patch)
+          )
+
         state
       else
         state
@@ -1469,7 +1477,8 @@ defmodule Muse.SessionServer do
         events = [patch_proposed_event, approval_event, status_event] |> Enum.reject(&is_nil/1)
 
         # Persist to patches.jsonl
-        :ok = SessionStore.append_patch(state.session_id, Patch.to_map(patch))
+        :ok =
+          SessionStore.append_patch(state.store_base_dir, state.session_id, Patch.to_map(patch))
 
         state =
           state
@@ -1786,7 +1795,7 @@ defmodule Muse.SessionServer do
     # Try in-memory first, then persisted
     case find_patch_in_state(state, patch_id) do
       {:ok, patch} -> {:ok, patch}
-      :not_found -> find_patch_in_store(state.session_id, patch_id)
+      :not_found -> find_patch_in_store(state.store_base_dir, state.session_id, patch_id)
     end
   end
 
@@ -1796,7 +1805,7 @@ defmodule Muse.SessionServer do
 
     case find_patch_in_state(state, patch_id) do
       {:ok, patch} -> {:ok, patch}
-      :not_found -> find_patch_in_store(state.session_id, patch_id)
+      :not_found -> find_patch_in_store(state.store_base_dir, state.session_id, patch_id)
     end
   end
 
@@ -1809,8 +1818,8 @@ defmodule Muse.SessionServer do
     end
   end
 
-  defp find_patch_in_store(session_id, patch_id) do
-    case SessionStore.load_patches(session_id) do
+  defp find_patch_in_store(store_base_dir, session_id, patch_id) do
+    case SessionStore.load_patches(store_base_dir, session_id) do
       {:ok, patches, _meta} ->
         case Enum.find(patches, fn p ->
                Map.get(p, "id") == patch_id or Map.get(p, "patch_id") == patch_id
@@ -2041,7 +2050,7 @@ defmodule Muse.SessionServer do
   # -- Plan persistence --------------------------------------------------------
 
   defp restore_plan_from_snapshot(state) do
-    case SessionStore.load_session(state.session_id) do
+    case SessionStore.load_session(state.store_base_dir, state.session_id) do
       {:ok, data} ->
         plan_data = Map.get(data, "plan")
         plans_data = Map.get(data, "plans", %{})
@@ -2262,7 +2271,7 @@ defmodule Muse.SessionServer do
         |> maybe_put_pending_patch(state)
         |> maybe_put_pending_remote_approval(state)
 
-      case SessionStore.save_session(state.session_id, data) do
+      case SessionStore.save_session(state.store_base_dir, state.session_id, data) do
         :ok -> :ok
         {:error, _} -> :ok
       end
@@ -2329,6 +2338,22 @@ defmodule Muse.SessionServer do
   end
 
   defp default_workspace, do: "/tmp/muse_workspace"
+
+  defp get_store_base_dir do
+    case Process.whereis(Muse.ActiveWorkspace) do
+      nil ->
+        default_store_base_dir()
+
+      pid ->
+        if Process.alive?(pid),
+          do: Muse.ActiveWorkspace.store_base_dir(),
+          else: default_store_base_dir()
+    end
+  rescue
+    _ -> default_store_base_dir()
+  end
+
+  defp default_store_base_dir, do: ".muse/sessions"
 
   defp normalize_muse_id(nil), do: nil
   defp normalize_muse_id(muse_id) when is_atom(muse_id), do: Atom.to_string(muse_id)
@@ -2408,24 +2433,24 @@ defmodule Muse.SessionServer do
 
   # -- Memory persistence helpers ----------------------------------------------
 
-  defp persist_memory(session_id, memory) when is_map(memory) do
-    case SessionStore.save_memory(session_id, memory) do
+  defp persist_memory(store_base_dir, session_id, memory) when is_map(memory) do
+    case SessionStore.save_memory(store_base_dir, session_id, memory) do
       :ok -> :ok
       # Non-fatal: log but don't crash
       {:error, _reason} -> :ok
     end
   end
 
-  defp persist_memory(_session_id, _memory), do: :ok
+  defp persist_memory(_store_base_dir, _session_id, _memory), do: :ok
 
-  defp clear_persisted_memory(session_id) do
-    _ = SessionStore.delete_memory(session_id)
+  defp clear_persisted_memory(store_base_dir, session_id) do
+    _ = SessionStore.delete_memory(store_base_dir, session_id)
     :ok
   end
 
   defp restore_memory(state) do
     if is_nil(state.memory) do
-      case SessionStore.load_memory(state.session_id) do
+      case SessionStore.load_memory(state.store_base_dir, state.session_id) do
         {:ok, memory} when is_map(memory) ->
           %{state | memory: decode_memory(memory)}
 

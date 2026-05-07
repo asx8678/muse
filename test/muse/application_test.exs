@@ -258,7 +258,7 @@ defmodule Muse.ApplicationTest do
   # -- base_children/0 -----------------------------------------------------------
 
   describe "base_children/0" do
-    test "includes PubSub, SessionRegistry, SessionSupervisor, TargetRegistry, and TaskSupervisor" do
+    test "includes PubSub, SessionRegistry, SessionSupervisor, TargetRegistry, ActiveWorkspace, and TaskSupervisor" do
       children = @app_mod.base_children()
       ids = child_ids(children)
 
@@ -267,7 +267,8 @@ defmodule Muse.ApplicationTest do
       assert Muse.SessionRegistry in ids
       assert Muse.SessionSupervisor in ids
       assert Muse.Execution.TargetRegistry in ids
-      assert length(ids) == 5
+      assert Muse.ActiveWorkspace in ids
+      assert length(ids) == 6
     end
   end
 

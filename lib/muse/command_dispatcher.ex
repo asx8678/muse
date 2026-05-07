@@ -895,8 +895,7 @@ defmodule Muse.CommandDispatcher do
       {:error, "Error: usage: /export session", []}
     else
       session_id = context_session_id(context)
-      workspace = Map.get(context, :workspace) || Backend.safe_workspace_root()
-      base_dir = WorkspaceProfile.sessions_dir_from_root(workspace)
+      base_dir = active_store_base_dir(context)
 
       case Muse.SessionStore.export_session(base_dir, session_id) do
         {:ok, export_map} ->
@@ -918,8 +917,7 @@ defmodule Muse.CommandDispatcher do
   end
 
   def dispatch(:import_session, args, context) do
-    workspace = Map.get(context, :workspace) || Backend.safe_workspace_root()
-    base_dir = WorkspaceProfile.sessions_dir_from_root(workspace)
+    base_dir = active_store_base_dir(context)
 
     case parse_import_args(args) do
       {:ok, path} ->
@@ -986,7 +984,7 @@ defmodule Muse.CommandDispatcher do
   def dispatch(:workspace_switch, args, _context) do
     case parse_workspace_switch_args(args) do
       {:ok, name} ->
-        case WorkspaceProfile.get_profile(name) do
+        case Muse.ActiveWorkspace.switch(name) do
           {:ok, profile} ->
             root = Map.get(profile, :root_path) || Map.get(profile, "root_path", "unknown")
 
@@ -994,12 +992,12 @@ defmodule Muse.CommandDispatcher do
               Map.get(profile, :sessions_dir) || Map.get(profile, "sessions_dir", "unknown")
 
             msg =
-              "Workspace profile '#{name}' is configured.\n" <>
+              "Workspace '#{name}' is now active.\n" <>
                 "  Root: #{root}\n" <>
                 "  Sessions: #{sessions}\n" <>
-                "Note: active runtime workspace is unchanged in this version."
+                "New sessions will use this workspace's session store."
 
-            {:ok, msg, [{:toast, :info, "Workspace profile: #{name} (not activated)"}]}
+            {:ok, msg, [{:toast, :success, "Workspace activated: #{name}"}]}
 
           {:error, :not_found} ->
             {:error,
@@ -1055,11 +1053,35 @@ defmodule Muse.CommandDispatcher do
         _ -> 0
       end
 
+    # Show active workspace profile info if ActiveWorkspace is running
+    active_info =
+      try do
+        case Process.whereis(Muse.ActiveWorkspace) do
+          nil ->
+            ""
+
+          pid ->
+            if Process.alive?(pid) do
+              aw = Muse.ActiveWorkspace.get()
+
+              if aw.profile_name do
+                "\n  Active profile: #{aw.profile_name}\n  Active store: #{aw.store_base_dir}"
+              else
+                "\n  Active profile: (default)\n  Active store: #{aw.store_base_dir}"
+              end
+            else
+              ""
+            end
+        end
+      rescue
+        _ -> ""
+      end
+
     msg =
       "Workspace info:\n" <>
         "  Root: #{workspace}\n" <>
         "  Sessions dir: #{sessions_dir}\n" <>
-        "  Stored sessions: #{session_count}"
+        "  Stored sessions: #{session_count}#{active_info}"
 
     {:ok, msg, []}
   end
@@ -1792,6 +1814,21 @@ defmodule Muse.CommandDispatcher do
       nil -> "default"
       session_id -> to_string(session_id)
     end
+  end
+
+  defp active_store_base_dir(_context) do
+    case Process.whereis(Muse.ActiveWorkspace) do
+      nil ->
+        workspace = Backend.safe_workspace_root()
+        WorkspaceProfile.sessions_dir_from_root(workspace)
+
+      pid ->
+        if Process.alive?(pid),
+          do: Muse.ActiveWorkspace.store_base_dir(),
+          else: WorkspaceProfile.sessions_dir_from_root(Backend.safe_workspace_root())
+    end
+  rescue
+    _ -> WorkspaceProfile.sessions_dir_from_root(Backend.safe_workspace_root())
   end
 
   defp context_source(context) do
