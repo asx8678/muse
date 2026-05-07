@@ -882,6 +882,7 @@ const MobileSidebar = {
 const DiagnosticsDrawer = {
   mounted() {
     this._previousFocus = null;
+    // Each entry: { el, hadInert, hadAriaHidden, ariaHiddenValue }
     this._inerted = [];
 
     // Activate the drawer: move focus in, make background inert, install trap
@@ -948,17 +949,36 @@ const DiagnosticsDrawer = {
     for (const child of parent.children) {
       if (child === drawer) continue;
       if (!child.hasAttribute("inert")) {
+        this._inertPush(child);
         child.setAttribute("inert", "");
         child.setAttribute("aria-hidden", "true");
-        this._inerted.push(child);
       }
     }
   },
 
+  // Record pre-existing inert/aria-hidden state so we can restore precisely
+  _inertPush(el) {
+    this._inerted.push({
+      el,
+      hadInert: el.hasAttribute("inert"),
+      hadAriaHidden: el.hasAttribute("aria-hidden"),
+      ariaHiddenValue: el.getAttribute("aria-hidden")
+    });
+  },
+
   _removeInert() {
-    for (const el of this._inerted) {
-      el.removeAttribute("inert");
-      el.removeAttribute("aria-hidden");
+    for (const entry of this._inerted) {
+      const { el, hadInert, hadAriaHidden, ariaHiddenValue } = entry;
+      if (hadInert) {
+        el.setAttribute("inert", "");
+      } else {
+        el.removeAttribute("inert");
+      }
+      if (hadAriaHidden) {
+        el.setAttribute("aria-hidden", ariaHiddenValue || "true");
+      } else {
+        el.removeAttribute("aria-hidden");
+      }
     }
     this._inerted = [];
   },

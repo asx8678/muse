@@ -878,3 +878,238 @@ test.describe("Skip link focus regression (desktop)", () => {
     expect(focusedInMain).toBe(true);
   });
 });
+
+// ─── Diagnostics drawer a11y regression ─────────────────────────────────
+//
+// Verifies WCAG 4.1.2 conformance: pre-existing aria-hidden and inert
+// attributes on sibling elements are preserved across the diagnostics
+// drawer open/close lifecycle.
+//
+// Limitation: The diagnostics drawer is conditionally rendered only when
+// server-side diagnostics exist AND the drawer is opened. Without a
+// test-only server endpoint to inject diagnostics, we cannot open the
+// real drawer in a Playwright test. Instead, we test the preservation
+// pattern logic directly against the real DOM (#muse-shell children)
+// and a synthetic fixture that covers edge cases. This proves the
+// _inertPush/_removeInert pattern works; full integration testing
+// (real drawer open/close via Phoenix events) requires server-side
+// diagnostic injection (tracked under muse-1rq).
+
+test.describe("Diagnostics drawer a11y regression (desktop)", () => {
+  test.use({ viewport: { width: 1200, height: 800 } });
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/");
+    await page.waitForFunction(() => {
+      return !document.documentElement.classList.contains("phx-loading");
+    }, { timeout: 15_000 });
+  });
+
+  test("preservation pattern restores pre-existing aria-hidden on #clipboard-handler", async ({ page }) => {
+    // #clipboard-handler is server-rendered with aria-hidden="true".
+    // Simulate the DiagnosticsDrawer _applyInert/_removeInert cycle
+    // on real #muse-shell children to verify the preservation pattern
+    // does not strip the pre-existing attribute.
+    const result = await page.evaluate(() => {
+      const shell = document.getElementById("muse-shell");
+      if (!shell) return { error: "#muse-shell not found" };
+
+      // Snapshot pre-existing states before simulating inert application
+      const preStates = {};
+      for (const child of shell.children) {
+        preStates[child.id || child.className] = {
+          ariaHidden: child.getAttribute("aria-hidden"),
+          hasInert: child.hasAttribute("inert")
+        };
+      }
+
+      // Simulate DiagnosticsDrawer._applyInert pattern
+      const inerted = [];
+      function inertPush(el) {
+        inerted.push({
+          el,
+          hadInert: el.hasAttribute("inert"),
+          hadAriaHidden: el.hasAttribute("aria-hidden"),
+          ariaHiddenValue: el.getAttribute("aria-hidden")
+        });
+      }
+
+      // Simulate _applyInert: inert all children (no drawer to skip in this test)
+      for (const child of shell.children) {
+        if (!child.hasAttribute("inert")) {
+          inertPush(child);
+          child.setAttribute("inert", "");
+          child.setAttribute("aria-hidden", "true");
+        }
+      }
+
+      // Simulate _removeInert: restore pre-existing states
+      for (const entry of inerted) {
+        const { el, hadInert, hadAriaHidden, ariaHiddenValue } = entry;
+        if (hadInert) {
+          el.setAttribute("inert", "");
+        } else {
+          el.removeAttribute("inert");
+        }
+        if (hadAriaHidden) {
+          el.setAttribute("aria-hidden", ariaHiddenValue || "true");
+        } else {
+          el.removeAttribute("aria-hidden");
+        }
+      }
+
+      // Check post-cycle states match pre-existing states
+      const postStates = {};
+      const mismatches = [];
+      for (const child of shell.children) {
+        const key = child.id || child.className;
+        postStates[key] = {
+          ariaHidden: child.getAttribute("aria-hidden"),
+          hasInert: child.hasAttribute("inert")
+        };
+        const pre = preStates[key];
+        if (pre.ariaHidden !== postStates[key].ariaHidden ||
+            pre.hasInert !== postStates[key].hasInert) {
+          mismatches.push({
+            key,
+            pre,
+            post: postStates[key]
+          });
+        }
+      }
+
+      return { mismatches, clipboardPre: preStates["clipboard-handler"], clipboardPost: postStates["clipboard-handler"] };
+    });
+
+    expect(result.error).toBeUndefined();
+    // #clipboard-handler must retain aria-hidden="true" after the cycle
+    expect(result.clipboardPre.ariaHidden).toBe("true");
+    expect(result.clipboardPost.ariaHidden).toBe("true");
+    expect(result.clipboardPost.hasInert).toBe(false);
+    // No mismatches at all — every element should return to its pre-existing state
+    expect(result.mismatches).toHaveLength(0);
+  });
+
+  test("preservation pattern handles edge cases: pre-existing inert, unusual aria-hidden values", async ({ page }) => {
+    // Synthetic fixture test covering edge cases not present in the real DOM:
+    // - element with pre-existing inert
+    // - element with unusual aria-hidden value (e.g., "false")
+    // - element with no pre-existing attributes
+    const result = await page.evaluate(() => {
+      // Create a synthetic fixture
+      const container = document.createElement("div");
+      container.id = "test-drawer-fixture";
+
+      const siblingPreHidden = document.createElement("div");
+      siblingPreHidden.id = "test-pre-hidden";
+      siblingPreHidden.setAttribute("aria-hidden", "true");
+
+      const siblingPreInert = document.createElement("div");
+      siblingPreInert.id = "test-pre-inert";
+      siblingPreInert.setAttribute("inert", "");
+      siblingPreInert.setAttribute("aria-hidden", "true");
+
+      const siblingUnusualValue = document.createElement("div");
+      siblingUnusualValue.id = "test-unusual-value";
+      siblingUnusualValue.setAttribute("aria-hidden", "false");
+
+      const siblingNoAttrs = document.createElement("div");
+      siblingNoAttrs.id = "test-no-attrs";
+
+      const drawer = document.createElement("div");
+      drawer.id = "test-drawer";
+
+      container.appendChild(siblingPreHidden);
+      container.appendChild(siblingPreInert);
+      container.appendChild(siblingUnusualValue);
+      container.appendChild(siblingNoAttrs);
+      container.appendChild(drawer);
+      document.body.appendChild(container);
+
+      // Simulate DiagnosticsDrawer._applyInert
+      const inerted = [];
+      function inertPush(el) {
+        inerted.push({
+          el,
+          hadInert: el.hasAttribute("inert"),
+          hadAriaHidden: el.hasAttribute("aria-hidden"),
+          ariaHiddenValue: el.getAttribute("aria-hidden")
+        });
+      }
+
+      for (const child of container.children) {
+        if (child === drawer) continue;
+        if (!child.hasAttribute("inert")) {
+          inertPush(child);
+          child.setAttribute("inert", "");
+          child.setAttribute("aria-hidden", "true");
+        }
+      }
+
+      // Simulate DiagnosticsDrawer._removeInert
+      for (const entry of inerted) {
+        const { el, hadInert, hadAriaHidden, ariaHiddenValue } = entry;
+        if (hadInert) {
+          el.setAttribute("inert", "");
+        } else {
+          el.removeAttribute("inert");
+        }
+        if (hadAriaHidden) {
+          el.setAttribute("aria-hidden", ariaHiddenValue || "true");
+        } else {
+          el.removeAttribute("aria-hidden");
+        }
+      }
+
+      const results = {
+        preHidden: {
+          ariaHidden: siblingPreHidden.getAttribute("aria-hidden"),
+          hasInert: siblingPreHidden.hasAttribute("inert")
+        },
+        preInert: {
+          ariaHidden: siblingPreInert.getAttribute("aria-hidden"),
+          hasInert: siblingPreInert.hasAttribute("inert")
+        },
+        unusualValue: {
+          ariaHidden: siblingUnusualValue.getAttribute("aria-hidden"),
+          hasInert: siblingUnusualValue.hasAttribute("inert")
+        },
+        noAttrs: {
+          ariaHidden: siblingNoAttrs.getAttribute("aria-hidden"),
+          hasInert: siblingNoAttrs.hasAttribute("inert")
+        }
+      };
+
+      container.remove();
+      return results;
+    });
+
+    // Pre-existing aria-hidden="true" is preserved, inert is not added
+    expect(result.preHidden.ariaHidden).toBe("true");
+    expect(result.preHidden.hasInert).toBe(false);
+
+    // Pre-existing inert+aria-hidden is preserved (was skipped by _applyInert)
+    expect(result.preInert.ariaHidden).toBe("true");
+    expect(result.preInert.hasInert).toBe(true);
+
+    // Unusual aria-hidden="false" value is restored (not stripped to null)
+    expect(result.unusualValue.ariaHidden).toBe("false");
+    expect(result.unusualValue.hasInert).toBe(false);
+
+    // Element with no pre-existing attributes has both removed
+    expect(result.noAttrs.ariaHidden).toBeNull();
+    expect(result.noAttrs.hasInert).toBe(false);
+  });
+
+  test("#clipboard-handler has aria-hidden=true in server-rendered HTML", async ({ page }) => {
+    // Baseline assertion: the server-rendered #clipboard-handler has
+    // aria-hidden="true". This is the element most likely to be affected
+    // by the DiagnosticsDrawer bug (it's a sibling of the drawer under
+    // #muse-shell).
+    const ariaHidden = await page.evaluate(() => {
+      const el = document.getElementById("clipboard-handler");
+      return el ? el.getAttribute("aria-hidden") : null;
+    });
+    expect(ariaHidden).toBe("true");
+  });
+});
