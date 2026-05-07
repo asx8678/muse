@@ -15,11 +15,11 @@
 
 | # | Phase | Epic | Priority | Status | Dependencies |
 |---|-------|------|----------|--------|-------------|
-| 1 | Release/distribution and CI polish | `muse-6jz` | P1 | Open | v0.2.0 epic |
-| 2 | LiveView/TUI/CLI UX and browser QA hardening | `muse-w23` | P2 | Open | v0.2.0 epic |
+| 1 | Release/distribution and CI polish | `muse-6jz` | P1 | In Progress (impl., awaiting epic close) | v0.2.0 epic |
+| 2 | LiveView/TUI/CLI UX and browser QA hardening | `muse-w23` | P2 | In Progress (a11y bug follow-up) | v0.2.0 epic |
 | 3 | Provider/model routing UX and resilience | `muse-3bh` | P2 | Open | v0.2.0 epic |
 | 4 | Persistent memory/session and multi-workspace foundations | `muse-9sr` | P2 | Open | v0.2.0 epic |
-| 5 | Remote execution approval design spike | `muse-pr5` | P3 | Open | v0.2.0 epic |
+| 5 | Remote execution approval design spike | `muse-pr5` | P3 | In Progress | v0.2.0 epic |
 | 6 | Observability, docs, and release readiness | `muse-4qh` | P2 | Open | Phases 1–4 |
 
 ### Phase 1 — Release/distribution and CI polish
