@@ -231,6 +231,20 @@ defmodule MuseWeb.HomeLiveTest do
 
   # -- Chat-first initial render assertions ------------------------------------
 
+  test "renders mobile sidebar toggle in app header" do
+    {:ok, _view, html} = live(build_conn(), "/")
+    assert html =~ ~s(mobile-sidebar-toggle)
+    assert html =~ ~s(toggle_mobile_sidebar)
+    assert html =~ ~s(Toggle context sidebar)
+  end
+
+  test "renders mobile sidebar backdrop when sidebar expanded" do
+    {:ok, view, _html} = live(build_conn(), "/")
+    # Default is expanded, so backdrop should render
+    html = render(view)
+    assert html =~ ~s(mobile-sidebar-backdrop)
+  end
+
   test "renders chat-first UI with lowercase muse" do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "muse"
@@ -369,6 +383,40 @@ defmodule MuseWeb.HomeLiveTest do
     {:noreply, socket} =
       MuseWeb.HomeLive.handle_event(
         "toggle_sidebar",
+        %{},
+        view.pid |> :sys.get_state() |> Map.get(:socket)
+      )
+
+    assert socket.assigns.sidebar_state == :expanded
+  end
+
+  test "toggle_mobile_sidebar cycles expanded <-> hidden" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    {:noreply, socket} =
+      MuseWeb.HomeLive.handle_event(
+        "toggle_mobile_sidebar",
+        %{},
+        view.pid |> :sys.get_state() |> Map.get(:socket)
+      )
+
+    assert socket.assigns.sidebar_state == :hidden
+
+    {:noreply, socket} = MuseWeb.HomeLive.handle_event("toggle_mobile_sidebar", %{}, socket)
+    assert socket.assigns.sidebar_state == :expanded
+  end
+
+  test "toggle_mobile_sidebar from rail goes to expanded" do
+    {:ok, view, _html} = live(build_conn(), "/")
+
+    # Set to rail first
+    view
+    |> element(".context-icon-btn[phx-click='set_sidebar_state'][phx-value-state='rail']")
+    |> render_click()
+
+    {:noreply, socket} =
+      MuseWeb.HomeLive.handle_event(
+        "toggle_mobile_sidebar",
         %{},
         view.pid |> :sys.get_state() |> Map.get(:socket)
       )

@@ -576,6 +576,17 @@ defmodule MuseWeb.HomeLive do
     {:noreply, assign(socket, sidebar_state: new_state)}
   end
 
+  @impl true
+  def handle_event("toggle_mobile_sidebar", _params, socket) do
+    new_state =
+      case socket.assigns.sidebar_state do
+        :expanded -> :hidden
+        _ -> :expanded
+      end
+
+    {:noreply, assign(socket, sidebar_state: new_state)}
+  end
+
   # -- Patch proposal handlers (PR17) ------------------------------------------
 
   @impl true
@@ -860,6 +871,7 @@ defmodule MuseWeb.HomeLive do
     <main id="muse-shell" class="app-shell" phx-hook="KeyboardShortcuts">
       <div id="clipboard-handler" phx-hook="ClipboardHandler" style="display:none" aria-hidden="true"></div>
       <.app_header workspace={@workspace} reload_status={@reload_status} state={@state} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} sidebar_state={@sidebar_state} />
+      <div :if={@sidebar_state == :expanded} class="mobile-sidebar-backdrop" phx-click="set_sidebar_state" phx-value-state="hidden" aria-hidden="true"></div>
       <main class={"main-layout sidebar-#{@sidebar_state}"}>
         <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} agent_snapshot={@agent_snapshot} beam_stats={@beam_stats} logs={@logs} sidebar_state={@sidebar_state} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} session_status={@session_status} />
         <.chat_panel messages={chat_messages(@state.events)} input={@input} />
