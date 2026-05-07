@@ -70,9 +70,11 @@ When a workspace profile is active, the session store base directory changes to 
 
 ### 2.1 Fail-closed validation
 
-Memory persistence uses a **fail-closed** approach: if secrets are detected in a memory artifact, the memory is **not** persisted, not loaded, and not exported. Unsafe memory is rejected rather than trusted.
+User-facing memory persistence and safety-sensitive memory boundaries use a **fail-closed** approach: if secrets are detected in a memory artifact, the memory is **not** persisted through those boundaries, not trusted on session restore, and not exported. Unsafe memory is rejected rather than trusted.
 
-The validation pipeline is:
+Low-level compatibility note: `Muse.SessionStore.save_memory/4` and `Muse.SessionStore.load_memory/3` keep backward-compatible defaults. Without `validate: true`, `save_memory/4` scrubs known sensitive keys/patterns and writes the artifact, and `load_memory/3` returns decoded memory as-is. Callers that need fail-closed behavior must use `Muse.Memory.validate_and_persist/3`, `Muse.SessionRouter.set_memory/2`, `Muse.Memory.validate_loaded_memory/1`, or pass `validate: true` to the store-level functions.
+
+The fail-closed validation pipeline is:
 
 1. **`Muse.Memory.validate_no_secrets/1`** — checks for two classes of secrets:
    - **Sensitive keys** — any key (atom or string) matching `Muse.MetadataSanitizer.sensitive_key?/1` (e.g., `:password`, `"api_key"`) is flagged regardless of value content.
@@ -80,9 +82,9 @@ The validation pipeline is:
 
 2. **`Muse.Memory.validate_and_persist/3`** — validates memory before calling `SessionStore.save_memory/3`. If validation fails, the memory is not written and `{:error, {:unsafe_memory, reasons}}` is returned.
 
-3. **`Muse.SessionStore.save_memory/4`** with `validate: true` — the store-level persistence function also validates before any disk I/O when the option is passed.
+3. **`Muse.SessionStore.save_memory/4`** with `validate: true` — the store-level persistence function validates before any disk I/O when the option is passed.
 
-4. **`Muse.Memory.validate_loaded_memory/1`** — validates memory loaded from `memory.json` before trusting it. Unsafe loaded memory is rejected (returns `{:error, {:unsafe_memory, reasons}}`), not returned to the caller.
+4. **`Muse.Memory.validate_loaded_memory/1`** — validates memory loaded from `memory.json` before trusting it. Unsafe loaded memory is rejected (returns `{:error, {:unsafe_memory, reasons}}`) rather than loaded into session state.
 
 ### 2.2 Memory commands
 
@@ -94,23 +96,26 @@ The validation pipeline is:
 
 ### 2.3 Legacy unsafe memory
 
-Memory loaded from `memory.json` (e.g., from a legacy session or a corrupted file) is validated before use. If unsafe memory is detected:
+Memory loaded from `memory.json` (e.g., from a legacy session or a corrupted file) is validated before use by session restore, export, import, and callers that explicitly request validation. If unsafe memory is detected at those fail-closed boundaries:
 
-- It is **not** returned to the caller or loaded into session state.
+- It is **not** loaded into session state.
 - It is **not** included in exports.
-- The error `{:error, {:unsafe_memory, reasons}}` is returned so the caller can handle it explicitly.
+- Validating callers receive `{:error, {:unsafe_memory, reasons}}` so they can handle it explicitly. Session restore treats unsafe persisted memory as absent and leaves in-memory state unchanged.
 
-Legacy memory is never silently trusted.
+Legacy memory is not silently trusted by the runtime restore/export/import paths.
 
-### 2.4 Secrets never in memory artifacts
+### 2.4 Memory-artifact secret boundary
 
-The security invariant from `security.md` §10 is enforced at every boundary:
+The security invariant from `security.md` §10 is enforced at runtime memory boundaries:
 
-- Compaction redacts secrets before producing the memory artifact.
-- `validate_no_secrets/1` is called before persistence and before loading.
+- Compaction redacts known sensitive values before producing the memory artifact.
+- User-facing persistence (`SessionRouter.set_memory/2`) validates via `validate_and_persist/3` before writing.
+- Runtime restore validates loaded memory before putting it into session state.
 - Export includes memory only when it passes `validate: true` validation.
 - Import validates memory before writing it to disk.
 - Rendering uses the full redaction pipeline (`EventPayloadRedactor` + `Prompt.Redactor`) before displaying.
+
+Redaction/validation is key- and pattern-based. It covers the configured sensitive keys and recognized credential patterns, but callers should still avoid intentionally placing secrets into memory artifacts.
 
 ---
 
@@ -135,19 +140,19 @@ The security invariant from `security.md` §10 is enforced at every boundary:
 
 **Safety:**
 
-- All data is redacted through the sensitive-key scrubbing pipeline before export — secrets are never included.
+- All data is redacted through the sensitive-key scrubbing pipeline before export. This scrubs configured sensitive keys and recognized secret-like string patterns; it is not a guarantee for arbitrary novel secret formats.
 - Memory is included only when it passes `validate_no_secrets/1`. If the memory file is missing, the `memory` field is omitted. If the memory is unsafe, the entire export fails with an error.
 - Session IDs are validated for path traversal before constructing file paths.
 
 ### 3.2 Import (`/import session <path>`)
 
-`/import session <path>` reads a `.muse-session` JSON file from the given file path and writes it to the active workspace's session store.
+`/import session <path>` reads a JSON export file from the given file path and writes it to the active workspace's session store. The `.muse-session` extension is conventional but not enforced by the command.
 
-**Syntax:** `/import session path/to/export.json`
+**Syntax:** `/import session path/to/export.muse-session`
 
 **What happens on import:**
 
-1. The file is read and decoded as JSON.
+1. The explicit local file path is expanded with `Path.expand/1`, read, and decoded as JSON. The import source path itself is not workspace-scoped by `Muse.Workspace.safe_resolve!/2`; the imported session data is still written only under the active session store after session ID validation.
 2. The export map is validated for required fields (`session_id`, `snapshot`).
 3. Session ID is validated for path traversal (see §6).
 4. Memory (if present) is validated through `validate_no_secrets/1`. Unsafe memory causes the import to fail — it is **not** written.
@@ -160,7 +165,7 @@ The security invariant from `security.md` §10 is enforced at every boundary:
 - Imported session IDs are validated for path traversal.
 - Memory is validated before being written to disk.
 - All data passes through the scrub pipeline before persistence.
-- If any step fails, the import returns an error and no partial state is left.
+- Malformed, unencodable, or unsafe export content is rejected before writing begins. The disk write phase is sequential rather than transactional: a late filesystem error can leave a partially updated target session, so callers should treat an import error as a failed import and retry or clean up explicitly.
 
 ### 3.3 Workspace scoping
 
@@ -176,7 +181,7 @@ Export and import are scoped to the **active workspace's session store directory
 
 ### 4.1 Retention API
 
-`Muse.SessionStore.evict_sessions/3` enforces a retention policy by removing the oldest sessions when limits are exceeded.
+`Muse.SessionStore.evict_sessions/2` enforces a retention policy by removing the oldest sessions when limits are exceeded.
 
 **Options:**
 
@@ -201,7 +206,7 @@ Muse.SessionStore.evict_sessions(".muse/sessions", ttl_seconds: 604_800)
 
 Retention is currently an **API-only feature**. There is no `/retention` or `/evict` slash command. Retention policy is applied programmatically (e.g., at session start, by a scheduled task, or by a caller managing session lifecycle).
 
-The `evict_sessions/3` function returns `{:ok, evicted_ids}` so callers can log or report what was removed.
+The `evict_sessions/2` function returns `{:ok, evicted_ids}` so callers can log or report what was removed.
 
 ---
 
@@ -277,20 +282,20 @@ Session IDs are validated in `SessionRouter.find_or_start_session/1` before look
 
 ## 7. Security Notes
 
-### 7.1 Secrets never in persisted data
+### 7.1 Persisted data is scrubbed for known secrets
 
-All data written through `SessionStore` is scrubbed through the sensitive-key pipeline (`Muse.MetadataSanitizer.sensitive_key?/1` for key detection, `Muse.EventPayloadRedactor.redact_string/1` for value pattern detection). Values at sensitive key names are replaced with `"**REDACTED**"` before persistence. Secret-like string values under otherwise non-sensitive keys are also redacted.
+All data written through `SessionStore` is scrubbed through the sensitive-key pipeline (`Muse.MetadataSanitizer.sensitive_key?/1` for key detection, `Muse.EventPayloadRedactor.redact_string/1` for value pattern detection). Values at sensitive key names are replaced with `"**REDACTED**"` before persistence. Recognized secret-like string values under otherwise non-sensitive keys are also redacted. This is a key/pattern-based defense-in-depth boundary, not a guarantee that arbitrary unknown secret formats will be detected.
 
 ### 7.2 Memory persistence is fail-closed
 
-Memory artifacts are validated at every boundary:
+Memory artifacts are validated at every runtime memory boundary:
 
-- Before persistence (`validate_and_persist/3`)
-- Before loading from disk (`validate_loaded_memory/1`)
-- Before export (`load_memory/2` with `validate: true`)
+- Before user-facing persistence (`validate_and_persist/3` via `SessionRouter.set_memory/2`)
+- Before runtime restore from disk (`validate_loaded_memory/1`)
+- Before export (`load_memory/3` with `validate: true`)
 - Before import (memory validated in `validate_memory/1` within `import_session/3`)
 
-If secrets are detected at any point, the memory is rejected — not persisted, not loaded, not exported. This is the fail-closed approach.
+If secrets are detected at those boundaries, the memory is rejected — not persisted through the user-facing path, not loaded into session state, not exported, and not imported. Low-level `SessionStore.save_memory/4` and `load_memory/3` require `validate: true` for fail-closed behavior.
 
 ### 7.3 Session ID path traversal protection
 
@@ -302,11 +307,11 @@ Sessions in different workspaces are fully isolated by both filesystem path and 
 
 ### 7.5 Export is redacted
 
-All export data passes through the scrub pipeline. Memory is included only when it passes validation. Secrets are never included in export output, even if they somehow reached the persisted files (defense-in-depth).
+All export data passes through the scrub pipeline. Memory is included only when it passes validation. Configured sensitive keys and recognized secret-like patterns are removed from export output as a defense-in-depth pass, even if they somehow reached persisted files.
 
 ### 7.6 Import validates before writing
 
-Import validates the export map structure, session IDs, and memory before writing any data to disk. Unsafe memory causes the import to fail entirely — no partial state is left.
+Import validates the export map structure, session IDs, artifact shapes/encodability, and memory safety before writing data to disk. Unsafe memory causes the import to fail before writes begin. The write phase itself is not transactional, so a late filesystem error can leave a partially updated target session.
 
 ### 7.7 No secrets in profile data
 
@@ -322,7 +327,7 @@ There is no user-facing `/retention` or `/evict` command. Retention policy must 
 
 ### 8.2 No automatic retention enforcement
 
-Retention is not automatically enforced at session start or on a schedule. Callers must invoke `evict_sessions/3` explicitly.
+Retention is not automatically enforced at session start or on a schedule. Callers must invoke `evict_sessions/2` explicitly.
 
 ### 8.3 User-facing invalid session ID errors
 
@@ -334,15 +339,15 @@ There is no command to move or copy a session from one workspace to another. `/i
 
 ### 8.5 Export format is JSON only
 
-Export produces JSON. There is no binary format, compressed archive, or streaming export. Large sessions may produce large export files.
+Export produces JSON. There is no binary format, compressed archive, or streaming export. Large sessions may produce large clipboard payloads or large files if the user saves the payload.
 
 ### 8.6 Import requires a file path
 
-`/import session` reads from a file path, not from clipboard content. The `/export session` command copies to clipboard, so the user must save the clipboard content to a file before importing.
+`/import session` reads from a file path, not from clipboard content. The `/export session` command copies JSON to the clipboard, so the user must save the clipboard content to a file before importing. The `.muse-session` suffix is recommended for clarity but not required.
 
 ### 8.7 Remote providers and external tests are opt-in
 
-This document covers persistence and workspace isolation only. Remote execution, SSH runners, and external provider tests remain opt-in and are not enabled by default. See `security.md` §14 and `testing.md` for details.
+This document covers persistence and workspace isolation only. Remote execution, SSH runners, and external provider tests remain opt-in and are not enabled by default. See `security.md` for safety boundaries and `testing.md` for external-test gating.
 
 ---
 

@@ -776,9 +776,9 @@ defmodule Muse.SessionStoreTest do
     end
   end
 
-  # ── evict_sessions/3 ─────────────────────────────────────────────────
+  # ── evict_sessions/2 ─────────────────────────────────────────────────
 
-  describe "evict_sessions/3" do
+  describe "evict_sessions/2" do
     test "evicts oldest sessions when max_sessions exceeded", %{base_dir: base_dir} do
       # Create 5 sessions
       for i <- 1..5 do
@@ -922,9 +922,9 @@ defmodule Muse.SessionStoreTest do
     end
   end
 
-  # ── export_session/3 and import_session/3 ─────────────────────────────
+  # ── export_session/2 and import_session/3 ─────────────────────────────
 
-  describe "export_session/3" do
+  describe "export_session/2" do
     test "exports a complete session with all artifacts",
          %{base_dir: base_dir, session_id: session_id} do
       # Create a full session

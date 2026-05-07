@@ -405,10 +405,11 @@ Test runner in PR19 is **preset-gated and restricted**. It does **not**:
 
 Memory compaction summarizes and truncates session history to fit within context limits. The compaction process:
 
-- **Redacts secrets from memory summaries.** `Muse.Memory` compaction applies the same redaction rules as `EventPayloadRedactor`.
-- **Never stores raw credentials.** Memory artifacts contain redacted summaries only.
-- **Preserves audit trail.** Compaction events (`:memory_compacted`) record what was summarized without including secret content.
-- **Compact artifacts are workspace-safe.** Memory artifacts stored as `.muse/sessions/<id>/memory.json` do not contain secrets.
+- **Redacts known secrets from memory summaries.** `Muse.Memory` compaction applies the same key/pattern-based redaction rules as `EventPayloadRedactor`.
+- **Uses fail-closed runtime memory boundaries.** User-facing memory persistence validates through `Muse.Memory.validate_and_persist/3`; runtime restore/export/import validate memory before trusting it. Low-level `SessionStore.save_memory/4` and `load_memory/3` require `validate: true` for fail-closed behavior.
+- **Avoids raw credential storage by contract.** Memory artifacts should contain redacted summaries only; unknown credential formats outside the configured redaction patterns are not a substitute for caller discipline.
+- **Preserves audit trail.** Compaction events (`:memory_compacted`) record what was summarized without including recognized secret content.
+- **Compact artifacts are workspace-scoped.** Memory artifacts are stored as `.muse/sessions/<id>/memory.json` under the active workspace's session store.
 
 ### Handoff and restoration safety
 
@@ -422,9 +423,9 @@ Muse handoff (transferring context between Planning/Coding/Testing Muse) follows
 ### Security rules for memory and handoff
 
 ```text
-✓ Secrets must not appear in memory artifacts.
-✓ Secrets must not appear in handoff specs.
-✓ Memory summaries use the same redaction as events.
+✓ Recognized secrets must be redacted or rejected from memory artifacts.
+✓ Credentials must not be intentionally included in handoff specs.
+✓ Memory summaries use the same key/pattern-based redaction as events.
 ✓ Handoff events are redacted before emission.
 ✓ Restoration validates approval bindings.
 ```

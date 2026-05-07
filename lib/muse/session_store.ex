@@ -51,15 +51,15 @@ defmodule Muse.SessionStore do
 
   ## Session Retention (v0.2.0+)
 
-  `evict_sessions/3` enforces a retention policy by removing the oldest sessions
+  `evict_sessions/2` enforces a retention policy by removing the oldest sessions
   when the total count exceeds a configurable maximum, and/or by removing sessions
   older than a configurable TTL. Eviction is based on session directory mtime.
 
   ## Export/Import (v0.2.0+)
 
-  `export_session/3` bundles a session snapshot, events, messages, patches,
+  `export_session/2` bundles a session snapshot, events, messages, patches,
   and memory into a single portable map suitable for JSON serialization.
-  All data is redacted before export — secrets are never included.
+  Export applies the configured sensitive-key and recognized secret-pattern scrub pass before returning data.
 
   `import_session/3` writes a portable map back to disk, reconstructing
   the session directory. Imported session IDs are validated for path traversal.
@@ -558,7 +558,7 @@ defmodule Muse.SessionStore do
 
   Bundles the session snapshot, events, messages, patches, and memory
   into a single map. All data is redacted through the sensitive-key
-  scrubbing pipeline — secrets are never included in the export.
+  scrubbing pipeline for configured sensitive keys and recognized secret-like patterns.
 
   Returns:
     - `{:ok, export_map}` on success

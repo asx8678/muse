@@ -260,7 +260,7 @@ Inside the `muse>` REPL:
 | `/memory compact` | Compact session context into safe durable memory |
 | `/memory clear` | Clear session memory |
 | `/export session` | Copy current session export JSON to clipboard (secrets redacted) |
-| `/import session` | Import a session from a `.muse-session` file (e.g. `/import session path/to/file`) |
+| `/import session` | Import a session from a JSON export file (commonly `.muse-session`; e.g. `/import session path/to/file.muse-session`) |
 | `/workspace create` | Create a workspace profile (e.g. `/workspace create myproject /path/to/root`) |
 | `/workspace list` | List all workspace profiles |
 | `/workspace switch` | Switch active workspace profile (affects new session persistence paths) |

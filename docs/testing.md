@@ -278,7 +278,7 @@ PR21 adds memory compaction, session handoffs, and restoration support.
 Primary coverage areas:
 
 - `test/muse/memory_test.exs`
-  - Memory compaction produces valid `memory.md` content
+  - Memory compaction produces a valid memory artifact
   - Compaction preserves critical context while reducing token count
   - Memory file persistence and loading
 - `test/muse/session_server_test.exs` (extended)
@@ -367,7 +367,7 @@ Unit tests cover individual modules and functions. Key test files and their focu
 **Key files:** `test/muse/memory_test.exs`
 
 - Memory compaction and summarization
-- `memory.md` persistence and restoration
+- `memory.json` persistence and restoration
 - Muse handoff coordination
 
 ### Prompt Assembly
