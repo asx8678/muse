@@ -1,0 +1,620 @@
+#!/usr/bin/env bash
+# script/muse-real-provider-local
+#
+# Start Muse with a real LLM provider using credentials from ~/.code_puppy.
+# NO secrets are embedded in this file — keys are extracted at runtime.
+#
+# Usage:
+#   ./script/muse-real-provider-local [--verify] [--verify-call] [--web-only] [--port 4100] [...other muse args]
+#
+# Provider selection (model-first resolution):
+#   1. If MUSE_PROVIDER is explicitly set → use it (user override)
+#   2. Read 'model' from puppy.cfg
+#   3. Look up model in ~/.code_puppy/extra_models.json
+#      - nahcrof-*    → openai_compatible  at https://crof.ai/v1      (crofai_api_key)
+#                         wire_api=chat_completions (crof.ai lacks /responses)
+#      - wafer.ai-*   → openai_compatible  at https://pass.wafer.ai/v1 (wafer_api_key)
+#      - openrouter-* → openrouter         at https://openrouter.ai/api/v1
+#      - chatgpt-*    → ERROR (requires OAuth, not supported by this launcher)
+#   4. If model not found in extra_models.json, fall back to key-based resolution:
+#      Anthropic → OpenRouter → OpenAI → Ollama
+#
+# Model selection (in priority order):
+#   1. MUSE_MODEL env var (explicit override)
+#   2. MUSE_<PROVIDER>_MODEL env var (e.g., MUSE_OPENROUTER_MODEL)
+#   3. 'model' field from puppy.cfg
+#   4. Provider-specific fallback defaults
+#
+# Config files:
+#   ~/.code_puppy/puppy.cfg       — model name, API keys (INI-style, key = value)
+#   ~/.code_puppy/extra_models.json — model→provider/endpoint/key mapping
+
+set -euo pipefail
+
+# ── Resolve Muse source directory ──────────────────────────────────────────────
+MUSE_SRC="$(cd "$(dirname "$0")/.." && pwd)"
+export MUSE_WORKSPACE="${MUSE_WORKSPACE:-$(pwd)}"
+
+# ── Locate config files ────────────────────────────────────────────────────────
+PUPPY_CFG="${PUPPY_CFG:-$HOME/.code_puppy/puppy.cfg}"
+EXTRA_MODELS="${EXTRA_MODELS:-$HOME/.code_puppy/extra_models.json}"
+CHATGPT_MODELS="${CHATGPT_MODELS:-$HOME/.code_puppy/chatgpt_models.json}"
+
+if [ ! -f "$PUPPY_CFG" ]; then
+  echo "ERROR: $PUPPY_CFG not found. Set PUPPY_CFG or create the file." >&2
+  exit 1
+fi
+
+# ── Check for --verify flag ────────────────────────────────────────────────────
+VERIFY_MODE=false
+VERIFY_CALL_MODE=false
+MUSE_ARGS=()
+for arg in "$@"; do
+  if [ "$arg" = "--verify" ]; then
+    VERIFY_MODE=true
+  elif [ "$arg" = "--verify-call" ]; then
+    VERIFY_CALL_MODE=true
+  else
+    MUSE_ARGS+=("$arg")
+  fi
+done
+
+# ── Extract a key from INI-style puppy.cfg (key = value) ──────────────────────
+# Prints the value (without leading/trailing whitespace) to stdout.
+# Returns 1 if the key is missing or empty.
+extract_key() {
+  local key="$1"
+  local val
+  val="$(grep -E "^\\s*${key}\\s*=" "$PUPPY_CFG" 2>/dev/null | head -1 | sed 's/^[^=]*=//')"
+
+  # Trim whitespace
+  val="$(echo "$val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+  if [ -z "$val" ]; then
+    return 1
+  fi
+  echo "$val"
+}
+
+# ── Read model from puppy.cfg if available ──────────────────────────────────────
+PUPPY_MODEL=""
+if puppy_model_val="$(extract_key model 2>/dev/null)" && [ -n "$puppy_model_val" ]; then
+  PUPPY_MODEL="$puppy_model_val"
+fi
+
+# ── Look up model in extra_models.json ─────────────────────────────────────────
+# Sets: MODEL_PROVIDER, MODEL_ENDPOINT_URL, MODEL_KEY_REF, MODEL_TYPE
+# Returns 0 if model found, 1 if not.
+# Also sets MODEL_JSON_KEY to the actual JSON key (may differ in case from input).
+lookup_model_in_extra() {
+  local model_name="$1"
+  if [ ! -f "$EXTRA_MODELS" ]; then
+    return 1
+  fi
+
+  # Extract fields from extra_models.json using jq.
+  # JSON keys may differ in case from the model name (e.g. "wafer.ai-GLM-5.1"
+  # vs "wafer.ai-glm-5.1"). We try exact match first, then case-insensitive.
+  # The key may contain dots, so we use bracket notation throughout.
+  local type provider endpoint_url key_ref json_key
+
+  # Try exact match first
+  type="$(jq -r --arg m "$model_name" '.[$m].type // empty' "$EXTRA_MODELS" 2>/dev/null)" || true
+
+  if [ -z "$type" ]; then
+    # Case-insensitive fallback: find the first key whose lowercase matches
+    local model_lower
+    model_lower="$(echo "$model_name" | tr '[:upper:]' '[:lower:]')"
+    json_key="$(jq -r --arg m "$model_lower" \
+      'keys[] | select(ascii_downcase == $m)' "$EXTRA_MODELS" 2>/dev/null | head -1)" || true
+    if [ -z "$json_key" ]; then
+      return 1
+    fi
+  else
+    json_key="$model_name"
+  fi
+
+  # Re-read type if we found it via case-insensitive match
+  type="$(jq -r --arg k "$json_key" '.[$k].type // empty' "$EXTRA_MODELS" 2>/dev/null)" || return 1
+  [ -z "$type" ] && return 1
+
+  provider="$(jq -r --arg k "$json_key" '.[$k].provider // empty' "$EXTRA_MODELS" 2>/dev/null)" || true
+  endpoint_url="$(jq -r --arg k "$json_key" '.[$k].custom_endpoint.url // empty' "$EXTRA_MODELS" 2>/dev/null)" || true
+  key_ref="$(jq -r --arg k "$json_key" '.[$k].custom_endpoint.api_key // empty' "$EXTRA_MODELS" 2>/dev/null)" || true
+
+  MODEL_TYPE="$type"
+  MODEL_PROVIDER="$provider"
+  MODEL_ENDPOINT_URL="$endpoint_url"
+  MODEL_KEY_REF="$key_ref"  # e.g. "$CROFAI_API_KEY" or "$WAFER_API_KEY"
+  MODEL_JSON_KEY="$json_key" # the actual JSON key (may differ in case)
+  MODEL_JSON_FILE="extra_models.json"
+  return 0
+}
+
+# ── Look up model in chatgpt_models.json ────────────────────────────────────────
+# Only used to detect chatgpt_oauth type and provide a clear error.
+# Sets MODEL_TYPE and MODEL_JSON_KEY.
+lookup_model_in_chatgpt() {
+  local model_name="$1"
+  if [ ! -f "$CHATGPT_MODELS" ]; then
+    return 1
+  fi
+
+  local type json_key
+
+  # Try exact match first
+  type="$(jq -r --arg m "$model_name" '.[$m].type // empty' "$CHATGPT_MODELS" 2>/dev/null)" || true
+
+  if [ -z "$type" ]; then
+    # Case-insensitive fallback
+    local model_lower
+    model_lower="$(echo "$model_name" | tr '[:upper:]' '[:lower:]')"
+    json_key="$(jq -r --arg m "$model_lower" \
+      'keys[] | select(ascii_downcase == $m)' "$CHATGPT_MODELS" 2>/dev/null | head -1)" || true
+    if [ -z "$json_key" ]; then
+      return 1
+    fi
+    type="$(jq -r --arg k "$json_key" '.[$k].type // empty' "$CHATGPT_MODELS" 2>/dev/null)" || return 1
+  else
+    json_key="$model_name"
+  fi
+
+  [ -z "$type" ] && return 1
+
+  MODEL_TYPE="$type"
+  MODEL_JSON_KEY="$json_key"
+  MODEL_JSON_FILE="chatgpt_models.json"
+  return 0
+}
+
+# ── Map extra_models.json key reference to puppy.cfg key name ──────────────────
+# e.g. "$CROFAI_API_KEY" → "crofai_api_key"
+key_ref_to_puppy_key() {
+  local ref="$1"
+  # Strip leading "$" and convert to lowercase
+  echo "$ref" | sed 's/^\$//' | tr '[:upper:]' '[:lower:]'
+}
+
+# ── Track resolution metadata ──────────────────────────────────────────────────
+MODEL_SOURCE="fallback"
+MODEL_SOURCE_DETAIL=""
+LOGICAL_PROVIDER=""      # The .code_puppy logical provider (nahcrof, wafer.ai, openrouter, etc.)
+KEY_ENV_VAR=""            # Set per-provider below; empty means none needed
+BASE_URL=""
+
+# ── Provider resolution (model-first) ──────────────────────────────────────────
+# ── Determine the effective model for provider resolution ────────────────────
+# When MUSE_MODEL is set, use it for provider routing (not just puppy.cfg model).
+RESOLUTION_MODEL=""
+if [ -n "${MUSE_MODEL:-}" ]; then
+  RESOLUTION_MODEL="$MUSE_MODEL"
+elif [ -n "$PUPPY_MODEL" ]; then
+  RESOLUTION_MODEL="$PUPPY_MODEL"
+fi
+
+if [ -n "${MUSE_PROVIDER:-}" ]; then
+  # ── User explicitly chose a provider — trust it ──────────────────────────────
+  : # no-op, MUSE_PROVIDER already set
+  LOGICAL_PROVIDER="(explicit: $MUSE_PROVIDER)"
+
+elif [ -n "$RESOLUTION_MODEL" ]; then
+  # ── Try model-first resolution from extra_models.json ───────────────────────
+  MODEL_TYPE=""
+  MODEL_PROVIDER=""
+  MODEL_ENDPOINT_URL=""
+  MODEL_KEY_REF=""
+  MODEL_JSON_KEY=""
+  MODEL_JSON_FILE=""
+
+  if lookup_model_in_extra "$RESOLUTION_MODEL"; then
+    LOGICAL_PROVIDER="$MODEL_PROVIDER"
+
+    case "$MODEL_TYPE" in
+      custom_openai)
+        case "$MODEL_PROVIDER" in
+          nahcrof)
+            # nahcrof → openai_compatible at https://crof.ai/v1
+            # crof.ai supports Chat Completions (/v1/chat/completions) only,
+            # NOT the OpenAI Responses API (/v1/responses). Force chat_completions.
+            # Strip the "nahcrof-" prefix: Code Puppy uses "nahcrof-kimi-k2.6"
+            # but crof.ai expects just "kimi-k2.6".
+            export MUSE_PROVIDER="openai_compatible"
+            export MUSE_WIRE_API="chat_completions"
+            BASE_URL="${MUSE_OPENAI_BASE_URL:-$MODEL_ENDPOINT_URL}"
+            if [ -z "$BASE_URL" ]; then
+              echo "ERROR: Model '$RESOLUTION_MODEL' (provider nahcrof) has no endpoint URL" >&2
+              echo "       Set crofai_base_url in $PUPPY_CFG or MUSE_OPENAI_BASE_URL env var." >&2
+              exit 1
+            fi
+            export MUSE_OPENAI_BASE_URL="$BASE_URL"
+            # Map key reference to puppy.cfg key name
+            local_puppy_key="$(key_ref_to_puppy_key "$MODEL_KEY_REF")"
+            if [ -z "${MUSE_OPENAI_API_KEY:-}" ]; then
+              if api_key_val="$(extract_key "$local_puppy_key" 2>/dev/null)" && [ -n "$api_key_val" ]; then
+                export MUSE_OPENAI_API_KEY="$api_key_val"
+              else
+                echo "ERROR: Model '$RESOLUTION_MODEL' requires key '$MODEL_KEY_REF' but '$local_puppy_key' not found in $PUPPY_CFG" >&2
+                exit 1
+              fi
+            fi
+            KEY_ENV_VAR="MUSE_OPENAI_API_KEY"
+            # Strip provider prefix from model name for the API
+            API_MODEL_NAME="${RESOLUTION_MODEL#nahcrof-}"
+            export MUSE_MODEL="$API_MODEL_NAME"
+            MODEL_SOURCE="puppy.cfg (stripped nahcrof- prefix)"
+            ;;
+
+          wafer.ai|wafer)
+            # wafer → openai_compatible at https://pass.wafer.ai/v1
+            # wafer.ai supports Chat Completions (/v1/chat/completions) only,
+            # NOT the OpenAI Responses API (/v1/responses). Force chat_completions.
+            # Strip the "wafer.ai-" prefix: Code Puppy uses "wafer.ai-GLM-5.1"
+            # but wafer.ai expects just "GLM-5.1".
+            export MUSE_PROVIDER="openai_compatible"
+            export MUSE_WIRE_API="chat_completions"
+            BASE_URL="${MUSE_OPENAI_BASE_URL:-$MODEL_ENDPOINT_URL}"
+            if [ -z "$BASE_URL" ]; then
+              echo "ERROR: Model '$RESOLUTION_MODEL' (provider wafer.ai) has no endpoint URL" >&2
+              echo "       Set wafer_base_url in $PUPPY_CFG or MUSE_OPENAI_BASE_URL env var." >&2
+              exit 1
+            fi
+            export MUSE_OPENAI_BASE_URL="$BASE_URL"
+            local_puppy_key="$(key_ref_to_puppy_key "$MODEL_KEY_REF")"
+            if [ -z "${MUSE_OPENAI_API_KEY:-}" ]; then
+              if api_key_val="$(extract_key "$local_puppy_key" 2>/dev/null)" && [ -n "$api_key_val" ]; then
+                export MUSE_OPENAI_API_KEY="$api_key_val"
+              else
+                echo "ERROR: Model '$RESOLUTION_MODEL' requires key '$MODEL_KEY_REF' but '$local_puppy_key' not found in $PUPPY_CFG" >&2
+                exit 1
+              fi
+            fi
+            KEY_ENV_VAR="MUSE_OPENAI_API_KEY"
+            # Strip provider prefix from model name for the API
+            API_MODEL_NAME="${RESOLUTION_MODEL#wafer.ai-}"
+            export MUSE_MODEL="$API_MODEL_NAME"
+            MODEL_SOURCE="puppy.cfg (stripped wafer.ai- prefix)"
+            # Reasoning models (GLM, DeepSeek) may exhaust their token budget
+            # on reasoning_content, producing no final answer. Set a generous
+            # default max_tokens only when the caller has not explicitly set it.
+            if [ -z "${MUSE_MAX_TOKENS:-}" ]; then
+              export MUSE_MAX_TOKENS="4096"
+            fi
+            ;;
+
+          openrouter)
+            # openrouter → native openrouter provider
+            export MUSE_PROVIDER="openrouter"
+            if [ -z "${MUSE_OPENROUTER_API_KEY:-}" ]; then
+              local_puppy_key="$(key_ref_to_puppy_key "$MODEL_KEY_REF")"
+              if api_key_val="$(extract_key "$local_puppy_key" 2>/dev/null)" && [ -n "$api_key_val" ]; then
+                export MUSE_OPENROUTER_API_KEY="$api_key_val"
+              else
+                echo "ERROR: Model '$RESOLUTION_MODEL' requires key '$MODEL_KEY_REF' but '$local_puppy_key' not found in $PUPPY_CFG" >&2
+                exit 1
+              fi
+            fi
+            KEY_ENV_VAR="MUSE_OPENROUTER_API_KEY"
+            BASE_URL="$MODEL_ENDPOINT_URL"
+            ;;
+
+          *)
+            # Unknown custom_openai provider — try generic openai_compatible
+            if [ -n "$MODEL_ENDPOINT_URL" ]; then
+              export MUSE_PROVIDER="openai_compatible"
+              BASE_URL="${MUSE_OPENAI_BASE_URL:-$MODEL_ENDPOINT_URL}"
+              export MUSE_OPENAI_BASE_URL="$BASE_URL"
+              local_puppy_key="$(key_ref_to_puppy_key "$MODEL_KEY_REF")"
+              if [ -z "${MUSE_OPENAI_API_KEY:-}" ]; then
+                if api_key_val="$(extract_key "$local_puppy_key" 2>/dev/null)" && [ -n "$api_key_val" ]; then
+                  export MUSE_OPENAI_API_KEY="$api_key_val"
+                else
+                  echo "ERROR: Model '$RESOLUTION_MODEL' requires key '$MODEL_KEY_REF' but '$local_puppy_key' not found in $PUPPY_CFG" >&2
+                  exit 1
+                fi
+              fi
+              KEY_ENV_VAR="MUSE_OPENAI_API_KEY"
+            else
+              echo "ERROR: Model '$RESOLUTION_MODEL' has custom_openai provider '$MODEL_PROVIDER' with no endpoint URL." >&2
+              echo "       Add a ${MODEL_PROVIDER}_base_url field to $PUPPY_CFG or set MUSE_OPENAI_BASE_URL." >&2
+              exit 1
+            fi
+            ;;
+        esac
+        ;;
+
+      chatgpt_oauth)
+        echo "ERROR: Model '$RESOLUTION_MODEL' is a ChatGPT OAuth model which requires browser-based" >&2
+        echo "       authentication. This launcher does not support ChatGPT OAuth models." >&2
+        echo "       Change the 'model' field in $PUPPY_CFG to an API-key-based model." >&2
+        exit 1
+        ;;
+
+      *)
+        echo "WARNING: Model '$RESOLUTION_MODEL' has unknown type '$MODEL_TYPE' in $MODEL_JSON_FILE." >&2
+        echo "         Falling back to key-based provider resolution." >&2
+        LOGICAL_PROVIDER="(unknown type: $MODEL_TYPE, falling back)"
+        # Fall through to key-based resolution below
+        MUSE_PROVIDER=""  # reset so fallback logic runs
+        ;;
+    esac
+  elif lookup_model_in_chatgpt "$RESOLUTION_MODEL"; then
+    # Found in chatgpt_models.json — check type
+    case "$MODEL_TYPE" in
+      chatgpt_oauth)
+        echo "ERROR: Model '$RESOLUTION_MODEL' is a ChatGPT OAuth model which requires browser-based" >&2
+        echo "       authentication. This launcher does not support ChatGPT OAuth models." >&2
+        echo "       Change the 'model' field in $PUPPY_CFG to an API-key-based model." >&2
+        exit 1
+        ;;
+      custom_openai)
+        echo "WARNING: Model '$RESOLUTION_MODEL' found in chatgpt_models.json as custom_openai but" >&2
+        echo "         without endpoint details. Falling back to key-based resolution." >&2
+        LOGICAL_PROVIDER="(chatgpt custom_openai, no endpoint, falling back)"
+        ;;
+      *)
+        echo "WARNING: Model '$RESOLUTION_MODEL' found in chatgpt_models.json with unknown type '$MODEL_TYPE'." >&2
+        echo "         Falling back to key-based provider resolution." >&2
+        LOGICAL_PROVIDER="(chatgpt unknown type: $MODEL_TYPE, falling back)"
+        ;;
+    esac
+  else
+    # Model not found in extra_models.json — fall back to key-based resolution
+    LOGICAL_PROVIDER="(not in extra_models.json, key-based fallback)"
+  fi
+fi
+
+# ── Fallback: key-based provider resolution ─────────────────────────────────────
+# Used when: no explicit MUSE_PROVIDER, and model-first resolution didn't work
+if [ -z "${MUSE_PROVIDER:-}" ]; then
+  if extract_key ANTHROPIC_API_KEY >/dev/null 2>&1; then
+    export MUSE_PROVIDER="anthropic"
+    LOGICAL_PROVIDER="anthropic (key-based fallback)"
+  elif extract_key openrouter_api_key >/dev/null 2>&1; then
+    export MUSE_PROVIDER="openrouter"
+    LOGICAL_PROVIDER="openrouter (key-based fallback)"
+  elif extract_key OPENAI_API_KEY >/dev/null 2>&1; then
+    export MUSE_PROVIDER="openai_compatible"
+    LOGICAL_PROVIDER="openai (key-based fallback)"
+  else
+    export MUSE_PROVIDER="ollama"
+    LOGICAL_PROVIDER="ollama (key-based fallback)"
+  fi
+fi
+
+# ── Export MUSE_* env vars based on chosen provider ───────────────────────────
+# (For model-first resolution, keys/base_url are already set above.)
+case "$MUSE_PROVIDER" in
+  anthropic)
+    if [ -z "${MUSE_ANTHROPIC_API_KEY:-}" ]; then
+      MUSE_ANTHROPIC_API_KEY="$(extract_key ANTHROPIC_API_KEY)" || true
+      export MUSE_ANTHROPIC_API_KEY
+    fi
+    KEY_ENV_VAR="${KEY_ENV_VAR:-MUSE_ANTHROPIC_API_KEY}"
+    BASE_URL="${BASE_URL:-https://api.anthropic.com}"
+    # Model precedence: MUSE_MODEL > MUSE_ANTHROPIC_MODEL > puppy.cfg > default
+    if [ -n "${MUSE_MODEL:-}" ]; then
+      MODEL_SOURCE="env"
+      MODEL_SOURCE_DETAIL="MUSE_MODEL"
+    elif [ -n "${MUSE_ANTHROPIC_MODEL:-}" ]; then
+      MODEL_SOURCE="env"
+      MODEL_SOURCE_DETAIL="MUSE_ANTHROPIC_MODEL"
+    elif [ -n "$PUPPY_MODEL" ]; then
+      export MUSE_MODEL="$PUPPY_MODEL"
+      MODEL_SOURCE="puppy.cfg"
+      MODEL_SOURCE_DETAIL="model"
+    else
+      export MUSE_MODEL="claude-sonnet-4-20250514"
+      MODEL_SOURCE="fallback"
+      MODEL_SOURCE_DETAIL="anthropic default"
+    fi
+    ;;
+
+  openrouter)
+    if [ -z "${MUSE_OPENROUTER_API_KEY:-}" ]; then
+      MUSE_OPENROUTER_API_KEY="$(extract_key openrouter_api_key)" || true
+      export MUSE_OPENROUTER_API_KEY
+    fi
+    KEY_ENV_VAR="${KEY_ENV_VAR:-MUSE_OPENROUTER_API_KEY}"
+    BASE_URL="${BASE_URL:-https://openrouter.ai/api/v1}"
+    # Model precedence: MUSE_MODEL > MUSE_OPENROUTER_MODEL > puppy.cfg > default
+    if [ -n "${MUSE_MODEL:-}" ]; then
+      MODEL_SOURCE="env"
+      MODEL_SOURCE_DETAIL="MUSE_MODEL"
+    elif [ -n "${MUSE_OPENROUTER_MODEL:-}" ]; then
+      MODEL_SOURCE="env"
+      MODEL_SOURCE_DETAIL="MUSE_OPENROUTER_MODEL"
+    elif [ -n "$PUPPY_MODEL" ]; then
+      export MUSE_MODEL="$PUPPY_MODEL"
+      MODEL_SOURCE="puppy.cfg"
+      MODEL_SOURCE_DETAIL="model"
+    else
+      export MUSE_MODEL="openai/gpt-4o-mini"
+      MODEL_SOURCE="fallback"
+      MODEL_SOURCE_DETAIL="openrouter default"
+    fi
+    ;;
+
+  openai_compatible)
+    if [ -z "${MUSE_OPENAI_API_KEY:-}" ]; then
+      MUSE_OPENAI_API_KEY="$(extract_key OPENAI_API_KEY)" || true
+      export MUSE_OPENAI_API_KEY
+    fi
+    export MUSE_OPENAI_BASE_URL="${MUSE_OPENAI_BASE_URL:-https://api.openai.com/v1}"
+    KEY_ENV_VAR="${KEY_ENV_VAR:-MUSE_OPENAI_API_KEY}"
+    BASE_URL="${BASE_URL:-$MUSE_OPENAI_BASE_URL}"
+    # Model precedence: MUSE_MODEL > MUSE_OPENAI_MODEL > puppy.cfg > default
+    if [ -n "${MUSE_MODEL:-}" ]; then
+      MODEL_SOURCE="env"
+      MODEL_SOURCE_DETAIL="MUSE_MODEL"
+    elif [ -n "${MUSE_OPENAI_MODEL:-}" ]; then
+      MODEL_SOURCE="env"
+      MODEL_SOURCE_DETAIL="MUSE_OPENAI_MODEL"
+    elif [ -n "$PUPPY_MODEL" ]; then
+      export MUSE_MODEL="$PUPPY_MODEL"
+      MODEL_SOURCE="puppy.cfg"
+      MODEL_SOURCE_DETAIL="model"
+    else
+      export MUSE_MODEL="gpt-4.1"
+      MODEL_SOURCE="fallback"
+      MODEL_SOURCE_DETAIL="openai default"
+    fi
+    ;;
+
+  ollama)
+    KEY_ENV_VAR="${KEY_ENV_VAR:-}"
+    BASE_URL="${BASE_URL:-http://localhost:11434}"
+    # Model precedence: MUSE_MODEL > MUSE_OLLAMA_MODEL > puppy.cfg > default
+    if [ -n "${MUSE_MODEL:-}" ]; then
+      MODEL_SOURCE="env"
+      MODEL_SOURCE_DETAIL="MUSE_MODEL"
+    elif [ -n "${MUSE_OLLAMA_MODEL:-}" ]; then
+      MODEL_SOURCE="env"
+      MODEL_SOURCE_DETAIL="MUSE_OLLAMA_MODEL"
+    elif [ -n "$PUPPY_MODEL" ]; then
+      export MUSE_MODEL="$PUPPY_MODEL"
+      MODEL_SOURCE="puppy.cfg"
+      MODEL_SOURCE_DETAIL="model"
+    else
+      export MUSE_MODEL="llama3.1"
+      MODEL_SOURCE="fallback"
+      MODEL_SOURCE_DETAIL="ollama default"
+    fi
+    ;;
+
+  *)
+    echo "ERROR: Unknown MUSE_PROVIDER=$MUSE_PROVIDER" >&2
+    exit 1
+    ;;
+esac
+
+# ── Verify MUSE_MODEL is set ──────────────────────────────────────────────────
+if [ -z "${MUSE_MODEL:-}" ]; then
+  echo "ERROR: No model resolved. Check puppy.cfg 'model' field or set MUSE_MODEL." >&2
+  exit 1
+fi
+
+# ── Check if fake provider would be used ───────────────────────────────────────
+FAKE_AVOIDED=true
+if [ "$MUSE_PROVIDER" = "ollama" ] && ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
+  FAKE_AVOIDED=false
+fi
+
+# ── Startup summary (no secrets printed) ───────────────────────────────────────
+echo "▶ Muse local launcher startup:"
+echo "  Config file:   $PUPPY_CFG"
+echo "  Models file:   $EXTRA_MODELS"
+echo "  Logical provider: ${LOGICAL_PROVIDER:-(same as Muse provider)}"
+echo "  Muse provider: $MUSE_PROVIDER"
+echo "  Model:         $MUSE_MODEL (source: $MODEL_SOURCE${MODEL_SOURCE_DETAIL:+ [$MODEL_SOURCE_DETAIL]})"
+echo "  Base URL:      $BASE_URL"
+DISPLAY_WIRE_API="${MUSE_WIRE_API:-(default for provider)}"
+echo "  Wire API:      $DISPLAY_WIRE_API"
+DISPLAY_KEY_ENV="${KEY_ENV_VAR:-(none)}"
+DISPLAY_KEY_SET="no"
+if [ -n "$KEY_ENV_VAR" ] && [ -n "${!KEY_ENV_VAR:-}" ]; then DISPLAY_KEY_SET="yes"; fi
+echo "  API key env:   $DISPLAY_KEY_ENV (set: $DISPLAY_KEY_SET)"
+echo "  Fake avoided:  $FAKE_AVOIDED"
+DISPLAY_MAX_TOKENS="${MUSE_MAX_TOKENS:-(default)}"
+echo "  Max tokens:    $DISPLAY_MAX_TOKENS"
+
+# ── Verify mode ────────────────────────────────────────────────────────────────
+if [ "$VERIFY_MODE" = true ]; then
+  echo ""
+  echo "✓ Verify mode — configuration resolved, not starting Muse."
+  echo ""
+  echo "  Summary:"
+  echo "    puppy.cfg model    = $PUPPY_MODEL"
+  echo "    Resolved provider  = $MUSE_PROVIDER (logical: ${LOGICAL_PROVIDER:-(same)})"
+  echo "    Resolved model     = $MUSE_MODEL"
+  echo "    Base URL           = $BASE_URL"
+  echo "    Key env var        = ${KEY_ENV_VAR:-(none)}"
+  VERIFY_KEY_SET="no"
+  if [ -n "$KEY_ENV_VAR" ] && [ -n "${!KEY_ENV_VAR:-}" ]; then VERIFY_KEY_SET="yes"; fi
+  echo "    Key is set         = $VERIFY_KEY_SET"
+  echo "    Model source       = $MODEL_SOURCE${MODEL_SOURCE_DETAIL:+ [$MODEL_SOURCE_DETAIL]}"
+  echo "    Wire API           = ${MUSE_WIRE_API:-(default for provider)}"
+  echo "    Max tokens         = ${MUSE_MAX_TOKENS:-(default)}"
+  echo "    Fake avoided       = $FAKE_AVOIDED"
+  echo "    OpenRouter misused = $([ "$MUSE_PROVIDER" = "openrouter" ] && [ -n "$MUSE_MODEL" ] && ! echo "$MUSE_MODEL" | grep -qE '^(openrouter-|openai/|anthropic/|google/|meta-llama/)' && echo 'WARNING: model may not be valid for OpenRouter' || echo 'no')"
+fi
+
+# ── Verify-call mode: minimal endpoint check ───────────────────────────────────
+if [ "$VERIFY_CALL_MODE" = true ]; then
+  # If --verify was also passed, summary was already printed above.
+  if [ "$VERIFY_MODE" != true ]; then
+    echo ""
+    echo "  Config: provider=$MUSE_PROVIDER model=$MUSE_MODEL base_url=$BASE_URL wire_api=${MUSE_WIRE_API:-(default)}"
+    KEY_SET=no
+    if [ -n "$KEY_ENV_VAR" ] && [ -n "${!KEY_ENV_VAR:-}" ]; then KEY_SET=yes; fi
+    echo "  Key ($KEY_ENV_VAR): $KEY_SET"
+  fi
+
+  echo ""
+  echo "▶ Verify-call: testing endpoint with minimal request..."
+
+  # Determine the path based on wire_api
+  if [ "${MUSE_WIRE_API:-}" = "chat_completions" ]; then
+    ENDPOINT_PATH="/chat/completions"
+  elif [ "${MUSE_WIRE_API:-}" = "anthropic_messages" ]; then
+    ENDPOINT_PATH="/messages"
+  else
+    ENDPOINT_PATH="/responses"  # default for openai_compatible
+  fi
+
+  TRIMMED_BASE="$(echo "$BASE_URL" | sed 's:/*$::')"
+  FULL_URL="${TRIMMED_BASE}${ENDPOINT_PATH}"
+
+  echo "  Endpoint URL: $FULL_URL"
+
+  # Minimal OpenAI chat completions request
+  MINIMAL_PAYLOAD='{"model":"'"$MUSE_MODEL"'","messages":[{"role":"user","content":"Say OK"}],"max_tokens":5,"stream":false}'
+
+  # Build auth header if key is available
+  AUTH_HEADER=""
+  if [ -n "$KEY_ENV_VAR" ] && [ -n "${!KEY_ENV_VAR:-}" ]; then
+    AUTH_HEADER="Authorization: Bearer ${!KEY_ENV_VAR}"
+  fi
+
+  HTTP_CODE=$(curl -s -o /tmp/muse_verify_body.json -w "%{http_code}" \
+    -X POST "$FULL_URL" \
+    -H "Content-Type: application/json" \
+    ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
+    -d "$MINIMAL_PAYLOAD" \
+    --max-time 15 2>/dev/null) || HTTP_CODE="000"
+
+  # Safe body summary (redact any key-like values)
+  BODY_SUMMARY=$(cat /tmp/muse_verify_body.json 2>/dev/null \
+    | head -c 500 \
+    | sed -E 's/(sk-|key-|Bearer )[a-zA-Z0-9_-]+/\1[REDACTED]/g' \
+    || echo "(empty)")
+  rm -f /tmp/muse_verify_body.json
+
+  echo "  HTTP status: $HTTP_CODE"
+  echo "  Body summary: $(echo "$BODY_SUMMARY" | head -c 200)"
+
+  if [ "$HTTP_CODE" = "200" ]; then
+    echo ""
+    echo "✓ Endpoint reachable — provider returned 200."
+    exit 0
+  else
+    echo ""
+    echo "✗ Endpoint returned $HTTP_CODE (expected 200)."
+    echo "  The model or endpoint may be incorrect, or the service may be down."
+    exit 1
+  fi
+fi
+
+# Exit after --verify (no --verify-call) if set
+if [ "$VERIFY_MODE" = true ]; then
+  exit 0
+fi
+
+# ── Start Muse ────────────────────────────────────────────────────────────────
+cd "$MUSE_SRC"
+
+# Default to --web-only unless the caller passes mode flags
+if echo "${MUSE_ARGS[*]}" | grep -qE '(--web-only|--tui|--repl|--no-web)'; then
+  exec mix muse "${MUSE_ARGS[@]}"
+else
+  exec mix muse --web-only --port "${MUSE_PORT:-4000}" "${MUSE_ARGS[@]}"
+fi

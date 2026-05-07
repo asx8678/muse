@@ -285,4 +285,145 @@ defmodule Muse.LLM.OpenAICompatibleProviderTest do
       0 -> Enum.reverse(acc)
     end
   end
+
+  describe "complete/2 — empty response validation" do
+    test "returns error when response content is empty with no tool_calls" do
+      post_fn = fn _url, _options ->
+        {:ok, Req.Response.new(status: 200, body: empty_body())}
+      end
+
+      request = request(%{})
+
+      assert {:error, reason} = OpenAICompatibleProvider.complete(request, post_fn: post_fn)
+      inspected = inspect(reason)
+      # Empty content without reasoning_content returns an invalid_response error
+      # from the decoder layer; with reasoning_content returns provider_empty_response
+      assert inspected =~ "invalid_response" or inspected =~ "provider_empty_response"
+    end
+
+    test "returns error when response has reasoning_content but empty content" do
+      post_fn = fn _url, _options ->
+        {:ok, Req.Response.new(status: 200, body: reasoning_only_body())}
+      end
+
+      request = request(%{})
+
+      assert {:error, reason} = OpenAICompatibleProvider.complete(request, post_fn: post_fn)
+      inspected = inspect(reason)
+      assert inspected =~ "provider_empty_response"
+      assert inspected =~ "reasoning"
+    end
+
+    test "returns success when response has tool_calls even with empty content" do
+      post_fn = fn _url, _options ->
+        {:ok, Req.Response.new(status: 200, body: tool_call_body())}
+      end
+
+      request = request(%{})
+
+      assert {:ok, %Muse.LLM.Response{}} =
+               OpenAICompatibleProvider.complete(request, post_fn: post_fn)
+    end
+  end
+
+  describe "stream/2 — empty response validation (SSE)" do
+    test "SSE stream with reasoning-only returns provider_empty_response error" do
+      # Simulate GLM-5.1 style: role-only init, reasoning, stop, no content
+      sse_chunks =
+        [
+          "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":null}}]}\n\n",
+          "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Thinking...\"}}]}\n\n",
+          "data: {\"choices\":[{\"delta\":{\"reasoning_content\":null},\"finish_reason\":\"stop\"}]}\n\n",
+          "data: [DONE]\n\n"
+        ]
+        |> Enum.join("")
+
+      sse_post_fn = fn _url, _req_options, on_chunk ->
+        on_chunk.(sse_chunks)
+        {:ok, %{status: 200}}
+      end
+
+      request = request(%{transport: :sse, sse_post_fn: sse_post_fn})
+
+      events = collect_stream_events(request)
+
+      # Should contain a provider_error event, not a blank assistant message
+      error_events = Enum.filter(events, &(&1.type == :provider_error))
+      assert length(error_events) >= 1
+    end
+
+    test "SSE stream with reasoning then content returns success" do
+      sse_chunks =
+        [
+          "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"reasoning_content\":null}}]}\n\n",
+          "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Thinking...\"}}]}\n\n",
+          "data: {\"choices\":[{\"delta\":{\"reasoning_content\":null,\"content\":\"OK\"}}]}\n\n",
+          "data: {\"choices\":[{\"delta\":{\"reasoning_content\":null},\"finish_reason\":\"stop\"}]}\n\n",
+          "data: [DONE]\n\n"
+        ]
+        |> Enum.join("")
+
+      sse_post_fn = fn _url, _req_options, on_chunk ->
+        on_chunk.(sse_chunks)
+        {:ok, %{status: 200}}
+      end
+
+      request = request(%{transport: :sse, sse_post_fn: sse_post_fn})
+
+      events = collect_stream_events(request)
+
+      # Should contain assistant_delta with "OK", not a provider_error
+      error_events = Enum.filter(events, &(&1.type == :provider_error))
+      assert error_events == []
+
+      delta_events = Enum.filter(events, &(&1.type == :assistant_delta))
+      assert length(delta_events) >= 1
+      assert Enum.at(delta_events, 0).text == "OK"
+    end
+  end
+
+  defp collect_stream_events(request) do
+    {:ok, pid} = Agent.start_link(fn -> [] end)
+
+    emit_fn = fn event ->
+      Agent.update(pid, fn events -> events ++ [event] end)
+      :ok
+    end
+
+    OpenAICompatibleProvider.stream(request, emit_fn)
+
+    events = Agent.get(pid, & &1)
+    Agent.stop(pid)
+    events
+  end
+
+  defp empty_body do
+    %{
+      "id" => "chatcmpl_empty",
+      "choices" => [
+        %{
+          "message" => %{"role" => "assistant", "content" => ""},
+          "finish_reason" => "stop"
+        }
+      ],
+      "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 5, "total_tokens" => 15}
+    }
+  end
+
+  defp reasoning_only_body do
+    %{
+      "id" => "chatcmpl_reasoning",
+      "choices" => [
+        %{
+          "message" => %{
+            "role" => "assistant",
+            "content" => "",
+            "reasoning_content" => "I thought about this but ran out of tokens."
+          },
+          "finish_reason" => "stop"
+        }
+      ],
+      "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 50, "total_tokens" => 60}
+    }
+  end
 end

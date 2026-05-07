@@ -165,6 +165,157 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsDecoderTest do
     end
   end
 
+  describe "decode/1 — reasoning model (reasoning_content)" do
+    test "content present with reasoning_content returns success" do
+      body = %{
+        "id" => "chatcmpl_glm",
+        "object" => "chat.completion",
+        "choices" => [
+          %{
+            "index" => 0,
+            "message" => %{
+              "role" => "assistant",
+              "content" => "Hello there!",
+              "reasoning_content" => "Let me think about how to respond."
+            },
+            "finish_reason" => "stop"
+          }
+        ],
+        "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 20, "total_tokens" => 30}
+      }
+
+      assert {:ok, %Response{} = response} = ChatCompletionsDecoder.decode(body)
+      assert response.content == "Hello there!"
+    end
+
+    test "nil content with reasoning_content and no tool_calls returns provider_empty_response error" do
+      body = %{
+        "id" => "chatcmpl_glm",
+        "object" => "chat.completion",
+        "choices" => [
+          %{
+            "index" => 0,
+            "message" => %{
+              "role" => "assistant",
+              "content" => nil,
+              "reasoning_content" => "I thought about this but ran out of tokens."
+            },
+            "finish_reason" => "stop"
+          }
+        ],
+        "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 20, "total_tokens" => 30}
+      }
+
+      assert {:error, reason} = ChatCompletionsDecoder.decode(body)
+      inspected = inspect(reason)
+      assert inspected =~ "provider_empty_response"
+      assert inspected =~ "reasoning_content"
+    end
+
+    test "empty string content with reasoning_content and no tool_calls returns provider_empty_response error" do
+      body = %{
+        "id" => "chatcmpl_glm",
+        "object" => "chat.completion",
+        "choices" => [
+          %{
+            "index" => 0,
+            "message" => %{
+              "role" => "assistant",
+              "content" => "",
+              "reasoning_content" => "I thought but ran out of tokens."
+            },
+            "finish_reason" => "stop"
+          }
+        ],
+        "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 20, "total_tokens" => 30}
+      }
+
+      assert {:error, reason} = ChatCompletionsDecoder.decode(body)
+      inspected = inspect(reason)
+      assert inspected =~ "provider_empty_response"
+    end
+
+    test "empty content without reasoning_content returns invalid_response error" do
+      body = %{
+        "id" => "chatcmpl_123",
+        "object" => "chat.completion",
+        "choices" => [
+          %{
+            "index" => 0,
+            "message" => %{
+              "role" => "assistant",
+              "content" => ""
+            },
+            "finish_reason" => "stop"
+          }
+        ],
+        "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 20, "total_tokens" => 30}
+      }
+
+      assert {:error, reason} = ChatCompletionsDecoder.decode(body)
+      inspected = inspect(reason)
+      assert inspected =~ "invalid_response"
+      refute inspected =~ "reasoning_content"
+    end
+
+    test "empty content with tool_calls present returns success (tool_calls carry the response)" do
+      tool_call =
+        tool_call_body(
+          id: "call_read",
+          name: "read_file",
+          arguments: ~s({"path":"README.md"})
+        )
+
+      body = %{
+        "id" => "chatcmpl_tools",
+        "object" => "chat.completion",
+        "choices" => [
+          %{
+            "index" => 0,
+            "message" => %{
+              "role" => "assistant",
+              "content" => "",
+              "tool_calls" => [tool_call]
+            },
+            "finish_reason" => "tool_calls"
+          }
+        ],
+        "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 20, "total_tokens" => 30}
+      }
+
+      assert {:ok, %Response{}} = ChatCompletionsDecoder.decode(body)
+    end
+
+    test "nil content with reasoning_content and tool_calls returns success" do
+      tool_call =
+        tool_call_body(
+          id: "call_read",
+          name: "read_file",
+          arguments: ~s({"path":"README.md"})
+        )
+
+      body = %{
+        "id" => "chatcmpl_glm",
+        "object" => "chat.completion",
+        "choices" => [
+          %{
+            "index" => 0,
+            "message" => %{
+              "role" => "assistant",
+              "content" => nil,
+              "reasoning_content" => "Thinking...",
+              "tool_calls" => [tool_call]
+            },
+            "finish_reason" => "tool_calls"
+          }
+        ],
+        "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 20, "total_tokens" => 30}
+      }
+
+      assert {:ok, %Response{}} = ChatCompletionsDecoder.decode(body)
+    end
+  end
+
   defp chat_completion_body(opts \\ []) do
     content = Keyword.get(opts, :content, "Hello")
     finish_reason = Keyword.get(opts, :finish_reason, "stop")

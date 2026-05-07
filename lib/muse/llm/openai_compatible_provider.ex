@@ -130,8 +130,10 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
     with {:ok, spec} <- RequestBuilder.build_chat_completions(request),
          {:ok, spec} <- attach_auth(spec, request, opts),
          {:ok, post_fn} <- complete_post_fn(opts),
-         {:ok, http_response} <- post(spec, post_fn) do
-      decode_http_response(http_response)
+         {:ok, http_response} <- post(spec, post_fn),
+         {:ok, response} <- decode_http_response(http_response),
+         :ok <- validate_non_empty_response(response) do
+      {:ok, response}
     end
   end
 
@@ -694,8 +696,17 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
                 {:error, {:provider_sse_error, "malformed data in final flush"}}
               else
                 {response, final_events} = ChatCompletionsStreamDecoder.finalize(final_decoder)
-                Enum.each(final_events, &emit_fn.(&1))
-                {:ok, response}
+
+                case validate_non_empty_response(response) do
+                  :ok ->
+                    Enum.each(final_events, &emit_fn.(&1))
+                    {:ok, response}
+
+                  {:error, reason} ->
+                    redacted = redact_error(reason)
+                    emit_fn.(Event.provider_error(redacted))
+                    {:error, redacted}
+                end
               end
             end
 
@@ -831,8 +842,16 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
 
     case result do
       {:ok, %Response{} = response} ->
-        emit_response_events(response, emit_fn)
-        {:ok, response}
+        case validate_non_empty_response(response) do
+          :ok ->
+            emit_response_events(response, emit_fn)
+            {:ok, response}
+
+          {:error, reason} ->
+            redacted = redact_error(reason)
+            emit_fn.(Event.provider_error(redacted))
+            {:error, redacted}
+        end
 
       {:error, reason} ->
         redacted = redact_error(reason)
@@ -1260,6 +1279,52 @@ defmodule Muse.LLM.OpenAICompatibleProvider do
   defp atom_key("tool_calls"), do: :tool_calls
   defp atom_key("total_tokens"), do: :total_tokens
   defp atom_key("usage"), do: :usage
+
+  # ---------------------------------------------------------------------------
+  # Empty-response validation
+  # ---------------------------------------------------------------------------
+
+  # Validate that a provider response contains meaningful content or tool calls.
+  # Reasoning models (e.g. GLM-5.1, DeepSeek-R1) may exhaust their token budget
+  # on reasoning_content and produce no final answer content. Without this
+  # check, the pipeline would emit a blank assistant message to the user.
+  #
+  # Returns :ok when the response has non-empty content or tool calls.
+  # Returns {:error, {:provider_empty_response, metadata}} when content is
+  # empty/nil and no tool calls are present.
+  @spec validate_non_empty_response(Response.t()) :: :ok | {:error, term()}
+  defp validate_non_empty_response(%Response{} = response) do
+    has_content =
+      case response.content do
+        content when is_binary(content) and content != "" -> true
+        _ -> false
+      end
+
+    has_tool_calls = Response.has_tool_calls?(response)
+
+    if has_content or has_tool_calls do
+      :ok
+    else
+      reasoning? =
+        case get_in(response.provider_state || %{}, [:reasoning_content_present?]) do
+          true -> true
+          _ -> false
+        end
+
+      {:error,
+       {:provider_empty_response,
+        %{
+          reasoning_content_present?: reasoning?,
+          finish_reason: response.finish_reason,
+          hint:
+            if(reasoning?,
+              do:
+                "reasoning model used all tokens on thinking; increase max_tokens or use a non-reasoning model",
+              else: "provider returned empty response with no tool calls"
+            )
+        }}}
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Safe option access and redaction

@@ -93,10 +93,45 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsDecoder do
   defp decode_content(message, tool_calls) do
     case fetch_known(message, "content") do
       :error when tool_calls == [] ->
-        error(:invalid_response, "missing required field choices[0].message.content")
+        # Check for reasoning_content before erroring — reasoning models
+        # (e.g. GLM-5.1) may produce reasoning_content with no content when
+        # the token budget is exhausted during the thinking phase.
+        if reasoning_content_present?(message) do
+          error(
+            :provider_empty_response,
+            "reasoning model produced reasoning_content but no final content; " <>
+              "consider increasing max_tokens or using a non-reasoning model"
+          )
+        else
+          error(:invalid_response, "missing required field choices[0].message.content")
+        end
 
       :error ->
         {:ok, nil}
+
+      {:ok, content} when is_binary(content) and content != "" ->
+        {:ok, content}
+
+      {:ok, ""} when tool_calls == [] ->
+        # Empty string content with no tool calls — check if reasoning was
+        # present to give an actionable error instead of returning empty success.
+        if reasoning_content_present?(message) do
+          error(
+            :provider_empty_response,
+            "reasoning model produced reasoning_content but empty final content; " <>
+              "consider increasing max_tokens or using a non-reasoning model"
+          )
+        else
+          # Non-reasoning model returned empty content — still an error
+          error(
+            :invalid_response,
+            "malformed choices[0].message.content: expected non-empty string unless tool_calls are present"
+          )
+        end
+
+      {:ok, ""} ->
+        # Empty content with tool_calls present — acceptable (tool_calls carry the response)
+        {:ok, ""}
 
       {:ok, content} when is_binary(content) ->
         {:ok, content}
@@ -105,13 +140,32 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsDecoder do
         {:ok, nil}
 
       {:ok, nil} ->
-        error(
-          :invalid_response,
-          "malformed choices[0].message.content: expected string unless tool_calls are present"
-        )
+        # Nil content with no tool calls — check reasoning_content
+        if reasoning_content_present?(message) do
+          error(
+            :provider_empty_response,
+            "reasoning model produced reasoning_content but nil final content; " <>
+              "consider increasing max_tokens or using a non-reasoning model"
+          )
+        else
+          error(
+            :invalid_response,
+            "malformed choices[0].message.content: expected string unless tool_calls are present"
+          )
+        end
 
       {:ok, _other} ->
         error(:invalid_response, "malformed choices[0].message.content: expected string or nil")
+    end
+  end
+
+  # Check if the message contains reasoning_content (used by reasoning models
+  # like GLM-5.1, DeepSeek-R1). This field is not in @known_atom_keys because
+  # it is provider-specific, but we check both string and atom forms.
+  defp reasoning_content_present?(message) when is_map(message) do
+    case Map.get(message, "reasoning_content") || Map.get(message, :reasoning_content) do
+      content when is_binary(content) and content != "" -> true
+      _other -> false
     end
   end
 

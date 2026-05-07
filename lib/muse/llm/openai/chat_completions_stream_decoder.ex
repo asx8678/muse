@@ -55,6 +55,7 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsStreamDecoder do
           id: String.t() | nil,
           usage: map() | nil,
           finish_reason: String.t() | nil,
+          reasoning_content_present?: boolean(),
           finalized: boolean()
         }
 
@@ -65,7 +66,15 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsStreamDecoder do
            started: boolean()
          }
 
-  defstruct [:text_parts, :tool_calls, :id, :usage, :finish_reason, :finalized]
+  defstruct [
+    :text_parts,
+    :tool_calls,
+    :id,
+    :usage,
+    :finish_reason,
+    reasoning_content_present?: false,
+    finalized: false
+  ]
 
   @doc """
   Creates a new empty decoder state.
@@ -78,6 +87,7 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsStreamDecoder do
       id: nil,
       usage: nil,
       finish_reason: nil,
+      reasoning_content_present?: false,
       finalized: false
     }
   end
@@ -176,6 +186,15 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsStreamDecoder do
       state.finish_reason ||
         if valid_tool_calls != [], do: "tool_calls", else: "stop"
 
+    # Build provider_state with reasoning metadata so upstream layers can
+    # detect reasoning-only responses (content empty but reasoning was present).
+    provider_state =
+      if state.reasoning_content_present? do
+        %{reasoning_content_present?: true}
+      else
+        %{}
+      end
+
     response =
       Response.new(
         id: state.id,
@@ -183,7 +202,8 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsStreamDecoder do
         text: content,
         tool_calls: valid_tool_calls,
         usage: state.usage,
-        finish_reason: finish_reason
+        finish_reason: finish_reason,
+        provider_state: provider_state
       )
 
     final_events =
@@ -251,8 +271,23 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsStreamDecoder do
   # ---------------------------------------------------------------------------
 
   defp process_delta(state, delta, events_acc) do
+    state = maybe_mark_reasoning(state, delta)
     {state, events} = process_content_delta(state, delta, events_acc)
     process_tool_call_delta(state, delta, events)
+  end
+
+  # Track whether the provider sent reasoning_content chunks (e.g. GLM-5.1,
+  # DeepSeek-R1). This is used at finalization time to produce a meaningful
+  # error when the model spent its token budget on reasoning but produced no
+  # final answer content.
+  defp maybe_mark_reasoning(state, delta) do
+    case Map.get(delta, "reasoning_content") do
+      content when is_binary(content) and content != "" ->
+        %{state | reasoning_content_present?: true}
+
+      _other ->
+        state
+    end
   end
 
   defp process_content_delta(state, delta, events_acc) do

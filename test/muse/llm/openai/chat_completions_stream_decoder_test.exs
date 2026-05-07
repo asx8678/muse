@@ -13,6 +13,7 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsStreamDecoderTest do
       assert state.id == nil
       assert state.usage == nil
       assert state.finish_reason == nil
+      assert state.reasoning_content_present? == false
       assert state.finalized == false
     end
   end
@@ -623,6 +624,123 @@ defmodule Muse.LLM.OpenAI.ChatCompletionsStreamDecoderTest do
       {response, _events} = ChatCompletionsStreamDecoder.finalize(state)
       assert response.content == "helloworld"
       assert response.finish_reason == "stop"
+    end
+  end
+
+  describe "feed/2 — reasoning_content (reasoning models)" do
+    test "reasoning_content chunks do not produce assistant_delta events" do
+      state = ChatCompletionsStreamDecoder.new()
+
+      # Simulate GLM-5.1 style: role-only init, reasoning, then content
+      init_chunk = %{
+        "choices" => [
+          %{
+            "delta" => %{"role" => "assistant", "content" => "", "reasoning_content" => nil},
+            "index" => 0
+          }
+        ]
+      }
+
+      reasoning_chunk = %{
+        "choices" => [
+          %{"delta" => %{"reasoning_content" => "Let me think"}, "index" => 0}
+        ]
+      }
+
+      content_chunk = %{
+        "choices" => [
+          %{"delta" => %{"reasoning_content" => nil, "content" => "OK"}, "index" => 0}
+        ]
+      }
+
+      {state, e1} = ChatCompletionsStreamDecoder.feed(state, init_chunk)
+      {state, e2} = ChatCompletionsStreamDecoder.feed(state, reasoning_chunk)
+      {state, e3} = ChatCompletionsStreamDecoder.feed(state, content_chunk)
+
+      events = e1 ++ e2 ++ e3
+
+      # Only the content chunk should produce an assistant_delta
+      assert events == [Event.assistant_delta("OK")]
+
+      {response, final_events} = ChatCompletionsStreamDecoder.finalize(state)
+      assert response.content == "OK"
+      assert response.provider_state[:reasoning_content_present?] == true
+
+      # Finalization events include assistant_completed and response_completed
+      assert Enum.any?(final_events, &(&1.type == :assistant_completed))
+    end
+
+    test "reasoning-only stream with no final content produces empty response with reasoning flag" do
+      state = ChatCompletionsStreamDecoder.new()
+
+      init_chunk = %{
+        "choices" => [
+          %{
+            "delta" => %{"role" => "assistant", "content" => "", "reasoning_content" => nil},
+            "index" => 0
+          }
+        ]
+      }
+
+      reasoning_chunk = %{
+        "choices" => [
+          %{"delta" => %{"reasoning_content" => "Thinking hard..."}, "index" => 0}
+        ]
+      }
+
+      stop_chunk = %{
+        "choices" => [
+          %{"delta" => %{"reasoning_content" => nil}, "finish_reason" => "stop", "index" => 0}
+        ]
+      }
+
+      {state, e1} = ChatCompletionsStreamDecoder.feed(state, init_chunk)
+      {state, e2} = ChatCompletionsStreamDecoder.feed(state, reasoning_chunk)
+      {state, e3} = ChatCompletionsStreamDecoder.feed(state, stop_chunk)
+      {state, _e4} = ChatCompletionsStreamDecoder.feed(state, :done)
+
+      events = e1 ++ e2 ++ e3
+      # No assistant_delta events produced (reasoning only)
+      assert events == []
+
+      {response, _final_events} = ChatCompletionsStreamDecoder.finalize(state)
+      # Content is empty but reasoning_content_present? flag is set in provider_state
+      assert response.content == ""
+      assert response.provider_state[:reasoning_content_present?] == true
+    end
+
+    test "normal content-only stream has reasoning_content_present? false" do
+      state = ChatCompletionsStreamDecoder.new()
+      {state, _events} = feed_text(state, "Hello")
+      {state, _events} = ChatCompletionsStreamDecoder.feed(state, :done)
+
+      {response, _final_events} = ChatCompletionsStreamDecoder.finalize(state)
+      assert response.content == "Hello"
+      assert response.provider_state == nil or response.provider_state == %{}
+    end
+
+    test "reasoning then final content sets provider_state with reasoning flag" do
+      state = ChatCompletionsStreamDecoder.new()
+
+      reasoning_chunk = %{
+        "choices" => [
+          %{"delta" => %{"reasoning_content" => "Hmm"}, "index" => 0}
+        ]
+      }
+
+      content_chunk = %{
+        "choices" => [
+          %{"delta" => %{"content" => "The answer is 42"}, "index" => 0}
+        ]
+      }
+
+      {state, _e1} = ChatCompletionsStreamDecoder.feed(state, reasoning_chunk)
+      {state, _e2} = ChatCompletionsStreamDecoder.feed(state, content_chunk)
+      {state, _e3} = ChatCompletionsStreamDecoder.feed(state, :done)
+
+      {response, _final_events} = ChatCompletionsStreamDecoder.finalize(state)
+      assert response.content == "The answer is 42"
+      assert response.provider_state[:reasoning_content_present?] == true
     end
   end
 

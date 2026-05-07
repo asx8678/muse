@@ -39,7 +39,7 @@ defmodule Muse.Conductor do
   }
 
   alias Muse.Conductor.ToolLoop
-  alias Muse.LLM.{FakeProvider, ModelRouter, ProviderConfig, ProviderRouter, Message}
+  alias Muse.LLM.{FakeProvider, ModelRouter, ProviderConfig, ProviderRouter, Response, Message}
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
   alias Muse.Config, as: LLMConfig
 
@@ -765,7 +765,92 @@ defmodule Muse.Conductor do
        when is_list(extra_opts) do
     assistant_text = response.content || ""
 
-    # Build conductor overhead event specs
+    # Defense-in-depth: never emit a blank assistant message to the user.
+    # If the provider returned empty content (e.g. reasoning model exhausted
+    # token budget on thinking), surface a clear error instead.
+    if blank_text?(assistant_text) and not Response.has_tool_calls?(response) do
+      reasoning? =
+        case get_in(response.provider_state || %{}, [:reasoning_content_present?]) do
+          true -> true
+          _ -> false
+        end
+
+      error_reason =
+        {:provider_empty_response,
+         %{
+           reasoning_content_present?: reasoning?,
+           finish_reason: response.finish_reason,
+           hint:
+             if(reasoning?,
+               do:
+                 "reasoning model used all tokens on thinking; increase max_tokens or use a non-reasoning model",
+               else: "provider returned empty response with no tool calls"
+             )
+         }}
+
+      # Build conductor overhead event specs
+      conductor_specs = [
+        muse_selected_spec(muse),
+        session_status_changed_spec(session.status, :running),
+        prompt_prepared_spec(bundle),
+        provider_request_started_spec(request, bundle)
+      ]
+
+      error_specs =
+        conductor_specs ++
+          provider_event_specs ++
+          [
+            {:conductor, :provider_error, %{error_type: :provider_empty_response},
+             [visibility: :debug]},
+            session_status_changed_spec(:running, :idle)
+          ]
+
+      duration = System.monotonic_time(:millisecond) - start_time
+
+      :telemetry.execute(
+        Telemetry.provider_error(),
+        %{duration_ms: duration},
+        Telemetry.provider_error_metadata(
+          session_id: session.id,
+          turn_id: turn.id,
+          error_type: :provider_empty_response
+        )
+      )
+
+      {:error, %{reason: error_reason, event_specs: error_specs}}
+    else
+      finalize_turn_with_content(
+        session,
+        turn,
+        muse,
+        bundle,
+        request,
+        response,
+        provider_event_specs,
+        start_time,
+        extra_opts,
+        assistant_text
+      )
+    end
+  end
+
+  defp blank_text?(text) when is_binary(text), do: String.trim(text) == ""
+  defp blank_text?(nil), do: true
+  defp blank_text?(_), do: false
+
+  defp finalize_turn_with_content(
+         session,
+         turn,
+         muse,
+         bundle,
+         request,
+         response,
+         provider_event_specs,
+         start_time,
+         extra_opts,
+         assistant_text
+       )
+       when is_list(extra_opts) and is_binary(assistant_text) do
     conductor_specs = [
       muse_selected_spec(muse),
       session_status_changed_spec(session.status, :running),

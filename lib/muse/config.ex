@@ -131,6 +131,7 @@ defmodule Muse.Config do
     |> maybe_override_base_url(env_map, app_config)
     |> maybe_override_timeout(env_map, app_config)
     |> maybe_override_retries(env_map, app_config)
+    |> maybe_override_max_tokens(env_map, app_config)
   end
 
   defp parse_provider("fake"), do: :fake
@@ -339,6 +340,13 @@ defmodule Muse.Config do
     case resolve(env_map, app_config, "MUSE_LLM_MAX_RETRIES", :max_retries, nil) do
       nil -> config
       val -> %{config | max_retries: parse_integer(val, config.max_retries)}
+    end
+  end
+
+  defp maybe_override_max_tokens(config, env_map, app_config) do
+    case resolve(env_map, app_config, "MUSE_MAX_TOKENS", :max_tokens, nil) do
+      nil -> config
+      val -> %{config | max_tokens: parse_integer(val, config.max_tokens)}
     end
   end
 
