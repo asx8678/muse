@@ -292,6 +292,29 @@ defmodule Muse.MemoryTest do
 
       assert :ok = Memory.validate_no_secrets(memory)
     end
+
+    test "rejects non-map memory without echoing raw secret-like values" do
+      secret = "sk-super-secret-value-12345"
+
+      assert {:error, reasons} = Memory.validate_no_secrets("memory #{secret}")
+      assert Enum.any?(reasons, &String.contains?(&1, "memory must be a map"))
+
+      for reason <- reasons do
+        refute reason =~ secret
+      end
+    end
+
+    test "detects secret-like map keys without echoing the raw key" do
+      secret_key = "sk-super-secret-key-12345"
+      memory = %{secret_key => "safe value"}
+
+      assert {:error, reasons} = Memory.validate_no_secrets(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Secret pattern"))
+
+      for reason <- reasons do
+        refute reason =~ secret_key
+      end
+    end
   end
 
   describe "merge/2" do
@@ -804,7 +827,7 @@ defmodule Muse.MemoryTest do
     test "renders charlist field as single string, not list of codepoints" do
       # A charlist containing a secret should be treated as a single string
       # and redacted, not iterated as individual codepoints.
-      charlist = 'key=sk-sentinel-charlist'
+      charlist = ~c"key=sk-sentinel-charlist"
 
       memory = %{
         user_goal: "Test goal",
@@ -829,7 +852,7 @@ defmodule Muse.MemoryTest do
       # When the whole field is a charlist (not in a list), treat as single value
       memory = %{
         user_goal: "Test goal",
-        project_facts: 'password=sentinel-charlist-field',
+        project_facts: ~c"password=sentinel-charlist-field",
         decisions_made: [],
         approved_plans: [],
         changes_completed: [],
@@ -1016,6 +1039,17 @@ defmodule Muse.MemoryTest do
 
       for reason <- reasons do
         refute reason =~ "super-secret-password-value"
+      end
+    end
+
+    test "rejects non-map loaded memory without echoing raw content" do
+      secret = "sk-loaded-secret-value-12345"
+
+      assert {:error, {:unsafe_memory, reasons}} = Memory.validate_loaded_memory([secret])
+      assert Enum.any?(reasons, &String.contains?(&1, "memory must be a map"))
+
+      for reason <- reasons do
+        refute reason =~ secret
       end
     end
   end

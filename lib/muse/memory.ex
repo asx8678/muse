@@ -225,8 +225,8 @@ defmodule Muse.Memory do
 
   Returns `:ok` if safe, `{:error, reasons}` if secrets detected.
   """
-  @spec validate_no_secrets(memory_artifact()) :: :ok | {:error, reasons :: [String.t()]}
-  def validate_no_secrets(memory) do
+  @spec validate_no_secrets(term()) :: :ok | {:error, reasons :: [String.t()]}
+  def validate_no_secrets(memory) when is_map(memory) do
     memory
     |> Map.drop([:compacted_at, :source_session_id, "compacted_at", "source_session_id"])
     |> Enum.flat_map(fn {key, value} ->
@@ -236,6 +236,10 @@ defmodule Muse.Memory do
       [] -> :ok
       reasons -> {:error, Enum.uniq(reasons)}
     end
+  end
+
+  def validate_no_secrets(memory) do
+    {:error, ["memory must be a map, got: #{type_label(memory)}"]}
   end
 
   @doc """
@@ -252,9 +256,9 @@ defmodule Muse.Memory do
     - `{:error, {:unsafe_memory, reasons}}` if secrets are detected
     - `{:error, reason}` if the disk write fails
   """
-  @spec validate_and_persist(String.t(), String.t(), map()) ::
+  @spec validate_and_persist(String.t(), String.t(), term()) ::
           :ok | {:error, {:unsafe_memory, reasons :: [String.t()]} | tuple()}
-  def validate_and_persist(store_base_dir, session_id, memory) when is_map(memory) do
+  def validate_and_persist(store_base_dir, session_id, memory) do
     case validate_no_secrets(memory) do
       :ok ->
         case SessionStore.save_memory(store_base_dir, session_id, memory) do
@@ -265,10 +269,6 @@ defmodule Muse.Memory do
       {:error, reasons} ->
         {:error, {:unsafe_memory, reasons}}
     end
-  end
-
-  def validate_and_persist(_store_base_dir, _session_id, memory) do
-    {:error, {:unsafe_memory, ["memory must be a map, got: #{inspect(memory, limit: 1)}"]}}
   end
 
   @doc """
@@ -282,13 +282,17 @@ defmodule Muse.Memory do
     - `{:ok, memory}` if the loaded memory is safe
     - `{:error, {:unsafe_memory, reasons}}` if secrets are detected
   """
-  @spec validate_loaded_memory(map()) ::
+  @spec validate_loaded_memory(term()) ::
           {:ok, map()} | {:error, {:unsafe_memory, reasons :: [String.t()]}}
   def validate_loaded_memory(memory) when is_map(memory) do
     case validate_no_secrets(memory) do
       :ok -> {:ok, memory}
       {:error, reasons} -> {:error, {:unsafe_memory, reasons}}
     end
+  end
+
+  def validate_loaded_memory(memory) do
+    {:error, {:unsafe_memory, ["memory must be a map, got: #{type_label(memory)}"]}}
   end
 
   @doc """
@@ -561,17 +565,27 @@ defmodule Muse.Memory do
     sensitive_key_reasons(full_path) ++ value_reasons
   end
 
-  # Helper: produce sensitive-key reasons for a given path if the last
-  # element is a sensitive key. Used by composite-type clauses above.
+  # Helper: produce key-related rejection reasons for a given path if the last
+  # element is sensitive or itself looks like a secret. Used by composite-type
+  # clauses above. Path formatting is redacted so malicious key names cannot
+  # leak raw secret values through error reasons.
   defp sensitive_key_reasons(full_path) do
     case List.last(full_path) do
       nil ->
         []
 
       key ->
-        if sensitive_key?(key),
-          do: ["Sensitive key #{format_path(full_path)} with value present"],
-          else: []
+        sensitive_reason =
+          if sensitive_key?(key),
+            do: ["Sensitive key #{format_path(full_path)} with value present"],
+            else: []
+
+        key_secret_reason =
+          if secret_pattern_match?(key_to_binary(key)),
+            do: ["Secret pattern found in key #{format_path(full_path)}"],
+            else: []
+
+        sensitive_reason ++ key_secret_reason
     end
   end
 
@@ -612,14 +626,60 @@ defmodule Muse.Memory do
       @auth_header_pattern
     ]
 
-    Enum.any?(patterns, &Regex.match?(&1, binary))
+    Enum.any?(patterns, &Regex.match?(&1, binary)) or redaction_would_change?(binary)
   end
 
   defp secret_pattern_match?(_), do: false
 
   # Format a path list as a dot-separated string for error messages.
+  # Segments are sanitized so error reasons never echo raw secret-like keys.
   defp format_path([]), do: "root"
-  defp format_path(path), do: Enum.map_join(path, ".", &to_string/1)
+  defp format_path(path), do: Enum.map_join(path, ".", &safe_path_segment/1)
+
+  defp safe_path_segment(segment) when is_binary(segment) do
+    segment
+    |> EventPayloadRedactor.redact_string()
+    |> Redactor.redact_text()
+  end
+
+  defp safe_path_segment(segment) when is_atom(segment),
+    do: segment |> Atom.to_string() |> safe_path_segment()
+
+  defp safe_path_segment(segment) when is_integer(segment), do: Integer.to_string(segment)
+  defp safe_path_segment(segment) when is_float(segment), do: Float.to_string(segment)
+  defp safe_path_segment(segment) when is_list(segment), do: "<list>"
+  defp safe_path_segment(segment) when is_tuple(segment), do: "<tuple>"
+  defp safe_path_segment(segment) when is_map(segment), do: "<map>"
+  defp safe_path_segment(_segment), do: "<term>"
+
+  defp key_to_binary(key) when is_binary(key), do: key
+  defp key_to_binary(key) when is_atom(key), do: Atom.to_string(key)
+  defp key_to_binary(_key), do: ""
+
+  defp redaction_would_change?(binary) do
+    redacted =
+      binary
+      |> EventPayloadRedactor.redact_string()
+      |> Redactor.redact_text()
+      |> redact_private_key_header()
+
+    redacted != binary
+  end
+
+  defp type_label(value) when is_map(value), do: "map"
+  defp type_label(value) when is_binary(value), do: "binary"
+
+  defp type_label(value) when is_list(value),
+    do: if(charlist?(value), do: "charlist", else: "list")
+
+  defp type_label(value) when is_tuple(value), do: "tuple"
+  defp type_label(value) when is_atom(value), do: "atom"
+  defp type_label(value) when is_integer(value), do: "integer"
+  defp type_label(value) when is_float(value), do: "float"
+  defp type_label(value) when is_pid(value), do: "pid"
+  defp type_label(value) when is_reference(value), do: "reference"
+  defp type_label(value) when is_function(value), do: "function"
+  defp type_label(_value), do: "term"
 
   # -- Private: Size bounding -----------------------------------------------------
 

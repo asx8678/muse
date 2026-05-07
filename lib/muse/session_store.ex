@@ -448,13 +448,15 @@ defmodule Muse.SessionStore do
   Returns:
     - `:ok` on success
     - `{:error, {:unsafe_memory, reasons}}` if `validate: true` and secrets detected
+    - `{:error, {:invalid_memory, reason}}` if the memory is not a map
     - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
     - `{:error, reason}` on other failures
   """
-  @spec save_memory(String.t(), String.t(), map(), keyword()) ::
+  @spec save_memory(String.t(), String.t(), term(), keyword()) ::
           :ok | {:error, tuple()}
   def save_memory(base_dir \\ @default_base_dir, session_id, memory, opts \\ [])
-      when is_map(memory) do
+
+  def save_memory(base_dir, session_id, memory, opts) when is_map(memory) do
     with :ok <- validate_session_id(session_id) do
       # Fail-closed: when validate: true, reject unsafe memory before any I/O.
       if Keyword.get(opts, :validate, false) do
@@ -471,6 +473,12 @@ defmodule Muse.SessionStore do
     end
   end
 
+  def save_memory(_base_dir, session_id, _memory, _opts) do
+    with :ok <- validate_session_id(session_id) do
+      {:error, {:invalid_memory, "memory must be a map"}}
+    end
+  end
+
   @doc """
   Loads a memory artifact from `memory.json`.
 
@@ -482,6 +490,7 @@ defmodule Muse.SessionStore do
   Returns:
     - `{:ok, memory}` with the decoded map (the `schema_version` field is stripped)
     - `{:error, {:unsafe_memory, reasons}}` if `validate: true` and secrets detected
+    - `{:error, {:invalid_memory, reason}}` if the JSON does not decode to a map
     - `{:error, :enoent}` if no memory file exists
     - `{:error, {:corrupt_json, reason}}` if the file contains invalid JSON
     - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
@@ -495,7 +504,7 @@ defmodule Muse.SessionStore do
       case File.read(path) do
         {:ok, content} ->
           case Jason.decode(content) do
-            {:ok, decoded} ->
+            {:ok, decoded} when is_map(decoded) ->
               decoded = Map.delete(decoded, "schema_version")
 
               if Keyword.get(opts, :validate, false) do
@@ -506,6 +515,9 @@ defmodule Muse.SessionStore do
               else
                 {:ok, decoded}
               end
+
+            {:ok, _decoded} ->
+              {:error, {:invalid_memory, "memory must be a map"}}
 
             {:error, reason} ->
               {:error, {:corrupt_json, reason}}
@@ -563,9 +575,8 @@ defmodule Muse.SessionStore do
       with {:ok, snapshot} <- load_session(base_dir, session_id),
            {:ok, events, _} <- load_events(base_dir, session_id),
            {:ok, messages, _} <- load_messages(base_dir, session_id),
-           {:ok, patches, _} <- load_patches(base_dir, session_id) do
-        memory_result = load_memory(base_dir, session_id)
-
+           {:ok, patches, _} <- load_patches(base_dir, session_id),
+           {:ok, memory_result} <- load_export_memory(base_dir, session_id) do
         # Snapshot was already redacted on save, but apply a final
         # scrub pass for defense-in-depth (no-op on already-redacted data).
         export =
@@ -582,6 +593,14 @@ defmodule Muse.SessionStore do
 
         {:ok, export}
       end
+    end
+  end
+
+  defp load_export_memory(base_dir, session_id) do
+    case load_memory(base_dir, session_id, validate: true) do
+      {:ok, memory} -> {:ok, {:ok, memory}}
+      {:error, :enoent} -> {:ok, {:error, :enoent}}
+      {:error, reason} -> {:error, reason}
     end
   end
 

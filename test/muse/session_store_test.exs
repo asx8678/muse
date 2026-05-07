@@ -875,6 +875,28 @@ defmodule Muse.SessionStoreTest do
                SessionStore.save_memory(base_dir, "../escape", %{"data" => "test"})
     end
 
+    test "rejects non-map memory without writing", %{base_dir: base_dir, session_id: session_id} do
+      assert {:error, {:invalid_memory, "memory must be a map"}} =
+               SessionStore.save_memory(base_dir, session_id, ["not", "a", "map"])
+
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
+    end
+
+    test "load_memory returns an error for non-map JSON", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      dir = SessionStore.session_dir(base_dir, session_id)
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "memory.json"), Jason.encode!(["not", "a", "map"]))
+
+      assert {:error, {:invalid_memory, "memory must be a map"}} =
+               SessionStore.load_memory(base_dir, session_id)
+
+      assert {:error, {:invalid_memory, "memory must be a map"}} =
+               SessionStore.load_memory(base_dir, session_id, validate: true)
+    end
+
     test "delete_memory removes memory and treats missing files as success", %{
       base_dir: base_dir,
       session_id: session_id
@@ -963,6 +985,32 @@ defmodule Muse.SessionStoreTest do
     test "export rejects invalid session ID", %{base_dir: base_dir} do
       assert {:error, {:invalid_session_id, "../escape"}} =
                SessionStore.export_session(base_dir, "../escape")
+    end
+
+    test "export fails closed when persisted legacy memory is unsafe", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      assert :ok = SessionStore.save_session(base_dir, session_id, %{"status" => "idle"})
+
+      dir = SessionStore.session_dir(base_dir, session_id)
+      File.mkdir_p!(dir)
+
+      raw_secret = "sk-legacy-export-secret-12345"
+
+      File.write!(
+        Path.join(dir, "memory.json"),
+        Jason.encode!(%{"schema_version" => 1, "user_goal" => "Key: #{raw_secret}"})
+      )
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               SessionStore.export_session(base_dir, session_id)
+
+      assert is_list(reasons) and reasons != []
+
+      for reason <- reasons do
+        refute reason =~ raw_secret
+      end
     end
   end
 
