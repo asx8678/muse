@@ -191,6 +191,7 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  overflow-x: clip; /* Hard clip — no horizontal scroll even at 320px / 200% zoom */
 }
 
 /* ─── Header + Tab navigation ───────────────────────────────────── */
@@ -2790,9 +2791,71 @@ textarea:focus-visible {
   }
 }
 
-/* ─── Responsive: hide context sidebar on medium screens ──────────── */
+/* ─── Mobile sidebar toggle (hidden on desktop) ────────────────── */
+
+.mobile-sidebar-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border-muted);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.mobile-sidebar-toggle:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
+}
+
+.mobile-sidebar-toggle:focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.mobile-sidebar-toggle[aria-expanded="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-text);
+}
+
+.mobile-sidebar-toggle-icon {
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* ─── Mobile sidebar backdrop ───────────────────────────────────── */
+
+.mobile-sidebar-backdrop {
+  display: none;
+}
+
+/* ─── Responsive: sidebar overlay on medium/narrow screens ────────── */
 
 @media (max-width: 960px) {
+  .mobile-sidebar-toggle {
+    display: flex;
+  }
+
+  .app-header {
+    align-items: flex-start;
+    flex-direction: row;
+    gap: var(--space-3);
+  }
+
+  .status-chips {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
   .main-layout {
     grid-template-columns: 1fr;
   }
@@ -2805,23 +2868,162 @@ textarea:focus-visible {
     grid-template-columns: 1fr;
   }
 
+  /* Sidebar: overlay instead of display:none */
   .context-panel,
   .context-sidebar {
-    display: none !important;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(320px, 85vw);
+    z-index: 300;
+    border-radius: 0 var(--radius-panel) var(--radius-panel) 0;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5);
+    overflow-y: auto;
+  }
+
+  /* Hide sidebar when not expanded */
+  .main-layout:not(.sidebar-expanded) .context-panel,
+  .main-layout:not(.sidebar-expanded) .context-sidebar {
+    transform: translateX(-110%);
+    pointer-events: none;
+    visibility: hidden;
+  }
+
+  .main-layout.sidebar-expanded .context-panel,
+  .main-layout.sidebar-expanded .context-sidebar {
+    transform: translateX(0);
+    pointer-events: auto;
+    visibility: visible;
+    transition: transform 0.25s ease-out, visibility 0s 0s;
+  }
+
+  .main-layout:not(.sidebar-expanded) .context-panel,
+  .main-layout:not(.sidebar-expanded) .context-sidebar {
+    transition: transform 0.2s ease-in, visibility 0s 0.25s;
+  }
+
+  /* Rail mode hidden on mobile — too narrow for 56px column */
+  .main-layout.sidebar-rail .context-panel,
+  .main-layout.sidebar-rail .context-sidebar {
+    transform: translateX(-110%);
+    pointer-events: none;
+    visibility: hidden;
   }
 
   .context-rail {
     display: none !important;
   }
 
+  /* Backdrop when sidebar is expanded on mobile */
+  .mobile-sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 299;
+    background: rgba(0, 0, 0, 0.55);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Prevent body scroll when sidebar overlay is open */
+  .main-layout.sidebar-expanded {
+    overflow: hidden;
+  }
+
+  /* Context sidebar header: add mobile close affordance */
+  .context-sidebar-header {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    background: var(--sidebar-bg-strong);
+    backdrop-filter: blur(8px);
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* Reopen chip hidden on mobile — hamburger toggle replaces it */
+  .context-reopen-chip {
+    display: none !important;
+  }
+}
+
+/* ─── Responsive: 320px narrow viewport / 200% zoom ──────────────── */
+
+@media (max-width: 360px) {
+  .app-shell {
+    padding: 6px 8px 8px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+
   .app-header {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: var(--space-3);
+    gap: var(--space-2);
+    padding-bottom: var(--space-1);
+  }
+
+  .muse-brand__logo {
+    width: 88px;
   }
 
   .status-chips {
-    justify-content: flex-start;
+    gap: 4px;
+  }
+
+  .status-chip {
+    padding: 2px 6px;
+    font-size: 10px;
+  }
+
+  .status-chip-label {
+    display: none;
+  }
+
+  .chat-composer {
+    padding: 6px 8px;
+  }
+
+  .chat-composer-form {
+    padding: 3px;
+  gap: 4px;
+  }
+
+  .chat-input {
+    padding: 8px 10px;
+    font-size: 16px; /* Prevent iOS zoom on focus */
+  }
+
+  .chat-scroll {
+    padding: 6px 8px;
+  }
+
+  .chat-bubble {
+    font-size: 13px;
+  }
+
+  .chat-empty h1 {
+    font-size: 24px;
+  }
+
+  .chat-empty p {
+    font-size: 13px;
+  }
+
+  .prompt-chip {
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+
+  /* Sidebar overlay narrower on tiny screens */
+  .context-panel,
+  .context-sidebar {
+    width: 90vw;
+  }
+
+  .mini-card {
+    padding: 8px 10px;
+  }
+
+  .mini-card-row {
+    font-size: 12px;
   }
 }
 
