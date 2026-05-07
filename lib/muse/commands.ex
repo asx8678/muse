@@ -66,7 +66,9 @@ defmodule Muse.Commands do
     {"/memory clear", :memory_clear, "Clear session memory"},
     {"/handoff", :handoff, "Request handoff to another Muse (e.g., /handoff coding)"},
     {"/checkpoints", :checkpoints, "List available checkpoints for restoration"},
-    {"/restore", :restore, "Restore from a checkpoint (Restoration Muse)"}
+    {"/restore", :restore, "Restore from a checkpoint (Restoration Muse)"},
+    {"/provider status", :provider_status, "Show provider configuration and connectivity status"},
+    {"/provider models", :provider_models, "List known models for the configured provider"}
   ]
 
   # Sort longest-prefix-first so "/simulate backend-error" matches before "/simulate"

@@ -1660,4 +1660,70 @@ defmodule Muse.CommandDispatcherTest do
       refute {:refresh, :session} in effects
     end
   end
+
+  describe "dispatch/3 — :provider_status" do
+    test "returns provider status report with no extra args" do
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:provider_status, nil, %{})
+
+      assert is_binary(output)
+      assert output =~ "Provider:"
+      assert output =~ "Status:"
+      assert effects == []
+    end
+
+    test "reports fake provider by default" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:provider_status, nil, %{})
+
+      assert output =~ "fake" or output =~ "Fake Provider"
+    end
+
+    test "rejects extra args with usage error" do
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:provider_status, "extra", %{})
+
+      assert output =~ "usage: /provider status"
+    end
+
+    test "output never contains API keys or secrets" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:provider_status, nil, %{})
+
+      refute output =~ ~r/sk-[a-zA-Z0-9]{8,}/
+    end
+  end
+
+  describe "dispatch/3 — :provider_models" do
+    test "returns model listing for default fake provider" do
+      {:ok, output, effects} =
+        CommandDispatcher.dispatch(:provider_models, nil, %{})
+
+      assert is_binary(output)
+      # Fake provider has no known models in the catalog
+      assert output =~ "No known models" or output =~ "fake"
+      assert effects == []
+    end
+
+    test "rejects extra args with usage error" do
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:provider_models, "extra", %{})
+
+      assert output =~ "usage: /provider models"
+    end
+
+    test "lists models when openrouter provider is configured" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_OPENROUTER_MODEL" => "anthropic/claude-3.5-sonnet"
+      }
+
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:provider_models, nil, %{env: env})
+
+      assert output =~ "OpenRouter" or output =~ "openrouter"
+      # Should mark current model
+      assert output =~ "\u2190 current" or output =~ "anthropic/claude-3.5-sonnet"
+    end
+  end
 end

@@ -263,6 +263,18 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/session extra") == {:command, :session_status, "extra"}
     end
 
+    test "parses /provider status" do
+      assert Commands.parse("/provider status") == {:command, :provider_status}
+    end
+
+    test "parses /provider models" do
+      assert Commands.parse("/provider models") == {:command, :provider_models}
+    end
+
+    test "/provider alone is unknown" do
+      assert Commands.parse("/provider") == {:unknown, "/provider"}
+    end
+
     test "returns :empty for blank input" do
       assert Commands.parse("") == :empty
       assert Commands.parse("   ") == :empty
@@ -353,6 +365,8 @@ defmodule Muse.CommandsTest do
       assert text =~ "/session"
       assert text =~ "/approve remote"
       assert text =~ "/reject remote"
+      assert text =~ "/provider status"
+      assert text =~ "/provider models"
     end
 
     test "includes /muses but not /agents legacy alias" do
@@ -377,7 +391,8 @@ defmodule Muse.CommandsTest do
       assert is_list(cmds)
       # PR21: Added /memory, /memory compact, /memory clear, /handoff, /checkpoints, /restore
       # Phase B: Added /approve remote, /reject remote
-      assert length(cmds) == 54
+      # Phase 3: Added /provider status, /provider models
+      assert length(cmds) == 56
 
       for {cmd, desc} <- cmds do
         assert is_binary(cmd)
@@ -403,6 +418,8 @@ defmodule Muse.CommandsTest do
       assert "/approve remote" in cmd_names
       assert "/reject remote" in cmd_names
       assert "/auth status" in cmd_names
+      assert "/provider status" in cmd_names
+      assert "/provider models" in cmd_names
     end
   end
 
@@ -412,7 +429,8 @@ defmodule Muse.CommandsTest do
       assert is_list(cmds)
       # PR21: Added /memory, /memory compact, /memory clear, /handoff, /checkpoints, /restore
       # Phase B: Added /approve remote, /reject remote
-      assert length(cmds) == 54
+      # Phase 3: Added /provider status, /provider models
+      assert length(cmds) == 56
 
       for cmd <- cmds do
         assert Map.has_key?(cmd, :command)
@@ -436,6 +454,8 @@ defmodule Muse.CommandsTest do
       assert "/approve remote" in cmd_names
       assert "/reject remote" in cmd_names
       assert "/auth status" in cmd_names
+      assert "/provider status" in cmd_names
+      assert "/provider models" in cmd_names
     end
   end
 end

@@ -37,6 +37,7 @@ defmodule Muse.Application do
       maybe_configure_endpoint(opts)
       children = runtime_children(opts)
       StartupBanner.io_puts(banner_opts(opts))
+      validate_provider_config()
       Supervisor.start_link(children, strategy: :one_for_one, name: Muse.Supervisor)
     else
       Supervisor.start_link(base_children(), strategy: :one_for_one, name: Muse.Supervisor)
@@ -158,6 +159,84 @@ defmodule Muse.Application do
       {:ok, tuple} -> tuple
       {:error, _} -> {127, 0, 0, 1}
     end
+  end
+
+  # -- Provider config validation ---------------------------------------------
+
+  @doc """
+  Validate the current provider configuration and emit diagnostics for
+  common misconfigurations.
+
+  Emits `:warning` diagnostics for recoverable issues (missing API key,
+  invalid base URL) and `:error` diagnostics for critical issues (unknown
+  provider, missing model).  Does not raise — the application still starts
+  with fake provider as fallback.
+
+  This function is called during application startup and can also be
+  invoked manually for troubleshooting.
+  """
+  @spec validate_provider_config() :: :ok
+  def validate_provider_config do
+    case Muse.Config.llm_provider_config() do
+      {:ok, config} ->
+        provider = Muse.LLM.ProviderConfig.provider_atom(config)
+
+        if provider == :fake do
+          # Fake provider is fine — no diagnostics needed
+          :ok
+        else
+          validate_non_fake_config(config)
+        end
+
+      {:error, reason} ->
+        # Config resolution failed entirely
+        maybe_emit_diagnostic(:error, "Provider config invalid: #{to_string(reason)}")
+
+        maybe_emit_diagnostic(
+          :warning,
+          "Falling back to fake provider. Set MUSE_PROVIDER and MUSE_MODEL to configure a provider."
+        )
+
+        :ok
+    end
+  end
+
+  defp validate_non_fake_config(config) do
+    # Check for common misconfigurations
+    if config.model in [nil, ""] do
+      maybe_emit_diagnostic(:error, "Model is required for non-fake providers. Set MUSE_MODEL.")
+    end
+
+    if config.auth == :api_key and config.env_key do
+      # Check if the API key env var is set (don't read its value)
+      has_key? = System.get_env(config.env_key) != nil
+
+      unless has_key? do
+        maybe_emit_diagnostic(
+          :warning,
+          "API key env var #{config.env_key} is not set. " <>
+            "Authentication will fail. Use /auth status to check credentials."
+        )
+      end
+    end
+
+    if config.base_url in [nil, ""] do
+      maybe_emit_diagnostic(
+        :error,
+        "Base URL is required for network providers. Set the appropriate MUSE_*_BASE_URL."
+      )
+    end
+
+    :ok
+  end
+
+  defp maybe_emit_diagnostic(level, message) do
+    # Only emit if Diagnostics GenServer is running (not in test base_children mode)
+    if Process.whereis(Muse.Diagnostics) do
+      Muse.Diagnostics.emit(level, "Provider config: #{message}", %{})
+    end
+
+    :ok
   end
 
   # -- Help text -----------------------------------------------------------------

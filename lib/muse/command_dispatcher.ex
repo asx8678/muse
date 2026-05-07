@@ -841,6 +841,63 @@ defmodule Muse.CommandDispatcher do
     end
   end
 
+  # -- Provider status ---------------------------------------------------------
+
+  def dispatch(:provider_status, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /provider status", []}
+    else
+      env_map = Map.get(context, :env) || Map.get(context, :env_map)
+
+      opts =
+        []
+        |> maybe_put_env(env_map)
+        |> maybe_put_config_source(context)
+
+      status = Muse.LLM.ProviderStatus.report(opts)
+      {:ok, Muse.LLM.ProviderStatus.render(status), []}
+    end
+  end
+
+  # -- Provider models ---------------------------------------------------------
+
+  def dispatch(:provider_models, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /provider models", []}
+    else
+      env_map = Map.get(context, :env) || Map.get(context, :env_map)
+
+      case Muse.Config.llm_provider_config(env_map || %{}) do
+        {:ok, config} ->
+          provider_id = config.id || "fake"
+          models = Muse.LLM.ProviderStatus.known_models(provider_id)
+
+          output =
+            case models do
+              [] ->
+                "No known models for provider: #{provider_id}. " <>
+                  "Set a provider with MUSE_PROVIDER and a model with MUSE_MODEL."
+
+              models ->
+                header = "Known models for #{config.name || provider_id} (#{provider_id}):"
+
+                lines =
+                  Enum.map(models, fn {id, desc} ->
+                    marker = if id == config.model, do: " ← current", else: ""
+                    "  - #{id}  (#{desc})#{marker}"
+                  end)
+
+                [header | lines] |> Enum.join("\n")
+            end
+
+          {:ok, output, []}
+
+        {:error, reason} ->
+          {:error, "Error: unable to resolve provider config: #{to_string(reason)}", []}
+      end
+    end
+  end
+
   # -- Catch-all ---------------------------------------------------------------
 
   def dispatch(action, _args, _context) do
@@ -1268,6 +1325,18 @@ defmodule Muse.CommandDispatcher do
   defp present_args?(nil), do: false
   defp present_args?(args) when is_binary(args), do: String.trim(args) != ""
   defp present_args?(_args), do: true
+
+  defp maybe_put_env(opts, nil), do: opts
+  defp maybe_put_env(opts, env_map) when is_map(env_map), do: Keyword.put(opts, :env, env_map)
+  defp maybe_put_env(opts, _), do: opts
+
+  defp maybe_put_config_source(opts, context) do
+    if Map.has_key?(context, :provider_config) or Map.has_key?(context, :llm_provider_config) do
+      Keyword.put(opts, :config_source, "context")
+    else
+      opts
+    end
+  end
 
   defp plan_lifecycle_usage(:approve_plan), do: "/approve plan"
   defp plan_lifecycle_usage(:reject_plan), do: "/reject plan"
