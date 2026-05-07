@@ -179,6 +179,30 @@ defmodule Muse.Execution.Command do
   def remote?(%__MODULE__{target: target}) when is_binary(target), do: true
   def remote?(_), do: false
 
+  @doc """
+  Compute a stable content hash for the command.
+
+  The hash covers the executable, args, target, and cwd. Used by
+  remote execution approvals to bind an approval to a specific
+  command, preventing stale or substituted commands from reusing
+  an approval.
+
+  Returns a `"sha256-<hex>"` string.
+
+  ## Examples
+
+      iex> {:ok, cmd} = Muse.Execution.Command.new("elixir", args: ["-e", "IO.puts(:hello)"])
+      iex> hash = Muse.Execution.Command.command_hash(cmd)
+      iex> String.starts_with?(hash, "sha256-")
+      true
+  """
+  @spec command_hash(t()) :: String.t()
+  def command_hash(%__MODULE__{} = cmd) do
+    data = :erlang.term_to_binary({cmd.executable, cmd.args, cmd.target, cmd.cwd})
+    hash = :crypto.hash(:sha256, data) |> Base.encode16(case: :lower)
+    "sha256-" <> hash
+  end
+
   # -- Validation helpers -------------------------------------------------------
 
   defp validate_executable(""), do: {:error, "executable must be a non-empty string"}

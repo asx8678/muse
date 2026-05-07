@@ -1210,7 +1210,10 @@ defmodule Muse.SessionServer do
             state =
               state
               |> Map.put(:pending_remote_approval, approval)
-              |> Map.put(:approvals, ApprovalGate.upsert_approval(state.approvals || [], approval))
+              |> Map.put(
+                :approvals,
+                ApprovalGate.upsert_approval(state.approvals || [], approval)
+              )
               |> Map.put(:status, :awaiting_remote_execution_approval)
               |> append_session_events(events)
               |> maybe_persist_snapshot()
@@ -2064,9 +2067,14 @@ defmodule Muse.SessionServer do
 
         safe_status =
           cond do
-            status == :awaiting_patch_approval and is_nil(pending_patch) -> :idle
-            status == :awaiting_remote_execution_approval and is_nil(pending_remote_approval) -> :idle
-            true -> status
+            status == :awaiting_patch_approval and is_nil(pending_patch) ->
+              :idle
+
+            status == :awaiting_remote_execution_approval and is_nil(pending_remote_approval) ->
+              :idle
+
+            true ->
+              status
           end
 
         %{

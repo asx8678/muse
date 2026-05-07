@@ -1533,9 +1533,14 @@ defmodule Muse.SessionServerTest do
 
       # Either :turn_running (if submit is still running) or :ok (if submit finished)
       case result do
-        {:error, :turn_running} -> :ok
-        {:ok, %Muse.Approval{kind: :remote_execution}} -> :ok
-        other -> flunk("Expected {:error, :turn_running} or {:ok, approval}, got: #{inspect(other)}")
+        {:error, :turn_running} ->
+          :ok
+
+        {:ok, %Muse.Approval{kind: :remote_execution}} ->
+          :ok
+
+        other ->
+          flunk("Expected {:error, :turn_running} or {:ok, approval}, got: #{inspect(other)}")
       end
     end
 

@@ -52,7 +52,8 @@ defmodule Muse.Application do
       {Task.Supervisor, name: Muse.TaskSupervisor},
       {Phoenix.PubSub, name: Muse.PubSub},
       Muse.SessionRegistry,
-      Muse.SessionSupervisor
+      Muse.SessionSupervisor,
+      Muse.Execution.TargetRegistry
     ]
   end
 
@@ -67,6 +68,7 @@ defmodule Muse.Application do
       {Phoenix.PubSub, name: Muse.PubSub},
       Muse.SessionRegistry,
       Muse.SessionSupervisor,
+      Muse.Execution.TargetRegistry,
       Muse.Diagnostics,
       Muse.SelfHealingQueue,
       {Muse.LogBuffer, [install_logger_handler?: true, logger_level: logger_level]},

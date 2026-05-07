@@ -51,7 +51,7 @@ defmodule Muse.ApplicationTest do
   # -- runtime_children/1 -------------------------------------------------------
 
   describe "runtime_children/1 — default (CLI + Web + watch + source_mode)" do
-    test "includes Task.Supervisor, PubSub, SessionRegistry, SessionSupervisor, Diagnostics, SelfHealingQueue, Workspace, State, CLI.Repl, Endpoint, DevReloader" do
+    test "includes Task.Supervisor, PubSub, SessionRegistry, SessionSupervisor, TargetRegistry, Diagnostics, SelfHealingQueue, Workspace, State, CLI.Repl, Endpoint, DevReloader" do
       with_env(:source_mode?, true, fn ->
         children = @app_mod.runtime_children(boot_opts())
         ids = child_ids(children)
@@ -79,13 +79,14 @@ defmodule Muse.ApplicationTest do
       end)
     end
 
-    test "SessionRegistry/Supervisor starts after PubSub and before Diagnostics; SelfHealingQueue after Diagnostics" do
+    test "SessionRegistry/Supervisor starts after PubSub and before TargetRegistry/Diagnostics; SelfHealingQueue after Diagnostics" do
       with_env(:source_mode?, true, fn ->
         ids = @app_mod.runtime_children(boot_opts()) |> child_ids()
 
         pubsub_index = Enum.find_index(ids, &(&1 == Phoenix.PubSub))
         registry_index = Enum.find_index(ids, &(&1 == Muse.SessionRegistry))
         supervisor_index = Enum.find_index(ids, &(&1 == Muse.SessionSupervisor))
+        target_registry_index = Enum.find_index(ids, &(&1 == Muse.Execution.TargetRegistry))
         diagnostics_index = Enum.find_index(ids, &(&1 == Muse.Diagnostics))
         self_healing_index = Enum.find_index(ids, &(&1 == Muse.SelfHealingQueue))
         workspace_index = Enum.find_index(ids, &(&1 == Muse.Workspace))
@@ -93,7 +94,8 @@ defmodule Muse.ApplicationTest do
 
         assert pubsub_index < registry_index
         assert registry_index < supervisor_index
-        assert supervisor_index < diagnostics_index
+        assert supervisor_index < target_registry_index
+        assert target_registry_index < diagnostics_index
         assert diagnostics_index < self_healing_index
         assert self_healing_index < workspace_index
         assert self_healing_index < state_index
@@ -241,7 +243,7 @@ defmodule Muse.ApplicationTest do
   # -- base_children/0 -----------------------------------------------------------
 
   describe "base_children/0" do
-    test "includes PubSub, SessionRegistry, SessionSupervisor, and TaskSupervisor" do
+    test "includes PubSub, SessionRegistry, SessionSupervisor, TargetRegistry, and TaskSupervisor" do
       children = @app_mod.base_children()
       ids = child_ids(children)
 
@@ -249,7 +251,8 @@ defmodule Muse.ApplicationTest do
       assert Phoenix.PubSub in ids
       assert Muse.SessionRegistry in ids
       assert Muse.SessionSupervisor in ids
-      assert length(ids) == 4
+      assert Muse.Execution.TargetRegistry in ids
+      assert length(ids) == 5
     end
   end
 

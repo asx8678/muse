@@ -35,8 +35,8 @@ defmodule Muse.Execution.RemoteDeniedRunner do
   end
 
   @impl Muse.Execution.Runner
-  def run(%Command{} = command, _opts) do
-    reason = denial_reason(command)
+  def run(%Command{} = command, opts) do
+    reason = Keyword.get(opts, :denial_reason) || denial_reason(command)
     {:error, Result.denied(command.id, reason, target: command.target, runner: :remote_denied)}
   end
 

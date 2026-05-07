@@ -14,8 +14,15 @@ defmodule Muse.Execution.Runner do
 
     * `Muse.Execution.LocalRunner` — local execution via Port.open
     * `Muse.Execution.RemoteDeniedRunner` — always denies remote execution
+    * `Muse.Execution.FakeRemoteRunner` — deterministic fake remote for tests
 
-  ## Future runners (not in PR24)
+  ## Remote runners
+
+    * Remote runners must also implement `Muse.Execution.RemoteRunner`.
+    * Remote execution is denied by default unless context-aware policy
+      routes to a valid runner with an approved `:remote_execution` approval.
+
+  ## Future runners (not in Phase C)
 
     * SSH/remote runners will require explicit approval and strict
       authorization. Remote execution is denied by default.
@@ -99,10 +106,14 @@ defmodule Muse.Execution.Runner do
     end
   end
 
+  # -- Routing: default context (backward compatible) ----------------------------
+
   @doc """
   Execute a command using the appropriate runner based on target.
 
   Routes to LocalRunner for local targets, RemoteDeniedRunner for remote.
+
+  For context-aware remote routing, use `run/3` with a context map.
   """
   @spec run(Command.t(), keyword()) :: run_result()
   def run(%Command{target: :local} = command, opts) do
@@ -128,5 +139,36 @@ defmodule Muse.Execution.Runner do
   def run(%Command{} = command, opts) do
     # Default to local runner
     Muse.Execution.LocalRunner.run(command, opts)
+  end
+
+  # -- Routing: context-aware (Phase C) -----------------------------------------
+
+  @doc """
+  Execute a command using context-aware runner routing.
+
+  For local targets, routes to `LocalRunner` (same as `run/2`).
+
+  For remote/string targets, uses `Policy.resolve_target/2` with the
+  context map to determine whether the target can route to `FakeRemoteRunner`.
+  If the context does not permit remote execution, routes to
+  `RemoteDeniedRunner`.
+
+  The context map may contain:
+    * `:approval` or `:remote_approval` — an approved `:remote_execution` approval
+    * `:target_id` — explicit target ID for registry lookup
+    * `:command` — the command being routed (set automatically)
+  """
+  @spec run(Command.t(), keyword(), map()) :: run_result()
+  def run(%Command{} = command, opts, context) when is_map(context) do
+    context_with_command = Map.put(context, :command, command)
+
+    case Muse.Execution.Policy.resolve_target(command.target, context_with_command) do
+      {:ok, runner_module} ->
+        runner_module.run(command, opts)
+
+      {:error, reason} ->
+        # Denied — route through RemoteDeniedRunner, preserving the policy denial reason
+        Muse.Execution.RemoteDeniedRunner.run(command, denial_reason: reason)
+    end
   end
 end

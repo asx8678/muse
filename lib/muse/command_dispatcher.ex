@@ -1585,8 +1585,10 @@ defmodule Muse.CommandDispatcher do
       case pending_remote_approval do
         %Muse.Approval{} = approval ->
           lines ++
-            ["Pending remote approval: #{approval.target_id || "?"} " <>
-               "(#{approval.command_hash || "?"}, expires: #{format_remote_expiry(approval)})"]
+            [
+              "Pending remote approval: #{approval.target_id || "?"} " <>
+                "(#{approval.command_hash || "?"}, expires: #{format_remote_expiry(approval)})"
+            ]
 
         %{"target_id" => tid, "command_hash" => ch} ->
           lines ++ ["Pending remote approval: #{tid} (#{ch})"]

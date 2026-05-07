@@ -1487,9 +1487,20 @@ defmodule Muse.ApprovalGate do
     with :ok <- ensure_remote_kind(approval),
          :ok <- ensure_approved_status(approval),
          :ok <- ensure_not_expired(approval, now),
-         :ok <- match_remote_field(approval.session_id, Keyword.get(opts, :session_id), :session_mismatch),
-         :ok <- match_remote_field(approval.target_id, Keyword.get(opts, :target_id), :target_mismatch),
-         :ok <- match_remote_field(approval.command_hash, Keyword.get(opts, :command_hash), :command_hash_mismatch) do
+         :ok <-
+           match_remote_field(
+             approval.session_id,
+             Keyword.get(opts, :session_id),
+             :session_mismatch
+           ),
+         :ok <-
+           match_remote_field(approval.target_id, Keyword.get(opts, :target_id), :target_mismatch),
+         :ok <-
+           match_remote_field(
+             approval.command_hash,
+             Keyword.get(opts, :command_hash),
+             :command_hash_mismatch
+           ) do
       :ok
     end
   end
@@ -1533,12 +1544,14 @@ defmodule Muse.ApprovalGate do
   defp ensure_remote_kind(%Approval{kind: kind}), do: {:error, {:wrong_kind, kind}}
 
   defp ensure_approved_status(%Approval{status: :approved}), do: :ok
+
   defp ensure_approved_status(%Approval{status: status}),
     do: {:error, {:approval_not_approved, status}}
 
   defp match_remote_field(_actual, nil, _error), do: :ok
   defp match_remote_field(_actual, "", _error), do: :ok
   defp match_remote_field(actual, expected, _error) when actual == expected, do: :ok
+
   defp match_remote_field(actual, expected, error),
     do: {:error, {error, %{expected: expected, actual: actual}}}
 end
