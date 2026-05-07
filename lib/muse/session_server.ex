@@ -7,8 +7,10 @@ defmodule Muse.SessionServer do
 
   Started by `Muse.SessionRouter` via `DynamicSupervisor.start_child/2`.
   `start_link/1` uses a `{:via, Registry, ...}` name so registration in
-  `Muse.SessionRegistry` is atomic and concurrent starts for the same
-  session id resolve to the same process.
+  `Muse.SessionRegistry` is atomic. The registry key is
+  `{store_base_dir, session_id}`: concurrent starts for the same session id in
+  the same workspace resolve to the same process, while the same id can run in
+  different workspace profiles without colliding.
 
   ## Turn execution
 
@@ -65,14 +67,63 @@ defmodule Muse.SessionServer do
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
-    session_id = Keyword.fetch!(opts, :session_id)
-    # Use :via tuple for atomic registration — if another process already
-    # registered this session_id, start_link returns
-    # {:error, {:already_started, pid}} deterministically.
-    GenServer.start_link(__MODULE__, session_id,
-      name: {:via, Registry, {Muse.SessionRegistry, session_id}}
+    session_id = Keyword.fetch!(opts, :session_id) |> to_string()
+
+    runtime_context = current_runtime_context()
+    store_base_dir = Keyword.get(opts, :store_base_dir) || runtime_context.store_base_dir
+    workspace = Keyword.get(opts, :workspace) || runtime_context.workspace
+    registry_key = registry_key(session_id, store_base_dir)
+
+    # Use :via tuple for atomic registration. The key includes the captured
+    # store_base_dir so the same session_id can run concurrently in different
+    # workspace profiles without colliding, while duplicate starts in the same
+    # workspace still resolve to {:error, {:already_started, pid}}.
+    GenServer.start_link(
+      __MODULE__,
+      %{session_id: session_id, store_base_dir: store_base_dir, workspace: workspace},
+      name: {:via, Registry, {Muse.SessionRegistry, registry_key}}
     )
   end
+
+  @doc false
+  @spec registry_key(String.t(), String.t()) :: {String.t(), String.t()}
+  def registry_key(session_id, store_base_dir) do
+    {to_string(store_base_dir), to_string(session_id)}
+  end
+
+  @doc false
+  @spec current_runtime_context() :: %{store_base_dir: String.t(), workspace: String.t()}
+  def current_runtime_context do
+    case Process.whereis(Muse.ActiveWorkspace) do
+      nil ->
+        default_runtime_context()
+
+      pid ->
+        if Process.alive?(pid) do
+          active = Muse.ActiveWorkspace.get()
+
+          %{
+            store_base_dir:
+              active.store_base_dir || store_base_dir_for_workspace(active.root_path),
+            workspace: active.root_path || workspace_agent_root()
+          }
+        else
+          default_runtime_context()
+        end
+    end
+  rescue
+    _ -> default_runtime_context()
+  catch
+    :exit, _ -> default_runtime_context()
+  end
+
+  @doc false
+  @spec current_store_base_dir() :: String.t()
+  def current_store_base_dir, do: current_runtime_context().store_base_dir
+
+  @doc false
+  @spec current_workspace_root() :: String.t()
+  def current_workspace_root, do: current_runtime_context().workspace
 
   @doc """
   Submits a user message to the session identified by `pid`.
@@ -302,7 +353,14 @@ defmodule Muse.SessionServer do
   # -- GenServer callbacks -----------------------------------------------------
 
   @impl true
-  def init(session_id) do
+  def init(session_id) when is_binary(session_id) do
+    %{store_base_dir: store_base_dir, workspace: workspace} = current_runtime_context()
+
+    init(%{session_id: session_id, store_base_dir: store_base_dir, workspace: workspace})
+  end
+
+  @impl true
+  def init(%{session_id: session_id, store_base_dir: store_base_dir, workspace: workspace}) do
     # Registration is handled atomically by the :via tuple in start_link.
     # If we reach init, the name was successfully registered.
     # `seq` is a session-local monotonic counter starting at 0; each
@@ -324,8 +382,8 @@ defmodule Muse.SessionServer do
       memory: nil,
       checkpoints: [],
       artifacts: [],
-      workspace: get_workspace(),
-      store_base_dir: get_store_base_dir(),
+      workspace: workspace,
+      store_base_dir: store_base_dir,
       # TurnRunner state
       active_turn_id: nil,
       runner_pid: nil,
@@ -1026,7 +1084,7 @@ defmodule Muse.SessionServer do
   end
 
   defp store_result_plan(state, %Plan{} = raw_plan, result_session) do
-    workspace = result_workspace(result_session) || current_workspace()
+    workspace = result_workspace(result_session) || state.workspace || current_workspace()
     plan = put_plan_workspace(raw_plan, workspace)
     active_plan_id = plan.id || state.active_plan_id
 
@@ -1731,7 +1789,7 @@ defmodule Muse.SessionServer do
   end
 
   defp do_apply_patch(state, patch_id) do
-    workspace = plan_workspace(state.plan) || current_workspace()
+    workspace = plan_workspace(state.plan) || state.workspace || current_workspace()
 
     with {:ok, plan} <- resolve_active_plan_for_apply(state),
          {:ok, patch} <- resolve_approved_patch(state, patch_id) do
@@ -1849,7 +1907,8 @@ defmodule Muse.SessionServer do
       plan_hash: PlanBinding.content_hash(plan),
       plan_status: plan.status,
       approvals: state.approvals || [],
-      pending_patch: patch
+      pending_patch: patch,
+      store_base_dir: state.store_base_dir
     }
   end
 
@@ -1923,7 +1982,7 @@ defmodule Muse.SessionServer do
   end
 
   defp do_rollback_checkpoint(state, checkpoint_id) do
-    workspace = plan_workspace(state.plan) || current_workspace()
+    workspace = plan_workspace(state.plan) || state.workspace || current_workspace()
 
     # Build full approved plan context for runtime auth
     {plan_id, plan_version, plan_hash, plan_status} =
@@ -1942,7 +2001,8 @@ defmodule Muse.SessionServer do
       plan_id: plan_id,
       plan_version: plan_version,
       plan_hash: plan_hash,
-      plan_status: plan_status
+      plan_status: plan_status,
+      store_base_dir: state.store_base_dir
     }
 
     result =
@@ -2328,31 +2388,38 @@ defmodule Muse.SessionServer do
     :exit, _ -> :ok
   end
 
-  defp get_workspace do
+  defp get_workspace, do: current_workspace_root()
+
+  defp default_runtime_context do
+    root_path = workspace_agent_root_or_nil()
+
+    %{
+      store_base_dir: store_base_dir_for_workspace(root_path),
+      workspace: root_path || default_workspace()
+    }
+  end
+
+  defp workspace_agent_root do
+    workspace_agent_root_or_nil() || default_workspace()
+  end
+
+  defp workspace_agent_root_or_nil do
     case Process.whereis(Muse.Workspace) do
-      nil -> default_workspace()
-      pid -> if Process.alive?(pid), do: Muse.Workspace.root(), else: default_workspace()
+      nil -> nil
+      pid -> if Process.alive?(pid), do: Muse.Workspace.root(), else: nil
     end
   rescue
-    _ -> default_workspace()
+    _ -> nil
+  catch
+    :exit, _ -> nil
   end
+
+  defp store_base_dir_for_workspace(nil), do: default_store_base_dir()
+
+  defp store_base_dir_for_workspace(root_path),
+    do: Muse.WorkspaceProfile.sessions_dir_from_root(root_path)
 
   defp default_workspace, do: "/tmp/muse_workspace"
-
-  defp get_store_base_dir do
-    case Process.whereis(Muse.ActiveWorkspace) do
-      nil ->
-        default_store_base_dir()
-
-      pid ->
-        if Process.alive?(pid),
-          do: Muse.ActiveWorkspace.store_base_dir(),
-          else: default_store_base_dir()
-    end
-  rescue
-    _ -> default_store_base_dir()
-  end
-
   defp default_store_base_dir, do: ".muse/sessions"
 
   defp normalize_muse_id(nil), do: nil

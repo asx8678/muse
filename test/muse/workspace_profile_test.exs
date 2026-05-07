@@ -221,6 +221,25 @@ defmodule Muse.WorkspaceProfileTest do
       assert sessions_dir == Path.join(Path.expand(root), ".muse/sessions")
     end
 
+    test "falls back to root-derived sessions dir for legacy profiles", %{muse_dir: muse_dir} do
+      root = Path.join(muse_dir, "legacy-proj")
+      File.mkdir_p!(root)
+
+      legacy_profile = [
+        %{
+          "name" => "legacy",
+          "root_path" => Path.expand(root),
+          "created_at" => "2026-01-01T00:00:00Z",
+          "updated_at" => "2026-01-01T00:00:00Z"
+        }
+      ]
+
+      File.write!(Path.join(muse_dir, "profiles.json"), Jason.encode!(legacy_profile))
+
+      assert {:ok, sessions_dir} = WorkspaceProfile.sessions_dir_for("legacy", muse_dir: muse_dir)
+      assert sessions_dir == Path.join(Path.expand(root), ".muse/sessions")
+    end
+
     test "returns error for non-existent profile" do
       assert {:error, :not_found} = WorkspaceProfile.sessions_dir_for("nonexistent")
     end

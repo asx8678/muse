@@ -1,13 +1,13 @@
 defmodule Muse.SessionRegistry do
   @moduledoc """
-  Named `Registry` process for unique session-id → `Muse.SessionServer` pid
-  lookups.
+  Named `Registry` process for unique `{store_base_dir, session_id}` →
+  `Muse.SessionServer` pid lookups.
 
   Started by `Muse.Application` via both `base_children/0` and
   `runtime_children/1` alongside `Muse.SessionSupervisor`. Every running
-  `Muse.SessionServer` registers here with its session id as the key so
-  that `Muse.SessionRouter` can dispatch to the correct process without
-  a linear scan.
+  `Muse.SessionServer` registers here with its captured store directory and
+  session id as the key so that `Muse.SessionRouter` can dispatch to the
+  correct workspace-scoped process without a linear scan.
   """
 
   @doc false

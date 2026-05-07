@@ -70,21 +70,29 @@ defmodule Muse.ActiveWorkspaceTest do
     end
   end
 
-  defp stop_active_workspace do
-    case Process.whereis(ActiveWorkspace) do
+  defp clean_session_children do
+    case Process.whereis(Muse.SessionSupervisor) do
       nil ->
         :ok
 
       pid ->
-        try do
-          GenServer.stop(pid, :normal, 5000)
-        catch
-          :exit, _ -> :ok
-        end
-    end
+        pid
+        |> DynamicSupervisor.which_children()
+        |> Enum.each(fn
+          {_, child_pid, _, _} when is_pid(child_pid) ->
+            try do
+              DynamicSupervisor.terminate_child(Muse.SessionSupervisor, child_pid)
+            catch
+              :exit, _ -> :ok
+            end
 
-    # Wait for process to fully exit and name to be unregistered
-    Process.sleep(10)
+          _ ->
+            :ok
+        end)
+
+        Process.sleep(10)
+        :ok
+    end
   end
 
   setup do
@@ -433,9 +441,10 @@ defmodule Muse.ActiveWorkspaceTest do
     test "session server captures store_base_dir at init and uses it for persistence" do
       ensure_active_workspace_running()
 
-      # Set ActiveWorkspace to a custom base dir
+      # Set ActiveWorkspace to a custom root/base dir
+      root = "/tmp/ws-init-test"
       base_dir = tmp_dir!() |> Path.join(".muse/sessions")
-      assert :ok = ActiveWorkspace.set("/tmp/ws-init-test", base_dir)
+      assert :ok = ActiveWorkspace.set(root, base_dir)
 
       session_id = "ws-runtime-test-#{:erlang.unique_integer([:positive])}"
 
@@ -447,7 +456,8 @@ defmodule Muse.ActiveWorkspaceTest do
 
       try do
         status = Muse.SessionServer.status(pid)
-        # SessionServer should have captured the ActiveWorkspace store_base_dir
+        # SessionServer should have captured the ActiveWorkspace root and store_base_dir
+        assert status.workspace == root
         assert status.store_base_dir == base_dir
 
         # Now switch ActiveWorkspace to a different dir
@@ -488,24 +498,26 @@ defmodule Muse.ActiveWorkspaceTest do
       # Now switch to workspace B
       assert :ok = ActiveWorkspace.set("/tmp/ws-b", dir_b)
 
-      # Start another session with the SAME ID in workspace B
-      # (Can't use same ID since the registry would return the existing session,
-      #  so use a different session_id to demonstrate the new base_dir)
-      session_id_b = "ws-switch-test-b-#{:erlang.unique_integer([:positive])}"
-
+      # Start another session with the SAME ID in workspace B.
+      # Registry keys include the store_base_dir, so this must not collide
+      # with the already-running workspace A session.
       {:ok, pid_b} =
         DynamicSupervisor.start_child(
           Muse.SessionSupervisor,
-          {Muse.SessionServer, session_id: session_id_b}
+          {Muse.SessionServer, session_id: session_id}
         )
 
       try do
-        # Session B should use dir_b
+        refute pid_a == pid_b
+
+        # Session B should use dir_b and the switched root.
         status_b = Muse.SessionServer.status(pid_b)
+        assert status_b.workspace == "/tmp/ws-b"
         assert status_b.store_base_dir == dir_b
 
-        # Session A should still use dir_a (not affected by switch)
+        # Session A should still use dir_a (not affected by switch).
         status_a2 = Muse.SessionServer.status(pid_a)
+        assert status_a2.workspace == "/tmp/ws-a"
         assert status_a2.store_base_dir == dir_a
       after
         DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid_a)
@@ -538,29 +550,68 @@ defmodule Muse.ActiveWorkspaceTest do
           "test_key" => "from-workspace-b"
         })
 
-      # Start session in workspace A
-      assert :ok = ActiveWorkspace.set("/tmp/iso-a", dir_a)
-
-      {:ok, pid_a} =
-        DynamicSupervisor.start_child(
-          Muse.SessionSupervisor,
-          {Muse.SessionServer, session_id: session_id}
-        )
-
       try do
-        # Session A should have restored from workspace A's data
-        status_a = Muse.SessionServer.status(pid_a)
-        # The plan should be nil for both, but the important thing is
-        # that the store_base_dir is correct and isolated
-        assert status_a.store_base_dir == dir_a
-      after
-        DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid_a)
-        ActiveWorkspace.reset()
-      end
+        # Start session in workspace A and persist memory through that process.
+        assert :ok = ActiveWorkspace.set("/tmp/iso-a", dir_a)
 
-      # Clean up
-      File.rm_rf!(Path.dirname(dir_a))
-      File.rm_rf!(Path.dirname(dir_b))
+        {:ok, pid_a} =
+          DynamicSupervisor.start_child(
+            Muse.SessionSupervisor,
+            {Muse.SessionServer, session_id: session_id}
+          )
+
+        assert Muse.SessionServer.status(pid_a).store_base_dir == dir_a
+        assert :ok = Muse.SessionServer.set_memory(pid_a, %{"summary" => "memory-a"})
+
+        # Start the same session id in workspace B at the same time.
+        assert :ok = ActiveWorkspace.set("/tmp/iso-b", dir_b)
+
+        {:ok, pid_b} =
+          DynamicSupervisor.start_child(
+            Muse.SessionSupervisor,
+            {Muse.SessionServer, session_id: session_id}
+          )
+
+        refute pid_a == pid_b
+        assert Muse.SessionServer.status(pid_b).store_base_dir == dir_b
+        assert :ok = Muse.SessionServer.set_memory(pid_b, %{"summary" => "memory-b"})
+
+        assert {:ok, %{"summary" => "memory-a"}} =
+                 Muse.SessionStore.load_memory(dir_a, session_id)
+
+        assert {:ok, %{"summary" => "memory-b"}} =
+                 Muse.SessionStore.load_memory(dir_b, session_id)
+
+        DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid_a)
+        DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid_b)
+        Process.sleep(10)
+
+        # Restart both and prove each restores from its captured workspace dir.
+        assert :ok = ActiveWorkspace.set("/tmp/iso-a", dir_a)
+
+        {:ok, restarted_a} =
+          DynamicSupervisor.start_child(
+            Muse.SessionSupervisor,
+            {Muse.SessionServer, session_id: session_id}
+          )
+
+        assert Muse.SessionServer.status(restarted_a).memory == %{"summary" => "memory-a"}
+
+        assert :ok = ActiveWorkspace.set("/tmp/iso-b", dir_b)
+
+        {:ok, restarted_b} =
+          DynamicSupervisor.start_child(
+            Muse.SessionSupervisor,
+            {Muse.SessionServer, session_id: session_id}
+          )
+
+        assert Muse.SessionServer.status(restarted_b).memory == %{"summary" => "memory-b"}
+      after
+        clean_session_children()
+        ActiveWorkspace.reset()
+        File.rm_rf!(Path.dirname(dir_a))
+        File.rm_rf!(Path.dirname(dir_b))
+      end
     end
 
     test "invalid profile/session IDs are rejected safely and do not touch outside paths" do

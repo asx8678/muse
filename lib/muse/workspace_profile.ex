@@ -224,7 +224,7 @@ defmodule Muse.WorkspaceProfile do
 
     case get_profile(profile_name, muse_dir) do
       {:ok, profile} ->
-        dir = Map.get(profile, :sessions_dir) || Map.get(profile, "sessions_dir")
+        dir = Map.get(profile, :sessions_dir) || derived_sessions_dir(profile.root_path)
         {:ok, dir}
 
       {:error, reason} ->
@@ -308,6 +308,11 @@ defmodule Muse.WorkspaceProfile do
     end
   end
 
+  defp derived_sessions_dir(root_path) when is_binary(root_path),
+    do: sessions_dir_from_root(root_path)
+
+  defp derived_sessions_dir(_root_path), do: nil
+
   # Encode profile map with string keys for JSON
   defp encode_profile(profile) do
     %{
@@ -321,10 +326,14 @@ defmodule Muse.WorkspaceProfile do
 
   # Normalize a profile from JSON (string keys) to atom keys
   defp normalize_profile(profile) when is_map(profile) do
+    root_path = Map.get(profile, "root_path") || Map.get(profile, :root_path)
+
     %{
       name: Map.get(profile, "name") || Map.get(profile, :name),
-      root_path: Map.get(profile, "root_path") || Map.get(profile, :root_path),
-      sessions_dir: Map.get(profile, "sessions_dir") || Map.get(profile, :sessions_dir),
+      root_path: root_path,
+      sessions_dir:
+        Map.get(profile, "sessions_dir") || Map.get(profile, :sessions_dir) ||
+          derived_sessions_dir(root_path),
       created_at: Map.get(profile, "created_at") || Map.get(profile, :created_at),
       updated_at: Map.get(profile, "updated_at") || Map.get(profile, :updated_at)
     }

@@ -62,6 +62,7 @@ defmodule Muse.Tools.PatchApply do
     * `:plan_status` — must be `:approved`
     * `:approvals` — list of approval records for this session
     * `:pending_patch` — the current pending patch (if in-memory)
+    * `:store_base_dir` — workspace-scoped sessions directory for persisted patches/checkpoints
     * `:patches` — loaded persisted patches for the session
   """
   @spec execute(map(), map()) :: Result.t()
@@ -77,14 +78,15 @@ defmodule Muse.Tools.PatchApply do
          :ok <- revalidate_patch(patch, workspace),
          :ok <- reject_deletes(patch),
          {:ok, checkpoint} <- create_checkpoint(patch, context, workspace),
-         :ok <- apply_via_git(patch, workspace, checkpoint) do
+         :ok <- apply_via_git(patch, workspace, checkpoint, context) do
       # Mark patch as applied
       {:ok, applied_patch} = Patch.transition(patch, :applied)
 
       # Mark checkpoint as active
       {:ok, checkpoint} = Checkpoint.transition(checkpoint, :active)
 
-      manifest_result = Store.update_manifest(checkpoint)
+      manifest_result =
+        Store.update_manifest(checkpoint, base_dir: context_store_base_dir(context))
 
       # Persist auditable apply record to session patches.jsonl
       audit_result =
@@ -158,7 +160,7 @@ defmodule Muse.Tools.PatchApply do
       {:error, {:apply_failed, reason, checkpoint}} ->
         # Mark checkpoint as failed
         {:ok, failed} = Checkpoint.transition(checkpoint, :failed, failure_reason: reason)
-        _ = Store.update_manifest(failed)
+        _ = Store.update_manifest(failed, base_dir: context_store_base_dir(context))
 
         Result.error(
           "patch_apply",
@@ -266,13 +268,20 @@ defmodule Muse.Tools.PatchApply do
       (is_nil(patch_hash) or patch.hash == patch_hash)
   end
 
+  defp context_store_base_dir(context) do
+    case Map.get(context, :store_base_dir) || Map.get(context, "store_base_dir") do
+      dir when is_binary(dir) and dir != "" -> dir
+      _ -> ".muse/sessions"
+    end
+  end
+
   defp load_persisted_patch(patch_id, patch_hash, context) do
     session_id = to_string(Map.get(context, :session_id, ""))
 
     if session_id == "" do
       {:error, "session_id is required to locate the approved patch"}
     else
-      case Muse.SessionStore.load_patches(session_id) do
+      case Muse.SessionStore.load_patches(context_store_base_dir(context), session_id) do
         {:ok, patches, _meta} ->
           # Patches may be persisted at propose time (status: proposed)
           # and updated later; accept any status since approval is verified separately.
@@ -387,7 +396,7 @@ defmodule Muse.Tools.PatchApply do
         metadata: %{diff: patch.diff}
       })
 
-    case Store.create(checkpoint) do
+    case Store.create(checkpoint, base_dir: context_store_base_dir(context)) do
       {:ok, created} -> {:ok, created}
       {:error, reason} -> {:error, {:checkpoint_failed, reason}}
     end
@@ -395,8 +404,10 @@ defmodule Muse.Tools.PatchApply do
 
   # -- Git apply ----------------------------------------------------------------
 
-  defp apply_via_git(%Patch{} = _patch, workspace, checkpoint) do
-    chk_dir = Store.checkpoint_dir(".muse/sessions", checkpoint.session_id, checkpoint.id)
+  defp apply_via_git(%Patch{} = _patch, workspace, checkpoint, context) do
+    chk_dir =
+      Store.checkpoint_dir(context_store_base_dir(context), checkpoint.session_id, checkpoint.id)
+
     diff_file = Path.join(chk_dir, "patch.diff")
 
     # Resolve to absolute path so git apply works regardless of workspace CWD
@@ -494,7 +505,7 @@ defmodule Muse.Tools.PatchApply do
       status: :applied
     }
 
-    case SessionStore.append_patch(session_id, audit_record) do
+    case SessionStore.append_patch(context_store_base_dir(context), session_id, audit_record) do
       :ok -> :ok
       {:error, reason} -> {:error, {:audit_persist_failed, reason}}
     end

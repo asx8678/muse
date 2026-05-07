@@ -19,6 +19,10 @@ defmodule Muse.SessionServerTest do
   # -- Helpers ------------------------------------------------------------------
 
   defp ensure_infrastructure do
+    if Process.whereis(Muse.ActiveWorkspace) do
+      Muse.ActiveWorkspace.reset()
+    end
+
     # PubSub, SessionRegistry, and SessionSupervisor are started by
     # Application.base_children/0 even in test mode.  We only need to
     # ensure State is running.
@@ -71,6 +75,10 @@ defmodule Muse.SessionServerTest do
           :exit, _ -> :ok
         end
     end
+  end
+
+  defp registry_key(session_id, base_dir \\ Muse.SessionServer.current_store_base_dir()) do
+    Muse.SessionServer.registry_key(session_id, base_dir)
   end
 
   defp start_server(session_id) do
@@ -155,7 +163,7 @@ defmodule Muse.SessionServerTest do
 
     test "registers in SessionRegistry" do
       pid = start_server("reg-session")
-      assert [{^pid, _}] = Registry.lookup(Muse.SessionRegistry, "reg-session")
+      assert [{^pid, _}] = Registry.lookup(Muse.SessionRegistry, registry_key("reg-session"))
     end
 
     test "refuses duplicate session id" do

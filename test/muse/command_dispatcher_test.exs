@@ -4,7 +4,7 @@ defmodule Muse.CommandDispatcherTest do
   alias Muse.CommandDispatcher
   alias Muse.LLM.ProviderConfig
 
-  setup_all do
+  setup do
     # Ensure ActiveWorkspace is in default state (no profile active)
     # so session persistence uses the default .muse/sessions path.
     if Process.whereis(Muse.ActiveWorkspace) do
@@ -101,6 +101,10 @@ defmodule Muse.CommandDispatcherTest do
     File.rm_rf!(path)
     File.mkdir_p!(path)
     path
+  end
+
+  defp registry_key(session_id, base_dir \\ Muse.SessionServer.current_store_base_dir()) do
+    Muse.SessionServer.registry_key(session_id, base_dir)
   end
 
   defp with_muse_dir(fun) do
@@ -264,13 +268,13 @@ defmodule Muse.CommandDispatcherTest do
     test "/plans returns no-history message and does not start a missing session" do
       session_id = "missing-plans-#{:erlang.unique_integer([:positive])}"
 
-      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
+      assert Registry.lookup(Muse.SessionRegistry, registry_key(session_id)) == []
 
       {:ok, output, effects} = CommandDispatcher.dispatch(:plans, nil, %{session_id: session_id})
 
       assert output =~ "No Muse Plan history is available yet"
       assert effects == []
-      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
+      assert Registry.lookup(Muse.SessionRegistry, registry_key(session_id)) == []
     end
 
     test "/plans with extra args returns usage error" do
@@ -512,7 +516,7 @@ defmodule Muse.CommandDispatcherTest do
 
       assert output == "Error: no Muse Plan is awaiting approval."
       assert effects == []
-      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
+      assert Registry.lookup(Muse.SessionRegistry, registry_key(session_id)) == []
     end
 
     test "reject returns safe error when active session has no plan" do

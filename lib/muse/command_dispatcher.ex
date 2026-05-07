@@ -291,7 +291,8 @@ defmodule Muse.CommandDispatcher do
   # -- Workspace ---------------------------------------------------------------
 
   def dispatch(:workspace, _args, context) do
-    workspace = Map.get(context, :workspace) || Backend.safe_workspace_root()
+    active = Backend.safe_active_workspace()
+    workspace = Map.get(context, :workspace) || active.root_path || Backend.safe_workspace_root()
     {:ok, "Workspace: #{workspace}", []}
   end
 
@@ -1044,8 +1045,9 @@ defmodule Muse.CommandDispatcher do
   end
 
   def dispatch(:workspace_info, _args, context) do
-    workspace = Map.get(context, :workspace) || Backend.safe_workspace_root()
-    sessions_dir = WorkspaceProfile.sessions_dir_from_root(workspace)
+    active = Backend.safe_active_workspace()
+    workspace = Map.get(context, :workspace) || active.root_path || Backend.safe_workspace_root()
+    sessions_dir = active.store_base_dir || WorkspaceProfile.sessions_dir_from_root(workspace)
 
     session_count =
       case Muse.SessionStore.list_sessions(sessions_dir) do
@@ -1817,18 +1819,7 @@ defmodule Muse.CommandDispatcher do
   end
 
   defp active_store_base_dir(_context) do
-    case Process.whereis(Muse.ActiveWorkspace) do
-      nil ->
-        workspace = Backend.safe_workspace_root()
-        WorkspaceProfile.sessions_dir_from_root(workspace)
-
-      pid ->
-        if Process.alive?(pid),
-          do: Muse.ActiveWorkspace.store_base_dir(),
-          else: WorkspaceProfile.sessions_dir_from_root(Backend.safe_workspace_root())
-    end
-  rescue
-    _ -> WorkspaceProfile.sessions_dir_from_root(Backend.safe_workspace_root())
+    Backend.safe_active_store_base_dir()
   end
 
   defp context_source(context) do

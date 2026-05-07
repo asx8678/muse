@@ -54,6 +54,10 @@ defmodule Muse.SessionSupervisorTest do
     end
   end
 
+  defp registry_key(session_id, base_dir \\ Muse.SessionServer.current_store_base_dir()) do
+    Muse.SessionServer.registry_key(session_id, base_dir)
+  end
+
   defp session_count do
     case Process.whereis(Muse.SessionSupervisor) do
       nil -> 0
@@ -128,7 +132,7 @@ defmodule Muse.SessionSupervisorTest do
           {SessionServer, session_id: "reg-test"}
         )
 
-      assert [{^pid, _}] = Registry.lookup(Muse.SessionRegistry, "reg-test")
+      assert [{^pid, _}] = Registry.lookup(Muse.SessionRegistry, registry_key("reg-test"))
     end
   end
 end

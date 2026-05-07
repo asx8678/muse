@@ -6,6 +6,10 @@ defmodule Muse.SessionRouterTest do
   # -- Helpers ------------------------------------------------------------------
 
   defp ensure_infrastructure do
+    if Process.whereis(Muse.ActiveWorkspace) do
+      Muse.ActiveWorkspace.reset()
+    end
+
     case Process.whereis(Muse.State) do
       nil -> {:ok, _} = State.start_link([])
       _pid -> :ok
@@ -56,6 +60,10 @@ defmodule Muse.SessionRouterTest do
     end
   end
 
+  defp registry_key(session_id, base_dir \\ Muse.SessionServer.current_store_base_dir()) do
+    Muse.SessionServer.registry_key(session_id, base_dir)
+  end
+
   defp persist_awaiting_plan(session_id) do
     plan =
       Muse.Plan.new(
@@ -99,11 +107,34 @@ defmodule Muse.SessionRouterTest do
       assert is_pid(pid)
     end
 
-    test "returns same pid for same session id" do
+    test "returns same pid for same session id in the same active workspace" do
       {:ok, pid1} = Muse.SessionRouter.find_or_start_session("same-id")
       {:ok, pid2} = Muse.SessionRouter.find_or_start_session("same-id")
 
       assert pid1 == pid2
+    end
+
+    test "allows same session id to run in different active workspaces" do
+      session_id = "same-id-cross-workspace"
+      dir_a = Path.join(System.tmp_dir!(), "muse-router-a-#{System.unique_integer([:positive])}")
+      dir_b = Path.join(System.tmp_dir!(), "muse-router-b-#{System.unique_integer([:positive])}")
+
+      try do
+        :ok = Muse.ActiveWorkspace.set("/tmp/router-ws-a", dir_a)
+        assert {:ok, pid_a} = Muse.SessionRouter.find_or_start_session(session_id)
+
+        :ok = Muse.ActiveWorkspace.set("/tmp/router-ws-b", dir_b)
+        assert {:ok, pid_b} = Muse.SessionRouter.find_or_start_session(session_id)
+
+        refute pid_a == pid_b
+        assert Muse.SessionServer.status(pid_a).store_base_dir == dir_a
+        assert Muse.SessionServer.status(pid_b).store_base_dir == dir_b
+      after
+        clean_sessions()
+        Muse.ActiveWorkspace.reset()
+        File.rm_rf!(dir_a)
+        File.rm_rf!(dir_b)
+      end
     end
 
     test "returns different pids for different session ids" do
@@ -120,7 +151,7 @@ defmodule Muse.SessionRouterTest do
     test "session process is registered in Registry" do
       {:ok, pid} = Muse.SessionRouter.find_or_start_session("reg-check")
 
-      assert [{^pid, _}] = Registry.lookup(Muse.SessionRegistry, "reg-check")
+      assert [{^pid, _}] = Registry.lookup(Muse.SessionRegistry, registry_key("reg-check"))
     end
   end
 
@@ -168,7 +199,7 @@ defmodule Muse.SessionRouterTest do
     test "creates session on first submit" do
       assert {:ok, _text} = Muse.SessionRouter.submit("first-submit", :cli, "first")
 
-      assert [{_pid, _}] = Registry.lookup(Muse.SessionRegistry, "first-submit")
+      assert [{_pid, _}] = Registry.lookup(Muse.SessionRegistry, registry_key("first-submit"))
     end
 
     test "reuses session across submits" do
@@ -193,7 +224,7 @@ defmodule Muse.SessionRouterTest do
 
       assert {:error, :not_found} = Muse.SessionRouter.approve_plan(session_id)
       assert {:error, :not_found} = Muse.SessionRouter.reject_plan(session_id)
-      assert Registry.lookup(Muse.SessionRegistry, session_id) == []
+      assert Registry.lookup(Muse.SessionRegistry, registry_key(session_id)) == []
     end
 
     test "routes approval to an existing session" do

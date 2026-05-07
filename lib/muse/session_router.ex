@@ -4,16 +4,19 @@ defmodule Muse.SessionRouter do
 
   ## Session lifecycle
 
-  Sessions are identified by a string `session_id`.  The router:
+  Sessions are identified by `{active_store_base_dir, session_id}`. The
+  public API still accepts a string `session_id`, and the router scopes it to
+  the currently active workspace before lookup/start:
 
-    1. Checks `Muse.SessionRegistry` for an existing session.
-    2. If found, returns the existing pid.
-    3. If not found, starts a new `Muse.SessionServer` under
+    1. Captures the active workspace store directory.
+    2. Checks `Muse.SessionRegistry` for an existing session in that store.
+    3. If found, returns the existing pid.
+    4. If not found, starts a new `Muse.SessionServer` under
        `Muse.SessionSupervisor` using a `{:via, Registry, …}` name for
-       atomic registration — concurrent callers for the same id safely
-       race, and losing callers resolve the already-started process through
-       the registry.
-    4. The session pid is looked up via the Registry, not cached locally,
+       atomic registration — concurrent callers for the same session id in the
+       same workspace safely race, while the same id in different workspaces can
+       coexist.
+    5. The session pid is looked up via the Registry, not cached locally,
        so the registry stays as the single source of truth.
 
   ## Default session
@@ -81,9 +84,8 @@ defmodule Muse.SessionRouter do
   """
   @spec status(String.t()) :: {:ok, map()} | {:error, :not_found}
   def status(session_id \\ @default_session_id) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> {:ok, Muse.SessionServer.status(pid)}
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      {:ok, Muse.SessionServer.status(pid)}
     end
   end
 
@@ -95,9 +97,8 @@ defmodule Muse.SessionRouter do
   """
   @spec cancel(String.t()) :: :ok | {:error, :not_found} | {:error, :no_active_turn}
   def cancel(session_id \\ @default_session_id) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.cancel(pid)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.cancel(pid)
     end
   end
 
@@ -114,9 +115,8 @@ defmodule Muse.SessionRouter do
              | :no_active_plan
              | {:plan_not_awaiting_approval, Muse.Plan.status()}}
   def approve_plan(session_id \\ @default_session_id, source \\ :system) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.approve_plan(pid, source)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.approve_plan(pid, source)
     end
   end
 
@@ -133,9 +133,8 @@ defmodule Muse.SessionRouter do
              | :no_active_plan
              | {:plan_not_awaiting_approval, Muse.Plan.status()}}
   def reject_plan(session_id \\ @default_session_id, source \\ :system) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.reject_plan(pid, source)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.reject_plan(pid, source)
     end
   end
 
@@ -154,9 +153,8 @@ defmodule Muse.SessionRouter do
              | :no_pending_patch
              | {:patch_not_awaiting_approval, term()}}
   def approve_patch(session_id \\ @default_session_id, source \\ :system) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.approve_patch(pid, source)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.approve_patch(pid, source)
     end
   end
 
@@ -173,9 +171,8 @@ defmodule Muse.SessionRouter do
              | :no_pending_patch
              | {:patch_not_awaiting_approval, term()}}
   def reject_patch(session_id \\ @default_session_id, source \\ :system) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.reject_patch(pid, source)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.reject_patch(pid, source)
     end
   end
 
@@ -196,9 +193,8 @@ defmodule Muse.SessionRouter do
              | :apply_failed
              | term()}
   def apply_patch(session_id \\ @default_session_id, patch_id \\ nil) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.apply_patch(pid, patch_id)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.apply_patch(pid, patch_id)
     end
   end
 
@@ -216,18 +212,26 @@ defmodule Muse.SessionRouter do
              | :turn_running
              | term()}
   def rollback_checkpoint(session_id \\ @default_session_id, checkpoint_id) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.rollback_checkpoint(pid, checkpoint_id)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.rollback_checkpoint(pid, checkpoint_id)
     end
   end
 
   @doc """
   Returns a list of all active session ids and their pids.
+
+  If the same session id is active in multiple workspace profiles, the id will
+  appear more than once with different pids. Registry keys remain
+  workspace-scoped internally.
   """
   @spec active_sessions() :: [{String.t(), pid()}]
   def active_sessions do
-    Registry.select(Muse.SessionRegistry, [{{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2"}}]}])
+    Muse.SessionRegistry
+    |> Registry.select([{{:"$1", :"$2", :"$3"}, [], [{{:"$1", :"$2"}}]}])
+    |> Enum.map(fn
+      {{_store_base_dir, session_id}, pid} -> {session_id, pid}
+      {session_id, pid} -> {session_id, pid}
+    end)
   end
 
   # -- Memory API ----------------------------------------------------------------
@@ -237,9 +241,8 @@ defmodule Muse.SessionRouter do
   """
   @spec get_memory(String.t()) :: {:ok, term() | nil} | {:error, :not_found}
   def get_memory(session_id \\ @default_session_id) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> {:ok, Muse.SessionServer.get_memory(pid)}
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      {:ok, Muse.SessionServer.get_memory(pid)}
     end
   end
 
@@ -248,9 +251,8 @@ defmodule Muse.SessionRouter do
   """
   @spec set_memory(String.t(), term()) :: :ok | {:error, :not_found}
   def set_memory(session_id \\ @default_session_id, memory) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.set_memory(pid, memory)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.set_memory(pid, memory)
     end
   end
 
@@ -259,9 +261,8 @@ defmodule Muse.SessionRouter do
   """
   @spec clear_memory(String.t()) :: :ok | {:error, :not_found}
   def clear_memory(session_id \\ @default_session_id) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.clear_memory(pid)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.clear_memory(pid)
     end
   end
 
@@ -270,9 +271,8 @@ defmodule Muse.SessionRouter do
   """
   @spec set_active_muse(String.t(), String.t()) :: :ok | {:error, :not_found}
   def set_active_muse(session_id \\ @default_session_id, muse_id) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.set_active_muse(pid, muse_id)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.set_active_muse(pid, muse_id)
     end
   end
 
@@ -286,9 +286,8 @@ defmodule Muse.SessionRouter do
           {:ok, Muse.Approval.t()}
           | {:error, :not_found | :turn_running | :pending_remote_approval_exists | term()}
   def request_remote_execution_approval(session_id \\ @default_session_id, opts \\ []) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.request_remote_execution_approval(pid, opts)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.request_remote_execution_approval(pid, opts)
     end
   end
 
@@ -302,9 +301,8 @@ defmodule Muse.SessionRouter do
           {:ok, Muse.Approval.t()}
           | {:error, :not_found | :turn_running | :no_pending_remote_approval | term()}
   def approve_remote(session_id \\ @default_session_id, source \\ :system) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.approve_remote(pid, source)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.approve_remote(pid, source)
     end
   end
 
@@ -317,9 +315,8 @@ defmodule Muse.SessionRouter do
           {:ok, Muse.Approval.t()}
           | {:error, :not_found | :turn_running | :no_pending_remote_approval | term()}
   def reject_remote(session_id \\ @default_session_id, source \\ :system) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
-      [{pid, _}] -> Muse.SessionServer.reject_remote(pid, source)
-      [] -> {:error, :not_found}
+    with {:ok, pid} <- lookup_session(session_id) do
+      Muse.SessionServer.reject_remote(pid, source)
     end
   end
 
@@ -329,27 +326,54 @@ defmodule Muse.SessionRouter do
   @spec find_or_start_session(String.t()) :: {:ok, pid()} | {:error, term()}
   def find_or_start_session(session_id) do
     session_id = to_string(session_id)
+    context = active_session_context(session_id)
 
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
+    case Registry.lookup(Muse.SessionRegistry, context.registry_key) do
       [{pid, _}] ->
         {:ok, pid}
 
       [] ->
-        start_session(session_id)
+        start_session(context)
     end
   end
 
   # -- Private helpers ----------------------------------------------------------
 
-  defp start_session(session_id) do
+  defp lookup_session(session_id) do
+    session_id = to_string(session_id)
+    %{registry_key: registry_key} = active_session_context(session_id)
+
+    case Registry.lookup(Muse.SessionRegistry, registry_key) do
+      [{pid, _}] -> {:ok, pid}
+      [] -> {:error, :not_found}
+    end
+  end
+
+  defp active_session_context(session_id) do
+    %{store_base_dir: store_base_dir, workspace: workspace} =
+      Muse.SessionServer.current_runtime_context()
+
+    %{
+      session_id: session_id,
+      store_base_dir: store_base_dir,
+      workspace: workspace,
+      registry_key: Muse.SessionServer.registry_key(session_id, store_base_dir)
+    }
+  end
+
+  defp start_session(context) do
     # Use the module shorthand for child_spec; DynamicSupervisor.start_child
     # passes the arg to SessionServer.child_spec/1. The :via-registered name
-    # guarantees that concurrent callers for the same session_id get the same
-    # pid. We still defensively resolve already-started responses through the
-    # registry because OTP can surface race results in more than one shape.
+    # guarantees that concurrent callers for the same session_id in the same
+    # workspace get the same pid. We still defensively resolve already-started
+    # responses through the registry because OTP can surface race results in
+    # more than one shape.
     case DynamicSupervisor.start_child(
            Muse.SessionSupervisor,
-           {Muse.SessionServer, session_id: session_id}
+           {Muse.SessionServer,
+            session_id: context.session_id,
+            store_base_dir: context.store_base_dir,
+            workspace: context.workspace}
          ) do
       {:ok, pid} ->
         {:ok, pid}
@@ -358,7 +382,7 @@ defmodule Muse.SessionRouter do
         {:ok, pid}
 
       {:error, :already_started} ->
-        lookup_started_session(session_id, :already_started)
+        lookup_started_session(context.registry_key, :already_started)
 
       {:error, {:shutdown, {:failed_to_start_child, _id, {:already_started, pid}}}}
       when is_pid(pid) ->
@@ -369,8 +393,8 @@ defmodule Muse.SessionRouter do
     end
   end
 
-  defp lookup_started_session(session_id, fallback_reason) do
-    case Registry.lookup(Muse.SessionRegistry, session_id) do
+  defp lookup_started_session(registry_key, fallback_reason) do
+    case Registry.lookup(Muse.SessionRegistry, registry_key) do
       [{pid, _}] -> {:ok, pid}
       [] -> {:error, fallback_reason}
     end

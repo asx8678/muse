@@ -39,18 +39,11 @@ defmodule Muse.Backend do
   end
 
   def safe_active_store_base_dir do
-    case Process.whereis(Muse.ActiveWorkspace) do
-      nil ->
-        workspace = safe_workspace_root()
-        Muse.WorkspaceProfile.sessions_dir_from_root(workspace)
-
-      pid ->
-        if Process.alive?(pid),
-          do: Muse.ActiveWorkspace.store_base_dir(),
-          else: Muse.WorkspaceProfile.sessions_dir_from_root(safe_workspace_root())
-    end
+    Muse.SessionServer.current_store_base_dir()
   rescue
     _ -> ".muse/sessions"
+  catch
+    :exit, _ -> ".muse/sessions"
   end
 
   # -- Dev reloader -----------------------------------------------------------

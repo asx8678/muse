@@ -206,15 +206,16 @@ defmodule Muse.Tools.RollbackCheckpointTest do
   end
 
   describe "execute/2 — successful rollback" do
-    test "restores workspace to pre-apply state", %{
+    test "restores workspace to pre-apply state from the scoped store", %{
       workspace: workspace,
       session_id: session_id
     } do
       checkpoint = make_checkpoint(%{}, workspace, session_id)
+      store_base_dir = Path.join(workspace, ".muse/sessions")
 
-      {:ok, created} = Store.create(checkpoint)
+      {:ok, created} = Store.create(checkpoint, base_dir: store_base_dir)
       {:ok, active} = Checkpoint.transition(created, :active)
-      {:ok, _} = Store.update_manifest(active)
+      {:ok, _} = Store.update_manifest(active, base_dir: store_base_dir)
 
       original_content = File.read!(Path.join([workspace, "lib", "example.ex"]))
       File.write!(Path.join([workspace, "lib", "example.ex"]), "MODIFIED CONTENT")
@@ -226,7 +227,8 @@ defmodule Muse.Tools.RollbackCheckpointTest do
             session_id: session_id,
             workspace: workspace,
             plan_id: "plan-1",
-            plan_hash: @plan_hash
+            plan_hash: @plan_hash,
+            store_base_dir: store_base_dir
           })
         )
 
@@ -237,8 +239,8 @@ defmodule Muse.Tools.RollbackCheckpointTest do
       restored = File.read!(Path.join([workspace, "lib", "example.ex"]))
       assert restored == original_content
 
-      # Verify rollback audit record persisted
-      {:ok, patches, _} = Muse.SessionStore.load_patches(session_id)
+      # Verify rollback audit record persisted in the scoped store, not the default store.
+      {:ok, patches, _} = Muse.SessionStore.load_patches(store_base_dir, session_id)
 
       assert Enum.any?(patches, fn p ->
                p["event"] == "rollback_completed" or p[:event] == :rollback_completed

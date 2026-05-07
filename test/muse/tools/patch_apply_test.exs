@@ -298,6 +298,7 @@ defmodule Muse.Tools.PatchApplyTest do
   describe "execute/2 — git apply check failure (regression muse-1ki.4.6)" do
     test "git apply --check failure does not mark patch as applied", %{
       workspace: workspace,
+      base_dir: base_dir,
       session_id: session_id
     } do
       {:ok, patch} =
@@ -312,13 +313,15 @@ defmodule Muse.Tools.PatchApplyTest do
 
       approval = make_approval(patch, %{session_id: session_id})
 
-      :ok = Muse.SessionStore.append_patch(session_id, Patch.to_map(patch))
+      store_base_dir = Path.join(base_dir, "workspace-sessions")
+      :ok = Muse.SessionStore.append_patch(store_base_dir, session_id, Patch.to_map(patch))
 
       ctx =
         approved_context(%{
           session_id: session_id,
           workspace: workspace,
-          approvals: [approval]
+          approvals: [approval],
+          store_base_dir: store_base_dir
         })
         |> Map.put(:pending_patch, patch)
 
@@ -336,8 +339,9 @@ defmodule Muse.Tools.PatchApplyTest do
   end
 
   describe "execute/2 — successful apply" do
-    test "creates checkpoint, applies patch, and returns diff preview", %{
+    test "creates checkpoint, applies patch, and returns diff preview in the scoped store", %{
       workspace: workspace,
+      base_dir: base_dir,
       session_id: session_id
     } do
       {:ok, patch} =
@@ -352,13 +356,15 @@ defmodule Muse.Tools.PatchApplyTest do
 
       approval = make_approval(patch, %{session_id: session_id})
 
-      :ok = Muse.SessionStore.append_patch(session_id, Patch.to_map(patch))
+      store_base_dir = Path.join(base_dir, "workspace-sessions")
+      :ok = Muse.SessionStore.append_patch(store_base_dir, session_id, Patch.to_map(patch))
 
       ctx =
         approved_context(%{
           session_id: session_id,
           workspace: workspace,
-          approvals: [approval]
+          approvals: [approval],
+          store_base_dir: store_base_dir
         })
         |> Map.put(:pending_patch, patch)
 
@@ -376,8 +382,8 @@ defmodule Muse.Tools.PatchApplyTest do
 
       assert is_binary(result.output.git_diff_preview)
 
-      # Verify audit record persisted
-      {:ok, patches, _} = Muse.SessionStore.load_patches(session_id)
+      # Verify audit record persisted in the scoped store, not the default store.
+      {:ok, patches, _} = Muse.SessionStore.load_patches(store_base_dir, session_id)
 
       assert Enum.any?(patches, fn p ->
                p["event"] == "patch_applied" or p[:event] == :patch_applied

@@ -40,6 +40,7 @@ defmodule Muse.Tools.RollbackCheckpoint do
     * `:session_id` — session identifier (required)
     * `:muse_id` — must be `:coding`
     * `:plan_id` — active plan ID for cross-validation
+    * `:store_base_dir` — workspace-scoped sessions directory for persisted checkpoints/audit
   """
   @spec execute(map(), map()) :: Result.t()
   def execute(args, context) do
@@ -50,11 +51,12 @@ defmodule Muse.Tools.RollbackCheckpoint do
     with :ok <- require_coding_muse(context),
          :ok <- require_approved_plan(context),
          {:ok, checkpoint_id} <- require_checkpoint_id(checkpoint_id),
-         {:ok, checkpoint} <- load_checkpoint(checkpoint_id, session_id),
+         {:ok, checkpoint} <- load_checkpoint(checkpoint_id, session_id, context),
          :ok <- verify_checkpoint_ownership(checkpoint, context),
          :ok <- verify_workspace_match(checkpoint, workspace),
          :ok <- verify_plan_binding(checkpoint, context),
-         {:ok, rolled_back} <- Store.rollback(checkpoint) do
+         {:ok, rolled_back} <-
+           Store.rollback(checkpoint, base_dir: context_store_base_dir(context)) do
       # Persist rollback audit record
       _ = persist_rollback_audit(context, rolled_back, :completed)
 
@@ -125,8 +127,15 @@ defmodule Muse.Tools.RollbackCheckpoint do
 
   # -- Checkpoint loading -------------------------------------------------------
 
-  defp load_checkpoint(checkpoint_id, session_id) do
-    case Store.load(session_id, checkpoint_id) do
+  defp context_store_base_dir(context) do
+    case Map.get(context, :store_base_dir) || Map.get(context, "store_base_dir") do
+      dir when is_binary(dir) and dir != "" -> dir
+      _ -> ".muse/sessions"
+    end
+  end
+
+  defp load_checkpoint(checkpoint_id, session_id, context) do
+    case Store.load(session_id, checkpoint_id, base_dir: context_store_base_dir(context)) do
       {:ok, checkpoint} ->
         {:ok, checkpoint}
 
@@ -220,7 +229,7 @@ defmodule Muse.Tools.RollbackCheckpoint do
         status: status
       }
 
-    case SessionStore.append_patch(session_id, audit_record) do
+    case SessionStore.append_patch(context_store_base_dir(context), session_id, audit_record) do
       :ok -> :ok
       # non-fatal for rollback audit
       {:error, _reason} -> :ok
