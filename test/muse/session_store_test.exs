@@ -151,6 +151,60 @@ defmodule Muse.SessionStoreTest do
         assert {:error, {:invalid_session_id, ^id}} = SessionStore.validate_session_id(id)
       end
     end
+
+    test "format_invalid_id_error/1 produces safe messages for string IDs" do
+      # Basic invalid string IDs — requirements text only, no raw value
+      msg = SessionStore.format_invalid_id_error({:invalid_session_id, ""})
+      assert msg =~ "Invalid session ID"
+      assert msg =~ "non-empty strings"
+      assert msg =~ "max 255 bytes"
+
+      msg = SessionStore.format_invalid_id_error({:invalid_session_id, ".."})
+      # The message describes requirements; it does NOT echo the raw value as:
+      #   "Invalid session ID: \"..\" " or similar
+      assert msg =~ "Invalid session ID."
+      assert msg =~ "reserved names"
+
+      msg = SessionStore.format_invalid_id_error({:invalid_session_id, "../escape"})
+      # Path traversal value must not appear as an echoed value
+      refute msg =~ "../escape"
+      refute msg =~ "escape"
+      assert msg =~ "path separators"
+    end
+
+    test "format_invalid_id_error/1 does not echo secret-like invalid IDs" do
+      canary = "sk-raw-session-secret-123456"
+      msg = SessionStore.format_invalid_id_error({:invalid_session_id, canary})
+      refute msg =~ canary
+      refute msg =~ "sk-raw-session"
+      refute msg =~ "raw-session-secret"
+      assert msg =~ "Invalid session ID"
+    end
+
+    test "format_invalid_id_error/1 does not echo overlong invalid IDs" do
+      overlong = String.duplicate("x", 500)
+      msg = SessionStore.format_invalid_id_error({:invalid_session_id, overlong})
+      refute msg =~ overlong
+      # Should not even contain a truncated portion of the raw value
+      refute msg =~ String.duplicate("x", 100)
+      assert msg =~ "Invalid session ID"
+    end
+
+    test "format_invalid_id_error/1 handles non-string IDs safely" do
+      msg = SessionStore.format_invalid_id_error({:invalid_session_id, :atom_id})
+      refute msg =~ "atom_id"
+      assert msg =~ "expected a string"
+      assert msg =~ "non-string value"
+
+      msg = SessionStore.format_invalid_id_error({:invalid_session_id, 12345})
+      refute msg =~ "12345"
+      assert msg =~ "expected a string"
+
+      msg = SessionStore.format_invalid_id_error({:invalid_session_id, %{secret: "leak"}})
+      refute msg =~ "secret"
+      refute msg =~ "leak"
+      assert msg =~ "expected a string"
+    end
   end
 
   # ── save_session/3 and load_session/2 ──────────────────────────────────

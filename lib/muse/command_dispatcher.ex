@@ -918,7 +918,7 @@ defmodule Muse.CommandDispatcher do
           {:error, "No session data found for session #{session_id}.", []}
 
         {:error, {:invalid_session_id, id}} ->
-          {:error, "Invalid session ID: #{inspect(id)}", []}
+          {:error, Muse.SessionStore.format_invalid_id_error({:invalid_session_id, id}), []}
 
         {:error, reason} ->
           {:error, "Export failed: #{inspect(reason)}", []}
@@ -943,7 +943,8 @@ defmodule Muse.CommandDispatcher do
                      [{:refresh, :session}]}
 
                   {:error, {:invalid_session_id, id}} ->
-                    {:error, "Invalid session ID in export: #{inspect(id)}", []}
+                    {:error, Muse.SessionStore.format_invalid_id_error({:invalid_session_id, id}),
+                     []}
 
                   {:error, {:invalid_export, reason}} ->
                     {:error, "Invalid export file: #{reason}", []}
@@ -1033,9 +1034,9 @@ defmodule Muse.CommandDispatcher do
 
             {:ok, msg, [{:toast, :success, "Workspace created: #{name}"}]}
 
-          {:error, {:invalid_profile_name, n}} ->
+          {:error, {:invalid_profile_name, _n}} ->
             {:error,
-             "Invalid profile name: #{inspect(n)}. Names must not contain /, \\, or be '.' or '..'.",
+             "Invalid profile name. Names must be non-empty strings without /, \\, NUL bytes, or reserved values (. ..).",
              []}
 
           {:error, :name_required} ->

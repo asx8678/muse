@@ -840,6 +840,11 @@ defmodule Muse.SessionStore do
     - contains path-traversal characters (`/`, `\\`, NUL)
     - exceeds the maximum length of `#{@max_session_id_length}` characters
 
+  The raw invalid value is retained in the error tuple for internal
+  diagnostics and contract tests, but must **not** be echoed verbatim
+  in user-facing messages. Use `format_invalid_id_error/1` to produce
+  safe display text.
+
   This function is the canonical validator used by `SessionStore`,
   `SessionRouter`, and `SessionServer` to reject invalid or dangerous
   session IDs before any Registry lookup, process start, or file I/O.
@@ -866,6 +871,36 @@ defmodule Muse.SessionStore do
 
   def validate_session_id(other) do
     {:error, {:invalid_session_id, other}}
+  end
+
+  @doc """
+  Produces a safe, user-facing error message for an invalid session ID.
+
+  The raw invalid value is intentionally **not** echoed — it may contain
+  secret-like strings (e.g. `sk-...`, `ghp_...`), path-traversal payloads,
+  NUL bytes, or huge overlong values. Instead, the message describes the
+  session ID requirements so the user can correct their input.
+
+  ## Examples
+
+      iex> Muse.SessionStore.format_invalid_id_error({:invalid_session_id, ""})
+      "Invalid session ID. Session IDs must be non-empty strings (max 255 bytes) without path separators (/, \\), NUL bytes, or reserved names (. ..)."
+
+      iex> Muse.SessionStore.format_invalid_id_error({:invalid_session_id, :atom_id})
+      "Invalid session ID: expected a string, got a non-string value. Session IDs must be non-empty strings (max 255 bytes) without path separators (/, \\), NUL bytes, or reserved names (. ..)."
+  """
+  @spec format_invalid_id_error({:invalid_session_id, term()}) :: String.t()
+  def format_invalid_id_error({:invalid_session_id, id}) when is_binary(id) do
+    "Invalid session ID. " <> id_requirements_text()
+  end
+
+  def format_invalid_id_error({:invalid_session_id, _id}) do
+    "Invalid session ID: expected a string, got a non-string value. " <> id_requirements_text()
+  end
+
+  defp id_requirements_text do
+    "Session IDs must be non-empty strings (max #{@max_session_id_length} bytes) " <>
+      "without path separators (/, \\), NUL bytes, or reserved names (. ..)."
   end
 
   # ── Private: Sensitive key redaction ──────────────────────────────────

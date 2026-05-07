@@ -1855,6 +1855,55 @@ defmodule Muse.CommandDispatcherTest do
     end
   end
 
+  # -- Invalid session ID: no raw value echoed (muse-4iq) ----------------------
+
+  describe "invalid session ID error safety (muse-4iq)" do
+    test "export_session with path-traversal session ID does not echo raw value" do
+      # Use a truly invalid session ID (path traversal) with secret-like prefix
+      canary = "../sk-raw-session-secret-123456"
+      context = %{session_id: canary, workspace: "/tmp/muse-safety-test"}
+
+      {:error, output, _effects} = CommandDispatcher.dispatch(:export_session, nil, context)
+      refute output =~ canary
+      refute output =~ "sk-raw-session-secret"
+      assert output =~ "Invalid session ID"
+    end
+
+    test "import_session with invalid session ID in export map does not echo raw value" do
+      # Write a minimal export file with a path-traversal secret-like session ID
+      canary = "../ghp_malicious-token-abc"
+      export_map = %{"session_id" => canary, "schema_version" => 1, "snapshot" => %{}}
+      dir = System.tmp_dir!()
+      path = Path.join(dir, "muse-safety-import-test-#{:erlang.unique_integer([:positive])}.json")
+      :ok = File.write(path, Jason.encode!(export_map))
+
+      on_exit(fn -> File.rm(path) end)
+
+      context = %{workspace: "/tmp/muse-safety-test"}
+
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:import_session, path, context)
+
+      refute output =~ canary
+      refute output =~ "ghp_malicious"
+      # Should still explain what's wrong
+      assert output =~ "Invalid session ID"
+    end
+
+    test "workspace create with invalid profile name does not echo raw value" do
+      # Use a path-traversal profile name (truly invalid) with secret-like prefix
+      canary = "../sk-evil-profile-name"
+      context = %{workspace: "/tmp/muse-safety-test"}
+
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:workspace_create, "#{canary} /tmp/dummy", context)
+
+      refute output =~ canary
+      refute output =~ "sk-evil-profile"
+      assert output =~ "Invalid profile name"
+    end
+  end
+
   # -- Workspace profile commands ----------------------------------------------
 
   describe "workspace list" do

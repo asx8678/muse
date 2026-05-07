@@ -331,7 +331,7 @@ Retention is not automatically enforced at session start or on a schedule. Calle
 
 ### 8.3 User-facing invalid session ID errors
 
-When an invalid session ID is provided through user-facing surfaces (e.g., the REPL), the error message is `{:error, {:invalid_session_id, id}}`. The display of this error to end users is tracked separately (`muse-4iq`).
+When an invalid session ID is provided through user-facing surfaces (e.g., the REPL, TUI, or web console), the internal API returns `{:error, {:invalid_session_id, id}}` (retained for contract tests), but user-facing messages produced by `SessionStore.format_invalid_id_error/1` describe the requirements (non-empty string, max 255 bytes, no path separators or NUL) without echoing the raw invalid value. This prevents accidental leakage of secret-like or malicious values in error output (`muse-4iq`, resolved).
 
 ### 8.4 No cross-workspace session migration
 
