@@ -7,6 +7,8 @@ Documentation directory for the Muse Universal Runtime. Start with [../README.md
 | Document | Purpose |
 |---|---|
 | [architecture.md](architecture.md) | Runtime architecture, process model, data models, module map, tools, Conductor, CLI/TUI/LiveView, telemetry, approvals, patch/checkpoint/rollback. |
+| [audits/liveview-screen-reader-audit-checklist.md](audits/liveview-screen-reader-audit-checklist.md) | Human-executable screen-reader audit runbook for the LiveView interface (muse-1rq). |
+| [audits/liveview-wcag-2.1-aa-2026-05-06.md](audits/liveview-wcag-2.1-aa-2026-05-06.md) | WCAG 2.1 AA structural audit report with automated/KB findings (muse-1rq). |
 | [prompts.md](prompts.md) | Muse profiles, role prompts, core runtime prompt, and project-rules loading behavior. |
 | [provider-roadmap.md](provider-roadmap.md) | Fake-provider-first provider roadmap, provider configuration, OpenAI-compatible mappings, transports, and auth. |
 | [testing.md](testing.md) | Offline-first testing strategy, provider contracts, fixtures, integration/safety/product-language tests, first fake-provider demo. |

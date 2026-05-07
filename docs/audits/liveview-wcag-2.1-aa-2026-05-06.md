@@ -13,6 +13,10 @@
 
 This audit was performed using browser DevTools, ARIA inspection tooling, keyboard navigation, and contrast measurement. **No actual OS-level screen reader (VoiceOver, NVDA, JAWS, Narrator) was used.** ARIA markup and keyboard patterns were verified structurally, but the lived assistive-technology experience — including announcement order, interruption behavior, and virtual cursor navigation — remains unvalidated. A screen-reader audit is still required per muse-1rq acceptance criteria.
 
+> **📋 Screen-reader audit checklist available at** \
+> [`docs/audits/liveview-screen-reader-audit-checklist.md`](./liveview-screen-reader-audit-checklist.md) \
+> A human-executable runbook with VoiceOver/NVDA commands, per-area checks, and a pass/fail recording template.
+
 ## Browser & Viewports
 
 - Chromium (Playwright-headed) — desktop viewport (1280×720 default)
