@@ -12,8 +12,12 @@ defmodule Muse.Execution.Target do
     * No `String.to_atom/1` — protocol is validated against a fixed map.
     * Safe event payload excludes `user`, `credential_ref`, `connection_opts`,
       and any other sensitive fields. Uses an explicit allowlist.
-    * `:ssh` protocol is a known future protocol but remains denied
-      (no SSHRunner module exists in Phase C).
+    * `:ssh` protocol targets require additional validation:
+      `user` and `credential_ref` are required, `port` defaults to 22
+      and must be in 1..65535, `host` must not contain whitespace or
+      embedded credentials, and `connection_opts` must not include
+      dangerous options (`silently_accept_hosts`, `user_interaction`,
+      raw `password`, raw `private_key`, raw `passphrase`).
 
   ## Fields
 
@@ -74,6 +78,13 @@ defmodule Muse.Execution.Target do
   # connection_opts, or any other sensitive fields
   @safe_payload_keys [:id, :label, :protocol, :host, :port, :tags]
 
+  # SSH-specific: fields that must NEVER appear in safe payloads
+  # even if someone adds them to @safe_payload_keys by mistake.
+  # This is defense-in-depth — user, credential_ref, connection_opts,
+  # metadata, key paths, known_hosts paths, and passwords must never
+  # leak into events.
+  @never_in_payload_keys [:user, :credential_ref, :connection_opts, :metadata]
+
   @doc """
   Create a new Target with validation.
 
@@ -110,17 +121,24 @@ defmodule Muse.Execution.Target do
          {:ok, protocol} <- parse_protocol(Keyword.get(opts, :protocol, :fake)),
          :ok <- validate_host(Keyword.get(opts, :host)),
          :ok <- validate_label(Keyword.get(opts, :label)),
-         :ok <- validate_tags(Keyword.get(opts, :tags, [])) do
+         :ok <- validate_tags(Keyword.get(opts, :tags, [])),
+         port <- Keyword.get(opts, :port),
+         :ok <- validate_port(port, protocol),
+         :ok <- validate_ssh_fields(protocol, opts),
+         :ok <- validate_connection_opts_safety(Keyword.get(opts, :connection_opts), protocol) do
       now = DateTime.utc_now()
       created_at = Keyword.get(opts, :created_at, now)
       updated_at = Keyword.get(opts, :updated_at, created_at)
+
+      # Default SSH port to 22 if not specified
+      effective_port = if protocol == :ssh and port == nil, do: 22, else: port
 
       target = %__MODULE__{
         id: id,
         label: Keyword.get(opts, :label),
         protocol: protocol,
         host: Keyword.get(opts, :host),
-        port: Keyword.get(opts, :port),
+        port: effective_port,
         user: Keyword.get(opts, :user),
         connection_opts: Keyword.get(opts, :connection_opts),
         credential_ref: Keyword.get(opts, :credential_ref),
@@ -215,6 +233,9 @@ defmodule Muse.Execution.Target do
     target
     |> Map.from_struct()
     |> Map.take(@safe_payload_keys)
+    # Defense-in-depth: strip any keys that must NEVER appear in payloads,
+    # even if accidentally added to @safe_payload_keys
+    |> Map.drop(@never_in_payload_keys)
     |> Map.reject(fn {_k, v} -> is_nil(v) end)
     |> redact_bare_credentials_in_payload()
     |> Muse.Prompt.Redactor.redact_term()
@@ -347,4 +368,103 @@ defmodule Muse.Execution.Target do
   end
 
   defp validate_label(_), do: {:error, "label must be a string or nil"}
+
+  # -- SSH-specific validation ---------------------------------------------------
+
+  defp validate_port(nil, _protocol), do: :ok
+
+  defp validate_port(port, _protocol) when is_integer(port) and port >= 1 and port <= 65535 do
+    :ok
+  end
+
+  defp validate_port(port, _protocol) when is_integer(port) do
+    {:error, "port must be between 1 and 65535"}
+  end
+
+  defp validate_port(_port, _protocol), do: {:error, "port must be an integer"}
+
+  # SSH targets require user and credential_ref; enforce host has no
+  # whitespace or embedded credentials
+  defp validate_ssh_fields(:ssh, opts) do
+    user = Keyword.get(opts, :user)
+    credential_ref = Keyword.get(opts, :credential_ref)
+    host = Keyword.get(opts, :host)
+
+    with :ok <- validate_ssh_user(user),
+         :ok <- validate_ssh_credential_ref(credential_ref),
+         :ok <- validate_ssh_host(host) do
+      :ok
+    end
+  end
+
+  defp validate_ssh_fields(_protocol, _opts), do: :ok
+
+  defp validate_ssh_user(nil), do: {:error, "SSH target requires a user"}
+  defp validate_ssh_user(""), do: {:error, "SSH target requires a non-empty user"}
+
+  defp validate_ssh_user(user) when is_binary(user) do
+    cond do
+      String.match?(user, ~r/[[:cntrl:]]/) ->
+        {:error, "SSH user contains control characters"}
+
+      String.contains?(user, " ") ->
+        {:error, "SSH user must not contain whitespace"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_ssh_user(_), do: {:error, "SSH user must be a string"}
+
+  defp validate_ssh_credential_ref(nil), do: {:error, "SSH target requires a credential_ref"}
+  defp validate_ssh_credential_ref(_), do: :ok
+
+  defp validate_ssh_host(nil), do: {:error, "SSH target requires a host"}
+  defp validate_ssh_host(""), do: {:error, "SSH target requires a non-empty host"}
+
+  defp validate_ssh_host(host) when is_binary(host) do
+    cond do
+      String.contains?(host, " ") ->
+        {:error, "SSH host must not contain whitespace"}
+
+      String.contains?(host, "\t") ->
+        {:error, "SSH host must not contain whitespace"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_ssh_host(_), do: {:error, "SSH host must be a string"}
+
+  # Validate that SSH connection_opts don't contain dangerous options.
+  # This is a defense-in-depth check at Target construction time —
+  # ErlangSSHClient also validates at connect time.
+  @dangerous_ssh_opts [
+    :silently_accept_hosts,
+    :user_interaction,
+    :password,
+    :private_key,
+    :passphrase,
+    :dsa_pass_phrase,
+    :rsa_pass_phrase,
+    :ecdsa_pass_phrase,
+    :pk_cs12_password
+  ]
+
+  defp validate_connection_opts_safety(nil, _protocol), do: :ok
+
+  defp validate_connection_opts_safety(opts, :ssh) when is_list(opts) do
+    dangerous =
+      @dangerous_ssh_opts
+      |> Enum.filter(&Keyword.has_key?(opts, &1))
+
+    case dangerous do
+      [] -> :ok
+      keys -> {:error, "SSH connection_opts contains dangerous options: #{Enum.join(keys, ", ")}"}
+    end
+  end
+
+  defp validate_connection_opts_safety(_opts, _protocol), do: :ok
 end

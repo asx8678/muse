@@ -4,7 +4,7 @@
 >
 > **Canonical source:** Design-only spike for remote execution approval. No implementation of remote execution capability. Remote execution remains denied by default throughout v0.2.0.
 >
-> **Status:** Design spike — **approved for reference**, not for implementation.
+> **Status:** Design spike — **approved for reference**. Phase D implements `SSHRunner` with approval-bound execution, credential resolution, and host key verification. Remote execution remains denied by default without valid approval context.
 
 ---
 
@@ -663,11 +663,20 @@ Phase C: Remote runner foundations (future)
   - Update Policy to route remote targets through approval
   - Integration tests with FakeRemoteRunner
 
-Phase D: SSH runner implementation (future)
+Phase D: SSH runner implementation (**IMPLEMENTED**)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  - Implement SSHRunner using :ssh Erlang library
-  - Credential resolution (SSH keys from auth subsystem)
-  - Host key verification
+  - ✓ Implement SSHRunner using :ssh Erlang library
+  - ✓ Credential resolution (SSH identity-file references via SSHCredentialResolver)
+  - ✓ Host key verification (required; no silent acceptance)
+  - ✓ SSH client behaviour/adapter (SSHClient behaviour, ErlangSSHClient, FakeSSHClient)
+  - ✓ SSH-specific Target validation (user, credential_ref, port, connection_opts safety)
+  - ✓ Policy routing for :ssh protocol targets
+  - ✓ Command quoting (POSIX single-quote escaping)
+  - ✓ Output capping and redaction (inherits from Runner contract)
+  - ✓ Deny-by-default: direct SSHRunner.run/2 without valid context is denied
+  - ✓ Existing fake remote behavior unchanged
+  - No connection pooling yet (future)
+  - No live SSH integration tests in default mix test (opt-in via :ssh_live tag)
   - Connection pooling / reuse
   - Full integration tests
   - Security audit before release

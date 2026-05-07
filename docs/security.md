@@ -59,10 +59,10 @@ Every item must be verified before the Muse Runtime reaches MVP. Status reflects
 
 - [x] Arbitrary shell commands remain blocked; only preset `test_runner` commands are executable (PR19)
 - [x] Network calls are disabled/blocked by default
-- [x] Remote execution is disabled (no remote execution tool; PR24 explicitly denies remote targets)
+- [x] Remote execution is disabled by default; SSHRunner (Phase D) routes only with valid approval context (PR24, Phase D)
 - [x] Test runner is preset-limited, timeout-bounded, output-capped, and Testing-Muse-only (PR19)
 - [x] Local execution uses argv-vector `Port.open` (no shell interpolation) via `Muse.Execution.LocalRunner` (PR24)
-- [x] Remote execution targets (`:remote`, `:ssh`, string hostnames) are denied by `Muse.Execution.Policy` (PR24)
+- [x] Remote execution targets (`:remote`, `:ssh`, string hostnames) are denied by default; `:ssh` protocol routes to SSHRunner only with valid approval (PR24, Phase D)
 - [x] Execution output is capped and redacted; secrets never leak in results (PR24)
 
 ### Network & Channels
@@ -621,3 +621,74 @@ The external WebSocket channel is **read-only**. It does **not** grant:
 ```
 
 Subscribing to the channel allows observing filtered session events only. No user action through the WebSocket can trigger runtime mutations. This is the **PR17+ safety invariant**: external WS grants zero tool/write/shell/network/approval authority.
+
+---
+
+## 14. SSH Remote Execution Security (Phase D)
+
+Phase D implements `SSHRunner` — the first real remote execution runner. It uses the Erlang `:ssh` application and requires the same approval-bound, deny-by-default security model as fake remote execution.
+
+### 14.1 Deny-by-Default Invariant
+
+SSH execution is denied by default. `SSHRunner.run/2` without a valid `execution_context` in opts always returns a denied result. No SSH connection is attempted without:
+
+1. A valid `:remote_execution` approval in the context
+2. The approval routing through `Policy.resolve_target/2` to `SSHRunner`
+3. Re-validation of the approval inside `SSHRunner` (defense-in-depth)
+
+Direct `SSHRunner.run/2` calls (bypassing `Runner.run/3`) without context are denied.
+
+### 14.2 Credential Safety
+
+- Credentials are resolved via `SSHCredentialResolver`, never stored or logged
+- Only `identity_file` credential references are supported initially
+- Raw passwords, private key contents, and passphrases are rejected as credential refs
+- Credential paths are never included in events, results, or logs
+
+### 14.3 Host Key Verification
+
+- Host key verification is **mandatory** — no silent host acceptance
+- `silently_accept_hosts: true` and `user_interaction: true` are rejected
+- Requires either `user_known_hosts_file` or `host_key_accept` in `connection_opts`
+- Target construction rejects dangerous SSH options (`password`, `private_key`, `passphrase`, etc.)
+
+### 14.4 Command Safety
+
+- Commands are passed as argv vectors, not shell strings
+- Each argument is POSIX shell-quoted (single-quote escaping) before SSH exec
+- `command.env` must be empty for SSH (no env forwarding)
+- `command.cwd` must be nil for SSH (no remote cwd support)
+- Adversarial inputs (spaces, `$()`, `;`, backticks, `|`, `>`) are safely quoted
+
+### 14.5 Output Safety
+
+- Output is capped at `command.max_output_bytes` (default 50KB)
+- All output passes through `Muse.Prompt.Redactor.redact_text/1`
+- Errors are redacted — no host, user, key path, or credential data in error messages
+- SSH connection errors are mapped to safe, generic messages
+
+### 14.6 Adapter Architecture
+
+- `SSHClient` behaviour defines `connect/2`, `exec/3`, `disconnect/1`
+- `ErlangSSHClient` wraps the Erlang `:ssh` application for production use
+- `FakeSSHClient` provides deterministic, offline testing
+- Default `mix test` uses `FakeSSHClient` — no live SSH server required
+- Live SSH tests are opt-in via `:ssh_live` ExUnit tag
+
+### 14.7 Tool-Level Blocking Preserved
+
+`ApprovalGate.authorize_tool/2` continues to hard-block remote tool names:
+- `remote_execution` — blocked
+- `ssh_exec` — blocked
+- `ssh_run` — blocked
+- `remote_run` — blocked
+
+SSH execution is only accessible through internal `Runner.run/3` with valid approval context, never through LLM tool calls.
+
+### 14.8 Non-Goals
+
+- No password-based SSH authentication
+- No SSH agent forwarding
+- No connection pooling / reuse (future)
+- No Docker or Kubernetes runners
+- No live SSH integration in default tests

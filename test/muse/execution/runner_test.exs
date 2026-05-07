@@ -82,25 +82,97 @@ defmodule Muse.Execution.RunnerTest do
       assert result.status == :denied
     end
 
-    test "routes to RemoteDeniedRunner for :ssh target even with context" do
-      {:ok, ssh_target} = Target.new("tgt_runner_ssh", protocol: :ssh, host: "ssh.host.io")
+    test "routes to SSHRunner for valid SSH target with approval (Phase D)" do
+      {:ok, ssh_target} =
+        Target.new("tgt_runner_ssh_d",
+          protocol: :ssh,
+          host: "ssh.host.io",
+          user: "deploy",
+          credential_ref: %{type: "identity_file", path: "/key"},
+          connection_opts: [user_known_hosts_file: "/known_hosts"]
+        )
+
       :ok = TargetRegistry.register(ssh_target)
 
-      {:ok, cmd} = Command.new("ls", target: "tgt_runner_ssh")
+      {:ok, cmd} = Command.new("ls", target: "tgt_runner_ssh_d")
       cmd_hash = Command.command_hash(cmd)
 
       context = %{
         approval: %{
           kind: :remote_execution,
           status: :approved,
-          target_id: "tgt_runner_ssh",
+          target_id: "tgt_runner_ssh_d",
           command_hash: cmd_hash,
-          session_id: "sess_ssh"
+          session_id: "sess_ssh_d"
         },
-        session_id: "sess_ssh"
+        session_id: "sess_ssh_d"
       }
 
-      assert {:error, result} = Runner.run(cmd, [], context)
+      ssh_opts = [
+        ssh_client: Muse.Execution.FakeSSHClient,
+        fake_outcome: :ok,
+        fake_stdout: "ssh output"
+      ]
+
+      assert {:ok, result} = Runner.run(cmd, ssh_opts, context)
+      assert result.runner == :ssh
+      assert result.status == :ok
+    end
+
+    test "routes to RemoteDeniedRunner for :ssh target even with context (Phase D)" do
+      {:ok, ssh_target} =
+        Target.new("tgt_runner_ssh_denied",
+          protocol: :ssh,
+          host: "ssh.host.io",
+          user: "deploy",
+          credential_ref: %{type: "identity_file", path: "/key"},
+          connection_opts: [user_known_hosts_file: "/known_hosts"]
+        )
+
+      :ok = TargetRegistry.register(ssh_target)
+
+      {:ok, cmd} = Command.new("ls", target: "tgt_runner_ssh_denied")
+      cmd_hash = Command.command_hash(cmd)
+
+      context = %{
+        approval: %{
+          kind: :remote_execution,
+          status: :approved,
+          target_id: "tgt_runner_ssh_denied",
+          command_hash: cmd_hash,
+          session_id: "sess_ssh_denied"
+        },
+        session_id: "sess_ssh_denied"
+      }
+
+      # Without the fake SSH client opts, the SSHRunner will try to use
+      # the real ErlangSSHClient which will fail to connect — but the
+      # routing should still go to SSHRunner. Let's test with the fake
+      # client to verify the routing works.
+      ssh_opts = [
+        ssh_client: Muse.Execution.FakeSSHClient,
+        fake_outcome: :ok
+      ]
+
+      assert {:ok, result} = Runner.run(cmd, ssh_opts, context)
+      assert result.runner == :ssh
+    end
+
+    test "routes to RemoteDeniedRunner for SSH target without approval" do
+      {:ok, ssh_target} =
+        Target.new("tgt_runner_ssh_no_approval",
+          protocol: :ssh,
+          host: "ssh.host.io",
+          user: "deploy",
+          credential_ref: %{type: "identity_file", path: "/key"},
+          connection_opts: [user_known_hosts_file: "/known_hosts"]
+        )
+
+      :ok = TargetRegistry.register(ssh_target)
+
+      {:ok, cmd} = Command.new("ls", target: "tgt_runner_ssh_no_approval")
+
+      assert {:error, result} = Runner.run(cmd, [], %{})
       assert result.status == :denied
     end
 

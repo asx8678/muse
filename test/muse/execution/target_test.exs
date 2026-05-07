@@ -551,4 +551,248 @@ defmodule Muse.Execution.TargetTest do
       assert payload.tags == ["web", "api", "staging"]
     end
   end
+
+  # -- Phase D: SSH-specific target validation -----------------------------------
+
+  describe "SSH target validation (Phase D)" do
+    test "creates SSH target with required fields" do
+      assert {:ok, target} =
+               Target.new("tgt_ssh_create",
+                 protocol: :ssh,
+                 host: "ssh.example.com",
+                 user: "deploy",
+                 credential_ref: %{type: "identity_file", path: "/home/deploy/.ssh/id_ed25519"},
+                 connection_opts: [user_known_hosts_file: "/home/deploy/.ssh/known_hosts"]
+               )
+
+      assert target.protocol == :ssh
+      assert target.host == "ssh.example.com"
+      assert target.user == "deploy"
+      assert target.port == 22
+    end
+
+    test "SSH target requires user" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_no_user",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 credential_ref: %{type: "identity_file", path: "/key"}
+               )
+
+      assert reason =~ "user"
+    end
+
+    test "SSH target requires credential_ref" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_no_cred",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 user: "deploy"
+               )
+
+      assert reason =~ "credential_ref"
+    end
+
+    test "SSH target rejects empty user" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_empty_user",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 user: "",
+                 credential_ref: %{type: "identity_file", path: "/key"}
+               )
+
+      assert reason =~ "user"
+    end
+
+    test "SSH target rejects user with whitespace" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_ws_user",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 user: "deploy user",
+                 credential_ref: %{type: "identity_file", path: "/key"}
+               )
+
+      assert reason =~ "whitespace"
+    end
+
+    test "SSH target rejects user with control characters" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_ctrl_user",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 user: "deploy\nuser",
+                 credential_ref: %{type: "identity_file", path: "/key"}
+               )
+
+      assert reason =~ "control characters"
+    end
+
+    test "SSH target rejects host with whitespace" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_ws_host",
+                 protocol: :ssh,
+                 host: "ssh host.io",
+                 user: "deploy",
+                 credential_ref: %{type: "identity_file", path: "/key"}
+               )
+
+      assert reason =~ "whitespace"
+    end
+
+    test "SSH target defaults port to 22" do
+      {:ok, target} =
+        Target.new("tgt_ssh_port_default",
+          protocol: :ssh,
+          host: "ssh.host.io",
+          user: "deploy",
+          credential_ref: %{type: "identity_file", path: "/key"}
+        )
+
+      assert target.port == 22
+    end
+
+    test "SSH target accepts explicit port" do
+      {:ok, target} =
+        Target.new("tgt_ssh_port_explicit",
+          protocol: :ssh,
+          host: "ssh.host.io",
+          port: 2222,
+          user: "deploy",
+          credential_ref: %{type: "identity_file", path: "/key"}
+        )
+
+      assert target.port == 2222
+    end
+
+    test "SSH target rejects port 0" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_port_zero",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 port: 0,
+                 user: "deploy",
+                 credential_ref: %{type: "identity_file", path: "/key"}
+               )
+
+      assert reason =~ "1 and 65535"
+    end
+
+    test "SSH target rejects port > 65535" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_port_high",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 port: 99999,
+                 user: "deploy",
+                 credential_ref: %{type: "identity_file", path: "/key"}
+               )
+
+      assert reason =~ "1 and 65535"
+    end
+
+    test "SSH target rejects silently_accept_hosts in connection_opts" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_silent_accept",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 user: "deploy",
+                 credential_ref: %{type: "identity_file", path: "/key"},
+                 connection_opts: [silently_accept_hosts: true]
+               )
+
+      assert reason =~ "dangerous"
+      assert reason =~ "silently_accept_hosts"
+    end
+
+    test "SSH target rejects user_interaction in connection_opts" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_user_interact",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 user: "deploy",
+                 credential_ref: %{type: "identity_file", path: "/key"},
+                 connection_opts: [user_interaction: true]
+               )
+
+      assert reason =~ "dangerous"
+      assert reason =~ "user_interaction"
+    end
+
+    test "SSH target rejects password in connection_opts" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_conn_password",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 user: "deploy",
+                 credential_ref: %{type: "identity_file", path: "/key"},
+                 connection_opts: [password: "secret123"]
+               )
+
+      assert reason =~ "dangerous"
+      assert reason =~ "password"
+    end
+
+    test "SSH target rejects private_key in connection_opts" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_conn_privkey",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 user: "deploy",
+                 credential_ref: %{type: "identity_file", path: "/key"},
+                 connection_opts: [private_key: "-----BEGIN RSA PRIVATE KEY-----"]
+               )
+
+      assert reason =~ "dangerous"
+      assert reason =~ "private_key"
+    end
+
+    test "SSH target rejects passphrase in connection_opts" do
+      assert {:error, reason} =
+               Target.new("tgt_ssh_conn_passphrase",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 user: "deploy",
+                 credential_ref: %{type: "identity_file", path: "/key"},
+                 connection_opts: [passphrase: "secret"]
+               )
+
+      assert reason =~ "dangerous"
+      assert reason =~ "passphrase"
+    end
+
+    test "SSH target accepts safe connection_opts" do
+      assert {:ok, target} =
+               Target.new("tgt_ssh_safe_opts",
+                 protocol: :ssh,
+                 host: "ssh.host.io",
+                 user: "deploy",
+                 credential_ref: %{type: "identity_file", path: "/key"},
+                 connection_opts: [user_known_hosts_file: "/home/deploy/.ssh/known_hosts"]
+               )
+
+      assert target.id == "tgt_ssh_safe_opts"
+    end
+
+    test "fake target does not require user or credential_ref" do
+      assert {:ok, target} =
+               Target.new("tgt_fake_no_ssh", protocol: :fake, host: "fake.host.io")
+
+      assert target.user == nil
+      assert target.credential_ref == nil
+    end
+
+    test "SSH target port validation applies to all protocols (not just :ssh)" do
+      # Port validation is universal
+      assert {:error, reason} =
+               Target.new("tgt_fake_bad_port",
+                 protocol: :fake,
+                 host: "host.io",
+                 port: 99999
+               )
+
+      assert reason =~ "1 and 65535"
+    end
+  end
 end

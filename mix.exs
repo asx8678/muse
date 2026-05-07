@@ -19,7 +19,7 @@ defmodule Muse.MixProject do
   def application do
     [
       mod: {Muse.Application, []},
-      extra_applications: [:logger]
+      extra_applications: [:logger, :ssh, :crypto]
     ]
   end
 

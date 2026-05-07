@@ -15,17 +15,15 @@ defmodule Muse.Execution.Runner do
     * `Muse.Execution.LocalRunner` — local execution via Port.open
     * `Muse.Execution.RemoteDeniedRunner` — always denies remote execution
     * `Muse.Execution.FakeRemoteRunner` — deterministic fake remote for tests
+    * `Muse.Execution.SSHRunner` — SSH remote execution (Phase D)
 
   ## Remote runners
 
     * Remote runners must also implement `Muse.Execution.RemoteRunner`.
     * Remote execution is denied by default unless context-aware policy
       routes to a valid runner with an approved `:remote_execution` approval.
-
-  ## Future runners (not in Phase C)
-
-    * SSH/remote runners will require explicit approval and strict
-      authorization. Remote execution is denied by default.
+    * `FakeRemoteRunner` handles `:fake` protocol targets.
+    * `SSHRunner` handles `:ssh` protocol targets.
   """
 
   alias Muse.Execution.Command
@@ -164,7 +162,11 @@ defmodule Muse.Execution.Runner do
 
     case Muse.Execution.Policy.resolve_target(command.target, context_with_command) do
       {:ok, runner_module} ->
-        runner_module.run(command, opts)
+        # Pass the execution context to the runner via opts so that
+        # runners (especially SSHRunner) can re-validate the approval
+        # as defense-in-depth against direct invocation without context.
+        opts_with_context = Keyword.put(opts, :execution_context, context_with_command)
+        runner_module.run(command, opts_with_context)
 
       {:error, reason} ->
         # Denied — route through RemoteDeniedRunner, preserving the policy denial reason

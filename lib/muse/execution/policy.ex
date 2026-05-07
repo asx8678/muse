@@ -4,13 +4,15 @@ defmodule Muse.Execution.Policy do
 
   Determines which runners and targets are allowed for execution.
   Remote execution is denied by default. Context-aware routing
-  (Phase C) allows fake remote runner routing only when:
+  (Phase C/D) allows runner routing only when:
 
     * The target is a registered Target in the TargetRegistry.
-    * The target's protocol is `:fake`.
     * The context contains a valid approved `:remote_execution` approval.
     * The approval matches session_id + target_id + command_hash.
     * The approval is not expired.
+
+  For `:fake` protocol targets → `FakeRemoteRunner`.
+  For `:ssh` protocol targets → `SSHRunner` (Phase D).
 
   ## Policy decisions (arity-1, backward compatible)
 
@@ -24,7 +26,7 @@ defmodule Muse.Execution.Policy do
     * String target matching a registered Target with `:fake` protocol
       and valid approval → `FakeRemoteRunner`
     * String target matching a registered Target with `:ssh` protocol
-      → denied (SSH runner not implemented)
+      and valid approval → `SSHRunner`
     * All other cases → denied
 
   ## No String.to_atom/1
@@ -89,9 +91,9 @@ defmodule Muse.Execution.Policy do
     * `:target_id` — explicit target ID; must not contradict approval.target_id.
     * `:session_id` — context session ID; must match approval.session_id.
 
-  A remote/string target routes to `FakeRemoteRunner` only when ALL of:
+  A remote/string target routes to `FakeRemoteRunner` or `SSHRunner` when ALL of:
     1. Target (or approval target_id) resolves to a registered Target.
-    2. The registered Target's protocol is `:fake`.
+    2. The registered Target's protocol is `:fake` or `:ssh`.
     3. The approval is `:remote_execution` kind, `:approved` status.
     4. The approval's `target_id` is present and matches the registered target's `id`;
        context.target_id must not contradict approval.target_id.
@@ -106,9 +108,8 @@ defmodule Muse.Execution.Policy do
       local_target?(target) ->
         {:ok, Muse.Execution.LocalRunner}
 
-      ssh_protocol_target?(target, context) ->
-        {:error,
-         "SSH runner not implemented; remote execution requires a runner for the :ssh protocol"}
+      ssh_protocol_target_with_approval?(target, context) ->
+        {:ok, Muse.Execution.SSHRunner}
 
       fake_protocol_target_with_approval?(target, context) ->
         {:ok, Muse.Execution.FakeRemoteRunner}
@@ -223,7 +224,7 @@ defmodule Muse.Execution.Policy do
     2. The approval's `target_id` is present and resolves to a registered Target
     3. Context `target_id` must not contradict the approval's `target_id`
     4. Command target (if a binary registered-target id) must match the approval's `target_id`
-    5. The registered Target's protocol is `:fake`
+    5. The registered Target's protocol is `:fake` or `:ssh`
     6. The approval's `command_hash` is present and matches the context command's hash
     7. The approval's `session_id` is present and matches the context `session_id`
     8. The approval is not expired
@@ -266,8 +267,8 @@ defmodule Muse.Execution.Policy do
       not target_registered?(effective_target_id(context, approval)) ->
         true
 
-      # Target protocol is not :fake — denied
-      target_protocol(effective_target_id(context, approval)) != :fake ->
+      # Target protocol is not :fake or :ssh — denied
+      target_protocol(effective_target_id(context, approval)) not in [:fake, :ssh] ->
         true
 
       # Approval is expired — denied
@@ -474,32 +475,52 @@ defmodule Muse.Execution.Policy do
     end
   end
 
-  defp ssh_protocol_target?(target, context) do
+  defp ssh_protocol_target_with_approval?(target, context) do
     approval = extract_approval(context)
     target_id = effective_target_id(context, approval)
 
     cond do
-      # Explicit :ssh atom target
-      target == :ssh ->
-        true
+      # Must be a registered :ssh protocol target
+      target_protocol(target_id) != :ssh ->
+        false
 
-      # String target that normalizes to :ssh
-      is_binary(target) and normalize_target_string(target) == :ssh ->
-        true
+      # Must have a valid approval (same checks as fake runner)
+      approval == nil ->
+        false
 
-      # Registered target with :ssh protocol
-      is_binary(target_id) and target_protocol(target_id) == :ssh ->
-        true
+      not remote_execution_kind?(map_get(approval, :kind)) ->
+        false
 
-      # String target matching a registered SSH target
-      is_binary(target) ->
-        case Muse.Execution.TargetRegistry.fetch(target) do
-          {:ok, %Target{protocol: :ssh}} -> true
-          _ -> false
-        end
+      not approved_status?(map_get(approval, :status)) ->
+        false
+
+      approval_target_id(approval) == nil ->
+        false
+
+      context_target_id_conflicts?(context, approval) ->
+        false
+
+      command_target_conflicts?(context, approval) ->
+        false
+
+      # Target argument must be a valid remote routing form
+      not valid_remote_routing_target?(target, approval) ->
+        false
+
+      invalid_remote_command_target?(context, approval) ->
+        false
+
+      session_id_mismatch?(approval, context) ->
+        false
 
       true ->
-        false
+        with {:ok, %Target{protocol: :ssh}} <- fetch_registered_target(target_id),
+             false <- approval_expired?(approval),
+             false <- command_hash_mismatch?(approval, context) do
+          true
+        else
+          _ -> false
+        end
     end
   rescue
     _ -> false

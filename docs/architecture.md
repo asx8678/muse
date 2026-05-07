@@ -57,7 +57,7 @@ New to the Muse codebase? Start here:
 - **Session:** `lib/muse/session*.ex`, `lib/muse/state.ex`
 - **Conductor/Turns:** `lib/muse/conductor*.ex`, `lib/muse/turn.ex`
 - **Tools:** `lib/muse/tool/*.ex`, `lib/muse/tools/*.ex`
-- **Execution:** `lib/muse/execution/*.ex` (PR24)
+- **Execution:** `lib/muse/execution/*.ex` (PR24, Phase D: SSHRunner, SSHClient, ErlangSSHClient, FakeSSHClient, SSHCredentialResolver, Policy, Target, TargetRegistry)
 - **Planning:** `lib/muse/plan*.ex`, `lib/muse/task.ex`
 - **Patches:** `lib/muse/patch*.ex`, `lib/muse/checkpoint*.ex`
 - **Memory:** `lib/muse/memory.ex`

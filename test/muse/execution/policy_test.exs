@@ -252,7 +252,15 @@ defmodule Muse.Execution.PolicyTest do
       {:ok, target} = Target.new("tgt_ctx_fake_1", protocol: :fake, host: "fake.host.io")
       :ok = TargetRegistry.register(target)
 
-      {:ok, ssh_target} = Target.new("tgt_ctx_ssh_1", protocol: :ssh, host: "ssh.host.io")
+      {:ok, ssh_target} =
+        Target.new("tgt_ctx_ssh_1",
+          protocol: :ssh,
+          host: "ssh.host.io",
+          user: "deploy",
+          credential_ref: %{type: "identity_file", path: "/key"},
+          connection_opts: [user_known_hosts_file: "/known_hosts"]
+        )
+
       :ok = TargetRegistry.register(ssh_target)
 
       on_exit(fn ->
@@ -363,7 +371,14 @@ defmodule Muse.Execution.PolicyTest do
       assert {:error, _} = Policy.resolve_target("nonexistent_target", context)
     end
 
-    test "denies when target protocol is :ssh (SSH runner not implemented)" do
+    test "denies when target protocol is :ssh without valid approval" do
+      {:ok, cmd} = Command.new("ls", target: "tgt_ctx_ssh_1")
+
+      # No approval — should be denied
+      assert {:error, _} = Policy.resolve_target("tgt_ctx_ssh_1", %{})
+    end
+
+    test "routes to SSHRunner for registered :ssh target with valid approval" do
       {:ok, cmd} = Command.new("ls", target: "tgt_ctx_ssh_1")
       cmd_hash = Command.command_hash(cmd)
 
@@ -373,14 +388,14 @@ defmodule Muse.Execution.PolicyTest do
           status: :approved,
           target_id: "tgt_ctx_ssh_1",
           command_hash: cmd_hash,
-          session_id: "sess_1"
+          session_id: "sess_ssh_1"
         },
-        session_id: "sess_1",
+        session_id: "sess_ssh_1",
         command: cmd
       }
 
-      assert {:error, reason} = Policy.resolve_target("tgt_ctx_ssh_1", context)
-      assert reason =~ "SSH runner not implemented"
+      assert {:ok, Muse.Execution.SSHRunner} =
+               Policy.resolve_target("tgt_ctx_ssh_1", context)
     end
 
     test "denies when command_hash mismatches" do
@@ -520,7 +535,15 @@ defmodule Muse.Execution.PolicyTest do
       {:ok, target} = Target.new("tgt_denied_fake", protocol: :fake, host: "fake.host.io")
       :ok = TargetRegistry.register(target)
 
-      {:ok, ssh_target} = Target.new("tgt_denied_ssh", protocol: :ssh, host: "ssh.host.io")
+      {:ok, ssh_target} =
+        Target.new("tgt_denied_ssh",
+          protocol: :ssh,
+          host: "ssh.host.io",
+          user: "deploy",
+          credential_ref: %{type: "identity_file", path: "/key"},
+          connection_opts: [user_known_hosts_file: "/known_hosts"]
+        )
+
       :ok = TargetRegistry.register(ssh_target)
 
       on_exit(fn -> TargetRegistry.clear() end)
@@ -546,23 +569,39 @@ defmodule Muse.Execution.PolicyTest do
       assert Policy.remote_execution_denied?(context) == false
     end
 
-    test "returns true for SSH target even with valid approval" do
-      {:ok, cmd} = Command.new("ls", target: "tgt_denied_ssh")
-      cmd_hash = Command.command_hash(cmd)
+    test "returns false for SSH target with valid approval (Phase D)" do
+      # Need to register SSH target with required fields
+      {:ok, ssh_target} =
+        Target.new("tgt_denied_ssh",
+          protocol: :ssh,
+          host: "ssh.host.io",
+          user: "deploy",
+          credential_ref: %{type: "identity_file", path: "/key"},
+          connection_opts: [user_known_hosts_file: "/known_hosts"]
+        )
 
-      context = %{
-        approval: %{
-          kind: :remote_execution,
-          status: :approved,
-          target_id: "tgt_denied_ssh",
-          command_hash: cmd_hash,
-          session_id: "sess_ssh"
-        },
-        session_id: "sess_ssh",
-        command: cmd
-      }
+      :ok = TargetRegistry.register(ssh_target)
 
-      assert Policy.remote_execution_denied?(context) == true
+      try do
+        {:ok, cmd} = Command.new("ls", target: "tgt_denied_ssh")
+        cmd_hash = Command.command_hash(cmd)
+
+        context = %{
+          approval: %{
+            kind: :remote_execution,
+            status: :approved,
+            target_id: "tgt_denied_ssh",
+            command_hash: cmd_hash,
+            session_id: "sess_ssh"
+          },
+          session_id: "sess_ssh",
+          command: cmd
+        }
+
+        assert Policy.remote_execution_denied?(context) == false
+      after
+        TargetRegistry.clear()
+      end
     end
 
     test "returns true when approval is expired" do
@@ -624,22 +663,30 @@ defmodule Muse.Execution.PolicyTest do
     end
   end
 
-  # -- Regression: SSH protocol always denied ----------------------------------
+  # -- Phase D: SSH protocol now routes to SSHRunner with valid approval -------
 
-  describe "SSH protocol denial regression" do
+  describe "SSH protocol routing (Phase D)" do
     setup do
-      {:ok, ssh_target} = Target.new("tgt_ssh_reg", protocol: :ssh, host: "ssh.host.io")
+      {:ok, ssh_target} =
+        Target.new("tgt_ssh_reg",
+          protocol: :ssh,
+          host: "ssh.host.io",
+          user: "deploy",
+          credential_ref: %{type: "identity_file", path: "/key"},
+          connection_opts: [user_known_hosts_file: "/known_hosts"]
+        )
+
       :ok = TargetRegistry.register(ssh_target)
 
       on_exit(fn -> TargetRegistry.clear() end)
       :ok
     end
 
-    test "resolve_target/1 denies :ssh atom" do
+    test "resolve_target/1 still denies :ssh atom (no context)" do
       assert {:error, _} = Policy.resolve_target(:ssh)
     end
 
-    test "resolve_target/2 denies registered :ssh target" do
+    test "resolve_target/2 routes to SSHRunner with valid approval" do
       {:ok, cmd} = Command.new("ls", target: "tgt_ssh_reg")
       cmd_hash = Command.command_hash(cmd)
 
@@ -655,11 +702,10 @@ defmodule Muse.Execution.PolicyTest do
         command: cmd
       }
 
-      assert {:error, reason} = Policy.resolve_target("tgt_ssh_reg", context)
-      assert reason =~ "SSH runner not implemented"
+      assert {:ok, Muse.Execution.SSHRunner} = Policy.resolve_target("tgt_ssh_reg", context)
     end
 
-    test "resolve_target/2 denies :ssh atom with context" do
+    test "resolve_target/2 denies :ssh atom with context (no registered target for :ssh atom)" do
       context = %{
         approval: %{
           kind: :remote_execution,
@@ -670,8 +716,31 @@ defmodule Muse.Execution.PolicyTest do
         session_id: "sess_ssh_atom"
       }
 
-      assert {:error, reason} = Policy.resolve_target(:ssh, context)
-      assert reason =~ "SSH runner not implemented"
+      assert {:error, _} = Policy.resolve_target(:ssh, context)
+    end
+
+    test "remote_execution_denied? returns false for valid SSH approval" do
+      {:ok, cmd} = Command.new("ls", target: "tgt_ssh_reg")
+      cmd_hash = Command.command_hash(cmd)
+
+      context = %{
+        approval: %{
+          kind: :remote_execution,
+          status: :approved,
+          target_id: "tgt_ssh_reg",
+          command_hash: cmd_hash,
+          session_id: "sess_ssh_denied"
+        },
+        session_id: "sess_ssh_denied",
+        command: cmd
+      }
+
+      assert Policy.remote_execution_denied?(context) == false
+    end
+
+    test "remote_execution_denied? returns true for SSH target without approval" do
+      context = %{target_id: "tgt_ssh_reg"}
+      assert Policy.remote_execution_denied?(context) == true
     end
   end
 
@@ -801,7 +870,15 @@ defmodule Muse.Execution.PolicyTest do
       {:ok, fake_target} = Target.new("tgt_inject_fake", protocol: :fake, host: "fake.host.io")
       :ok = TargetRegistry.register(fake_target)
 
-      {:ok, ssh_target} = Target.new("tgt_inject_ssh", protocol: :ssh, host: "ssh.host.io")
+      {:ok, ssh_target} =
+        Target.new("tgt_inject_ssh",
+          protocol: :ssh,
+          host: "ssh.host.io",
+          user: "deploy",
+          credential_ref: %{type: "identity_file", path: "/key"},
+          connection_opts: [user_known_hosts_file: "/known_hosts"]
+        )
+
       :ok = TargetRegistry.register(ssh_target)
 
       on_exit(fn -> TargetRegistry.clear() end)
