@@ -1590,6 +1590,25 @@ defmodule MuseWeb.HomeLiveTest do
       assert html =~ ~s(aria-label="Use prompt: Check recent backend errors")
       assert html =~ ~s(aria-label="Use prompt: Review changed files")
     end
+
+    test "exactly one main landmark per page" do
+      {:ok, _view, html} = live(build_conn(), "/")
+
+      assert occurrences(html, "<main") == 1,
+             "expected exactly one <main> element, found #{occurrences(html, "<main")}"
+
+      assert occurrences(html, "</main>") == 1
+      assert html =~ ~s(id="main-content")
+    end
+
+    test "skip link is first focusable element targeting main content" do
+      {:ok, _view, html} = live(build_conn(), "/")
+      assert html =~ ~s(class="skip-link")
+      assert html =~ ~s(href="#main-content")
+      # Skip link should appear before the app header and before the main landmark
+      assert first_index!(html, "skip-link") < first_index!(html, "app-header")
+      assert first_index!(html, "skip-link") < first_index!(html, "id=\"main-content\"")
+    end
   end
 
   # -- Command discoverability tests --------------------------------------------
