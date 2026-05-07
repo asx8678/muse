@@ -110,6 +110,23 @@ defmodule Muse.Execution.SSHRunner do
 
   @impl Muse.Execution.RemoteRunner
   def remote_run(connection_ref, %Command{} = command, opts) do
+    execution_context = Keyword.get(opts, :execution_context)
+
+    with true <- valid_execution_context?(execution_context, command),
+         :ok <- validate_ssh_command(command) do
+      do_remote_run(connection_ref, command, opts)
+    else
+      _ ->
+        Result.denied(
+          command.id,
+          "SSH remote_run requires valid approval-bound execution context",
+          target: command.target,
+          runner: :ssh
+        )
+    end
+  end
+
+  defp do_remote_run(connection_ref, %Command{} = command, opts) do
     ssh_client = ssh_client_module(opts)
 
     command_string = build_safe_command_string(command)
@@ -144,14 +161,21 @@ defmodule Muse.Execution.SSHRunner do
 
   # -- Private: execution context validation ------------------------------------
 
-  defp valid_execution_context?(context, command) do
-    case Muse.Execution.Policy.resolve_target(command.target, context) do
+  defp valid_execution_context?(context, command) when is_map(context) do
+    # Bind policy validation to the actual command passed to SSHRunner.run/2.
+    # Do not trust a caller-supplied context[:command], which could be stale or
+    # intentionally different from the command being executed.
+    context_with_actual_command = Map.put(context, :command, command)
+
+    case Muse.Execution.Policy.resolve_target(command.target, context_with_actual_command) do
       {:ok, runner_module} when runner_module == __MODULE__ -> true
       _ -> false
     end
   rescue
     _ -> false
   end
+
+  defp valid_execution_context?(_context, _command), do: false
 
   # -- Private: execution with context -------------------------------------------
 
@@ -243,12 +267,11 @@ defmodule Muse.Execution.SSHRunner do
         end
 
       {:error, reason} ->
-        {:error,
-         Result.error(command.id, reason,
-           runner: :ssh,
-           target: command.target,
-           argv_display: Command.safe_display(command)
-         )}
+        Result.error(command.id, reason,
+          runner: :ssh,
+          target: command.target,
+          argv_display: Command.safe_display(command)
+        )
     end
   end
 

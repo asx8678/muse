@@ -18,8 +18,8 @@ defmodule Muse.Execution.SSHCredentialResolver do
 
   ## Safety invariants
 
-    * Never returns raw key contents — only file paths suitable for
-      Erlang `:ssh` `:dsa_pass_phrase` / `:rsa_pass_phrase` options.
+    * Never returns raw key contents — only a private key callback configured
+      with an identity-file path for Erlang `:ssh` to read at connect time.
     * Never stores credentials — resolves on demand and returns only
       the options needed by `:ssh.connect/4`.
     * Errors are redacted — never leak key paths or credential details.
@@ -47,7 +47,7 @@ defmodule Muse.Execution.SSHCredentialResolver do
   ## Examples
 
       iex> Muse.Execution.SSHCredentialResolver.resolve(%{type: "identity_file", path: "/home/user/.ssh/id_ed25519"})
-      {:ok, [{:key_cb, {ErlangSSHClient.KeyCallback, %{identity_file: '/home/user/.ssh/id_ed25519'}}}]}
+      {:ok, [{:key_cb, {Muse.Execution.SSHKeyCallback, [identity_file: ~c"/home/user/.ssh/id_ed25519"]}}]}
 
       iex> Muse.Execution.SSHCredentialResolver.resolve(%{type: "password", value: "secret"})
       {:error, "unsupported credential type: password"}
@@ -72,7 +72,9 @@ defmodule Muse.Execution.SSHCredentialResolver do
 
   # Reject other unsupported types
   def resolve(%{type: type}) when is_binary(type) do
-    {:error, "unsupported credential type: #{type}"}
+    # Do not echo arbitrary credential type strings; callers can provide
+    # secret-bearing data in unsupported fields.
+    {:error, "unsupported credential type"}
   end
 
   # Reject nil
@@ -107,7 +109,7 @@ defmodule Muse.Execution.SSHCredentialResolver do
 
         {:ok,
          [
-           {:key_cb, {Muse.Execution.SSHKeyCallback, %{identity_file: charlist_path}}}
+           {:key_cb, {Muse.Execution.SSHKeyCallback, [identity_file: charlist_path]}}
          ]}
     end
   end

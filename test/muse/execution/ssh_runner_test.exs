@@ -3,6 +3,22 @@ defmodule Muse.Execution.SSHRunnerTest do
 
   alias Muse.Execution.{Command, Result, SSHRunner, Target, TargetRegistry}
 
+  defmodule FailingIfConnectedSSHClient do
+    @behaviour Muse.Execution.SSHClient
+
+    def connect(_target, _opts), do: raise("SSH connection should not have been attempted")
+    def exec(_connection_ref, _command_string, _opts), do: {:error, "unexpected exec"}
+    def disconnect(_connection_ref), do: :ok
+  end
+
+  defmodule ConnectFailureSSHClient do
+    @behaviour Muse.Execution.SSHClient
+
+    def connect(_target, _opts), do: {:error, "SSH connection failed"}
+    def exec(_connection_ref, _command_string, _opts), do: {:error, "unexpected exec"}
+    def disconnect(_connection_ref), do: :ok
+  end
+
   setup do
     on_exit(fn ->
       TargetRegistry.clear()
@@ -61,11 +77,25 @@ defmodule Muse.Execution.SSHRunnerTest do
       assert {:error, %Result{status: :denied}} = SSHRunner.run(cmd, ssh_opts())
     end
 
+    test "denies without execution context and does not connect" do
+      {:ok, cmd} = Command.new("ls", target: "tgt_ssh_test")
+
+      assert {:error, %Result{status: :denied}} =
+               SSHRunner.run(cmd, ssh_client: FailingIfConnectedSSHClient)
+    end
+
     test "denies with empty execution context" do
       {:ok, cmd} = Command.new("ls", target: "tgt_ssh_test")
 
       assert {:error, %Result{status: :denied}} =
                SSHRunner.run(cmd, Keyword.put(ssh_opts(), :execution_context, %{}))
+    end
+
+    test "remote_run/3 denies without execution context" do
+      {:ok, conn_ref} = Muse.Execution.FakeSSHClient.connect(%{})
+      {:ok, cmd} = Command.new("ls", target: "tgt_ssh_test")
+
+      assert %Result{status: :denied} = SSHRunner.remote_run(conn_ref, cmd, ssh_opts())
     end
 
     test "denies with context that would not route to SSHRunner" do
@@ -129,6 +159,19 @@ defmodule Muse.Execution.SSHRunnerTest do
       assert {:ok, %Result{status: :ok, runner: :ssh}} = SSHRunner.run(cmd, opts)
     end
 
+    test "denies direct run when context command hash is for a different command" do
+      register_ssh_target!()
+      {:ok, approved_cmd} = Command.new("ls", target: "tgt_ssh_test")
+
+      {:ok, substituted_cmd} =
+        Command.new("rm", args: ["-rf", "/tmp/muse-test"], target: "tgt_ssh_test")
+
+      stale_context = valid_ssh_context(approved_cmd)
+      opts = Keyword.put(ssh_opts(), :execution_context, stale_context)
+
+      assert {:error, %Result{status: :denied}} = SSHRunner.run(substituted_cmd, opts)
+    end
+
     test "returns capped and redacted output" do
       register_ssh_target!()
       {:ok, cmd} = Command.new("ls", target: "tgt_ssh_test")
@@ -137,6 +180,16 @@ defmodule Muse.Execution.SSHRunnerTest do
 
       assert {:ok, %Result{status: :ok} = result} = SSHRunner.run(cmd, opts)
       assert is_binary(result.output)
+    end
+
+    test "returns error result for connection failure without crashing" do
+      register_ssh_target!()
+      {:ok, cmd} = Command.new("ls", target: "tgt_ssh_test")
+      context = valid_ssh_context(cmd)
+      opts = [ssh_client: ConnectFailureSSHClient, execution_context: context]
+
+      assert {:ok, %Result{status: :error, runner: :ssh} = result} = SSHRunner.run(cmd, opts)
+      assert result.error =~ "SSH connection failed"
     end
 
     test "returns error result for non-zero exit" do

@@ -41,9 +41,10 @@ defmodule Muse.Execution.ErlangSSHClient do
     connection_opts = Map.get(target, :connection_opts, [])
     timeout = Keyword.get(opts, :timeout_ms, @default_connect_timeout)
 
-    with :ok <- validate_connect_params(host, user, credential_ref),
-         {:ok, ssh_opts} <- build_ssh_opts(host, port, user, credential_ref, connection_opts) do
-      case :ssh.connect(String.to_charlist(host), port, ssh_opts, timeout: timeout) do
+    with :ok <- validate_connect_params(host, port, user, credential_ref),
+         {:ok, ssh_opts} <-
+           build_ssh_opts(host, port, user, credential_ref, connection_opts, timeout) do
+      case :ssh.connect(String.to_charlist(host), port, ssh_opts, timeout) do
         {:ok, conn_ref} ->
           ref = make_ref()
           {:ok, {__MODULE__, ref, conn_ref}}
@@ -99,10 +100,13 @@ defmodule Muse.Execution.ErlangSSHClient do
 
   # -- Private: connection parameter validation ----------------------------------
 
-  defp validate_connect_params(host, user, credential_ref) do
+  defp validate_connect_params(host, port, user, credential_ref) do
     cond do
       not is_binary(host) or host == "" ->
         {:error, "SSH connection requires a valid host"}
+
+      not is_integer(port) or port not in 1..65_535 ->
+        {:error, "SSH connection requires a valid port"}
 
       not is_binary(user) or user == "" ->
         {:error, "SSH connection requires a valid user"}
@@ -117,17 +121,21 @@ defmodule Muse.Execution.ErlangSSHClient do
 
   # -- Private: SSH option building --------------------------------------------
 
-  defp build_ssh_opts(_host, _port, user, credential_ref, connection_opts) do
+  defp build_ssh_opts(_host, _port, user, credential_ref, connection_opts, timeout) do
     with {:ok, cred_opts} <- SSHCredentialResolver.resolve(credential_ref),
-         {:ok, host_key_opts} <- host_key_verification_opts(connection_opts),
+         {:ok, host_key_private_opts} <- host_key_verification_opts(connection_opts),
          :ok <- validate_connection_opts_safety(connection_opts) do
       base_opts = [
         {:user, String.to_charlist(user)},
         {:silently_accept_hosts, false},
-        {:user_interaction, false}
+        {:user_interaction, false},
+        {:connect_timeout, timeout},
+        {:save_accepted_host, false},
+        {:quiet_mode, true}
       ]
 
-      opts = base_opts ++ cred_opts ++ host_key_opts ++ safe_connection_opts(connection_opts)
+      cred_opts = merge_key_cb_private_opts(cred_opts, host_key_private_opts)
+      opts = base_opts ++ cred_opts ++ safe_connection_opts(connection_opts)
       {:ok, opts}
     end
   end
@@ -135,26 +143,70 @@ defmodule Muse.Execution.ErlangSSHClient do
   # -- Private: host key verification ------------------------------------------
 
   defp host_key_verification_opts(connection_opts) do
-    known_hosts_path = find_opt(connection_opts, :user_known_hosts_file)
-    host_key_accept = find_opt(connection_opts, :host_key_accept)
+    known_hosts_path =
+      find_opt(connection_opts, :user_known_hosts_file) ||
+        find_opt(connection_opts, :known_hosts_file)
+
+    pinned_fingerprint =
+      find_opt(connection_opts, :host_key_accept) ||
+        find_opt(connection_opts, :host_key_fingerprint)
 
     cond do
-      # Explicit known_hosts file path
       is_binary(known_hosts_path) ->
-        {:ok, [{:user_known_hosts_file, String.to_charlist(known_hosts_path)}]}
+        with :ok <- validate_reference_path(known_hosts_path, "known_hosts path") do
+          {:ok, [{:known_hosts_file, String.to_charlist(known_hosts_path)}]}
+        end
 
-      # Pinned host key fingerprint (hex string)
-      is_binary(host_key_accept) ->
-        {:ok, [{:host_key_accept, host_key_accept}]}
+      is_binary(pinned_fingerprint) ->
+        with :ok <- validate_fingerprint(pinned_fingerprint) do
+          {:ok, [{:pinned_fingerprint, pinned_fingerprint}]}
+        end
 
-      # Pinned host key fingerprint (callback function)
-      is_function(host_key_accept, 2) ->
-        {:ok, [{:host_key_accept, host_key_accept}]}
+      is_function(pinned_fingerprint) ->
+        {:error, "SSH host key verification callbacks are not supported"}
 
-      # No host key verification method specified — DENY
       true ->
         {:error,
-         "SSH host key verification is required; specify :user_known_hosts_file or :host_key_accept in connection_opts"}
+         "SSH host key verification is required; specify :user_known_hosts_file or a pinned :host_key_accept fingerprint in connection_opts"}
+    end
+  end
+
+  defp merge_key_cb_private_opts(cred_opts, host_key_private_opts) do
+    Keyword.update(cred_opts, :key_cb, nil, fn
+      {module, key_cb_private_opts} when is_atom(module) and is_list(key_cb_private_opts) ->
+        {module, Keyword.merge(key_cb_private_opts, host_key_private_opts)}
+
+      other ->
+        other
+    end)
+  end
+
+  defp validate_reference_path(path, label) do
+    cond do
+      path == "" ->
+        {:error, "SSH #{label} must not be empty"}
+
+      String.match?(path, ~r/[[:cntrl:]]/) ->
+        {:error, "SSH #{label} contains control characters"}
+
+      String.contains?(path, "..") ->
+        {:error, "SSH #{label} must not contain path traversal"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_fingerprint(fingerprint) do
+    cond do
+      String.trim(fingerprint) == "" ->
+        {:error, "SSH host key fingerprint must not be empty"}
+
+      String.match?(fingerprint, ~r/[[:cntrl:]]/) ->
+        {:error, "SSH host key fingerprint contains control characters"}
+
+      true ->
+        :ok
     end
   end
 
@@ -169,16 +221,13 @@ defmodule Muse.Execution.ErlangSSHClient do
   # Allowlisted connection options that are safe to pass through.
   # Dangerous options are rejected.
   @allowed_ssh_opts [
-    :user_known_hosts_file,
-    :host_key_accept,
-    :timeout,
     :connect_timeout,
     :transport,
     :auth_methods,
-    :preferred_authentications,
-    :keyboard_interact,
-    :public_key_alg,
-    :rsa_sig_alg
+    :pref_public_key_algs,
+    :preferred_algorithms,
+    :modify_algorithms,
+    :idle_time
   ]
 
   # Options that are NEVER allowed (security risks)

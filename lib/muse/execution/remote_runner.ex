@@ -19,11 +19,12 @@ defmodule Muse.Execution.RemoteRunner do
 
   ## Safety invariants
 
-    * No real SSH, network, or shell execution in Phase C.
-    * Only `FakeRemoteRunner` implements this behaviour for testing.
-    * Remote execution requires an approved `:remote_execution` approval
-      matching session_id + target_id + command_hash.
-    * SSH protocol targets are denied (no SSHRunner module exists).
+    * Remote execution is deny-by-default and requires an approved
+      `:remote_execution` approval matching session_id + target_id +
+      command_hash.
+    * `FakeRemoteRunner` remains deterministic/offline for tests.
+    * `SSHRunner` is the real SSH implementation and must fail closed unless
+      routed through context-aware policy with a valid approval.
 
   ## Separate from Runner behaviour
 

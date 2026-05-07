@@ -649,7 +649,7 @@ Direct `SSHRunner.run/2` calls (bypassing `Runner.run/3`) without context are de
 
 - Host key verification is **mandatory** — no silent host acceptance
 - `silently_accept_hosts: true` and `user_interaction: true` are rejected
-- Requires either `user_known_hosts_file` or `host_key_accept` in `connection_opts`
+- Requires either `user_known_hosts_file` / `known_hosts_file` or a pinned `host_key_accept` / `host_key_fingerprint` string in `connection_opts`; callback-based host-key acceptance is rejected
 - Target construction rejects dangerous SSH options (`password`, `private_key`, `passphrase`, etc.)
 
 ### 14.4 Command Safety

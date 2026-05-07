@@ -1,7 +1,7 @@
 defmodule Muse.Execution.SSHClientTest do
   use ExUnit.Case, async: true
 
-  alias Muse.Execution.{FakeSSHClient, SSHCredentialResolver}
+  alias Muse.Execution.{ErlangSSHClient, FakeSSHClient, SSHCredentialResolver, SSHKeyCallback}
 
   describe "FakeSSHClient" do
     test "connect returns a fake connection ref" do
@@ -93,14 +93,17 @@ defmodule Muse.Execution.SSHClientTest do
                  path: "/home/user/.ssh/id_ed25519"
                })
 
-      assert Keyword.has_key?(opts, :key_cb)
+      assert {:key_cb, {SSHKeyCallback, key_cb_opts}} = List.keyfind(opts, :key_cb, 0)
+      assert is_list(key_cb_opts)
+      assert Keyword.get(key_cb_opts, :identity_file) == ~c"/home/user/.ssh/id_ed25519"
     end
 
     test "resolves identity_file tuple credential" do
       assert {:ok, opts} =
                SSHCredentialResolver.resolve({:identity_file, "/home/user/.ssh/id_ed25519"})
 
-      assert Keyword.has_key?(opts, :key_cb)
+      assert {:key_cb, {SSHKeyCallback, key_cb_opts}} = List.keyfind(opts, :key_cb, 0)
+      assert is_list(key_cb_opts)
     end
 
     test "rejects password credential type" do
@@ -118,9 +121,10 @@ defmodule Muse.Execution.SSHClientTest do
       assert reason =~ "unsupported credential type: passphrase"
     end
 
-    test "rejects unknown credential type" do
-      assert {:error, reason} = SSHCredentialResolver.resolve(%{type: "unknown"})
-      assert reason =~ "unsupported credential type: unknown"
+    test "rejects unknown credential type without echoing arbitrary input" do
+      assert {:error, reason} = SSHCredentialResolver.resolve(%{type: "unknown-secret-token"})
+      assert reason == "unsupported credential type"
+      refute reason =~ "unknown-secret-token"
     end
 
     test "rejects nil credential ref" do
@@ -150,6 +154,68 @@ defmodule Muse.Execution.SSHClientTest do
                SSHCredentialResolver.resolve(%{type: "identity_file", path: "/tmp/../etc/keys"})
 
       assert reason =~ "path traversal"
+    end
+  end
+
+  describe "ErlangSSHClient offline safety checks" do
+    test "rejects missing host key verification before any network connection" do
+      target = %{
+        host: "ssh.example.invalid",
+        port: 22,
+        user: "deploy",
+        credential_ref: %{type: "identity_file", path: "/tmp/id_ed25519"},
+        connection_opts: []
+      }
+
+      assert {:error, reason} = ErlangSSHClient.connect(target, timeout_ms: 1)
+      assert reason =~ "host key verification is required"
+    end
+
+    test "rejects invalid ports before any network connection" do
+      target = %{
+        host: "ssh.example.invalid",
+        port: "22",
+        user: "deploy",
+        credential_ref: %{type: "identity_file", path: "/tmp/id_ed25519"},
+        connection_opts: []
+      }
+
+      assert {:error, reason} = ErlangSSHClient.connect(target, timeout_ms: 1)
+      assert reason =~ "valid port"
+    end
+
+    test "rejects host key accept callbacks instead of allowing silent accept" do
+      target = %{
+        host: "ssh.example.invalid",
+        port: 22,
+        user: "deploy",
+        credential_ref: %{type: "identity_file", path: "/tmp/id_ed25519"},
+        connection_opts: [host_key_accept: fn _host, _fingerprint -> true end]
+      }
+
+      assert {:error, reason} = ErlangSSHClient.connect(target, timeout_ms: 1)
+      assert reason =~ "callbacks are not supported"
+    end
+  end
+
+  describe "SSHKeyCallback" do
+    test "user_key reads identity_file from nested key_cb_private options without raising" do
+      opts = [key_cb_private: [identity_file: ~c"/path/that/does/not/exist"]]
+
+      assert {:error, ~c"identity key unavailable"} =
+               SSHKeyCallback.user_key(:"ssh-ed25519", opts)
+    end
+
+    test "is_host_key fails closed when known_hosts file is missing" do
+      opts = [key_cb_private: [known_hosts_file: ~c"/path/that/does/not/exist"]]
+
+      refute SSHKeyCallback.is_host_key(
+               :not_a_real_key,
+               ~c"example.invalid",
+               22,
+               :"ssh-ed25519",
+               opts
+             )
     end
   end
 end

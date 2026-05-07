@@ -9,72 +9,182 @@ defmodule Muse.Execution.SSHKeyCallback do
 
   ## Safety invariants
 
-    * Never stores or returns raw key content.
-    * Only provides file paths to the :ssh application.
-    * Host key verification is delegated to the known_hosts file or
-      the `:host_key_accept` option set by `ErlangSSHClient`.
+    * Never stores or emits raw key content.
+    * Reads only the configured identity file when Erlang `:ssh` requests a
+      user key for authentication.
+    * Verifies host keys against a configured known_hosts file or pinned
+      fingerprint. It never silently accepts unknown hosts or prompts users.
 
   ## Implementation notes
 
-  The `:ssh_client_key_api` behaviour requires `add_host_key/4` and
-  `is_host_key/4` callbacks. This module:
+  The `:ssh_client_key_api` behaviour requires host-key and user-key callbacks.
+  This module:
 
-    * Accepts any host key if the caller (ErlangSSHClient) has already
-      set up proper host key verification via `user_known_hosts_file`
-      or `host_key_accept` options. If neither is set, `ErlangSSHClient`
-      rejects the connection before reaching this callback.
-    * Provides the identity file for user key authentication.
+    * Returns `false` for unknown host keys, causing the SSH connection to fail
+      closed rather than falling back to TOFU or an interactive prompt.
+    * Does not persist host keys (`add_host_key/4` returns an error).
+    * Provides the configured identity file for user key authentication without
+      exposing key contents in errors or logs.
   """
 
   @behaviour :ssh_client_key_api
 
   @impl :ssh_client_key_api
   def add_host_key(_host, _port, _key, _opts) do
-    # We don't add host keys — that's handled by known_hosts files
-    :ok
+    # Do not implement TOFU/persistence. Hosts must already be trusted via the
+    # configured known_hosts file or a pinned fingerprint.
+    {:error, :host_key_persistence_disabled}
   end
 
   @impl :ssh_client_key_api
-  def is_host_key(_key, _host, _port, _opts) do
-    # Host key verification is handled by the :ssh application's
-    # built-in known_hosts check when user_known_hosts_file is set,
-    # or by the :host_key_accept callback if provided.
-    # If we reach this point without proper verification, deny.
-    false
+  def is_host_key(key, hosts, port, _algorithm, opts) do
+    pinned_fingerprint_matches?(key, opts) or known_hosts_trusts_key?(key, hosts, port, opts)
+  rescue
+    _ -> false
+  end
+
+  @impl :ssh_client_key_api
+  def is_host_key(key, host, algorithm, opts) do
+    # Compatibility fallback for older OTP callback shape. Without a port in the
+    # callback, only the default SSH port can be checked safely.
+    is_host_key(key, host, 22, algorithm, opts)
   end
 
   @impl :ssh_client_key_api
   def user_key(algorithm, opts) do
-    # Look up the identity file from the opts map provided by
-    # SSHCredentialResolver
-    case Keyword.get(opts, :identity_file) do
+    case private_opt(opts, :identity_file) do
       nil ->
-        {:error, :not_found}
+        {:error, ~c"identity key unavailable"}
 
       path ->
-        # Read the key file and return it in the format :ssh expects
-        case :file.read_file(path) do
-          {:ok, bin} ->
-            decode_key(bin, algorithm)
+        read_identity_file(path, algorithm)
+    end
+  rescue
+    _ -> {:error, ~c"identity key unavailable"}
+  end
 
-          {:error, _reason} ->
-            {:error, :not_found}
+  defp read_identity_file(path, algorithm) do
+    with {:ok, bin} <- :file.read_file(path),
+         {:ok, [{key_data, _attrs} | _rest]} <- decode_identity_key(bin, algorithm) do
+      {:ok, key_data}
+    else
+      _ -> {:error, ~c"identity key unavailable"}
+    end
+  end
+
+  defp decode_identity_key(bin, algorithm) do
+    :ssh_file.decode_ssh_file(:private, algorithm, bin, :ignore)
+  rescue
+    _ -> {:error, :decode_failed}
+  end
+
+  defp known_hosts_trusts_key?(key, hosts, port, opts) do
+    case private_opt(opts, :known_hosts_file) do
+      nil ->
+        false
+
+      path ->
+        candidates = host_candidates(hosts, port)
+
+        with {:ok, bin} <- :file.read_file(path),
+             decoded when is_list(decoded) <- :ssh_file.decode(bin, :known_hosts) do
+          Enum.any?(decoded, &known_host_entry_matches?(&1, key, candidates))
+        else
+          _ -> false
         end
     end
   end
 
-  # Decode SSH key from file content based on algorithm
-  defp decode_key(bin, algorithm) do
-    try do
-      case :ssh_file.decode(bin, algorithm) do
-        [{_key_type, key_data} | _rest] ->
-          {:ok, key_data}
+  defp known_host_entry_matches?({known_key, attrs}, key, candidates) do
+    known_key == key and
+      attrs
+      |> Keyword.get(:hostnames, [])
+      |> Enum.any?(&known_host_pattern_matches?(&1, candidates))
+  end
 
-        [] ->
-          {:error, :no_matching_key}
-      end
-    rescue
-      _ -> {:error, :decode_failed}
+  defp known_host_entry_matches?(_entry, _key, _candidates), do: false
+
+  defp known_host_pattern_matches?(pattern, candidates) do
+    pattern = to_string(pattern)
+    pattern == "*" or pattern in candidates
+  end
+
+  defp host_candidates(hosts, port) do
+    hosts
+    |> List.wrap()
+    |> Enum.flat_map(&host_strings(&1, port))
+    |> Enum.uniq()
+  end
+
+  defp host_strings(host, port) do
+    host_string = host_to_string(host)
+
+    cond do
+      host_string == "" -> []
+      port == 22 -> [host_string, "[#{host_string}]:22"]
+      true -> ["[#{host_string}]:#{port}", "#{host_string}:#{port}", host_string]
     end
   end
+
+  defp host_to_string(tuple) when is_tuple(tuple) do
+    tuple
+    |> :inet.ntoa()
+    |> to_string()
+  rescue
+    _ -> ""
+  end
+
+  defp host_to_string(host), do: to_string(host)
+
+  defp pinned_fingerprint_matches?(key, opts) do
+    case private_opt(opts, :pinned_fingerprint) do
+      nil ->
+        false
+
+      fingerprint ->
+        expected = normalize_fingerprint(fingerprint)
+
+        key
+        |> possible_fingerprints()
+        |> Enum.any?(&(normalize_fingerprint(&1) == expected))
+    end
+  end
+
+  defp possible_fingerprints(key) do
+    [
+      safe_fingerprint(fn -> :ssh.hostkey_fingerprint(key) end),
+      safe_fingerprint(fn -> :ssh.hostkey_fingerprint(:sha256, key) end),
+      safe_fingerprint(fn -> :ssh.hostkey_fingerprint(:sha, key) end),
+      safe_fingerprint(fn -> :ssh.hostkey_fingerprint(:md5, key) end)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp safe_fingerprint(fun) do
+    fun.() |> IO.iodata_to_binary()
+  rescue
+    _ -> nil
+  end
+
+  defp normalize_fingerprint(value) do
+    value
+    |> to_string()
+    |> String.trim()
+    |> String.downcase()
+    |> String.replace(~r/\s+/, "")
+  end
+
+  defp private_opt(opts, key) when is_list(opts) do
+    case Keyword.get(opts, key) do
+      nil ->
+        opts
+        |> Keyword.get(:key_cb_private, [])
+        |> Keyword.get(key)
+
+      value ->
+        value
+    end
+  end
+
+  defp private_opt(_opts, _key), do: nil
 end
