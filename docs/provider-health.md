@@ -85,7 +85,7 @@ All error messages are secret-safe — they never contain API keys, bearer token
 
 ## Retry and Backoff
 
-Muse implements bounded exponential backoff for transient provider failures:
+Muse includes a bounded exponential backoff helper for transient provider failures:
 
 - **Base delay:** 1000ms (1 second)
 - **Multiplier:** 2 (exponential)
@@ -93,15 +93,17 @@ Muse implements bounded exponential backoff for transient provider failures:
 - **Jitter:** ±20% of computed delay (prevents thundering herd)
 - **Max retries:** from `ProviderConfig.max_retries` (default: 2, 0 for fake)
 
-Only **retryable** error categories are retried:
+When this helper is wired into a call path, only **retryable** error categories are retried:
 - Rate limits (429)
 - Timeouts
 - Connection errors
 - Server errors (5xx)
 
-**Non-retryable** errors (auth, invalid model, invalid request, quota) are never retried — retrying would produce the same failure.
+**Non-retryable** errors (auth, invalid model, invalid request, quota) should never be retried — retrying would produce the same failure.
 
 Configure max retries via `MUSE_LLM_MAX_RETRIES` environment variable.
+
+**Runtime note:** `Muse.LLM.Retry` is a reusable helper and only applies where a provider call path explicitly wraps an operation with it. Provider transports may also pass `max_retries` to their underlying HTTP client where supported. User-facing output should not claim an individual request was retried unless that specific call path reports retry activity.
 
 ---
 

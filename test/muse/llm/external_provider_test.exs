@@ -62,12 +62,13 @@ defmodule Muse.LLM.ExternalProviderTest do
   # -- Helpers ----------------------------------------------------------------
 
   defp resolve_test_provider_config do
-    case Muse.Config.llm_provider_config() do
+    case Muse.Config.llm_provider_config(System.get_env()) do
       {:ok, config} ->
         config
 
       {:error, reason} ->
-        flunk("Cannot run external provider test: invalid config — #{to_string(reason)}")
+        safe_reason = reason |> to_string() |> Muse.Prompt.Redactor.redact_text()
+        flunk("Cannot run external provider test: invalid config — #{safe_reason}")
     end
   end
 end

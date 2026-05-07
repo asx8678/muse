@@ -66,6 +66,17 @@ defmodule Muse.LLM.ProviderErrorTest do
       assert error.category == :unknown
       assert error.retryable == false
     end
+
+    test "classifies provider adapter HTTP error shapes" do
+      error =
+        ProviderError.classify(
+          {:provider_http_error, %{status: 401, body_summary: "Unauthorized"}}
+        )
+
+      assert error.category == :auth
+      assert error.retryable == false
+      assert error.http_status == 401
+    end
   end
 
   describe "classify/1 — non-HTTP errors" do
@@ -127,6 +138,18 @@ defmodule Muse.LLM.ProviderErrorTest do
     test "classifies :closed as connection error" do
       error = ProviderError.classify(:closed)
       assert error.category == :connection
+      assert error.retryable == true
+    end
+
+    test "classifies provider adapter network errors as retryable" do
+      error = ProviderError.classify({:provider_network_error, %{reason: "Connection refused"}})
+      assert error.category == :connection
+      assert error.retryable == true
+    end
+
+    test "classifies provider adapter timeout summaries as timeout" do
+      error = ProviderError.classify({:provider_network_error, %{reason: "request timeout"}})
+      assert error.category == :timeout
       assert error.retryable == true
     end
   end

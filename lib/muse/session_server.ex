@@ -968,8 +968,21 @@ defmodule Muse.SessionServer do
   # additional sanitization as defense-in-depth to ensure no secrets leak.
   @spec format_provider_error(term()) :: String.t()
   defp format_provider_error(reason) do
-    safe_reason = safe_error_summary(reason)
-    "Error: provider error occurred — #{safe_reason}"
+    error = Muse.LLM.ProviderError.classify(reason)
+
+    details =
+      case error.category do
+        :unknown ->
+          "#{safe_error_summary(reason)} — #{error.hint}"
+
+        _ ->
+          Muse.LLM.ProviderError.render_compact(error)
+      end
+
+    "Error: provider error occurred — #{details}"
+  rescue
+    _ ->
+      "Error: provider error occurred — #{safe_error_summary(reason)}"
   end
 
   # Generate a safe, bounded string summary of an error term.

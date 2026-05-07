@@ -48,6 +48,21 @@ defmodule Muse.ApplicationTest do
     end
   end
 
+  defp with_system_env(env, fun) when is_map(env) do
+    keys = Map.keys(env)
+    original = Map.new(keys, fn key -> {key, System.get_env(key)} end)
+
+    try do
+      Enum.each(env, fn {key, value} -> System.put_env(key, value) end)
+      fun.()
+    after
+      Enum.each(original, fn
+        {key, nil} -> System.delete_env(key)
+        {key, value} -> System.put_env(key, value)
+      end)
+    end
+  end
+
   # -- runtime_children/1 -------------------------------------------------------
 
   describe "runtime_children/1 — default (CLI + Web + watch + source_mode)" do
@@ -596,6 +611,43 @@ defmodule Muse.ApplicationTest do
       end)
 
       :ok
+    end
+
+    test "runtime startup emits redacted provider config diagnostics after Diagnostics starts" do
+      with_system_env(
+        %{
+          "MUSE_PROVIDER" => "openrouter",
+          "MUSE_OPENROUTER_MODEL" => "anthropic/claude-3.5-sonnet",
+          "MUSE_OPENROUTER_BASE_URL" => "not-a-url?api_key=sk-test-secret-key-12345"
+        },
+        fn ->
+          Elixir.Application.put_env(:muse, :start_runtime_children?, true)
+          Elixir.Application.put_env(:muse, :source_mode?, false)
+          Elixir.Application.put_env(:muse, :boot_args, ["--web-only", "--no-watch"])
+          Elixir.Application.put_env(:muse, :halt_fun, fn _ -> :ok end)
+
+          Elixir.Application.stop(:muse)
+          Process.sleep(50)
+
+          try do
+            {:ok, _} = Elixir.Application.ensure_all_started(:muse)
+
+            diagnostics = Muse.Diagnostics.list()
+            messages = Enum.map(diagnostics, & &1.message)
+
+            assert Enum.any?(messages, &String.contains?(&1, "Provider config invalid"))
+            refute Enum.any?(messages, &String.contains?(&1, "sk-test-secret-key-12345"))
+            assert Enum.any?(messages, &String.contains?(&1, "[REDACTED]"))
+          after
+            Elixir.Application.stop(:muse)
+            Process.sleep(50)
+            Elixir.Application.put_env(:muse, :start_runtime_children?, false)
+            Elixir.Application.delete_env(:muse, :boot_args)
+            Elixir.Application.delete_env(:muse, :halt_fun)
+            Elixir.Application.ensure_all_started(:muse)
+          end
+        end
+      )
     end
 
     test "starts runtime children and Muse.submit/2 routes through a session" do

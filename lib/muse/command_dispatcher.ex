@@ -854,7 +854,15 @@ defmodule Muse.CommandDispatcher do
         |> maybe_put_env(env_map)
         |> maybe_put_config_source(context)
 
-      status = Muse.LLM.ProviderStatus.report(opts)
+      status =
+        case context_provider_config(context) do
+          %Muse.LLM.ProviderConfig{} = config ->
+            Muse.LLM.ProviderStatus.from_config(config, opts)
+
+          nil ->
+            Muse.LLM.ProviderStatus.report(opts)
+        end
+
       {:ok, Muse.LLM.ProviderStatus.render(status), []}
     end
   end
@@ -867,33 +875,12 @@ defmodule Muse.CommandDispatcher do
     else
       env_map = Map.get(context, :env) || Map.get(context, :env_map)
 
-      case Muse.Config.llm_provider_config(env_map || %{}) do
+      case resolve_provider_config_for_command(context, env_map) do
         {:ok, config} ->
-          provider_id = config.id || "fake"
-          models = Muse.LLM.ProviderStatus.known_models(provider_id)
-
-          output =
-            case models do
-              [] ->
-                "No known models for provider: #{provider_id}. " <>
-                  "Set a provider with MUSE_PROVIDER and a model with MUSE_MODEL."
-
-              models ->
-                header = "Known models for #{config.name || provider_id} (#{provider_id}):"
-
-                lines =
-                  Enum.map(models, fn {id, desc} ->
-                    marker = if id == config.model, do: " ← current", else: ""
-                    "  - #{id}  (#{desc})#{marker}"
-                  end)
-
-                [header | lines] |> Enum.join("\n")
-            end
-
-          {:ok, output, []}
+          {:ok, render_provider_models(config), []}
 
         {:error, reason} ->
-          {:error, "Error: unable to resolve provider config: #{to_string(reason)}", []}
+          {:error, "Error: unable to resolve provider config: #{safe_provider_error(reason)}", []}
       end
     end
   end
@@ -1331,11 +1318,62 @@ defmodule Muse.CommandDispatcher do
   defp maybe_put_env(opts, _), do: opts
 
   defp maybe_put_config_source(opts, context) do
-    if Map.has_key?(context, :provider_config) or Map.has_key?(context, :llm_provider_config) do
+    if context_provider_config(context) do
       Keyword.put(opts, :config_source, "context")
     else
       opts
     end
+  end
+
+  defp context_provider_config(context) when is_map(context) do
+    case Map.get(context, :provider_config) || Map.get(context, "provider_config") ||
+           Map.get(context, :llm_provider_config) || Map.get(context, "llm_provider_config") do
+      %Muse.LLM.ProviderConfig{} = config -> config
+      _other -> nil
+    end
+  end
+
+  defp context_provider_config(_context), do: nil
+
+  defp resolve_provider_config_for_command(context, env_map) do
+    case context_provider_config(context) do
+      %Muse.LLM.ProviderConfig{} = config ->
+        {:ok, config}
+
+      nil when is_map(env_map) ->
+        Muse.Config.llm_provider_config(env_map)
+
+      nil ->
+        Muse.Config.llm_provider_config(System.get_env())
+    end
+  end
+
+  defp render_provider_models(config) do
+    provider_id = config.id || "fake"
+    models = Muse.LLM.ProviderStatus.known_models(provider_id)
+
+    case models do
+      [] ->
+        "No known models for provider: #{provider_id}. " <>
+          "Set a provider with MUSE_PROVIDER and a model with MUSE_MODEL."
+
+      models ->
+        header = "Known models for #{config.name || provider_id} (#{provider_id}):"
+
+        lines =
+          Enum.map(models, fn {id, desc} ->
+            marker = if id == config.model, do: " ← current", else: ""
+            "  - #{id}  (#{desc})#{marker}"
+          end)
+
+        [header | lines] |> Enum.join("\n")
+    end
+  end
+
+  defp safe_provider_error(reason) do
+    reason
+    |> safe_to_string()
+    |> Muse.Prompt.Redactor.redact_text()
   end
 
   defp plan_lifecycle_usage(:approve_plan), do: "/approve plan"

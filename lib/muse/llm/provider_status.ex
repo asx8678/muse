@@ -95,7 +95,7 @@ defmodule Muse.LLM.ProviderStatus do
           auth_mode: nil,
           wire_api: nil,
           transport: nil,
-          validation_errors: [to_string(reason)],
+          validation_errors: [safe_error(reason)],
           connectivity_error: nil,
           config_source: config_source
         }
@@ -215,7 +215,7 @@ defmodule Muse.LLM.ProviderStatus do
         maybe_connectivity_check(base, config, opts)
 
       {:error, reason} ->
-        %{base | status: :misconfigured, validation_errors: [to_string(reason)]}
+        %{base | status: :misconfigured, validation_errors: [safe_error(reason)]}
     end
   end
 
@@ -350,6 +350,15 @@ defmodule Muse.LLM.ProviderStatus do
   defp status_label(:misconfigured), do: "misconfigured"
   defp status_label(:unreachable), do: "unreachable"
   defp status_label(:reachable), do: "reachable"
+
+  defp safe_error(reason) do
+    reason
+    |> safe_to_string()
+    |> Muse.Prompt.Redactor.redact_text()
+  end
+
+  defp safe_to_string(value) when is_binary(value), do: value
+  defp safe_to_string(value), do: inspect(value, limit: 10, printable_limit: 200)
 
   defp safe_string(nil), do: nil
   defp safe_string(value) when is_binary(value), do: value

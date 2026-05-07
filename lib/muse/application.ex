@@ -37,8 +37,15 @@ defmodule Muse.Application do
       maybe_configure_endpoint(opts)
       children = runtime_children(opts)
       StartupBanner.io_puts(banner_opts(opts))
-      validate_provider_config()
-      Supervisor.start_link(children, strategy: :one_for_one, name: Muse.Supervisor)
+
+      case Supervisor.start_link(children, strategy: :one_for_one, name: Muse.Supervisor) do
+        {:ok, _pid} = result ->
+          validate_provider_config()
+          result
+
+        other ->
+          other
+      end
     else
       Supervisor.start_link(base_children(), strategy: :one_for_one, name: Muse.Supervisor)
     end
@@ -177,7 +184,7 @@ defmodule Muse.Application do
   """
   @spec validate_provider_config() :: :ok
   def validate_provider_config do
-    case Muse.Config.llm_provider_config() do
+    case Muse.Config.llm_provider_config(System.get_env()) do
       {:ok, config} ->
         provider = Muse.LLM.ProviderConfig.provider_atom(config)
 
@@ -190,7 +197,7 @@ defmodule Muse.Application do
 
       {:error, reason} ->
         # Config resolution failed entirely
-        maybe_emit_diagnostic(:error, "Provider config invalid: #{to_string(reason)}")
+        maybe_emit_diagnostic(:error, "Provider config invalid: #{safe_provider_message(reason)}")
 
         maybe_emit_diagnostic(
           :warning,
@@ -231,13 +238,28 @@ defmodule Muse.Application do
   end
 
   defp maybe_emit_diagnostic(level, message) do
-    # Only emit if Diagnostics GenServer is running (not in test base_children mode)
+    # Only emit if Diagnostics GenServer is running (not in test base_children mode).
+    # Validation must never make startup fail, even if Diagnostics exits between
+    # the availability check and the GenServer.call/3.
     if Process.whereis(Muse.Diagnostics) do
-      Muse.Diagnostics.emit(level, "Provider config: #{message}", %{})
+      Muse.Diagnostics.emit(level, "Provider config: #{safe_provider_message(message)}", %{})
     end
 
     :ok
+  rescue
+    _ -> :ok
+  catch
+    :exit, _ -> :ok
   end
+
+  defp safe_provider_message(message) do
+    message
+    |> safe_provider_to_string()
+    |> Muse.Prompt.Redactor.redact_text()
+  end
+
+  defp safe_provider_to_string(message) when is_binary(message), do: message
+  defp safe_provider_to_string(message), do: inspect(message, limit: 10, printable_limit: 200)
 
   # -- Help text -----------------------------------------------------------------
 

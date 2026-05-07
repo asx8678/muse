@@ -1,7 +1,9 @@
 defmodule Muse.LLM.Retry do
   @moduledoc """
-  Bounded retry with exponential backoff for transient provider failures.
+  Bounded retry helper with exponential backoff for transient provider failures.
 
+  This module is inert unless a caller explicitly wraps an operation with
+  `with_retry/2`; it does not automatically change provider runtime behavior.
   Only retries errors classified as retryable by `Muse.LLM.ProviderError`.
   Client errors (auth, invalid model, invalid request) are never retried —
   retrying would produce the same failure.
@@ -84,7 +86,7 @@ defmodule Muse.LLM.Retry do
         error = ProviderError.classify(reason)
 
         if error.retryable and max_retries > 0 do
-          retry_loop(fun, error, 1, max_retries, opts)
+          retry_loop(fun, reason, 1, max_retries, opts)
         else
           {:error, reason}
         end
@@ -98,7 +100,7 @@ defmodule Muse.LLM.Retry do
 
       delay = min(base * multiplier^(n-1), max_delay)
       jitter = delay * random(-0.2, 0.2)
-      final = max(0, delay + jitter)
+      final = min(max_delay, max(0, delay + jitter))
 
   For deterministic testing, pass `:backoff_fn` to `with_retry/2`.
 
@@ -127,7 +129,7 @@ defmodule Muse.LLM.Retry do
     jitter = :rand.uniform() * jitter_range * 2 - jitter_range
 
     delay = round(capped + jitter)
-    max(0, delay)
+    delay |> max(0) |> min(max_delay)
   end
 
   @doc """
@@ -149,11 +151,15 @@ defmodule Muse.LLM.Retry do
     {:error, prev_error}
   end
 
-  defp retry_loop(fun, _prev_error, attempt, max_retries, opts) do
+  defp retry_loop(fun, prev_reason, attempt, max_retries, opts) do
     backoff_fn = Keyword.get(opts, :backoff_fn, &compute_delay/2)
     on_retry = Keyword.get(opts, :on_retry, &default_on_retry/2)
 
     delay = backoff_fn.(attempt, opts)
+
+    # Notify before sleeping/retrying so telemetry/UI callers can observe
+    # successful retries as well as retries that ultimately fail.
+    on_retry.(attempt, ProviderError.classify(prev_reason))
 
     # Sleep for backoff
     if delay > 0 do
@@ -166,9 +172,6 @@ defmodule Muse.LLM.Retry do
 
       {:error, reason} ->
         error = ProviderError.classify(reason)
-
-        # Notify about retry
-        on_retry.(attempt, error)
 
         if error.retryable do
           retry_loop(fun, reason, attempt + 1, max_retries, opts)

@@ -180,6 +180,25 @@ defmodule Muse.LLM.ProviderError do
 
   # -- Classification logic ----------------------------------------------------
 
+  defp do_classify({:provider_http_error, details}) when is_map(details) do
+    status = Map.get(details, :status) || Map.get(details, "status")
+    body = Map.get(details, :body_summary) || Map.get(details, "body_summary")
+
+    if is_integer(status) do
+      do_classify({:http_error, status, body})
+    else
+      do_classify({:connection_error, inspect(details, limit: 5, printable_limit: 200)})
+    end
+  end
+
+  defp do_classify({:provider_network_error, details}) when is_map(details) do
+    reason = Map.get(details, :reason) || Map.get(details, "reason") || details
+    classify_transport_reason(reason)
+  end
+
+  defp do_classify({:sse_transport_error, reason}), do: classify_transport_reason(reason)
+  defp do_classify({:transport_error, reason}), do: classify_transport_reason(reason)
+
   defp do_classify({:http_error, status, _body}) when status in [401, 403] do
     hint =
       if status == 401 do
@@ -324,6 +343,16 @@ defmodule Muse.LLM.ProviderError do
   defp do_classify(_reason) do
     {:unknown, "Provider error", "An unexpected error occurred.",
      "Check /auth status and /provider status for configuration issues.", false, nil}
+  end
+
+  defp classify_transport_reason(reason) do
+    case do_classify(reason) do
+      {:unknown, _title, _message, _hint, _retryable, _status} ->
+        do_classify({:connection_error, reason})
+
+      classified ->
+        classified
+    end
   end
 
   # -- Redaction ---------------------------------------------------------------

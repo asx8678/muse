@@ -135,7 +135,7 @@ defmodule Muse.LLM.RetryTest do
     test "uses custom backoff function" do
       backoff_calls = :counters.new(1, [:atomics])
 
-      backoff_fn = fn attempt, _opts ->
+      backoff_fn = fn _attempt, _opts ->
         :counters.add(backoff_calls, 1, 1)
         # No actual delay for tests
         0
@@ -169,7 +169,34 @@ defmodule Muse.LLM.RetryTest do
       )
 
       # on_retry should have been called for each retry attempt
-      assert :counters.get(retries, 1) >= 1
+      assert :counters.get(retries, 1) == 2
+    end
+
+    test "calls on_retry before a retry that later succeeds" do
+      attempts = :counters.new(1, [:atomics])
+
+      parent = self()
+
+      result =
+        Retry.with_retry(
+          fn ->
+            :counters.add(attempts, 1, 1)
+
+            case :counters.get(attempts, 1) do
+              1 -> {:error, :timeout}
+              _ -> {:ok, "recovered"}
+            end
+          end,
+          max_retries: 2,
+          backoff_fn: fn _attempt, _opts -> 0 end,
+          on_retry: fn attempt, error ->
+            send(parent, {:retry, attempt, error.category})
+            :ok
+          end
+        )
+
+      assert result == {:ok, "recovered"}
+      assert_received {:retry, 1, :timeout}
     end
   end
 
@@ -188,8 +215,8 @@ defmodule Muse.LLM.RetryTest do
 
     test "delay is capped by max_delay_ms" do
       delay = Retry.compute_delay(10, base_delay_ms: 1000, multiplier: 2, max_delay_ms: 5000)
-      # Even at attempt 10 (would be 512000ms without cap), it should be ≤ 6000 (5000 + 20%)
-      assert delay <= 6000
+      # Even at attempt 10 (would be 512000ms without cap), it should respect the cap.
+      assert delay <= 5000
     end
 
     test "delay is never negative" do

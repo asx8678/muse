@@ -1664,7 +1664,7 @@ defmodule Muse.CommandDispatcherTest do
   describe "dispatch/3 — :provider_status" do
     test "returns provider status report with no extra args" do
       {:ok, output, effects} =
-        CommandDispatcher.dispatch(:provider_status, nil, %{})
+        CommandDispatcher.dispatch(:provider_status, nil, %{env: %{}})
 
       assert is_binary(output)
       assert output =~ "Provider:"
@@ -1674,7 +1674,7 @@ defmodule Muse.CommandDispatcherTest do
 
     test "reports fake provider by default" do
       {:ok, output, _effects} =
-        CommandDispatcher.dispatch(:provider_status, nil, %{})
+        CommandDispatcher.dispatch(:provider_status, nil, %{env: %{}})
 
       assert output =~ "fake" or output =~ "Fake Provider"
     end
@@ -1686,18 +1686,35 @@ defmodule Muse.CommandDispatcherTest do
       assert output =~ "usage: /provider status"
     end
 
+    test "uses provider_config from context when present" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:provider_status, nil, %{
+          provider_config: openai_provider_config()
+        })
+
+      assert output =~ "OpenAI Compatible"
+      assert output =~ "gpt-4o-mini"
+      assert output =~ "Config source: context"
+    end
+
     test "output never contains API keys or secrets" do
       {:ok, output, _effects} =
-        CommandDispatcher.dispatch(:provider_status, nil, %{})
+        CommandDispatcher.dispatch(:provider_status, nil, %{
+          env: %{
+            "MUSE_PROVIDER" => "openrouter",
+            "MUSE_OPENROUTER_MODEL" => "anthropic/claude-3.5-sonnet",
+            "MUSE_OPENROUTER_API_KEY" => "sk-test-secret-key-12345"
+          }
+        })
 
-      refute output =~ ~r/sk-[a-zA-Z0-9]{8,}/
+      refute output =~ "sk-test-secret-key-12345"
     end
   end
 
   describe "dispatch/3 — :provider_models" do
     test "returns model listing for default fake provider" do
       {:ok, output, effects} =
-        CommandDispatcher.dispatch(:provider_models, nil, %{})
+        CommandDispatcher.dispatch(:provider_models, nil, %{env: %{}})
 
       assert is_binary(output)
       # Fake provider has no known models in the catalog
@@ -1724,6 +1741,30 @@ defmodule Muse.CommandDispatcherTest do
       assert output =~ "OpenRouter" or output =~ "openrouter"
       # Should mark current model
       assert output =~ "\u2190 current" or output =~ "anthropic/claude-3.5-sonnet"
+    end
+
+    test "lists models from provider_config in context" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:provider_models, nil, %{
+          provider_config: openai_provider_config()
+        })
+
+      assert output =~ "OpenAI Compatible"
+      assert output =~ "gpt-4o-mini"
+      assert output =~ "← current"
+    end
+
+    test "redacts secret-looking values from config errors" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_OPENROUTER_MODEL" => "anthropic/claude-3.5-sonnet",
+        "MUSE_OPENROUTER_BASE_URL" => "not-a-url?api_key=sk-test-secret-key-12345"
+      }
+
+      {:error, output, _effects} = CommandDispatcher.dispatch(:provider_models, nil, %{env: env})
+
+      refute output =~ "sk-test-secret-key-12345"
+      assert output =~ "[REDACTED]"
     end
   end
 end

@@ -3,6 +3,19 @@ defmodule Muse.SessionServerTest do
 
   alias Muse.State
 
+  defmodule AuthFailProvider do
+    @behaviour Muse.LLM.Provider
+
+    @reason {:provider_http_error,
+             %{status: 401, body_summary: "Unauthorized sk-test-secret-key-12345"}}
+
+    @impl true
+    def stream(_request, emit) do
+      emit.(Muse.LLM.Event.provider_error(@reason))
+      {:error, @reason}
+    end
+  end
+
   # -- Helpers ------------------------------------------------------------------
 
   defp ensure_infrastructure do
@@ -861,6 +874,19 @@ defmodule Muse.SessionServerTest do
       assert event.data.text == error_text or
                String.contains?(event.data.text, "[REDACTED]") or
                not String.contains?(event.data.text, "sk-test-secret")
+    end
+
+    test "provider HTTP auth failures return actionable safe user text" do
+      pid = start_server("actionable-provider-error-session")
+
+      assert {:ok, text} =
+               Muse.SessionServer.submit(pid, :cli, "trigger provider auth failure",
+                 provider_module: AuthFailProvider
+               )
+
+      assert text =~ "Authentication failed"
+      assert text =~ "/auth status"
+      refute text =~ "sk-test-secret-key-12345"
     end
   end
 

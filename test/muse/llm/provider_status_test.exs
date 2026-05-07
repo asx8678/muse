@@ -175,6 +175,24 @@ defmodule Muse.LLM.ProviderStatusTest do
 
       refute output =~ "sk-test-secret-key-12345"
     end
+
+    test "redacts secret-looking values from validation errors" do
+      status =
+        ProviderStatus.report(
+          env: %{
+            "MUSE_PROVIDER" => "openrouter",
+            "MUSE_OPENROUTER_MODEL" => "anthropic/claude-3.5-sonnet",
+            "MUSE_OPENROUTER_BASE_URL" => "not-a-url?api_key=sk-test-secret-key-12345"
+          },
+          config_source: "test"
+        )
+
+      output = ProviderStatus.render(status)
+
+      assert output =~ "misconfigured"
+      refute output =~ "sk-test-secret-key-12345"
+      assert output =~ "[REDACTED]"
+    end
   end
 
   describe "render_compact/1" do
