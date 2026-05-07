@@ -26,7 +26,7 @@ defmodule Muse.Memory do
 
   """
 
-  alias Muse.{EventPayloadRedactor, MetadataSanitizer, Prompt.Redactor, Session}
+  alias Muse.{EventPayloadRedactor, MetadataSanitizer, Prompt.Redactor, Session, SessionStore}
 
   @max_memory_bytes 20_000
   @max_list_length 10
@@ -228,13 +228,66 @@ defmodule Muse.Memory do
   @spec validate_no_secrets(memory_artifact()) :: :ok | {:error, reasons :: [String.t()]}
   def validate_no_secrets(memory) do
     memory
-    |> Map.drop([:compacted_at, :source_session_id])
+    |> Map.drop([:compacted_at, :source_session_id, "compacted_at", "source_session_id"])
     |> Enum.flat_map(fn {key, value} ->
       check_for_secrets(key, value, [])
     end)
     |> case do
       [] -> :ok
       reasons -> {:error, Enum.uniq(reasons)}
+    end
+  end
+
+  @doc """
+  Validate memory for secrets and persist it to disk.
+
+  This is the central persistence boundary for memory artifacts. It
+  validates the memory with `validate_no_secrets/1` before calling
+  `SessionStore.save_memory/3`. If validation fails, the memory is
+  **not** written and an error is returned. If the disk write fails,
+  the error is propagated to the caller rather than swallowed.
+
+  Returns:
+    - `:ok` on successful validation and persistence
+    - `{:error, {:unsafe_memory, reasons}}` if secrets are detected
+    - `{:error, reason}` if the disk write fails
+  """
+  @spec validate_and_persist(String.t(), String.t(), map()) ::
+          :ok | {:error, {:unsafe_memory, reasons :: [String.t()]} | tuple()}
+  def validate_and_persist(store_base_dir, session_id, memory) when is_map(memory) do
+    case validate_no_secrets(memory) do
+      :ok ->
+        case SessionStore.save_memory(store_base_dir, session_id, memory) do
+          :ok -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reasons} ->
+        {:error, {:unsafe_memory, reasons}}
+    end
+  end
+
+  def validate_and_persist(_store_base_dir, _session_id, memory) do
+    {:error, {:unsafe_memory, ["memory must be a map, got: #{inspect(memory, limit: 1)}"]}}
+  end
+
+  @doc """
+  Validate memory loaded from disk before trusting it.
+
+  Memory restored from `memory.json` may contain secrets from legacy
+  sessions or corrupted files. This function validates the loaded map
+  and returns either the safe memory or `nil` (fail-closed).
+
+  Returns:
+    - `{:ok, memory}` if the loaded memory is safe
+    - `{:error, {:unsafe_memory, reasons}}` if secrets are detected
+  """
+  @spec validate_loaded_memory(map()) ::
+          {:ok, map()} | {:error, {:unsafe_memory, reasons :: [String.t()]}}
+  def validate_loaded_memory(memory) when is_map(memory) do
+    case validate_no_secrets(memory) do
+      :ok -> {:ok, memory}
+      {:error, reasons} -> {:error, {:unsafe_memory, reasons}}
     end
   end
 

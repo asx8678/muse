@@ -495,4 +495,76 @@ defmodule Muse.SessionRouterTest do
       assert {:ok, _status} = Muse.SessionRouter.status("valid-session")
     end
   end
+
+  # -- muse-02e: set_memory/2 fail-closed validation -----------------------------
+
+  describe "set_memory/2 — fail-closed validation" do
+    setup do
+      # Ensure infrastructure is running
+      if Process.whereis(Muse.SessionSupervisor) do
+        :ok
+      else
+        {:ok, _} =
+          DynamicSupervisor.start_link(strategy: :one_for_one, name: Muse.SessionSupervisor)
+      end
+
+      if Process.whereis(Muse.SessionRegistry) do
+        :ok
+      else
+        {:ok, _} = Registry.start_link(keys: :unique, name: Muse.SessionRegistry)
+      end
+
+      on_exit(fn ->
+        # Clean up test sessions
+        if Process.whereis(Muse.SessionSupervisor) do
+          Muse.SessionSupervisor
+          |> DynamicSupervisor.which_children()
+          |> Enum.each(fn
+            {_, pid, _, _} when is_pid(pid) ->
+              try do
+                DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid)
+              catch
+                :exit, _ -> :ok
+              end
+
+            _ ->
+              :ok
+          end)
+        end
+      end)
+
+      :ok
+    end
+
+    test "propagates unsafe_memory error from SessionServer" do
+      session_id = "router-mem-unsafe-#{:erlang.unique_integer([:positive])}"
+      {:ok, _pid} = Muse.SessionRouter.find_or_start_session(session_id)
+
+      unsafe_memory = %{"user_goal" => "Key: sk-test12345secret"}
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               Muse.SessionRouter.set_memory(session_id, unsafe_memory)
+
+      assert is_list(reasons) and length(reasons) > 0
+    end
+
+    test "accepts safe memory" do
+      session_id = "router-mem-safe-#{:erlang.unique_integer([:positive])}"
+      {:ok, _pid} = Muse.SessionRouter.find_or_start_session(session_id)
+
+      safe_memory = %{"user_goal" => "Build feature", "project_facts" => ["Elixir"]}
+      assert :ok = Muse.SessionRouter.set_memory(session_id, safe_memory)
+
+      assert {:ok, memory} = Muse.SessionRouter.get_memory(session_id)
+      assert memory != nil
+    end
+
+    test "returns not_found for non-existent session" do
+      assert {:error, :not_found} =
+               Muse.SessionRouter.set_memory(
+                 "nonexistent-#{:erlang.unique_integer([:positive])}",
+                 %{"data" => 1}
+               )
+    end
+  end
 end

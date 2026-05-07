@@ -1292,4 +1292,175 @@ defmodule Muse.SessionStoreTest do
       assert memory["decisions_made"] == ["Use GenServer pattern"]
     end
   end
+
+  # -- muse-02e: Fail-closed memory persistence validation -------------------------
+
+  describe "save_memory/3 with validate: true" do
+    test "persists safe memory when validate: true", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = %{"user_goal" => "Build feature", "project_facts" => ["Elixir project"]}
+
+      assert :ok = SessionStore.save_memory(base_dir, session_id, memory, validate: true)
+      assert {:ok, loaded} = SessionStore.load_memory(base_dir, session_id)
+      assert loaded["user_goal"] == "Build feature"
+    end
+
+    test "rejects memory with API keys when validate: true", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = %{"user_goal" => "Key: sk-test12345secret"}
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               SessionStore.save_memory(base_dir, session_id, memory, validate: true)
+
+      assert is_list(reasons) and length(reasons) > 0
+      # Memory should NOT be written to disk
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
+    end
+
+    test "rejects memory with sensitive keys when validate: true", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = %{"user_goal" => "Test", "password" => "hunter2"}
+
+      assert {:error, {:unsafe_memory, _reasons}} =
+               SessionStore.save_memory(base_dir, session_id, memory, validate: true)
+
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
+    end
+
+    test "rejects memory with nested sensitive keys when validate: true", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = %{"user_goal" => "Test", "config" => %{"api_key" => "plain-value"}}
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               SessionStore.save_memory(base_dir, session_id, memory, validate: true)
+
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "without validate option, redacts and persists as before (backward compat)", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      # Legacy behavior: redact and persist even if secrets present
+      memory = %{"user_goal" => "Key: sk-test12345secret"}
+
+      assert :ok = SessionStore.save_memory(base_dir, session_id, memory)
+
+      {:ok, raw} =
+        File.read(Path.join(SessionStore.session_dir(base_dir, session_id), "memory.json"))
+
+      refute String.contains?(raw, "sk-test12345secret")
+      # Redaction replaces secret patterns with [REDACTED]
+      assert String.contains?(raw, "REDACTED")
+    end
+  end
+
+  describe "load_memory/2 with validate: true" do
+    test "returns safe loaded memory when validate: true", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = %{"user_goal" => "Build feature", "project_facts" => ["Elixir project"]}
+
+      assert :ok = SessionStore.save_memory(base_dir, session_id, memory)
+      assert {:ok, loaded} = SessionStore.load_memory(base_dir, session_id, validate: true)
+      assert loaded["user_goal"] == "Build feature"
+    end
+
+    test "rejects loaded memory with secrets when validate: true", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      # Write a memory file with a secret that survives redaction.
+      # We craft a file where the secret is under a sensitive key,
+      # which gets replaced with **REDACTED** by scrub_sensitive_keys,
+      # so the secret doesn't survive the save. Instead, we write
+      # the file directly to simulate a legacy/corrupted file.
+      dir = SessionStore.session_dir(base_dir, session_id)
+      File.mkdir_p!(dir)
+
+      # Write a memory.json with a raw secret that bypasses save-time redaction
+      raw_json =
+        Jason.encode!(%{
+          "schema_version" => 1,
+          "user_goal" => "Key: sk-test12345secret",
+          "project_facts" => []
+        })
+
+      File.write!(Path.join(dir, "memory.json"), raw_json)
+
+      # Loading with validate: true should reject it
+      assert {:error, {:unsafe_memory, _reasons}} =
+               SessionStore.load_memory(base_dir, session_id, validate: true)
+    end
+
+    test "without validate option, returns loaded memory as-is (backward compat)", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      # Write safe memory
+      memory = %{"user_goal" => "Build feature", "project_facts" => ["Elixir"]}
+      assert :ok = SessionStore.save_memory(base_dir, session_id, memory)
+
+      # Loading without validate returns the data
+      assert {:ok, loaded} = SessionStore.load_memory(base_dir, session_id)
+      assert loaded["user_goal"] == "Build feature"
+    end
+  end
+
+  describe "import_session/3 — memory validation" do
+    test "rejects import with unsafe memory", %{base_dir: base_dir} do
+      export = %{
+        "session_id" => "import-unsafe-mem",
+        "snapshot" => %{"status" => "idle"},
+        "events" => [],
+        "messages" => [],
+        "patches" => [],
+        "memory" => %{"user_goal" => "Key: sk-test12345secret", "project_facts" => []}
+      }
+
+      assert {:error, {:unsafe_memory, _reasons}} =
+               SessionStore.import_session(base_dir, export)
+
+      refute SessionStore.session_exists?(base_dir, "import-unsafe-mem")
+    end
+
+    test "rejects import with sensitive keys in memory", %{base_dir: base_dir} do
+      export = %{
+        "session_id" => "import-sensitive-key",
+        "snapshot" => %{"status" => "idle"},
+        "events" => [],
+        "messages" => [],
+        "patches" => [],
+        "memory" => %{"user_goal" => "Test", "password" => "hunter2"}
+      }
+
+      assert {:error, {:unsafe_memory, _reasons}} =
+               SessionStore.import_session(base_dir, export)
+    end
+
+    test "accepts import with safe memory", %{base_dir: base_dir} do
+      export = %{
+        "session_id" => "import-safe-mem",
+        "snapshot" => %{"status" => "idle"},
+        "events" => [],
+        "messages" => [],
+        "patches" => [],
+        "memory" => %{"user_goal" => "Build feature", "project_facts" => ["Elixir"]}
+      }
+
+      assert {:ok, "import-safe-mem"} = SessionStore.import_session(base_dir, export)
+
+      assert {:ok, memory} = SessionStore.load_memory(base_dir, "import-safe-mem")
+      assert memory["user_goal"] == "Build feature"
+    end
+  end
 end

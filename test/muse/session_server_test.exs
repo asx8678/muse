@@ -2008,4 +2008,199 @@ defmodule Muse.SessionServerTest do
       assert status.session_id == "valid-server-session"
     end
   end
+
+  # -- muse-02e: Fail-closed memory persistence tests ---------------------------
+
+  describe "set_memory/2 — fail-closed validation" do
+    setup do
+      ensure_infrastructure()
+      on_exit(fn -> cleanup() end)
+      :ok
+    end
+
+    test "accepts safe map memory and persists" do
+      session_id = "mem-safe-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      memory = %{"user_goal" => "Build feature", "project_facts" => ["Elixir"]}
+      assert :ok = Muse.SessionServer.set_memory(pid, memory)
+
+      # In-memory state is updated
+      status = Muse.SessionServer.status(pid)
+      assert status.memory == memory
+
+      # Durable state is persisted
+      base_dir = Muse.SessionServer.current_store_base_dir()
+      assert {:ok, loaded} = Muse.SessionStore.load_memory(base_dir, session_id)
+      assert loaded["user_goal"] == "Build feature"
+    end
+
+    test "rejects memory with API key — does not update in-memory state" do
+      session_id = "mem-unsafe-key-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      # First set safe memory
+      safe_memory = %{"user_goal" => "Build feature"}
+      assert :ok = Muse.SessionServer.set_memory(pid, safe_memory)
+
+      # Now try to set unsafe memory
+      unsafe_memory = %{"user_goal" => "Key: sk-test12345secret"}
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               Muse.SessionServer.set_memory(pid, unsafe_memory)
+
+      assert is_list(reasons) and length(reasons) > 0
+
+      # In-memory state should NOT be updated — old safe memory remains
+      status = Muse.SessionServer.status(pid)
+      assert status.memory == safe_memory
+
+      # Durable state should also remain the old safe memory
+      base_dir = Muse.SessionServer.current_store_base_dir()
+      assert {:ok, loaded} = Muse.SessionStore.load_memory(base_dir, session_id)
+      assert loaded["user_goal"] == "Build feature"
+    end
+
+    test "rejects memory with sensitive keys — does not update in-memory state" do
+      session_id = "mem-sensitive-key-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      safe_memory = %{"user_goal" => "Build feature"}
+      assert :ok = Muse.SessionServer.set_memory(pid, safe_memory)
+
+      unsafe_memory = %{"user_goal" => "Test", "password" => "hunter2"}
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               Muse.SessionServer.set_memory(pid, unsafe_memory)
+
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+
+      status = Muse.SessionServer.status(pid)
+      assert status.memory == safe_memory
+    end
+
+    test "rejects non-map memory" do
+      session_id = "mem-non-map-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               Muse.SessionServer.set_memory(pid, "just a string")
+
+      assert Enum.any?(reasons, &String.contains?(&1, "must be a map"))
+
+      # In-memory state is nil (never set)
+      status = Muse.SessionServer.status(pid)
+      assert status.memory == nil
+    end
+
+    test "clear_memory still works after failed set_memory" do
+      session_id = "mem-clear-after-fail-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      safe_memory = %{"user_goal" => "Build feature"}
+      assert :ok = Muse.SessionServer.set_memory(pid, safe_memory)
+
+      # Try to set unsafe memory (fails)
+      unsafe_memory = %{"user_goal" => "Key: sk-test12345secret"}
+
+      assert {:error, {:unsafe_memory, _reasons}} =
+               Muse.SessionServer.set_memory(pid, unsafe_memory)
+
+      # Clear still works
+      assert :ok = Muse.SessionServer.clear_memory(pid)
+      status = Muse.SessionServer.status(pid)
+      assert status.memory == nil
+
+      # Durable memory is also gone
+      base_dir = Muse.SessionServer.current_store_base_dir()
+      assert {:error, :enoent} = Muse.SessionStore.load_memory(base_dir, session_id)
+    end
+
+    test "error reasons do not contain raw secret values" do
+      session_id = "mem-no-raw-#{:erlang.unique_integer([:positive])}"
+      pid = start_server(session_id)
+
+      unsafe_memory = %{"user_goal" => "Key: sk-super-secret-value-12345"}
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               Muse.SessionServer.set_memory(pid, unsafe_memory)
+
+      for reason <- reasons do
+        refute reason =~ "sk-super-secret-value-12345"
+      end
+    end
+  end
+
+  describe "restore_memory — unsafe legacy memory rejection" do
+    setup do
+      ensure_infrastructure()
+      on_exit(fn -> cleanup() end)
+      :ok
+    end
+
+    test "does not load memory containing API keys from disk" do
+      session_id = "restore-unsafe-#{:erlang.unique_integer([:positive])}"
+      base_dir = Muse.SessionServer.current_store_base_dir()
+
+      # Write unsafe memory directly to disk, bypassing save-time redaction.
+      # This simulates a legacy/corrupted memory.json with raw secrets.
+      dir = Muse.SessionStore.session_dir(base_dir, session_id)
+      File.mkdir_p!(dir)
+
+      raw_json =
+        Jason.encode!(%{
+          "schema_version" => 1,
+          "user_goal" => "Key: sk-test12345secret",
+          "project_facts" => []
+        })
+
+      File.write!(Path.join(dir, "memory.json"), raw_json)
+
+      # Start the session — it should NOT restore the unsafe memory
+      pid = start_server(session_id)
+
+      status = Muse.SessionServer.status(pid)
+      assert status.memory == nil
+    end
+
+    test "does not load memory containing sensitive keys from disk" do
+      session_id = "restore-sensitive-#{:erlang.unique_integer([:positive])}"
+      base_dir = Muse.SessionServer.current_store_base_dir()
+
+      # Write memory with a sensitive key directly to disk, bypassing
+      # save-time redaction. This simulates legacy corrupted memory.json.
+      dir = Muse.SessionStore.session_dir(base_dir, session_id)
+      File.mkdir_p!(dir)
+
+      raw_json =
+        Jason.encode!(%{
+          "schema_version" => 1,
+          "user_goal" => "Test",
+          "password" => "hunter2"
+        })
+
+      File.write!(Path.join(dir, "memory.json"), raw_json)
+
+      pid = start_server(session_id)
+
+      status = Muse.SessionServer.status(pid)
+      assert status.memory == nil
+    end
+
+    test "loads safe memory from disk on restart" do
+      session_id = "restore-safe-#{:erlang.unique_integer([:positive])}"
+      base_dir = Muse.SessionServer.current_store_base_dir()
+
+      safe_memory = %{"user_goal" => "Build feature", "project_facts" => ["Elixir"]}
+      assert :ok = Muse.SessionStore.save_memory(base_dir, session_id, safe_memory)
+
+      pid = start_server(session_id)
+
+      status = Muse.SessionServer.status(pid)
+      assert status.memory != nil
+      # Memory loaded from disk has string keys
+      assert status.memory["user_goal"] == "Build feature" or
+               status.memory[:user_goal] == "Build feature"
+    end
+  end
 end

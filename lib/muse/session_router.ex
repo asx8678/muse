@@ -247,8 +247,20 @@ defmodule Muse.SessionRouter do
 
   @doc """
   Sets the memory artifact for the given session.
+
+  The memory is validated through `Muse.Memory.validate_and_persist/3`
+  before being accepted. Unsafe memory is rejected with
+  `{:error, {:unsafe_memory, reasons}}` and neither in-memory nor
+  durable state is updated.
+
+  Returns:
+    - `:ok` on success
+    - `{:error, :not_found}` if the session does not exist
+    - `{:error, {:unsafe_memory, reasons}}` if secrets are detected
+    - `{:error, reason}` if the disk write fails
   """
-  @spec set_memory(String.t(), term()) :: :ok | {:error, :not_found}
+  @spec set_memory(String.t(), term()) ::
+          :ok | {:error, :not_found | {:unsafe_memory, [String.t()]} | tuple()}
   def set_memory(session_id \\ @default_session_id, memory) do
     with {:ok, pid} <- lookup_session(session_id) do
       Muse.SessionServer.set_memory(pid, memory)

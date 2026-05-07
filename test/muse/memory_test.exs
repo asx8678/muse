@@ -1,7 +1,7 @@
 defmodule Muse.MemoryTest do
   use ExUnit.Case, async: true
 
-  alias Muse.{Memory, Session, Plan}
+  alias Muse.{Memory, Session, Plan, SessionStore}
 
   describe "new/1" do
     test "creates an empty memory artifact" do
@@ -866,6 +866,157 @@ defmodule Muse.MemoryTest do
       assert rendered =~ "Build an app"
       assert rendered =~ "Elixir"
       assert rendered =~ "Phoenix"
+    end
+  end
+
+  # -- muse-02e: Fail-closed persistence boundary tests ---------------------------
+
+  describe "validate_and_persist/3" do
+    setup do
+      base_dir =
+        Path.join(System.tmp_dir!(), "muse-memory-persist-#{:erlang.unique_integer([:positive])}")
+
+      on_exit(fn -> File.rm_rf!(base_dir) end)
+      session_id = "test-session"
+      {:ok, base_dir: base_dir, session_id: session_id}
+    end
+
+    test "persists safe memory and returns :ok", %{base_dir: base_dir, session_id: session_id} do
+      memory = Memory.new(user_goal: "Build feature", project_facts: ["Elixir project"])
+
+      assert :ok = Memory.validate_and_persist(base_dir, session_id, memory)
+      assert {:ok, loaded} = SessionStore.load_memory(base_dir, session_id)
+      assert loaded["user_goal"] == "Build feature" or loaded[:user_goal] == "Build feature"
+    end
+
+    test "rejects memory with API keys and does not write to disk", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = Memory.new(user_goal: "Key: sk-test12345secret")
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               Memory.validate_and_persist(base_dir, session_id, memory)
+
+      assert is_list(reasons) and length(reasons) > 0
+
+      # No file should be written
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
+    end
+
+    test "rejects memory with sensitive keys and does not write to disk", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = Memory.new(open_issues: [%{password: "hunter2"}])
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               Memory.validate_and_persist(base_dir, session_id, memory)
+
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
+    end
+
+    test "rejects non-map memory", %{base_dir: base_dir, session_id: session_id} do
+      assert {:error, {:unsafe_memory, reasons}} =
+               Memory.validate_and_persist(base_dir, session_id, "just a string")
+
+      assert Enum.any?(reasons, &String.contains?(&1, "must be a map"))
+    end
+
+    test "rejects memory with nested secrets in tuples", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = Memory.new(open_issues: [{:password, "nested-secret"}])
+
+      assert {:error, {:unsafe_memory, _reasons}} =
+               Memory.validate_and_persist(base_dir, session_id, memory)
+
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
+    end
+
+    test "rejects memory with secrets in charlists", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      charlist = ~c"key=sk-test12345"
+      memory = Memory.new(open_issues: [charlist])
+
+      assert {:error, {:unsafe_memory, _reasons}} =
+               Memory.validate_and_persist(base_dir, session_id, memory)
+
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
+    end
+
+    test "rejects memory with sensitive string keys in nested maps", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = Memory.new(open_issues: [%{"api_key" => "plain-text-value"}])
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               Memory.validate_and_persist(base_dir, session_id, memory)
+
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
+    end
+
+    test "error reasons do not contain raw secret values", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = Memory.new(user_goal: "Key: sk-super-secret-value-12345")
+
+      assert {:error, {:unsafe_memory, reasons}} =
+               Memory.validate_and_persist(base_dir, session_id, memory)
+
+      for reason <- reasons do
+        refute reason =~ "sk-super-secret-value-12345"
+      end
+    end
+
+    test "propagates disk write errors", %{session_id: session_id} do
+      memory = Memory.new(user_goal: "Build feature")
+      # Use an invalid base_dir path that will fail mkdir
+      bad_dir = "/dev/null/impossible/path"
+
+      result = Memory.validate_and_persist(bad_dir, session_id, memory)
+      # Should get some error (mkdir_failed or write_failed)
+      assert match?({:error, _}, result)
+      refute match?({:error, {:unsafe_memory, _}}, result)
+    end
+  end
+
+  describe "validate_loaded_memory/1" do
+    test "returns {:ok, memory} for safe memory" do
+      memory = Memory.new(user_goal: "Build feature")
+
+      assert {:ok, ^memory} = Memory.validate_loaded_memory(memory)
+    end
+
+    test "returns {:error, {:unsafe_memory, reasons}} for memory with secrets" do
+      memory = Memory.new(user_goal: "Key: sk-test12345secret")
+
+      assert {:error, {:unsafe_memory, reasons}} = Memory.validate_loaded_memory(memory)
+      assert is_list(reasons) and length(reasons) > 0
+    end
+
+    test "returns {:error, {:unsafe_memory, reasons}} for memory with sensitive keys" do
+      memory = Memory.new(open_issues: [%{password: "hunter2"}])
+
+      assert {:error, {:unsafe_memory, reasons}} = Memory.validate_loaded_memory(memory)
+      assert Enum.any?(reasons, &String.contains?(&1, "Sensitive key"))
+    end
+
+    test "error reasons do not contain raw secret values" do
+      memory = Memory.new(user_goal: "password=super-secret-password-value")
+
+      assert {:error, {:unsafe_memory, reasons}} = Memory.validate_loaded_memory(memory)
+
+      for reason <- reasons do
+        refute reason =~ "super-secret-password-value"
+      end
     end
   end
 end

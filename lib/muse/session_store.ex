@@ -1,3 +1,5 @@
+alias Muse.Memory
+
 defmodule Muse.SessionStore do
   @moduledoc """
   Crash-safe persistence for Muse sessions using JSON and JSONL files.
@@ -434,29 +436,37 @@ defmodule Muse.SessionStore do
   @doc """
   Saves a memory artifact to `memory.json` inside the session directory.
 
-  The memory map is redacted through the same sensitive-key scrubbing
-  pipeline as session data. Writes are atomic.
+  By default, the memory map is redacted through the same sensitive-key
+  scrubbing pipeline as session data. When `validate: true` is passed,
+  the memory is validated through `Muse.Memory.validate_no_secrets/1`
+  **before** any disk write. If validation fails, the memory is **not**
+  written and `{:error, {:unsafe_memory, reasons}}` is returned — the
+  fail-closed approach preferred by callers like `SessionServer.set_memory/2`.
+
+  Writes are atomic.
 
   Returns:
     - `:ok` on success
+    - `{:error, {:unsafe_memory, reasons}}` if `validate: true` and secrets detected
     - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
     - `{:error, reason}` on other failures
   """
-  @spec save_memory(String.t(), String.t(), map()) :: :ok | {:error, tuple()}
-  def save_memory(base_dir \\ @default_base_dir, session_id, memory) when is_map(memory) do
-    with :ok <- validate_session_id(session_id),
-         {:ok, dir} <- ensure_dir(base_dir, session_id) do
-      path = Path.join(dir, "memory.json")
+  @spec save_memory(String.t(), String.t(), map(), keyword()) ::
+          :ok | {:error, tuple()}
+  def save_memory(base_dir \\ @default_base_dir, session_id, memory, opts \\ [])
+      when is_map(memory) do
+    with :ok <- validate_session_id(session_id) do
+      # Fail-closed: when validate: true, reject unsafe memory before any I/O.
+      if Keyword.get(opts, :validate, false) do
+        case Memory.validate_no_secrets(memory) do
+          :ok ->
+            do_save_memory(base_dir, session_id, memory)
 
-      data =
-        memory
-        |> encode_for_storage()
-        |> scrub_sensitive_keys()
-        |> Map.put("schema_version", @schema_version)
-
-      case Jason.encode(data) do
-        {:ok, content} -> atomic_write(path, content)
-        {:error, reason} -> {:error, {:encode_failed, reason}}
+          {:error, reasons} ->
+            {:error, {:unsafe_memory, reasons}}
+        end
+      else
+        do_save_memory(base_dir, session_id, memory)
       end
     end
   end
@@ -464,22 +474,41 @@ defmodule Muse.SessionStore do
   @doc """
   Loads a memory artifact from `memory.json`.
 
+  By default, the loaded memory is returned as-is. When `validate: true`
+  is passed, the memory is validated through `Muse.Memory.validate_no_secrets/1`
+  and unsafe memory is rejected with `{:error, {:unsafe_memory, reasons}}`
+  rather than returned to the caller.
+
   Returns:
     - `{:ok, memory}` with the decoded map (the `schema_version` field is stripped)
+    - `{:error, {:unsafe_memory, reasons}}` if `validate: true` and secrets detected
     - `{:error, :enoent}` if no memory file exists
     - `{:error, {:corrupt_json, reason}}` if the file contains invalid JSON
     - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
   """
-  @spec load_memory(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def load_memory(base_dir \\ @default_base_dir, session_id) do
+  @spec load_memory(String.t(), String.t(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def load_memory(base_dir \\ @default_base_dir, session_id, opts \\ []) do
     with :ok <- validate_session_id(session_id) do
       path = Path.join(session_dir(base_dir, session_id), "memory.json")
 
       case File.read(path) do
         {:ok, content} ->
           case Jason.decode(content) do
-            {:ok, decoded} -> {:ok, Map.delete(decoded, "schema_version")}
-            {:error, reason} -> {:error, {:corrupt_json, reason}}
+            {:ok, decoded} ->
+              decoded = Map.delete(decoded, "schema_version")
+
+              if Keyword.get(opts, :validate, false) do
+                case Memory.validate_no_secrets(decoded) do
+                  :ok -> {:ok, decoded}
+                  {:error, reasons} -> {:error, {:unsafe_memory, reasons}}
+                end
+              else
+                {:ok, decoded}
+              end
+
+            {:error, reason} ->
+              {:error, {:corrupt_json, reason}}
           end
 
         {:error, reason} ->
@@ -688,14 +717,21 @@ defmodule Muse.SessionStore do
   defp validate_memory(nil), do: :ok
 
   defp validate_memory(memory) when is_map(memory) do
-    memory
-    |> encode_for_storage()
-    |> scrub_sensitive_keys()
-    |> Map.put("schema_version", @schema_version)
-    |> Jason.encode()
-    |> case do
-      {:ok, _content} -> :ok
-      {:error, reason} -> {:error, {:encode_failed, reason}}
+    # Fail-closed: validate memory for secrets before accepting import.
+    # Also verify it's encodable (defense-in-depth).
+    with :ok <-
+           Memory.validate_no_secrets(memory) do
+      memory
+      |> encode_for_storage()
+      |> scrub_sensitive_keys()
+      |> Map.put("schema_version", @schema_version)
+      |> Jason.encode()
+      |> case do
+        {:ok, _content} -> :ok
+        {:error, reason} -> {:error, {:encode_failed, reason}}
+      end
+    else
+      {:error, reasons} -> {:error, {:unsafe_memory, reasons}}
     end
   end
 
@@ -734,7 +770,8 @@ defmodule Muse.SessionStore do
   end
 
   defp write_import_memory(base_dir, session_id, memory) when is_map(memory) do
-    save_memory(base_dir, session_id, memory)
+    # Fail-closed: validate imported memory before persisting
+    save_memory(base_dir, session_id, memory, validate: true)
   end
 
   defp remove_session_file(base_dir, session_id, file_name) do
@@ -745,6 +782,25 @@ defmodule Muse.SessionStore do
         :ok -> :ok
         {:error, :enoent} -> :ok
         {:error, reason} -> {:error, {:write_failed, reason}}
+      end
+    end
+  end
+
+  # ── Private: Memory persistence internals ────────────────────────────
+
+  defp do_save_memory(base_dir, session_id, memory) do
+    with {:ok, dir} <- ensure_dir(base_dir, session_id) do
+      path = Path.join(dir, "memory.json")
+
+      data =
+        memory
+        |> encode_for_storage()
+        |> scrub_sensitive_keys()
+        |> Map.put("schema_version", @schema_version)
+
+      case Jason.encode(data) do
+        {:ok, content} -> atomic_write(path, content)
+        {:error, reason} -> {:error, {:encode_failed, reason}}
       end
     end
   end

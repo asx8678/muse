@@ -681,10 +681,19 @@ defmodule Muse.CommandDispatcher do
           case Muse.Memory.compact_safe(session) do
             {:ok, memory} ->
               # Persist via SessionRouter so it's available for future turns
-              Muse.SessionRouter.set_memory(session_id, memory)
+              case Muse.SessionRouter.set_memory(session_id, memory) do
+                :ok ->
+                  output = "Memory compacted successfully.\n\n" <> Muse.Memory.render(memory)
+                  {:ok, output, [{:refresh, :session}]}
 
-              output = "Memory compacted successfully.\n\n" <> Muse.Memory.render(memory)
-              {:ok, output, [{:refresh, :session}]}
+                {:error, {:unsafe_memory, reasons}} ->
+                  {:error,
+                   "Memory compaction blocked: secrets detected in persistence. #{inspect(reasons)}",
+                   []}
+
+                {:error, reason} ->
+                  {:error, "Memory compaction failed: persistence error. #{inspect(reason)}", []}
+              end
 
             {:error, :secrets_detected, reasons} ->
               {:error, "Memory compaction blocked: secrets detected. #{inspect(reasons)}", []}

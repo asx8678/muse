@@ -49,6 +49,7 @@ defmodule Muse.SessionServer do
     ApprovalGate,
     Event,
     EventPayloadRedactor,
+    Memory,
     MetadataSanitizer,
     Patch,
     PlanBinding,
@@ -286,8 +287,19 @@ defmodule Muse.SessionServer do
 
   @doc """
   Sets the session's memory artifact.
+
+  The memory is validated through `Muse.Memory.validate_and_persist/3`
+  before being persisted to disk or updated in process state. If the
+  memory contains secrets, or if the disk write fails, neither the
+  in-memory state nor the durable state is updated.
+
+  Returns:
+    - `:ok` on success
+    - `{:error, {:unsafe_memory, reasons}}` if secrets are detected
+    - `{:error, reason}` if the disk write fails
   """
-  @spec set_memory(pid(), term()) :: :ok
+  @spec set_memory(pid(), term()) ::
+          :ok | {:error, {:unsafe_memory, [String.t()]} | tuple()}
   def set_memory(pid, memory) do
     GenServer.call(pid, {:set_memory, memory})
   end
@@ -575,9 +587,15 @@ defmodule Muse.SessionServer do
 
   @impl true
   def handle_call({:set_memory, memory}, _from, state) do
-    # Persist memory to disk so it survives restarts
-    persist_memory(state.store_base_dir, state.session_id, memory)
-    {:reply, :ok, %{state | memory: memory}}
+    # Fail-closed: validate and persist before updating in-memory state.
+    # If validation or disk write fails, neither state is updated.
+    case Memory.validate_and_persist(state.store_base_dir, state.session_id, memory) do
+      :ok ->
+        {:reply, :ok, %{state | memory: memory}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
@@ -2531,16 +2549,6 @@ defmodule Muse.SessionServer do
 
   # -- Memory persistence helpers ----------------------------------------------
 
-  defp persist_memory(store_base_dir, session_id, memory) when is_map(memory) do
-    case SessionStore.save_memory(store_base_dir, session_id, memory) do
-      :ok -> :ok
-      # Non-fatal: log but don't crash
-      {:error, _reason} -> :ok
-    end
-  end
-
-  defp persist_memory(_store_base_dir, _session_id, _memory), do: :ok
-
   defp clear_persisted_memory(store_base_dir, session_id) do
     _ = SessionStore.delete_memory(store_base_dir, session_id)
     :ok
@@ -2550,7 +2558,17 @@ defmodule Muse.SessionServer do
     if is_nil(state.memory) do
       case SessionStore.load_memory(state.store_base_dir, state.session_id) do
         {:ok, memory} when is_map(memory) ->
-          %{state | memory: decode_memory(memory)}
+          # Fail-closed: validate loaded memory before trusting it.
+          # Unsafe legacy memory is rejected (set to nil) rather than used.
+          case Memory.validate_loaded_memory(memory) do
+            {:ok, safe_memory} ->
+              %{state | memory: decode_memory(safe_memory)}
+
+            {:error, {:unsafe_memory, _reasons}} ->
+              # Log a warning but don't crash; treat as no valid memory.
+              # The unsafe memory is NOT loaded into process state.
+              state
+          end
 
         _ ->
           state
