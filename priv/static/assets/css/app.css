@@ -23,7 +23,7 @@
   --text-secondary: #c8c8cc;
   --text-muted: #9a9aa0;
   --text-subtle: #82828a;
-  --text-placeholder: #8e8e96;
+  --text-placeholder: #92929a;
   --text-disabled: #636370;
 
   /* ─── Borders ──────────────────────────────────────────────────── */
@@ -2013,7 +2013,7 @@ textarea:focus-visible {
 }
 
 /* Content above gradient border pseudo-element */
-.chat-composer-form > * {
+.chat-composer-form > :not(.sr-only) {
   position: relative;
   z-index: 1;
 }
@@ -2958,4 +2958,43 @@ textarea:focus-visible {
   font-size: var(--text-xs) !important;
   color: var(--text-subtle) !important;
   font-style: italic;
+}
+
+/* ─── Accessibility utilities ───────────────────────────────────── */
+
+/* Screen-reader-only: Visually hidden but accessible to screen readers */
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+
+/* Focus-visible outline for keyboard navigation */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Skip link for keyboard users to bypass navigation */
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: var(--accent);
+  color: white;
+  padding: 8px 16px;
+  z-index: 100;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.skip-link:focus {
+  top: 0;
 }
