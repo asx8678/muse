@@ -254,13 +254,10 @@ test.describe("Muse LiveView browser smoke", () => {
     const composerForm = page.locator('#input-form[role="form"]');
     await expect(composerForm).toBeAttached();
 
-    // Visible label linked to textarea
-    const label = page.locator('label[for="chat-input-textarea"]');
-    await expect(label).toBeAttached();
-
-    // Concise placeholder present
+    // Textarea has an accessible name and concise placeholder.
     const textarea = page.locator('#chat-input-textarea');
-    await expect(textarea).toHaveAttribute('placeholder', /Ask Muse/);
+    await expect(textarea).toHaveAttribute("aria-label", /Message to Muse/);
+    await expect(textarea).toHaveAttribute("placeholder", /Ask Muse/);
   });
 
   // ─── 8. Page load success and no network errors ──────────────────────

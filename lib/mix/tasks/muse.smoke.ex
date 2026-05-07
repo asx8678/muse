@@ -13,14 +13,15 @@ defmodule Mix.Tasks.Muse.Smoke do
 
   ## Options
 
-    * `--port`, `-p` — HTTP port (default: 4101)
-    * `--host`       — HTTP host (default: 127.0.0.1)
+    * `--port`, `-p` — HTTP port in `1..65535` (default: 4101)
+    * `--host`       — HTTP hostname or IPv4 address; do not include
+      a URL scheme, port, or path (default: 127.0.0.1)
 
   ## Prerequisites
 
   Start the Muse server first:
 
-      MIX_ENV=smoke mix muse --web-only --port 4101 --no-watch
+      MIX_ENV=smoke mix muse --web-only --host 127.0.0.1 --port 4101 --no-watch
 
   Or use the orchestration script:
 
@@ -37,8 +38,8 @@ defmodule Mix.Tasks.Muse.Smoke do
        session labels, workspace context labels
     5. No visible secrets — no API key prefixes (sk-), Bearer tokens,
        or key/env-var names leaked into rendered HTML
-    6. Keyboard focus indicators — visible labels, aria-describedby,
-       form roles, submit buttons, screen-reader-only utility class
+    6. Keyboard focus indicators — focusable textarea markers,
+       accessible labels, form roles, and submit/sidebar controls
 
   This task does NOT verify browser console errors — that requires a
   real browser (Playwright/QA Kitten). See `docs/testing.md` for the
@@ -49,20 +50,29 @@ defmodule Mix.Tasks.Muse.Smoke do
 
   @default_host "127.0.0.1"
   @default_port 4101
+  @max_port 65_535
+  @host_pattern ~r/^[A-Za-z0-9._-]+$/
+
+  @type smoke_options :: %{
+          host: String.t(),
+          port: pos_integer(),
+          base_url: String.t()
+        }
 
   @impl Mix.Task
   def run(args) do
+    options =
+      case parse_args(args) do
+        {:ok, options} ->
+          options
+
+        {:error, reason} ->
+          Mix.raise("#{reason}\n\nUsage: mix muse.smoke [--port PORT] [--host HOST]")
+      end
+
     Application.ensure_all_started(:req)
 
-    {opts, _, _} =
-      OptionParser.parse(args,
-        strict: [port: :integer, host: :string],
-        aliases: [p: :port]
-      )
-
-    host = opts[:host] || @default_host
-    port = opts[:port] || @default_port
-    base_url = "http://#{host}:#{port}"
+    base_url = options.base_url
 
     IO.puts("==> Running LiveView browser smoke against #{base_url}")
 
@@ -104,6 +114,30 @@ defmodule Mix.Tasks.Muse.Smoke do
     IO.puts("")
     IO.puts("==> All smoke checks passed!")
     :ok
+  end
+
+  @doc false
+  @spec parse_args([String.t()]) :: {:ok, smoke_options()} | {:error, String.t()}
+  def parse_args(args) when is_list(args) do
+    {opts, positional, invalid} =
+      OptionParser.parse(args,
+        strict: [port: :integer, host: :string],
+        aliases: [p: :port]
+      )
+
+    cond do
+      invalid != [] ->
+        {:error, "invalid or unknown smoke option(s): #{format_invalid_options(invalid)}"}
+
+      positional != [] ->
+        {:error, "unexpected positional argument(s): #{Enum.join(positional, " ")}"}
+
+      true ->
+        with {:ok, port} <- validate_port(opts[:port] || @default_port),
+             {:ok, host} <- validate_host(opts[:host] || @default_host) do
+          {:ok, %{host: host, port: port, base_url: base_url(host, port)}}
+        end
+    end
   end
 
   # -- Individual checks --------------------------------------------------------
@@ -229,14 +263,17 @@ defmodule Mix.Tasks.Muse.Smoke do
   defp check_focus_indicators(base_url) do
     with {:ok, html} <- fetch_html(base_url) do
       checks = [
-        {~s(<label for="chat-input-textarea"), "visible label on chat input"},
+        {~s(id="chat-input-textarea"), "chat input textarea present"},
+        {~s(class="chat-input command-input"), "focusable chat input class"},
+        {~s(aria-label="Message to Muse"), "input ARIA label"},
         {~s(placeholder="Ask Muse anything, or type /help..."),
          "concise placeholder on chat input"},
         {~s(role="form"), "form role on composer"},
         {~s(type="submit"), "submit button present"},
         {~s(aria-label="Collapse to rail"), "sidebar collapse button label"},
         {"sr-only", "screen-reader-only utility class"},
-        {"skip-link", "skip link for keyboard navigation"}
+        {"skip-link", "skip link for keyboard navigation"},
+        {~s(aria-label="Send message to Muse"), "send button label"}
       ]
 
       missing =
@@ -252,6 +289,48 @@ defmodule Mix.Tasks.Muse.Smoke do
           {:error, "missing: #{Enum.map_join(missing, ", ", fn {_, d} -> d end)}"}
       end
     end
+  end
+
+  # -- Option validation --------------------------------------------------------
+
+  defp validate_port(port) when is_integer(port) and port in 1..@max_port do
+    {:ok, port}
+  end
+
+  defp validate_port(port) do
+    {:error, "invalid port #{inspect(port)}; must be an integer in 1..#{@max_port}"}
+  end
+
+  defp validate_host(host) when is_binary(host) do
+    cond do
+      String.trim(host) == "" ->
+        {:error, "invalid host: cannot be empty"}
+
+      Regex.match?(~r/\s/, host) ->
+        {:error, "invalid host #{inspect(host)}; whitespace is not allowed"}
+
+      String.contains?(host, "://") or String.contains?(host, ["/", "\\", "@"]) ->
+        {:error,
+         "invalid host #{inspect(host)}; provide only a hostname or IPv4 address, not a URL"}
+
+      not Regex.match?(@host_pattern, host) ->
+        {:error,
+         "invalid host #{inspect(host)}; use a hostname or IPv4 address without scheme, port, or path"}
+
+      true ->
+        {:ok, host}
+    end
+  end
+
+  defp base_url(host, port), do: "http://#{host}:#{port}"
+
+  defp format_invalid_options(invalid) do
+    invalid
+    |> Enum.map(fn
+      {flag, nil} -> flag
+      {flag, value} -> "#{flag} #{value}"
+    end)
+    |> Enum.join(", ")
   end
 
   # -- HTTP helper --------------------------------------------------------------

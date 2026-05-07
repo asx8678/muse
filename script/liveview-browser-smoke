@@ -12,12 +12,13 @@
 #   MUSE_BROWSER_SMOKE_PORT=4200 ./script/liveview-browser-smoke
 #
 # Environment:
-#   MUSE_BROWSER_SMOKE_PORT    — HTTP port (default: 4101)
-#   MUSE_BROWSER_SMOKE_HOST    — HTTP host (default: 127.0.0.1)
-#   MUSE_BROWSER_SMOKE_TIMEOUT — Server readiness timeout in seconds (default: 60)
+#   MUSE_BROWSER_SMOKE_PORT    — HTTP port, 1..65535 and free (default: 4101)
+#   MUSE_BROWSER_SMOKE_HOST    — Local HTTP host: 127.0.0.1, localhost, or 0.0.0.0 (default: 127.0.0.1)
+#   MUSE_BROWSER_SMOKE_TIMEOUT — Positive readiness timeout in seconds (default: 60)
 #
 # Prerequisites:
 #   - Elixir/Erlang installed
+#   - curl installed
 #   - mix deps.get has been run
 #
 # This script does NOT require a real browser (Playwright/QA Kitten).
@@ -38,9 +39,112 @@ HOST="${MUSE_BROWSER_SMOKE_HOST:-127.0.0.1}"
 TIMEOUT="${MUSE_BROWSER_SMOKE_TIMEOUT:-60}"
 MUSE_PROVIDER="fake"
 MIX_ENV="smoke"
+BASE_URL=""
 
 SERVER_PID=""
 SMOKE_LOG=""
+NORMALIZED_INTEGER=""
+
+error() {
+    echo "ERROR: $*" >&2
+    exit 1
+}
+
+validate_positive_integer() {
+    local name="$1"
+    local value="$2"
+
+    if ! [[ "${value}" =~ ^[0-9]+$ ]]; then
+        error "invalid ${name} '${value}'; must be a positive integer"
+    fi
+
+    local normalized="${value}"
+    while [[ "${normalized}" == 0* && "${normalized}" != "0" ]]; do
+        normalized="${normalized#0}"
+    done
+
+    if [ "${normalized}" = "0" ]; then
+        error "invalid ${name} '${value}'; must be a positive integer"
+    fi
+
+    if [ "${#normalized}" -gt 9 ]; then
+        error "invalid ${name} '${value}'; must be a positive integer less than 1000000000"
+    fi
+
+    NORMALIZED_INTEGER="${normalized}"
+}
+
+validate_configuration() {
+    validate_positive_integer "MUSE_BROWSER_SMOKE_PORT" "${PORT}"
+    PORT="${NORMALIZED_INTEGER}"
+    if [ "${PORT}" -gt 65535 ]; then
+        error "invalid MUSE_BROWSER_SMOKE_PORT '${PORT}'; must be in 1..65535"
+    fi
+
+    validate_positive_integer "MUSE_BROWSER_SMOKE_TIMEOUT" "${TIMEOUT}"
+    TIMEOUT="${NORMALIZED_INTEGER}"
+
+    if [ -z "${HOST}" ]; then
+        error "invalid MUSE_BROWSER_SMOKE_HOST; cannot be empty"
+    fi
+
+    if [[ "${HOST}" == *"://"* ]] || [[ "${HOST}" == *"/"* ]] || \
+       [[ "${HOST}" == *"\\"* ]] || [[ "${HOST}" == *"@"* ]] || \
+       [[ "${HOST}" == *":"* ]] || [[ "${HOST}" =~ [[:space:]] ]] || \
+       [[ ! "${HOST}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        error "invalid MUSE_BROWSER_SMOKE_HOST '${HOST}'; use a local host without scheme, port, or path"
+    fi
+
+    if [ "${HOST}" != "127.0.0.1" ] && [ "${HOST}" != "localhost" ] && \
+       [ "${HOST}" != "0.0.0.0" ]; then
+        error "invalid MUSE_BROWSER_SMOKE_HOST '${HOST}'; use 127.0.0.1, localhost, or 0.0.0.0"
+    fi
+
+    if ! command -v curl >/dev/null 2>&1; then
+        error "curl is required for LiveView smoke readiness checks"
+    fi
+
+    BASE_URL="http://${HOST}:${PORT}"
+}
+
+http_ready() {
+    curl --fail --silent --show-error \
+        --connect-timeout 1 \
+        --max-time 2 \
+        --output /dev/null \
+        "${BASE_URL}/" >/dev/null 2>&1
+}
+
+print_server_log() {
+    if [ -n "${SMOKE_LOG:-}" ] && [ -f "${SMOKE_LOG}" ]; then
+        echo "       Server log (last 80 lines):" >&2
+        tail -80 "${SMOKE_LOG}" >&2 2>/dev/null || true
+    else
+        echo "       Server log unavailable." >&2
+    fi
+}
+
+fail_if_server_exited() {
+    local context="${1:-before readiness}"
+
+    if [ -z "${SERVER_PID:-}" ] || kill -0 "${SERVER_PID}" 2>/dev/null; then
+        return 0
+    fi
+
+    local status=0
+    wait "${SERVER_PID}" 2>/dev/null || status=$?
+    echo "ERROR: Muse server exited ${context} (status ${status})." >&2
+    print_server_log
+    exit 1
+}
+
+preflight_target_free() {
+    if http_ready; then
+        echo "ERROR: ${BASE_URL}/ already responds before this script launched Muse." >&2
+        echo "       Stop the stale server or choose a free MUSE_BROWSER_SMOKE_PORT." >&2
+        exit 1
+    fi
+}
 
 cleanup() {
     if [ -n "${SERVER_PID:-}" ] && kill -0 "${SERVER_PID}" 2>/dev/null; then
@@ -56,6 +160,8 @@ cleanup() {
         if kill -0 "${SERVER_PID}" 2>/dev/null; then
             kill -9 "${SERVER_PID}" 2>/dev/null || true
         fi
+
+        wait "${SERVER_PID}" 2>/dev/null || true
     fi
     # Clean up temp log file
     if [ -n "${SMOKE_LOG:-}" ] && [ -f "${SMOKE_LOG}" ]; then
@@ -64,13 +170,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+validate_configuration
+
 echo "==> Muse LiveView Browser Smoke"
+echo "    URL:     ${BASE_URL}/"
 echo "    Port:    ${PORT}"
 echo "    Host:    ${HOST}"
 echo "    Timeout: ${TIMEOUT}s"
 echo "    Env:     ${MIX_ENV}"
 echo "    Provider: ${MUSE_PROVIDER}"
 echo ""
+
+preflight_target_free
 
 # Compile in the smoke environment first so readiness wait
 # doesn't race with compilation.
@@ -79,34 +190,44 @@ MIX_ENV="${MIX_ENV}" mix compile 2>&1
 
 # Start Muse server in background, capturing output to a temp log.
 SMOKE_LOG="$(mktemp /tmp/muse-smoke-server.XXXXXX.log)"
-echo "==> Starting Muse on http://${HOST}:${PORT}/ (fake provider)..."
+echo "==> Starting Muse on ${BASE_URL}/ (fake provider)..."
 MIX_ENV="${MIX_ENV}" MUSE_PROVIDER="${MUSE_PROVIDER}" \
-    mix muse --web-only --port "${PORT}" --no-watch \
+    mix muse --web-only --host "${HOST}" --port "${PORT}" --no-watch \
     > "${SMOKE_LOG}" 2>&1 &
 SERVER_PID=$!
 
 # Wait for HTTP readiness
 echo "==> Waiting for server readiness..."
+start_seconds=${SECONDS}
+deadline=$((start_seconds + TIMEOUT))
 elapsed=0
-while [ "${elapsed}" -lt "${TIMEOUT}" ]; do
-    if curl -sf -o /dev/null "http://${HOST}:${PORT}/" 2>/dev/null; then
+ready=0
+while [ "${SECONDS}" -lt "${deadline}" ]; do
+    elapsed=$((SECONDS - start_seconds))
+    fail_if_server_exited
+
+    if http_ready; then
+        fail_if_server_exited
+        elapsed=$((SECONDS - start_seconds))
         echo "==> Server ready after ${elapsed}s"
+        ready=1
         break
     fi
+
     sleep 1
-    elapsed=$((elapsed + 1))
 done
 
-if [ "${elapsed}" -ge "${TIMEOUT}" ]; then
-    echo "ERROR: Muse did not become ready within ${TIMEOUT}s" >&2
-    echo "       Server log (last 20 lines):" >&2
-    tail -20 "${SMOKE_LOG}" >&2 2>/dev/null || true
+if [ "${ready}" -ne 1 ]; then
+    echo "ERROR: Muse did not become ready within ${TIMEOUT}s at ${BASE_URL}/" >&2
+    print_server_log
     exit 1
 fi
 
 # Run smoke assertions via the Mix task.
 echo "==> Running smoke assertions..."
+fail_if_server_exited "before smoke assertions"
 MIX_ENV="${MIX_ENV}" mix muse.smoke --port "${PORT}" --host "${HOST}"
+fail_if_server_exited "during smoke assertions"
 
 echo ""
 echo "==> LiveView browser smoke complete!"

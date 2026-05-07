@@ -683,9 +683,11 @@ This single command:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MUSE_BROWSER_SMOKE_PORT` | 4101 | HTTP port for the smoke server |
-| `MUSE_BROWSER_SMOKE_HOST` | 127.0.0.1 | HTTP host |
-| `MUSE_BROWSER_SMOKE_TIMEOUT` | 60 | Server readiness timeout (seconds) |
+| `MUSE_BROWSER_SMOKE_PORT` | 4101 | HTTP port for the smoke server; must be in `1..65535` and free before launch |
+| `MUSE_BROWSER_SMOKE_HOST` | 127.0.0.1 | Local host passed to both `mix muse --host` and `mix muse.smoke --host`; accepted values are `127.0.0.1`, `localhost`, and `0.0.0.0` (no URL scheme, port, or path) |
+| `MUSE_BROWSER_SMOKE_TIMEOUT` | 60 | Server readiness timeout in seconds; must be a positive integer |
+
+The orchestration script validates these values before compiling or starting Muse. It also refuses to continue if `http://HOST:PORT/` already responds before the script launches its own server, which prevents false success against a stale or unrelated local process.
 
 ### 11.3 Manual / Standalone Usage
 
@@ -693,7 +695,7 @@ If the server is already running, assertions can be run independently:
 
 ```bash
 # Start the server manually
-MIX_ENV=smoke MUSE_PROVIDER=fake mix muse --web-only --port 4101 --no-watch
+MIX_ENV=smoke MUSE_PROVIDER=fake mix muse --web-only --host 127.0.0.1 --port 4101 --no-watch
 
 # In another terminal, run just the assertions
 mix muse.smoke --port 4101
@@ -708,7 +710,7 @@ mix muse.smoke --port 4101
 | Command discoverability | `/help` hints visible, `data-slash-commands` attribute, placeholder text, descriptive ARIA labels on input and buttons |
 | Session/context panel | Context sidebar renders, session labels present, `role="complementary"`, `aria-label` for workspace context and session status |
 | No visible secrets | HTML does not contain `sk-` prefixes, `Bearer` tokens, API key env var names, or `secret_key_base` |
-| Keyboard focus indicators | Visible `<label>` on chat input, concise placeholder text, `role="form"` on composer, submit button, `.sr-only` class |
+| Keyboard focus indicators | Focusable chat textarea markers, accessible input label, concise placeholder text, `role="form"` on composer, submit button, sidebar collapse label |
 
 ### 11.5 Mix Environment
 
@@ -765,23 +767,26 @@ Node.js 18+ and npm are required. These are **not** required for `mix test` — 
 | Keyboard focusability | Tab navigation reaches the chat input textarea; Enter submit doesn't throw errors |
 | Session/context panel markers | `role="complementary"`, `aria-label` for workspace context, `role="status"` elements |
 | No visible secrets | Visible page text doesn't contain API key prefixes, bearer tokens, or secret env var names |
-| ARIA landmarks | Chat region, log role, live region, toast status, form role, labels, sr-only help text |
+| ARIA landmarks | Chat region, log role, live region, toast status, form role, textarea accessible name |
 | Page load success | Main shell element present, substantial HTML content |
 
 #### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MUSE_BROWSER_SMOKE_PORT` | 4101 | HTTP port for the smoke server |
-| `MUSE_BROWSER_SMOKE_HOST` | 127.0.0.1 | HTTP host |
-| `MUSE_BROWSER_SMOKE_TIMEOUT` | 60 | Server readiness timeout (seconds) |
+| `MUSE_BROWSER_SMOKE_PORT` | 4101 | HTTP port for the smoke server; must be in `1..65535` and free before launch |
+| `MUSE_BROWSER_SMOKE_HOST` | 127.0.0.1 | Local host passed to `mix muse --host`, HTTP smoke assertions, and Playwright's `baseURL`; accepted values are `127.0.0.1`, `localhost`, and `0.0.0.0` (no URL scheme, port, or path) |
+| `MUSE_BROWSER_SMOKE_TIMEOUT` | 60 | Server readiness timeout in seconds; must be a positive integer |
+
+The Playwright orchestration uses the same validated launch behavior as the HTTP smoke: it refuses a pre-existing responder at `http://HOST:PORT/` and fails immediately with server logs if the launched `mix muse` process exits before readiness.
+
 #### Running Without the Orchestration Script
 
 If the server is already running:
 
 ```bash
 # Terminal 1: start server
-MIX_ENV=smoke MUSE_PROVIDER=fake mix muse --web-only --port 4101 --no-watch
+MIX_ENV=smoke MUSE_PROVIDER=fake mix muse --web-only --host 127.0.0.1 --port 4101 --no-watch
 
 # Terminal 2: run just the Playwright tests
 npm run smoke:liveview:browser
