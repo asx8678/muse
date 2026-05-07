@@ -275,3 +275,70 @@ test.describe("Muse LiveView browser smoke", () => {
     expect(html.length).toBeGreaterThan(500);
   });
 });
+
+// ─── Mobile viewport smoke ─────────────────────────────────────────────
+
+test.describe("Muse LiveView mobile viewport smoke", () => {
+  /** @type {Array<{type: string, text: string}>} */
+  let consoleMessages = [];
+  /** @type {Array<{error: Error}>} */
+  let pageErrors = [];
+
+  test.use({ viewport: { width: 320, height: 568 } });
+
+  test.beforeEach(async ({ page }) => {
+    consoleMessages = [];
+    pageErrors = [];
+
+    page.on("console", (msg) => {
+      consoleMessages.push({ type: msg.type(), text: msg.text() });
+    });
+
+    page.on("pageerror", (error) => {
+      pageErrors.push({ error });
+    });
+
+    await page.goto("/");
+
+    await page.waitForFunction(() => {
+      return !document.documentElement.classList.contains("phx-loading");
+    }, { timeout: 15_000 });
+  });
+
+  test("page loads without errors at 320px viewport", () => {
+    const errors = consoleMessages.filter((m) => m.type === "error");
+    expect(errors).toHaveLength(0);
+    expect(pageErrors).toHaveLength(0);
+  });
+
+  test("mobile sidebar toggle button is rendered", async ({ page }) => {
+    const toggle = page.locator(".mobile-sidebar-toggle");
+    await expect(toggle).toBeAttached();
+    await expect(toggle).toHaveAttribute("aria-label", /toggle context sidebar/i);
+  });
+
+  test("no horizontal scroll at 320px viewport", async ({ page }) => {
+    const scrollWidth = await page.evaluate(() => {
+      return document.documentElement.scrollWidth;
+    });
+    const clientWidth = await page.evaluate(() => {
+      return document.documentElement.clientWidth;
+    });
+    // Allow 2px tolerance for sub-pixel rounding
+    expect(scrollWidth).toBeLessThanOrEqual(clientWidth + 2);
+  });
+
+  test("composer input is focusable at 320px viewport", async ({ page }) => {
+    const input = page.locator("#chat-input-textarea");
+    await expect(input).toBeEnabled();
+    // Click to focus (mobile touch)
+    await input.click();
+    const focused = await page.evaluate(() => document.activeElement?.id);
+    expect(focused).toBe("chat-input-textarea");
+  });
+
+  test("send button is visible and reachable at 320px", async ({ page }) => {
+    const sendBtn = page.locator('button[aria-label="Send message to Muse"]');
+    await expect(sendBtn).toBeVisible();
+  });
+});

@@ -587,6 +587,9 @@ defmodule MuseWeb.ConsoleComponents do
   def app_header(assigns) do
     ~H"""
     <header class="app-header">
+      <button type="button" class="mobile-sidebar-toggle" phx-click="toggle_mobile_sidebar" aria-label="Toggle context sidebar" aria-expanded={to_string(@sidebar_state == :expanded)}>
+        <span class="mobile-sidebar-toggle-icon" aria-hidden="true">☰</span>
+      </button>
       <div class="app-brand muse-brand">
         <img src="/images/muse-logo-header.png" alt="Muse CLI Coding Muse" class="muse-brand__logo" />
       </div>
