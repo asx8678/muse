@@ -652,7 +652,7 @@ defmodule MuseWeb.ConsoleComponents do
       <div class="muse-bg muse-bg--main" aria-hidden="true"></div>
       <div class="chat-scroll" id="chat-scroll" role="log" aria-live="polite" aria-label="Conversation history">
         <%= if @messages == [] do %>
-          <div class="chat-empty" role="status">
+          <div class="chat-empty">
             <h1>muse</h1>
             <p>Ask muse to inspect, explain, fix, or generate code in this workspace.</p>
             <div class="prompt-chips" role="group" aria-label="Suggested prompts">
@@ -933,7 +933,7 @@ defmodule MuseWeb.ConsoleComponents do
   def diagnostics_popup(assigns) do
     ~H"""
     <%= if @diagnostics != [] and @diagnostics_open? do %>
-      <aside id="diagnostics-drawer" class="diagnostics-drawer" role="region" aria-labelledby="diagnostics-title" aria-live="polite">
+      <aside id="diagnostics-drawer" class="diagnostics-drawer" role="region" aria-labelledby="diagnostics-title">
         <div class="diagnostic-title-bar">
           <span id="diagnostics-title" class="diagnostic-title">Diagnostics</span>
           <button type="button" class="diagnostics-collapse-btn" phx-click="collapse_diagnostics" title="Minimize" aria-label="Minimize diagnostics panel">
@@ -1114,7 +1114,7 @@ defmodule MuseWeb.ConsoleComponents do
 
   def toast_container(assigns) do
     ~H"""
-    <div class="toast-container" aria-live="polite" aria-atomic="true" role="status" aria-label="Notifications">
+    <div class="toast-container" aria-label="Notifications">
       <%= for toast <- @toasts do %>
         <div class={"toast toast-#{toast.type}"} id={"toast-#{toast.id}"} phx-hook="ToastAutoDismiss" role="alert">
           <span class="toast-message"><%= toast.message %></span>
@@ -1273,7 +1273,7 @@ defmodule MuseWeb.ConsoleComponents do
           </div>
         <% end %>
         <%= if @session_status[:active_turn_id] do %>
-          <div class="mini-card-row" aria-live="polite" aria-label="Muse turn running">
+          <div class="mini-card-row" aria-label="Muse turn running">
             <span class="mini-card-label">turn</span>
             <span>running</span>
           </div>
@@ -1330,7 +1330,7 @@ defmodule MuseWeb.ConsoleComponents do
   def patch_proposal_panel(assigns) do
     ~H"""
     <%= if @patch_proposal do %>
-      <aside id="patch-proposal-panel" class="patch-proposal-panel" role="region" aria-label="Patch proposal awaiting approval" aria-live="polite">
+      <aside id="patch-proposal-panel" class="patch-proposal-panel" role="region" aria-label="Patch proposal awaiting approval">
         <div class="patch-proposal-header">
           <span class="patch-proposal-title">Patch Proposal</span>
           <button type="button" class="patch-proposal-dismiss" phx-click="dismiss_patch_proposal" title="Dismiss" aria-label="Dismiss patch proposal">✕</button>
