@@ -857,17 +857,18 @@ defmodule MuseWeb.HomeLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <main id="muse-shell" class="app-shell" phx-hook="KeyboardShortcuts">
+    <div id="muse-shell" class="app-shell" phx-hook="KeyboardShortcuts">
+      <a href="#main-content" class="skip-link">Skip to main content</a>
       <div id="clipboard-handler" phx-hook="ClipboardHandler" style="display:none" aria-hidden="true"></div>
       <.app_header workspace={@workspace} reload_status={@reload_status} state={@state} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} sidebar_state={@sidebar_state} />
-      <main class={"main-layout sidebar-#{@sidebar_state}"}>
+      <main id="main-content" class={"main-layout sidebar-#{@sidebar_state}"}>
         <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} agent_snapshot={@agent_snapshot} beam_stats={@beam_stats} logs={@logs} sidebar_state={@sidebar_state} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} session_status={@session_status} />
         <.chat_panel messages={chat_messages(@state.events)} input={@input} />
       </main>
       <.diagnostics_popup diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
       <.patch_proposal_panel patch_proposal={@patch_proposal} />
       <.toast_container toasts={@toasts} />
-    </main>
+    </div>
     """
   end
 
