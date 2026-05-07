@@ -645,6 +645,19 @@ defmodule Muse.PatchTest do
     end
 
     test "does not create atoms from unknown JSON keys" do
+      # Unique sentinel: guaranteed not to pre-exist as an atom
+      sentinel = "muse_test_unknown_key_" <> to_string(System.unique_integer([:positive]))
+
+      # Warm up from_map to avoid module-loading atom allocation
+      {:ok, _warmup} =
+        Patch.from_map(%{
+          "session_id" => "warmup",
+          "plan_id" => "warmup",
+          "plan_version" => 1,
+          "plan_hash" => "warmup",
+          "diff" => ""
+        })
+
       before_atoms = :erlang.system_info(:atom_count)
 
       {:ok, patch} =
@@ -654,12 +667,21 @@ defmodule Muse.PatchTest do
           "plan_version" => 1,
           "plan_hash" => "abc",
           "diff" => "",
-          "unknown_patch_key_xyzzy" => "ignored"
+          sentinel => "ignored_value"
         })
 
       after_atoms = :erlang.system_info(:atom_count)
 
+      # Known keys are correctly mapped to the struct
       assert %Patch{} = patch
+      assert patch.session_id == "s1"
+      assert patch.plan_id == "p1"
+
+      # Unknown string keys must NOT be converted to atoms
+      # (String.to_existing_atom raises ArgumentError for non-existent atoms)
+      assert_raise ArgumentError, fn -> String.to_existing_atom(sentinel) end
+
+      # Atom count is stable after warm-up (no new atoms from unknown keys)
       assert after_atoms - before_atoms < 3
     end
 
