@@ -548,6 +548,67 @@ defmodule Muse.ConfigTest do
   # Structured outputs support
   # ---------------------------------------------------------------------------
 
+  # ---------------------------------------------------------------------------
+  # Tools support
+  # ---------------------------------------------------------------------------
+
+  describe "llm_provider_config/1 — MUSE_TOOLS" do
+    test "MUSE_TOOLS=false sets supports_tools to false" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1",
+        "MUSE_TOOLS" => "false"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.supports_tools == false
+      assert ProviderConfig.supports_tools?(config) == false
+    end
+
+    test "MUSE_TOOLS=true sets supports_tools to true" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1",
+        "MUSE_TOOLS" => "true"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.supports_tools == true
+      assert ProviderConfig.supports_tools?(config) == true
+    end
+
+    test "absent MUSE_TOOLS defaults to true for openai_compatible" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.supports_tools == true
+      assert ProviderConfig.supports_tools?(config) == true
+    end
+
+    test "invalid MUSE_TOOLS value is ignored" do
+      env = %{
+        "MUSE_PROVIDER" => "openai_compatible",
+        "MUSE_MODEL" => "gpt-4",
+        "MUSE_OPENAI_BASE_URL" => "https://api.openai.com/v1",
+        "MUSE_TOOLS" => "maybe"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      # Invalid value is ignored — stays default (true for openai_compatible)
+      assert config.supports_tools == true
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Structured outputs support
+  # ---------------------------------------------------------------------------
+
   describe "llm_provider_config/1 — MUSE_STRUCTURED_OUTPUTS" do
     test "MUSE_STRUCTURED_OUTPUTS=false sets supports_structured_outputs to false" do
       env = %{

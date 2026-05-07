@@ -765,6 +765,14 @@ defmodule Muse.Conductor do
        when is_list(extra_opts) do
     assistant_text = response.content || ""
 
+    # Defense-in-depth: sanitize raw textual tool-call markers that some
+    # providers emit in assistant content (e.g. <tool_call>, </tool_call>,
+    # <think>, </think>) instead of structured tool_calls. Strip these
+    # markers to prevent raw markup leaking to the user. This handles edge
+    # cases where tools are disabled (MUSE_TOOLS=false) but the provider
+    # still produces textual tool call markers.
+    assistant_text = sanitize_raw_tool_markers(assistant_text)
+
     # Defense-in-depth: never emit a blank assistant message to the user.
     # If the provider returned empty content (e.g. reasoning model exhausted
     # token budget on thinking), surface a clear error instead.
@@ -837,6 +845,26 @@ defmodule Muse.Conductor do
   defp blank_text?(text) when is_binary(text), do: String.trim(text) == ""
   defp blank_text?(nil), do: true
   defp blank_text?(_), do: false
+
+  @raw_tool_markers ["<tool_call>", "</tool_call>", "<tool_call", "<think>", "</think>", "<think"]
+
+  @doc false
+  # Strip raw textual tool-call/reasoning markers from assistant content.
+  # Some providers (e.g. wafer.ai / GLM-5.1) emit XML-like markers such as
+  # <tool_call>, </tool_call>, <think>, </think> in assistant content instead
+  # of structured tool_calls. This sanitization prevents these markers from
+  # leaking raw to the user when tool support is disabled or the provider
+  # doesn't support structured function calling.
+  defp sanitize_raw_tool_markers(nil), do: nil
+
+  defp sanitize_raw_tool_markers(text) when is_binary(text) do
+    Enum.reduce(@raw_tool_markers, text, fn marker, acc ->
+      String.replace(acc, marker, "")
+    end)
+    |> String.trim()
+  end
+
+  defp sanitize_raw_tool_markers(text), do: text
 
   defp finalize_turn_with_content(
          session,

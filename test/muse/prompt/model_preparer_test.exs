@@ -603,4 +603,93 @@ defmodule Muse.Prompt.ModelPreparerTest do
       assert "patch_propose" in tool_names or "list_files" in tool_names
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # supports_tools — tool omission for providers without tool support
+  # ---------------------------------------------------------------------------
+
+  describe "to_request/3 — supports_tools" do
+    setup do
+      session =
+        Session.new(
+          workspace: "/tmp/test_project",
+          id: "sess_tools",
+          status: :idle,
+          created_at: ~U[2025-01-01 00:00:00Z],
+          updated_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      planning_profile = Muse.MuseRegistry.get(:planning)
+
+      bundle =
+        Assembler.build(session, planning_profile, "inspect the project",
+          id: "pb_tools",
+          turn_id: "turn_tools",
+          model: "fake-planning-model",
+          project_rules?: false,
+          created_at: ~U[2025-01-01 00:00:00Z]
+        )
+
+      %{bundle: bundle, session: session}
+    end
+
+    test "supports_tools=false omits tools from request", %{bundle: bundle} do
+      request =
+        ModelPreparer.to_request(
+          bundle,
+          provider: :fake,
+          supports_tools: false
+        )
+
+      assert request.tools == []
+      assert request.tool_choice == :none
+    end
+
+    test "supports_tools=true preserves tools in request", %{bundle: bundle} do
+      request =
+        ModelPreparer.to_request(
+          bundle,
+          provider: :fake,
+          supports_tools: true
+        )
+
+      assert request.tools != []
+      assert is_list(request.tools)
+    end
+
+    test "nil supports_tools (default) preserves tools in request", %{bundle: bundle} do
+      request = ModelPreparer.to_request(bundle, provider: :fake)
+
+      assert request.tools != []
+      assert is_list(request.tools)
+    end
+
+    test "supports_tools=false via ProviderConfig omits tools from request", %{bundle: bundle} do
+      provider_config = %Muse.LLM.ProviderConfig{
+        Muse.LLM.ProviderConfig.fake()
+        | supports_tools: false
+      }
+
+      request = ModelPreparer.to_request(bundle, provider_config)
+
+      assert request.tools == []
+      assert request.tool_choice == :none
+    end
+
+    test "supports_tools=false also omits tool_choice even when explicitly passed", %{
+      bundle: bundle
+    } do
+      request =
+        ModelPreparer.to_request(
+          bundle,
+          provider: :fake,
+          supports_tools: false,
+          tool_choice: :auto
+        )
+
+      # When tools are disabled, tool_choice is always :none regardless of override
+      assert request.tools == []
+      assert request.tool_choice == :none
+    end
+  end
 end

@@ -1004,6 +1004,114 @@ defmodule Muse.LLM.ProviderConfigTest do
     end
   end
 
+  # ---------------------------------------------------------------------------
+  # Tools support
+  # ---------------------------------------------------------------------------
+
+  describe "supports_tools?/1" do
+    test "defaults to true when nil" do
+      config = ProviderConfig.fake()
+      # fake() sets supports_tools: true explicitly
+      assert config.supports_tools == true
+      assert ProviderConfig.supports_tools?(config) == true
+    end
+
+    test "returns false when explicitly set to false" do
+      config = %{ProviderConfig.fake() | supports_tools: false}
+      assert ProviderConfig.supports_tools?(config) == false
+    end
+
+    test "returns true when explicitly set to true" do
+      config = %{ProviderConfig.fake() | supports_tools: true}
+      assert ProviderConfig.supports_tools?(config) == true
+    end
+
+    test "defaults to true when nil (via explicit struct)" do
+      config = %ProviderConfig{ProviderConfig.fake() | supports_tools: nil}
+      assert ProviderConfig.supports_tools?(config) == true
+    end
+  end
+
+  describe "parse_tools/1" do
+    test "parses 'true' string to true" do
+      assert ProviderConfig.parse_tools("true") == true
+    end
+
+    test "parses 'false' string to false" do
+      assert ProviderConfig.parse_tools("false") == false
+    end
+
+    test "passes through boolean true" do
+      assert ProviderConfig.parse_tools(true) == true
+    end
+
+    test "passes through boolean false" do
+      assert ProviderConfig.parse_tools(false) == false
+    end
+
+    test "returns nil for nil" do
+      assert ProviderConfig.parse_tools(nil) == nil
+    end
+
+    test "returns nil for unrecognized strings" do
+      assert ProviderConfig.parse_tools("maybe") == nil
+    end
+  end
+
+  describe "MUSE_TOOLS env var" do
+    test "load/1 respects MUSE_TOOLS=false" do
+      assert {:ok, config} =
+               ProviderConfig.load(%{
+                 "MUSE_PROVIDER" => "openai_compatible",
+                 "MUSE_MODEL" => "gpt-4.1",
+                 "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+                 "MUSE_TOOLS" => "false"
+               })
+
+      assert config.supports_tools == false
+      assert ProviderConfig.supports_tools?(config) == false
+    end
+
+    test "load/1 respects MUSE_TOOLS=true" do
+      assert {:ok, config} =
+               ProviderConfig.load(%{
+                 "MUSE_PROVIDER" => "openai_compatible",
+                 "MUSE_MODEL" => "gpt-4.1",
+                 "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+                 "MUSE_TOOLS" => "true"
+               })
+
+      assert config.supports_tools == true
+      assert ProviderConfig.supports_tools?(config) == true
+    end
+
+    test "load/1 defaults to true when MUSE_TOOLS is unset" do
+      assert {:ok, config} =
+               ProviderConfig.load(%{
+                 "MUSE_PROVIDER" => "openai_compatible",
+                 "MUSE_MODEL" => "gpt-4.1",
+                 "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1"
+               })
+
+      # openai_compatible defaults supports_tools: true
+      assert config.supports_tools == true
+      assert ProviderConfig.supports_tools?(config) == true
+    end
+
+    test "load/1 ignores invalid MUSE_TOOLS value" do
+      assert {:ok, config} =
+               ProviderConfig.load(%{
+                 "MUSE_PROVIDER" => "openai_compatible",
+                 "MUSE_MODEL" => "gpt-4.1",
+                 "MUSE_OPENAI_BASE_URL" => "https://api.example.test/v1",
+                 "MUSE_TOOLS" => "maybe"
+               })
+
+      # Invalid values are ignored — stays default (true for openai_compatible)
+      assert config.supports_tools == true
+    end
+  end
+
   describe "MUSE_STRUCTURED_OUTPUTS env var" do
     test "load/1 respects MUSE_STRUCTURED_OUTPUTS=false" do
       assert {:ok, config} =

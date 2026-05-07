@@ -184,6 +184,7 @@ defmodule Muse.LLM.ProviderConfig do
     * `MUSE_LLM_TIMEOUT_MS` — per-request timeout in ms (default: `120_000`)
     * `MUSE_LLM_MAX_RETRIES` — max retries (default: `2`, `0` for fake)
     * `MUSE_STRUCTURED_OUTPUTS` — `"true"`/`"false"` — whether the provider supports strict structured outputs (default: `true`)
+    * `MUSE_TOOLS` — `"true"`/`"false"` — whether the provider supports OpenAI-style tool/function calling (default: `true`). Set `"false"` for providers like wafer.ai / GLM-5.1 that receive `tools`/`tool_choice` but return textual tool-call markers instead of structured `tool_calls`.
 
   Provider-specific env vars:
     * OpenAI: `MUSE_OPENAI_BASE_URL` (required for openai_compatible)
@@ -429,6 +430,44 @@ defmodule Muse.LLM.ProviderConfig do
   @spec supports_structured_outputs?(t()) :: boolean()
   def supports_structured_outputs?(%__MODULE__{supports_structured_outputs: nil}), do: true
   def supports_structured_outputs?(%__MODULE__{supports_structured_outputs: val}), do: val
+
+  @doc """
+  Return whether the provider supports OpenAI-style tool/function calling.
+
+  Defaults to `true` when `supports_tools` is `nil` (backward
+  compatible — existing providers that don't set the field are assumed to
+  support tool calling).
+
+  Providers like wafer.ai / GLM-5.1 that receive `tools` and `tool_choice`
+  parameters but return textual tool-call markers instead of structured
+  `tool_calls` should set this to `false` so Muse omits tools from the
+  request payload and avoids the textual tool-call stall.
+  """
+  @spec supports_tools?(t()) :: boolean()
+  def supports_tools?(%__MODULE__{supports_tools: nil}), do: true
+  def supports_tools?(%__MODULE__{supports_tools: val}), do: val
+
+  @doc """
+  Safely parse a tools capability flag from a string or boolean.
+
+  Accepts `"true"`, `"false"`, `true`, `false`, or `nil`.
+  Returns `true`, `false`, or `nil` (for unrecognized values).
+
+  ## Examples
+
+      iex> Muse.LLM.ProviderConfig.parse_tools("false")
+      false
+      iex> Muse.LLM.ProviderConfig.parse_tools("true")
+      true
+      iex> Muse.LLM.ProviderConfig.parse_tools(nil)
+      nil
+  """
+  @spec parse_tools(String.t() | boolean() | nil) :: boolean() | nil
+  def parse_tools("true"), do: true
+  def parse_tools("false"), do: false
+  def parse_tools(true), do: true
+  def parse_tools(false), do: false
+  def parse_tools(_), do: nil
 
   @doc """
   Safely parse a structured outputs flag from a string or boolean.
@@ -694,7 +733,9 @@ defmodule Muse.LLM.ProviderConfig do
              strict?
            ) do
       config = %{config | timeout_ms: timeout_ms, max_retries: max_retries}
-      {:ok, maybe_set_structured_outputs(config, env_map)}
+      config = maybe_set_structured_outputs(config, env_map)
+      config = maybe_set_tools(config, env_map)
+      {:ok, config}
     end
   end
 
@@ -707,6 +748,19 @@ defmodule Muse.LLM.ProviderConfig do
         case parse_structured_outputs(value) do
           nil -> config
           parsed -> %{config | supports_structured_outputs: parsed}
+        end
+    end
+  end
+
+  defp maybe_set_tools(config, env_map) do
+    case env_value(env_map, "MUSE_TOOLS") do
+      nil ->
+        config
+
+      value ->
+        case parse_tools(value) do
+          nil -> config
+          parsed -> %{config | supports_tools: parsed}
         end
     end
   end

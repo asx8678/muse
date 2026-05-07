@@ -92,6 +92,19 @@ defmodule Muse.Prompt.ModelPreparer do
     {tools, response_format} =
       planning_muse_request_overrides(response_mode, output_schema, bundle, opts, provider_map)
 
+    # When the provider does not support tool/function calling
+    # (supports_tools: false), omit tools and tool_choice from the request.
+    # Providers like wafer.ai / GLM-5.1 that receive tools/tool_choice but
+    # return textual tool-call markers instead of structured tool_calls
+    # cause Muse to stall — the text appears as assistant content but tools
+    # are never actually invoked.
+    {tools, tool_choice} =
+      if provider_supports_tools?(provider_map) do
+        {tools, option_or_config(opts, provider_map, :tool_choice)}
+      else
+        {[], :none}
+      end
+
     %Request{
       provider: provider,
       model: model,
@@ -102,7 +115,7 @@ defmodule Muse.Prompt.ModelPreparer do
       messages: bundle.messages,
       prompt_bundle: bundle,
       tools: tools,
-      tool_choice: option_or_config(opts, provider_map, :tool_choice),
+      tool_choice: tool_choice,
       previous_response_id: option_or_config(opts, provider_map, :previous_response_id),
       stream: Keyword.get(opts, :stream, true),
       store: option_or_config(opts, provider_map, :store),
@@ -209,6 +222,20 @@ defmodule Muse.Prompt.ModelPreparer do
   # in their ProviderConfig.
   defp provider_supports_structured_outputs?(provider_map) do
     case Map.get(provider_map, :supports_structured_outputs) do
+      nil -> true
+      false -> false
+      true -> true
+    end
+  end
+
+  # Check whether the provider supports OpenAI-style tool/function calling.
+  # Defaults to true for backward compatibility — providers that haven't set
+  # the flag are assumed to support tools. Providers like wafer.ai / GLM-5.1
+  # that receive tools/tool_choice but return textual tool-call markers
+  # instead of structured tool_calls should set MUSE_TOOLS=false or
+  # supports_tools: false in their ProviderConfig.
+  defp provider_supports_tools?(provider_map) do
+    case Map.get(provider_map, :supports_tools) do
       nil -> true
       false -> false
       true -> true

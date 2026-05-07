@@ -133,6 +133,7 @@ defmodule Muse.Config do
     |> maybe_override_retries(env_map, app_config)
     |> maybe_override_max_tokens(env_map, app_config)
     |> maybe_override_structured_outputs(env_map, app_config)
+    |> maybe_override_tools(env_map, app_config)
   end
 
   defp parse_provider("fake"), do: :fake
@@ -360,6 +361,19 @@ defmodule Muse.Config do
         case ProviderConfig.parse_structured_outputs(val) do
           nil -> config
           parsed -> %{config | supports_structured_outputs: parsed}
+        end
+    end
+  end
+
+  defp maybe_override_tools(config, env_map, app_config) do
+    case resolve(env_map, app_config, "MUSE_TOOLS", :tools, nil) do
+      nil ->
+        config
+
+      val ->
+        case ProviderConfig.parse_tools(val) do
+          nil -> config
+          parsed -> %{config | supports_tools: parsed}
         end
     end
   end
