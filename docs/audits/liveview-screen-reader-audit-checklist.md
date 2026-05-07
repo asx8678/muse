@@ -1,6 +1,6 @@
 # LiveView Screen-Reader Audit Checklist
 
-> **Audit Issue:** [muse-1rq](../beads-db/issues/muse-1rq.md)
+> **Audit Issue:** `muse-1rq` (`bd show muse-1rq`)
 > **Checklist created:** 2026-05-06 (muse-ur4)
 > **Auditor:** _fill in your name/role_
 > **Date executed:** _fill in audit date_
@@ -27,7 +27,7 @@
 ### Required Hardware / Software
 
 - [ ] **macOS 14+** (for VoiceOver) **or** **Windows 10/11** (for NVDA / JAWS)
-- [ ] Latest stable version of **Google Chrome** or **Mozilla Firefox** (see matrix below)
+- [ ] Latest stable browser appropriate for the selected screen reader: **Safari** or **Chrome** for VoiceOver, **Firefox** or **Chrome** for NVDA, **Edge** for Narrator (see matrix below)
 - [ ] **VoiceOver** (macOS, built-in) **or** **NVDA** (Windows, free: <https://www.nvaccess.org/>) — at least one must be installed and working
 - [ ] **Optional but recommended:** JAWS (paid) or Narrator (Windows built-in) for cross-reader validation
 - [ ] Elixir/OTP 26+ installed (`elixir --version`)
@@ -54,7 +54,7 @@
 
 | Screen Reader | OS        | Best Browser    | Notes                                  |
 |---------------|-----------|-----------------|----------------------------------------|
-| **VoiceOver** | macOS 14+ | Safari          | Native integration; required for bleed-through testing |
+| **VoiceOver** | macOS 14+ | Safari          | Native integration; best primary macOS combination |
 | VoiceOver     | macOS 14+ | Chrome          | Different rendering engine; useful for comparison |
 | **NVDA**      | Windows   | Firefox         | Most popular free SR; close-to-real-world |
 | NVDA          | Windows   | Chrome          | Also widely used                        |
@@ -75,8 +75,8 @@
 MIX_ENV=smoke MUSE_PROVIDER=fake mix muse --web-only --host 127.0.0.1 --port 4102 --no-watch
 ```
 
-> Alternatively, use `./script/liveview-browser-smoke` which auto-starts on port 4101.  
-> However, for manual screen-reader work, a persistent server (above) is preferred.
+> `./script/liveview-browser-smoke` is useful as a non-manual smoke check: it auto-starts on port 4101 by default, runs assertions, and tears the server down.  
+> For manual screen-reader work, use the persistent server command above.
 
 ### URL
 
@@ -99,21 +99,21 @@ http://127.0.0.1:4102
 ### Tab / Focus Navigation
 
 - [ ] `Tab` from page load moves focus to **skip link** (if rendered) → Enter activates it, moving focus to main chat panel
-- [ ] `Tab` order is logical: skip link → composer → send button → context/sidebar controls → status card → (drawer trigger / other)
+- [ ] `Tab` order is logical for the current DOM: skip link → header controls (mobile/context toggle, diagnostics chip if present) → context/sidebar controls and session card → chat panel prompt chips/history → composer → send button → overlays when visible
 - [ ] No **keyboard traps**: You can `Tab` through the entire page without getting stuck
 - [ ] `Shift+Tab` reverses navigation correctly
 - [ ] All interactive elements are reachable via keyboard alone
 
 ### Interactive Elements
 
-- [ ] **Chat composer** (`<textarea>`): receives focus, typing works, Enter submits (or Cmd+Enter / Ctrl+Enter depending on config)
+- [ ] **Chat composer** (`<textarea>`): receives focus, typing works, `Enter` submits, and `Shift+Enter` inserts a newline
 - [ ] **Send button**: reachable and activatable via `Enter` / `Space`
-- [ ] **Context sidebar collapse/expand**: reachable and toggles state
+- [ ] **Context sidebar controls**: mobile "Toggle context sidebar", rail "Expand sidebar", "Collapse to rail", and "Hide sidebar" controls are reachable where rendered and communicate state clearly enough for the current viewport
 - [ ] **Diagnostics drawer trigger**: reachable; `Enter`/`Space` opens drawer
 - [ ] **Diagnostics drawer close/back**: reachable while drawer is open; `Escape` closes drawer
 - [ ] **Toast dismiss button**: reachable (if not auto-dismissed) and activatable
 - [ ] **Session status card**: focusable elements within (if any) are reachable
-- [ ] **Patch proposal panel** (when visible): accept/reject buttons reachable and activatable
+- [ ] **Patch proposal panel** (when visible): dismiss button and command guidance are reachable; approval/rejection via `/approve patch` and `/reject patch` remains discoverable through the composer
 
 ### Focus Indicators
 
@@ -199,133 +199,135 @@ http://127.0.0.1:4102
 ### 6.2 Landmarks & Regions (WCAG 1.3.1, 4.1.2)
 
 - [ ] Exactly **one** `role="main"` or `<main>` landmark per page
-- [ ] Chat panel is a `region` with an `aria-label` like "Chat conversation"
-- [ ] Context / sidebar is `role="complementary"` with an `aria-label` like "Workspace context"
-- [ ] Toast container is `role="status"` with `aria-live="polite"`
-- [ ] Session status card is `role="region"` or within a landmark
+- [ ] Chat panel is a `region` with an `aria-label` like "Muse conversation"; its scroll area is a `log` named "Conversation history"
+- [ ] Context / sidebar is `role="complementary"` with an `aria-label` like "Workspace context and session status"
+- [ ] Toast notifications are exposed consistently with current markup: the container is labelled "Notifications" and individual toasts use `role="alert"`; record whether that assertive behavior is appropriate for the toast type
+- [ ] Session status card is understandable within the complementary landmark; the current status row exposes a concise `role="status"` name such as "Session status: Idle"
 - [ ] Diagnostics drawer (when open) has `role="dialog"` with `aria-label` / `aria-labelledby`
 - [ ] Patch proposal panel (when visible) has `role="region"` with `aria-label`
-- [ ] No duplicate landmark roles caused by wrapping/inner elements (see finding #2 in audit report)
+- [ ] No duplicate landmark roles caused by wrapping/inner elements; historical finding #2 was addressed in `muse-1rq.2`, so verify no regression
 - [ ] VoiceOver Rotor → Landmarks lists all distinct landmarks clearly
 - [ ] NVDA: `D` navigation cycles through landmarks in a logical order
 
 **Expected landmarks (VoiceOver Rotor, NVDA `D`):**
 1. "banner" or site header (if any)
 2. "main" — the primary content region
-3. "Chat conversation" region (or inside main)
-4. "Workspace context" complementary
-5. "Status" live region for toasts
-6. "Session Status" region (or within complementary)
-7. "Diagnostics dialog" (when open)
+3. "Muse conversation" region (inside main)
+4. "Workspace context and session status" complementary
+5. "Conversation history" log (may be exposed as a live region rather than a rotor landmark)
+6. Toast alerts as notifications when present (not necessarily a landmark)
+7. "Diagnostics" dialog (when open)
 
 ### 6.3 Chat Composer (WCAG 1.3.1, 2.4.6, 4.1.2)
 
-- [ ] `<textarea>` has an associated `<label>` or `aria-label`
-- [ ] Label clearly describes purpose, e.g., "Message input" or "Chat message"
-- [ ] Placeholder text provides additional hint (e.g., "Type a message… /help for commands")
+- [ ] `<textarea>` has an associated `<label>` or `aria-label` (current markup: `aria-label="Message to Muse"`)
+- [ ] Label clearly describes purpose, e.g., "Message to Muse", "Message input", or "Chat message"
+- [ ] Placeholder text provides additional hint (current markup: "Ask Muse anything, or type /help...")
 - [ ] `role="form"` on the composer form element
 - [ ] Send button has an accessible name (e.g., "Send" or "Send message")
 - [ ] Screen reader announces label + role + state when focused
-- [ ] Textarea placeholder contrast meets AA (≥4.5:1) — existing finding #6
+- [ ] Textarea placeholder contrast meets AA (≥4.5:1); historical finding #6 was addressed in `muse-1rq.4`, so verify no regression
 
 **Expected announcements (VoiceOver focus on textarea):**
-- "Message input, text area, insert text for chat, /help for commands"
-- "Enter text to send to Muse"
+- "Message to Muse, text area" plus placeholder/hint text
+- "Ask Muse anything, or type /help..."
 
 **Expected announcements (NVDA browse mode on textarea):**
-- "Message input, edit, /help for commands"
+- "Message to Muse, edit, multi-line" plus placeholder/hint text
 - Form landmark is navigable
 
 ### 6.4 Message Log / Live Region (WCAG 4.1.2, 4.1.3)
 
-- [ ] Message container has `role="log"` with `aria-live="polite"` and `aria-label="Chat conversation"`
+- [ ] Message container has `role="log"` with `aria-live="polite"` and `aria-label="Conversation history"`
 - [ ] New messages are announced automatically (or via `aria-live` region `polite` updates)
 - [ ] Announcements do not interrupt current focus/speech (i.e., use `polite` not `assertive`)
-- [ ] No nested `role="status"` inside `role="log"` (see finding #4)
+- [ ] No nested `role="status"` inside `role="log"`; historical finding #4 was addressed in `muse-1rq.3`, so verify no regression
 - [ ] Each message has clear accessible name/label if interactive
 - [ ] With screen reader: type a message, send it → the message is announced without focus being moved
 - [ ] Message timestamps (if present) are not overly verbose
 
 **Expected behavior:**
-- VoiceOver: "You said: [message text]" announced as live region update
-- NVDA: "[message text]" announced while remaining in browse mode
+- VoiceOver: new user/assistant message text is announced as a polite live-region update, with the visible speaker label (for example "you" or "muse") available when browsing history
+- NVDA: new message text is announced without moving focus away from the composer/current control
 
 ### 6.5 Context / Sidebar Controls (WCAG 1.3.2, 2.4.3)
 
-- [ ] Sidebar toggle/collapse button has accessible name: "Collapse sidebar" / "Expand sidebar"
-- [ ] State is communicated: `aria-expanded="true|false"`
+- [ ] Sidebar controls have accessible names matching the current UI: "Toggle context sidebar" (mobile/header), "Expand sidebar" (rail), "Collapse to rail", and "Hide sidebar"
+- [ ] State is communicated where applicable: the mobile/header toggle exposes `aria-expanded="true|false"`; rail/desktop controls should still be understandable from their names
 - [ ] Sidebar content navigable when expanded
-- [ ] With screen reader: navigate to toggle → hear "Workspace context, complementary, [heading/text]" → activate toggle → sidebar collapse is announced
+- [ ] With screen reader: navigate to the complementary landmark → hear "Workspace context and session status, complementary"; activate sidebar controls and verify the resulting expanded/rail/hidden state is clear
 - [ ] When sidebar is collapsed/hidden, its content is not in tab order
 - [ ] Sidebar controls are not announced as "dimmed" or "unavailable" unless visually disabled
 
-**Expected announcements (VoiceOver Rotor → Landmarks → "Workspace context"):**
-- "Workspace context, complementary"
-- Inside: "Workspace, heading level 2"
-- "Session status, region"
+**Expected announcements (VoiceOver Rotor → Landmarks → "Workspace context and session status"):**
+- "Workspace context and session status, complementary"
+- Inside: "Context" and mini-card headings such as "session", "workspace", "diagnostics"
+- Current session row: "Session status: Idle" / "Session status: Running" (or equivalent current state)
 
 ### 6.6 Diagnostics Drawer (WCAG 2.4.3, 2.4.7, 4.1.2)
 
-> Existing finding #1 (HIGH): Drawer focus management is broken. Test carefully.
+> Historical finding #1 (HIGH) reported broken drawer focus management. Follow-up `muse-1rq.1` is closed; verify the current modal/focus-trap behavior manually and file a regression if it fails.
 
-- [ ] Drawer trigger button has accessible name: "Open diagnostics" or "Diagnostics"
+- [ ] Drawer trigger button has an accessible name derived from the current diagnostics chip/details control (for example "diagnostics … issue(s)" or "open details")
 - [ ] When drawer opens, focus moves **into** the drawer (NOT remaining on trigger)
 - [ ] Focus is trapped within drawer while open (Tab cycles inside, not behind)
 - [ ] Background content is `aria-hidden="true"` and/or `inert` while drawer is open
-- [ ] Drawer close button has accessible name: "Close diagnostics" or "Close"
+- [ ] Drawer close/minimize button has an accessible name (current markup: "Minimize diagnostics panel")
 - [ ] `Escape` key closes the drawer
 - [ ] When drawer closes, focus returns to the trigger
 - [ ] Drawer has `role="dialog"` with `aria-modal="true"` (if modal) or appropriate landmark
-- [ ] With screen reader: activate trigger → hear announcement like "Diagnostics dialog, currently open" → navigate inside → all drawer content is readable
+- [ ] With screen reader: activate trigger → hear announcement like "Diagnostics, dialog" → navigate inside → all drawer content and action buttons are readable
 - [ ] NVDA: browse mode should work inside drawer; focus mode for interactive elements
 - [ ] Announcement of live regions inside drawer should not bleed to background
 
 **Expected announcements (VoiceOver):**
-- Trigger: "Diagnostics, button"
-- On open: "Diagnostics dialog, [content summary], you are currently in a dialog"
-- Close button: "Close, button"
+- Trigger: "diagnostics, [n] issue(s), button" or "open details, button"
+- On open: "Diagnostics, dialog" / "Diagnostics, heading/text" followed by drawer content
+- Close button: "Minimize diagnostics panel, button"
 
 ### 6.7 Patch Proposal Panel (WCAG 2.4.3, 4.1.2) — Visible only when a patch is proposed
 
-- [ ] Panel has clear accessible role: `role="region"` with `aria-label="Patch proposal"`
-- [ ] Approve and Reject buttons have distinct accessible names
-- [ ] Keyboard navigation reaches panel in logical order (after the message prompting it)
-- [ ] With screen reader: panel is discoverable through landmark navigation
-- [ ] Status is clear: "Awaiting approval" or similar
+- [ ] Panel has clear accessible role: `role="region"` with an `aria-label` like "Patch proposal awaiting approval"
+- [ ] Dismiss button has a distinct accessible name (current markup: "Dismiss patch proposal")
+- [ ] Approval/rejection instructions are readable: `/approve patch` and `/reject patch`; if approve/reject buttons are added later, each must have a distinct accessible name
+- [ ] Keyboard navigation reaches panel in a logical order for an overlay rendered after main content
+- [ ] With screen reader: panel is discoverable through region navigation or sequential reading
+- [ ] Status is clear: "awaiting approval" or similar
 
 **Expected announcements:**
-- "Patch proposal, region"
-- "Approve, button" / "Reject, button"
+- "Patch proposal awaiting approval, region"
+- "Dismiss patch proposal, button"
+- Text guidance for `/approve patch` and `/reject patch`
 
 ### 6.8 Session Status Card (WCAG 1.3.1, 4.1.2)
 
-- [ ] Card is within a landmark with label (e.g., "Session status")
-- [ ] Session status text ("active", "idle", etc.) is readable by screen reader
-- [ ] If status changes dynamically, consider `aria-live="polite"` on the status region
-- [ ] Workspace name and session ID (if displayed) are descriptive
+- [ ] Card is within the "Workspace context and session status" complementary landmark and has a meaningful card label (current mini-card label: "Session status")
+- [ ] Session status text ("Idle", "Running", "Plan awaiting approval", etc.) is readable by screen reader
+- [ ] The current status row's `role="status"` announcement is concise and does not create excessive repeated speech
+- [ ] Active Muse, plan, patch, and turn rows (when present) have descriptive names
 
 **Expected announcements:**
-- "Session status, region"
-- "Status: active"
-- "Workspace: [name]"
+- "Session status: Idle" / "Session status: Running" (or equivalent current state)
+- "Active Muse: [name]" when present
+- "Patch awaiting approval" when present
 
 ### 6.9 Toast / Error Announcements (WCAG 4.1.3, 4.1.2)
 
-- [ ] Toast container is `role="status"` with `aria-live="polite"`
+- [ ] Toast container is labelled "Notifications" and individual toasts expose the intended live-region behavior (current markup: each toast uses `role="alert"`)
 - [ ] Toasts are announced without moving focus
 - [ ] Toast content is concise and meaningful
-- [ ] Dismissible toasts have a close button with accessible name
-- [ ] Error toasts do not use `aria-live="assertive"` unless truly urgent
+- [ ] Dismissible toasts have a close button with accessible name (current pattern: "Dismiss {type} notification: {message}")
+- [ ] Assertive `role="alert"` announcements are reserved for error/urgent toasts; if routine/success toasts interrupt speech, file a follow-up to use a polite status pattern for those cases
 - [ ] With screen reader: trigger a toast → hear announcement like "Error: [message]" while remaining in current context
 - [ ] Multiple simultaneous toasts: announcements are not overly verbose (deduplication or summarization if needed)
 
 **Expected announcements:**
 - "Error: Could not connect to provider. Please try again."
-- "Close notification, button" (if dismissible)
+- "Dismiss error notification: Could not connect to provider. Please try again., button" (or equivalent current toast type/message)
 
 ### 6.10 Skip-Link Rendering (WCAG 2.4.1)
 
-> Existing finding #3: skip link may not be rendered. Verify status.
+> Historical finding #3 reported a missing skip link. Follow-up `muse-1rq.2` is closed; verify the current rendered skip link has not regressed.
 
 - [ ] A rendered skip link exists in the HTML (not just CSS class)
 - [ ] Skip link is target of `href="#main-content"` or similar
@@ -398,7 +400,7 @@ After completing checks, fill in:
 
 1. File follow-up issues for each FAIL (see §9 below)
 2. Re-test after fixes
-3. Update muse-1rq status
+3. Update `muse-1rq` with the audit summary; do not close it until results are reviewed and accepted
 ```
 
 ---
@@ -419,10 +421,10 @@ After completing checks, fill in:
 
 ## 9. When to File Follow-Up Beads Issues
 
-File a new beads issue for **every FAIL** of Medium severity or above using:
+File a new child beads issue for **every FAIL** of Medium severity or above using:
 
 ```bash
-bd create --title="a11y: {specific issue}" --description="WCAG SC {ref}: {description of problem}
+bd create --parent muse-1rq --title="a11y: {specific issue}" --description="WCAG SC {ref}: {description of problem}
 
 Found during screen-reader audit (muse-1rq).
 Screen reader: {VoiceOver/NVDA/...}
@@ -436,24 +438,20 @@ Steps to reproduce:
 Expected: {what should happen}
 Actual: {what actually happens}
 
-Severity: {Critical/High/Medium}" --type=bug --priority={0-4}
+Severity: {Critical/High/Medium}" --type=bug --priority={0-4} --labels=a11y,wcag
 ```
 
-Then note the dependency:
-
-```bash
-bd dep add {new-issue} muse-1rq
-```
+Use the priority scale from `bd prime`: P0/P1 for Critical, P2 for High, P3 for Medium unless the coordinator sets a different priority. Prefer `--parent muse-1rq` so findings are grouped under the audit. Do **not** add dependency edges unless the coordinator explicitly wants a bug to block the audit; if blocking is required, the direction is `bd dep add muse-1rq {new-issue}` (the audit depends on the bug), not the reverse.
 
 For Low severity items, either file a bug or add to a tracking issue. Use judgment.
 
-Do **not** close `muse-1rq` until all Critical/High issues found are filed, and the overall audit record is complete.
+Do **not** close `muse-1rq` until all Critical/High issues found are filed, the overall audit record is complete, and the coordinator/human accepts the screen-reader results.
 
 ---
 
 ## 10. Responsive / Mobile Checks
 
-If a mobile viewport or OS-level zoom is feasible with the screen reader:
+If a mobile viewport or OS-level zoom is feasible with the screen reader, verify the fixes from `muse-1rq.5` did not regress:
 
 ### Narrow Viewport (320–390 px CSS width)
 
@@ -495,4 +493,4 @@ If testing on iOS (VoiceOver on iPhone/iPad):
 
 ---
 
-*This checklist was prepared under [muse-ur4](beads-issues/../beads-db/issues/muse-ur4.md). The actual audit is tracked under [muse-1rq](beads-issues/../beads-db/issues/muse-1rq.md). See the [WCAG 2.1 AA audit report](./liveview-wcag-2.1-aa-2026-05-06.md) for structural ARIA findings.*
+*This checklist was prepared under `muse-ur4`. The actual audit is tracked under `muse-1rq`. See the [WCAG 2.1 AA audit report](./liveview-wcag-2.1-aa-2026-05-06.md) for structural ARIA findings.*

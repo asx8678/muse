@@ -11,6 +11,8 @@
 
 ## Limitations
 
+This is a point-in-time structural audit from 2026-05-06. Several recommended follow-up bugs were later closed under `muse-1rq`, but this report remains historical evidence of what was found on that date. Verify the current LiveView markup and behavior with the screen-reader checklist before treating any finding as still open or fully resolved.
+
 This audit was performed using browser DevTools, ARIA inspection tooling, keyboard navigation, and contrast measurement. **No actual OS-level screen reader (VoiceOver, NVDA, JAWS, Narrator) was used.** ARIA markup and keyboard patterns were verified structurally, but the lived assistive-technology experience — including announcement order, interruption behavior, and virtual cursor navigation — remains unvalidated. A screen-reader audit is still required per muse-1rq acceptance criteria.
 
 > **📋 Screen-reader audit checklist available at** \
