@@ -59,6 +59,33 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/reject") == {:unknown, "/reject"}
     end
 
+    test "parses /approve remote" do
+      assert Commands.parse("/approve remote") == {:command, :approve_remote}
+    end
+
+    test "/approve remote with args is parsed with args" do
+      assert Commands.parse("/approve remote now") == {:command, :approve_remote, "now"}
+    end
+
+    test "parses /reject remote" do
+      assert Commands.parse("/reject remote") == {:command, :reject_remote}
+    end
+
+    test "/reject remote with args is parsed with args" do
+      assert Commands.parse("/reject remote because") == {:command, :reject_remote, "because"}
+    end
+
+    test "/approve remote matches before /approve (longest prefix)" do
+      # Verify that /approve remote is a distinct command from /approve
+      assert Commands.parse("/approve remote") == {:command, :approve_remote}
+      assert Commands.parse("/approve") == {:unknown, "/approve"}
+    end
+
+    test "/reject remote matches before /reject (longest prefix)" do
+      assert Commands.parse("/reject remote") == {:command, :reject_remote}
+      assert Commands.parse("/reject") == {:unknown, "/reject"}
+    end
+
     test "parses /events" do
       assert Commands.parse("/events") == {:command, :events}
     end
@@ -324,6 +351,8 @@ defmodule Muse.CommandsTest do
       assert text =~ "/prompt-preview"
       assert text =~ "/auth status"
       assert text =~ "/session"
+      assert text =~ "/approve remote"
+      assert text =~ "/reject remote"
     end
 
     test "includes /muses but not /agents legacy alias" do
@@ -347,7 +376,8 @@ defmodule Muse.CommandsTest do
       cmds = Commands.slash_commands()
       assert is_list(cmds)
       # PR21: Added /memory, /memory compact, /memory clear, /handoff, /checkpoints, /restore
-      assert length(cmds) == 52
+      # Phase B: Added /approve remote, /reject remote
+      assert length(cmds) == 54
 
       for {cmd, desc} <- cmds do
         assert is_binary(cmd)
@@ -370,6 +400,8 @@ defmodule Muse.CommandsTest do
       assert "/plan show" in cmd_names
       assert "/approve plan" in cmd_names
       assert "/reject plan" in cmd_names
+      assert "/approve remote" in cmd_names
+      assert "/reject remote" in cmd_names
       assert "/auth status" in cmd_names
     end
   end
@@ -379,7 +411,8 @@ defmodule Muse.CommandsTest do
       cmds = Commands.slash_commands_json()
       assert is_list(cmds)
       # PR21: Added /memory, /memory compact, /memory clear, /handoff, /checkpoints, /restore
-      assert length(cmds) == 52
+      # Phase B: Added /approve remote, /reject remote
+      assert length(cmds) == 54
 
       for cmd <- cmds do
         assert Map.has_key?(cmd, :command)
@@ -400,6 +433,8 @@ defmodule Muse.CommandsTest do
       assert "/plan history" in cmd_names
       assert "/plan status" in cmd_names
       assert "/plan show" in cmd_names
+      assert "/approve remote" in cmd_names
+      assert "/reject remote" in cmd_names
       assert "/auth status" in cmd_names
     end
   end

@@ -119,6 +119,15 @@ defmodule Muse.CommandDispatcher do
     dispatch_patch_lifecycle_command(:reject_patch, args, context)
   end
 
+  # Phase B: Remote execution approval commands
+  def dispatch(:approve_remote, args, context) do
+    dispatch_remote_lifecycle_command(:approve_remote, args, context)
+  end
+
+  def dispatch(:reject_remote, args, context) do
+    dispatch_remote_lifecycle_command(:reject_remote, args, context)
+  end
+
   # PR18: /apply patch and /rollback checkpoint
   def dispatch(:apply_patch, args, context) do
     dispatch_apply_patch_command(args, context)
@@ -1419,6 +1428,81 @@ defmodule Muse.CommandDispatcher do
   defp safe_patch_lifecycle_reason(binary) when is_binary(binary), do: binary
   defp safe_patch_lifecycle_reason(_reason), do: "unexpected patch approval error"
 
+  # -- Remote execution lifecycle (Phase B) -------------------------------------
+
+  defp dispatch_remote_lifecycle_command(action, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /#{remote_lifecycle_verb(action)} remote", []}
+    else
+      session_id = context_session_id(context)
+      source = context_source(context)
+
+      action
+      |> call_remote_lifecycle_router(session_id, source)
+      |> format_remote_lifecycle_result(action)
+    end
+  end
+
+  defp call_remote_lifecycle_router(:approve_remote, session_id, source) do
+    Muse.SessionRouter.approve_remote(session_id, source)
+  end
+
+  defp call_remote_lifecycle_router(:reject_remote, session_id, source) do
+    Muse.SessionRouter.reject_remote(session_id, source)
+  end
+
+  defp format_remote_lifecycle_result({:ok, %Muse.Approval{} = approval}, :approve_remote) do
+    msg =
+      "Remote execution approved (audit-only, no execution granted).\n" <>
+        "  Approval: #{approval.id}\n" <>
+        "  Target: #{approval.target_id || "unknown"}\n" <>
+        "  Command hash: #{approval.command_hash || "unknown"}"
+
+    {:ok, msg, [{:refresh, :events}, {:refresh, :session}]}
+  end
+
+  defp format_remote_lifecycle_result({:ok, %Muse.Approval{} = approval}, :reject_remote) do
+    msg =
+      "Remote execution rejected.\n" <>
+        "  Approval: #{approval.id}\n" <>
+        "  Target: #{approval.target_id || "unknown"}"
+
+    {:ok, msg, [{:refresh, :events}, {:refresh, :session}]}
+  end
+
+  defp format_remote_lifecycle_result({:error, :turn_running}, action) do
+    verb = remote_lifecycle_verb(action)
+    {:error, "Error: cannot #{verb} remote execution while a turn is running.", []}
+  end
+
+  defp format_remote_lifecycle_result({:error, reason}, _action)
+       when reason in [:not_found, :no_pending_remote_approval] do
+    {:error, "Error: no pending remote execution approval is awaiting decision.", []}
+  end
+
+  defp format_remote_lifecycle_result({:error, :pending_remote_approval_exists}, _action) do
+    {:error, "Error: a pending remote execution approval already exists. Reject it first.", []}
+  end
+
+  defp format_remote_lifecycle_result({:error, {:invalid_transition, status, _target}}, _action) do
+    {:error, "Error: remote approval status is #{status}, not pending.", []}
+  end
+
+  defp format_remote_lifecycle_result({:error, :approval_expired}, _action) do
+    {:error, "Error: remote execution approval has expired.", []}
+  end
+
+  defp format_remote_lifecycle_result({:error, {:missing_field, field}}, _action) do
+    {:error, "Error: remote execution request missing required field: #{field}.", []}
+  end
+
+  defp format_remote_lifecycle_result({:error, reason}, _action) do
+    {:error, "Error: remote approval failed: #{inspect(reason)}.", []}
+  end
+
+  defp remote_lifecycle_verb(:approve_remote), do: "approve"
+  defp remote_lifecycle_verb(:reject_remote), do: "reject"
+
   defp context_session_id(context) do
     case map_get_any(context, [:session_id, "session_id"]) do
       nil -> "default"
@@ -1495,11 +1579,33 @@ defmodule Muse.CommandDispatcher do
           lines
       end
 
+    pending_remote_approval = Map.get(status, :pending_remote_approval)
+
+    lines =
+      case pending_remote_approval do
+        %Muse.Approval{} = approval ->
+          lines ++
+            ["Pending remote approval: #{approval.target_id || "?"} " <>
+               "(#{approval.command_hash || "?"}, expires: #{format_remote_expiry(approval)})"]
+
+        %{"target_id" => tid, "command_hash" => ch} ->
+          lines ++ ["Pending remote approval: #{tid} (#{ch})"]
+
+        _ ->
+          lines
+      end
+
     lines ++ ["Events: #{event_count}"]
   end
 
   defp format_session_state(status) when is_atom(status), do: Atom.to_string(status)
   defp format_session_state(status), do: to_string(status)
+
+  defp format_remote_expiry(%Muse.Approval{expires_at: %DateTime{} = dt}),
+    do: DateTime.to_iso8601(dt)
+
+  defp format_remote_expiry(%{"expires_at" => dt}) when is_binary(dt), do: dt
+  defp format_remote_expiry(_), do: "unknown"
 
   defp render_plan_with_identity(%Muse.Plan{} = plan) do
     plan_show_heading(plan) <> "\n\n" <> Muse.Plan.render(plan)

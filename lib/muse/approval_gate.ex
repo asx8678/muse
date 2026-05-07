@@ -1328,4 +1328,217 @@ defmodule Muse.ApprovalGate do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
+  # -- Remote execution approval (Phase B) ------------------------------------
+
+  @default_remote_expiry_seconds 300
+
+  @doc """
+  Request a pending remote execution approval.
+
+  Creates a `%Muse.Approval{kind: :remote_execution}` record bound to the
+  given `session_id`, `target_id`, and `command_hash`. The approval has a
+  single-command scope and defaults to a 5-minute expiry.
+
+  **Critical invariant:** This approval is auditable metadata only. It does
+  NOT grant actual runner/tool execution. Remote execution tools remain
+  denied by `authorize_tool/2` and `Muse.Execution.Policy`.
+
+  ## Options
+
+    * `:session_id`    — the session requesting remote execution (required)
+    * `:target_id`    — the remote target identifier (required)
+    * `:command_hash` — SHA-256 hash of the command to execute (required)
+    * `:argv_preview` — short, safe preview of the command argv (no credentials)
+    * `:ttl_seconds`  — approval time-to-live in seconds (default: 300 / 5 min)
+    * `:expires_at`   — explicit expiry DateTime (overrides :ttl_seconds)
+    * `:now`          — deterministic timestamp for tests
+    * `:requested_by` — actor requesting the approval
+    * `:source`       — source of the request
+    * `:metadata`     — additional metadata map
+
+  Returns `{:ok, approval}` on success or `{:error, reason}` on failure.
+  """
+  @spec request_remote_execution_approval(keyword()) ::
+          {:ok, Approval.t()} | {:error, term()}
+  def request_remote_execution_approval(opts) when is_list(opts) do
+    with {:ok, session_id} <- require_remote_field(opts, :session_id),
+         {:ok, target_id} <- require_remote_field(opts, :target_id),
+         {:ok, command_hash} <- require_remote_field(opts, :command_hash) do
+      now = keyword_datetime(opts, :now, DateTime.utc_now())
+      ttl = Keyword.get(opts, :ttl_seconds, @default_remote_expiry_seconds)
+
+      expires_at =
+        cond do
+          match?(%DateTime{}, Keyword.get(opts, :expires_at)) -> Keyword.get(opts, :expires_at)
+          is_integer(ttl) and ttl > 0 -> DateTime.add(now, ttl, :second)
+          true -> DateTime.add(now, @default_remote_expiry_seconds, :second)
+        end
+
+      argv_preview =
+        case Keyword.get(opts, :argv_preview) do
+          nil -> nil
+          preview when is_binary(preview) -> String.slice(preview, 0, 200)
+          other -> inspect(other, printable_limit: 200)
+        end
+
+      approval =
+        Approval.new(%{
+          kind: :remote_execution,
+          type: :remote_execution,
+          status: :pending,
+          session_id: session_id,
+          target_id: target_id,
+          command_hash: command_hash,
+          argv_preview: argv_preview,
+          scope: :single_command,
+          requested_by: Keyword.get(opts, :requested_by),
+          source: Keyword.get(opts, :source),
+          created_at: now,
+          expires_at: expires_at,
+          metadata:
+            Map.merge(
+              %{hash_algorithm: "sha256", approval_phase: "B"},
+              Keyword.get(opts, :metadata, %{})
+            )
+        })
+
+      {:ok, approval}
+    end
+  end
+
+  @doc """
+  Approve a pending remote execution approval.
+
+  Returns `{:ok, approval}` when the approval is pending and not expired.
+  Returns `{:error, reason}` otherwise.
+
+  **Critical invariant:** Approval does NOT grant runner/tool execution.
+  """
+  @spec approve_remote_execution(Approval.t(), keyword()) ::
+          {:ok, Approval.t()} | {:error, term()}
+  def approve_remote_execution(%Approval{} = approval, opts \\ []) do
+    now = keyword_datetime(opts, :now, DateTime.utc_now())
+
+    cond do
+      Approval.expired?(approval, now) ->
+        {:error, :approval_expired}
+
+      approval.kind != :remote_execution ->
+        {:error, {:wrong_kind, approval.kind}}
+
+      approval.status != :pending ->
+        {:error, {:invalid_transition, approval.status, :approved}}
+
+      true ->
+        Approval.approve(approval,
+          approved_by: Keyword.get(opts, :approved_by, Keyword.get(opts, :actor)),
+          approved_at: now,
+          source: Keyword.get(opts, :source)
+        )
+    end
+  end
+
+  @doc """
+  Reject a pending remote execution approval.
+
+  Returns `{:ok, approval}` when the approval is pending and not expired.
+  Returns `{:error, reason}` otherwise.
+  """
+  @spec reject_remote_execution(Approval.t(), keyword()) ::
+          {:ok, Approval.t()} | {:error, term()}
+  def reject_remote_execution(%Approval{} = approval, opts \\ []) do
+    now = keyword_datetime(opts, :now, DateTime.utc_now())
+
+    cond do
+      Approval.expired?(approval, now) ->
+        {:error, :approval_expired}
+
+      approval.kind != :remote_execution ->
+        {:error, {:wrong_kind, approval.kind}}
+
+      approval.status != :pending ->
+        {:error, {:invalid_transition, approval.status, :rejected}}
+
+      true ->
+        Approval.reject(approval,
+          rejected_by: Keyword.get(opts, :rejected_by, Keyword.get(opts, :actor)),
+          rejected_at: now,
+          reason: Keyword.get(opts, :reason, "rejected by user"),
+          source: Keyword.get(opts, :source)
+        )
+    end
+  end
+
+  @doc """
+  Validate a remote execution approval against expected binding.
+
+  Checks that the approval matches the expected `session_id`, `target_id`,
+  `command_hash`, and is not expired. Returns `:ok` when all checks pass.
+
+  **Critical invariant:** Even a validated remote execution approval does
+  NOT grant actual execution. Use this for audit/metadata only.
+  """
+  @spec validate_remote_execution_approval(Approval.t(), keyword()) ::
+          :ok | {:error, term()}
+  def validate_remote_execution_approval(%Approval{} = approval, opts) when is_list(opts) do
+    now = keyword_datetime(opts, :now, DateTime.utc_now())
+
+    with :ok <- ensure_remote_kind(approval),
+         :ok <- ensure_approved_status(approval),
+         :ok <- ensure_not_expired(approval, now),
+         :ok <- match_remote_field(approval.session_id, Keyword.get(opts, :session_id), :session_mismatch),
+         :ok <- match_remote_field(approval.target_id, Keyword.get(opts, :target_id), :target_mismatch),
+         :ok <- match_remote_field(approval.command_hash, Keyword.get(opts, :command_hash), :command_hash_mismatch) do
+      :ok
+    end
+  end
+
+  @doc """
+  Build safe event metadata for remote execution approval events.
+
+  No credentials, connection details, or sensitive target info are included.
+  Only `approval_id`, `kind`, `status`, `target_id`, `command_hash`, and
+  `argv_preview` are exposed.
+  """
+  @spec remote_approval_event_data(Approval.t()) :: map()
+  def remote_approval_event_data(%Approval{} = approval) do
+    Approval.event_payload(%{
+      approval_id: approval.id,
+      kind: approval.kind,
+      status: approval.status,
+      target_id: approval.target_id,
+      command_hash: approval.command_hash,
+      argv_preview: approval.argv_preview
+    })
+  end
+
+  @doc """
+  Return the default remote execution approval expiry in seconds (300 = 5 min).
+  """
+  @spec default_remote_expiry_seconds() :: non_neg_integer()
+  def default_remote_expiry_seconds, do: @default_remote_expiry_seconds
+
+  # -- Remote execution approval internals --------------------------------------
+
+  defp require_remote_field(opts, key) do
+    case Keyword.get(opts, key) do
+      nil -> {:error, {:missing_field, key}}
+      "" -> {:error, {:missing_field, key}}
+      value -> {:ok, to_string(value)}
+    end
+  end
+
+  defp ensure_remote_kind(%Approval{kind: :remote_execution}), do: :ok
+  defp ensure_remote_kind(%Approval{kind: kind}), do: {:error, {:wrong_kind, kind}}
+
+  defp ensure_approved_status(%Approval{status: :approved}), do: :ok
+  defp ensure_approved_status(%Approval{status: status}),
+    do: {:error, {:approval_not_approved, status}}
+
+  defp match_remote_field(_actual, nil, _error), do: :ok
+  defp match_remote_field(_actual, "", _error), do: :ok
+  defp match_remote_field(actual, expected, _error) when actual == expected, do: :ok
+  defp match_remote_field(actual, expected, error),
+    do: {:error, {error, %{expected: expected, actual: actual}}}
 end

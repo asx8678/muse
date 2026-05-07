@@ -185,4 +185,44 @@ defmodule Muse.Execution.PolicyTest do
       end
     end
   end
+
+  # Phase B regression: remote execution remains denied even with approved
+  # remote_execution approval context
+  describe "remote execution denied with approval context (Phase B regression)" do
+    test "remote_execution_denied? returns true even with approved remote approval" do
+      # Simulate an approved remote_execution approval in context
+      approved_context = %{
+        approval: %{kind: :remote_execution, status: :approved},
+        target_id: "tgt_staging_web_1",
+        command_hash: "abc123"
+      }
+
+      assert Policy.remote_execution_denied?(approved_context) == true
+    end
+
+    test "remote_execution_denied? returns true for any context shape" do
+      contexts = [
+        %{approval: :granted},
+        %{approval: %{kind: :remote_execution, status: :approved, scope: :single_command}},
+        %{plan_status: :approved, muse_id: :admin, remote_approval: %{}},
+        %{}
+      ]
+
+      for ctx <- contexts do
+        assert Policy.remote_execution_denied?(ctx) == true
+      end
+    end
+
+    test "remote_tool_blocked? still blocks remote tool names" do
+      assert Policy.remote_tool_blocked?("remote_execution")
+      assert Policy.remote_tool_blocked?("ssh_exec")
+      assert Policy.remote_tool_blocked?("ssh_run")
+      assert Policy.remote_tool_blocked?("remote_run")
+    end
+
+    test "resolve_target still denies :remote and :ssh" do
+      assert {:error, _} = Policy.resolve_target(:remote)
+      assert {:error, _} = Policy.resolve_target(:ssh)
+    end
+  end
 end

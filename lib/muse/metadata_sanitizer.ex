@@ -33,7 +33,7 @@ defmodule Muse.MetadataSanitizer do
   @sensitive_patterns ~w(
     token secret password authorization cookie api_key csrf_token
     access_key private_key auth_key session_key refresh_token id_token
-    access_token bearer
+    access_token bearer credential credential_ref
   )
 
   @default_max_depth 3

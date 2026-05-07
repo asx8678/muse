@@ -276,6 +276,53 @@ defmodule Muse.SessionRouter do
     end
   end
 
+  @doc """
+  Requests a pending remote execution approval for the given session.
+
+  The session transitions to `:awaiting_remote_execution_approval`.
+  No remote execution is actually granted — this is auditable metadata only.
+  """
+  @spec request_remote_execution_approval(String.t(), keyword()) ::
+          {:ok, Muse.Approval.t()}
+          | {:error, :not_found | :turn_running | :pending_remote_approval_exists | term()}
+  def request_remote_execution_approval(session_id \\ @default_session_id, opts \\ []) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.request_remote_execution_approval(pid, opts)
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Approves the pending remote execution approval for the given session.
+
+  The session transitions back to `:idle`. Approval is audit metadata only —
+  no runner/tool execution is granted.
+  """
+  @spec approve_remote(String.t(), atom()) ::
+          {:ok, Muse.Approval.t()}
+          | {:error, :not_found | :turn_running | :no_pending_remote_approval | term()}
+  def approve_remote(session_id \\ @default_session_id, source \\ :system) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.approve_remote(pid, source)
+      [] -> {:error, :not_found}
+    end
+  end
+
+  @doc """
+  Rejects the pending remote execution approval for the given session.
+
+  The session transitions back to `:idle`. Rejection is recorded for audit.
+  """
+  @spec reject_remote(String.t(), atom()) ::
+          {:ok, Muse.Approval.t()}
+          | {:error, :not_found | :turn_running | :no_pending_remote_approval | term()}
+  def reject_remote(session_id \\ @default_session_id, source \\ :system) do
+    case Registry.lookup(Muse.SessionRegistry, session_id) do
+      [{pid, _}] -> Muse.SessionServer.reject_remote(pid, source)
+      [] -> {:error, :not_found}
+    end
+  end
+
   # -- Session lifecycle --------------------------------------------------------
 
   @doc false

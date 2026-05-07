@@ -61,6 +61,7 @@ defmodule Muse.Session do
           | :executing
           | :awaiting_patch_approval
           | :awaiting_shell_approval
+          | :awaiting_remote_execution_approval
           | :verifying
           | :reviewing
           | :repairing
@@ -94,7 +95,8 @@ defmodule Muse.Session do
 
       iex> Muse.Session.statuses()
       [:idle, :running, :planning, :awaiting_plan_approval, :executing,
-       :awaiting_patch_approval, :awaiting_shell_approval, :verifying,
+       :awaiting_patch_approval, :awaiting_shell_approval,
+       :awaiting_remote_execution_approval, :verifying,
        :reviewing, :repairing, :done, :failed, :error, :cancelled]
   """
   @spec statuses() :: [status()]
@@ -107,6 +109,7 @@ defmodule Muse.Session do
       :executing,
       :awaiting_patch_approval,
       :awaiting_shell_approval,
+      :awaiting_remote_execution_approval,
       :verifying,
       :reviewing,
       :repairing,

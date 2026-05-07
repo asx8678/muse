@@ -45,6 +45,24 @@ defmodule Muse.MetadataSanitizerTest do
       assert result[:line] == 42
     end
 
+    test "redacts credential and credential_ref keys" do
+      assert MetadataSanitizer.sanitize(%{credential: "secret_creds"}) == %{
+               credential: "**REDACTED**"
+             }
+
+      assert MetadataSanitizer.sanitize(%{credential_ref: "ref_123"}) == %{
+               credential_ref: "**REDACTED**"
+             }
+
+      assert MetadataSanitizer.sanitize(%{"credential" => "abc"}) == %{
+               "credential" => "**REDACTED**"
+             }
+
+      assert MetadataSanitizer.sanitize(%{"Credential_Ref" => "ref"}) == %{
+               "Credential_Ref" => "**REDACTED**"
+             }
+    end
+
     test "redacts deeply nested sensitive keys" do
       input = %{config: %{database: %{password: "db_pass"}, app: %{name: "muse"}}}
       result = MetadataSanitizer.sanitize(input, max_depth: 5)
@@ -70,6 +88,17 @@ defmodule Muse.MetadataSanitizerTest do
       assert MetadataSanitizer.sensitive_key?("x-api-key")
       refute MetadataSanitizer.sensitive_key?("filename")
       refute MetadataSanitizer.sensitive_key?("source")
+    end
+
+    test "detects credential and credential_ref as sensitive" do
+      assert MetadataSanitizer.sensitive_key?(:credential)
+      assert MetadataSanitizer.sensitive_key?(:credential_ref)
+      assert MetadataSanitizer.sensitive_key?("credential")
+      assert MetadataSanitizer.sensitive_key?("credential_ref")
+      assert MetadataSanitizer.sensitive_key?("CREDENTIAL")
+      assert MetadataSanitizer.sensitive_key?("CREDENTIAL_REF")
+      assert MetadataSanitizer.sensitive_key?("my_credential")
+      assert MetadataSanitizer.sensitive_key?("x-credential-ref")
     end
 
     test "returns false for non-string/non-atom keys" do

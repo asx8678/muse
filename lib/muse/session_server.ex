@@ -248,6 +248,57 @@ defmodule Muse.SessionServer do
     GenServer.call(pid, {:set_active_muse, muse_id})
   end
 
+  @doc """
+  Requests a pending remote execution approval for this session.
+
+  The session transitions to `:awaiting_remote_execution_approval` and a
+  `%Muse.Approval{kind: :remote_execution}` record is created. No remote
+  execution is actually granted — this is auditable metadata only.
+
+  ## Options
+
+    * `:target_id`    — remote target identifier (required)
+    * `:command_hash` — SHA-256 hash of the command to execute (required)
+    * `:argv_preview` — short, safe preview of the command argv
+    * `:ttl_seconds`  — approval time-to-live (default: 300 / 5 min)
+    * `:requested_by` — actor requesting the approval
+  """
+  @spec request_remote_execution_approval(pid(), keyword()) ::
+          {:ok, Approval.t()}
+          | {:error,
+             :turn_running
+             | :pending_remote_approval_exists
+             | {:missing_field, atom()}
+             | term()}
+  def request_remote_execution_approval(pid, opts \\ []) do
+    GenServer.call(pid, {:request_remote_execution_approval, opts})
+  end
+
+  @doc """
+  Approves the pending remote execution approval for this session.
+
+  The session transitions back to `:idle`. No remote execution is actually
+  granted — approval is auditable metadata only.
+  """
+  @spec approve_remote(pid(), atom()) ::
+          {:ok, Approval.t()}
+          | {:error, :turn_running | :no_pending_remote_approval | term()}
+  def approve_remote(pid, source \\ :system) do
+    GenServer.call(pid, {:approve_remote, source})
+  end
+
+  @doc """
+  Rejects the pending remote execution approval for this session.
+
+  The session transitions back to `:idle`. The rejection is recorded for audit.
+  """
+  @spec reject_remote(pid(), atom()) ::
+          {:ok, Approval.t()}
+          | {:error, :turn_running | :no_pending_remote_approval | term()}
+  def reject_remote(pid, source \\ :system) do
+    GenServer.call(pid, {:reject_remote, source})
+  end
+
   # -- GenServer callbacks -----------------------------------------------------
 
   @impl true
@@ -269,6 +320,7 @@ defmodule Muse.SessionServer do
       approval_binding: nil,
       active_approval: nil,
       pending_patch: nil,
+      pending_remote_approval: nil,
       memory: nil,
       checkpoints: [],
       artifacts: [],
@@ -316,6 +368,7 @@ defmodule Muse.SessionServer do
       runner_pid: state.runner_pid,
       cancellation_requested: state.cancellation_requested,
       pending_patch: state.pending_patch,
+      pending_remote_approval: state.pending_remote_approval,
       memory: state.memory,
       checkpoints: state.checkpoints,
       artifacts: state.artifacts,
@@ -441,6 +494,25 @@ defmodule Muse.SessionServer do
   @impl true
   def handle_call({:set_active_muse, muse_id}, _from, state) do
     {:reply, :ok, %{state | active_muse: muse_id}}
+  end
+
+  # Phase B: Remote execution approval lifecycle
+  @impl true
+  def handle_call({:request_remote_execution_approval, opts}, _from, state) do
+    {reply, state} = handle_request_remote_approval(state, opts)
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:approve_remote, source}, _from, state) do
+    {reply, state} = handle_remote_lifecycle_command(state, source, :approved)
+    {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call({:reject_remote, source}, _from, state) do
+    {reply, state} = handle_remote_lifecycle_command(state, source, :rejected)
+    {:reply, reply, state}
   end
 
   defp do_submit(source, text, opts, from, state) do
@@ -1091,6 +1163,201 @@ defmodule Muse.SessionServer do
   end
 
   defp turn_running?(state), do: state.status == :running or not is_nil(state.runner_pid)
+
+  # -- Phase B: Remote execution approval handlers ----------------------------
+
+  defp handle_request_remote_approval(state, opts) do
+    cond do
+      turn_running?(state) ->
+        {{:error, :turn_running}, state}
+
+      state.pending_remote_approval != nil ->
+        {{:error, :pending_remote_approval_exists}, state}
+
+      true ->
+        opts_with_session = Keyword.put(opts, :session_id, state.session_id)
+
+        case ApprovalGate.request_remote_execution_approval(opts_with_session) do
+          {:ok, approval} ->
+            previous_status = state.status
+
+            # Emit remote_execution_requested event
+            {requested_event, state} =
+              emit_session_event(
+                state,
+                :conductor,
+                :remote_execution_requested,
+                ApprovalGate.remote_approval_event_data(approval),
+                visibility: :user
+              )
+
+            # Emit session status change event
+            {status_event, state} =
+              if previous_status != :awaiting_remote_execution_approval do
+                emit_session_event(
+                  state,
+                  :conductor,
+                  :session_status_changed,
+                  %{from: previous_status, to: :awaiting_remote_execution_approval},
+                  visibility: :internal
+                )
+              else
+                {nil, state}
+              end
+
+            events = [requested_event, status_event] |> Enum.reject(&is_nil/1)
+
+            state =
+              state
+              |> Map.put(:pending_remote_approval, approval)
+              |> Map.put(:approvals, ApprovalGate.upsert_approval(state.approvals || [], approval))
+              |> Map.put(:status, :awaiting_remote_execution_approval)
+              |> append_session_events(events)
+              |> maybe_persist_snapshot()
+
+            {{:ok, approval}, state}
+
+          {:error, reason} ->
+            {{:error, reason}, state}
+        end
+    end
+  end
+
+  defp handle_remote_lifecycle_command(state, source, target_status) do
+    cond do
+      turn_running?(state) ->
+        {{:error, :turn_running}, state}
+
+      state.pending_remote_approval == nil ->
+        {{:error, :no_pending_remote_approval}, state}
+
+      true ->
+        do_transition_remote_approval(state, source, target_status)
+    end
+  end
+
+  defp do_transition_remote_approval(state, source, target_status) do
+    approval = state.pending_remote_approval
+    actor = Atom.to_string(source || :system)
+
+    gate_result =
+      case target_status do
+        :approved ->
+          ApprovalGate.approve_remote_execution(approval,
+            approved_by: actor,
+            source: source
+          )
+
+        :rejected ->
+          ApprovalGate.reject_remote_execution(approval,
+            rejected_by: actor,
+            reason: "rejected by #{actor}",
+            source: source
+          )
+      end
+
+    case gate_result do
+      {:ok, transitioned_approval} ->
+        previous_status = state.status
+
+        # Upsert approval in session approvals list
+        approvals =
+          ApprovalGate.upsert_approval(state.approvals || [], transitioned_approval)
+
+        # Emit lifecycle event
+        event_type = remote_lifecycle_event_type(target_status)
+
+        {lifecycle_event, state} =
+          emit_session_event(
+            state,
+            source,
+            event_type,
+            ApprovalGate.remote_approval_event_data(transitioned_approval),
+            visibility: :user
+          )
+
+        # Emit session status change
+        {status_event, state} =
+          if previous_status == :awaiting_remote_execution_approval do
+            emit_session_event(
+              state,
+              :conductor,
+              :session_status_changed,
+              %{from: :awaiting_remote_execution_approval, to: :idle},
+              visibility: :internal
+            )
+          else
+            {nil, state}
+          end
+
+        events = [lifecycle_event, status_event] |> Enum.reject(&is_nil/1)
+
+        state =
+          state
+          |> Map.put(:pending_remote_approval, nil)
+          |> Map.put(:approvals, approvals)
+          |> Map.put(:status, :idle)
+          |> append_session_events(events)
+          |> maybe_persist_snapshot()
+
+        {{:ok, transitioned_approval}, state}
+
+      {:error, :approval_expired} ->
+        handle_expired_remote_approval(state, approval, source)
+
+      {:error, reason} ->
+        {{:error, reason}, state}
+    end
+  end
+
+  # When the gate returns :approval_expired, the session would otherwise be
+  # stuck in :awaiting_remote_execution_approval with an un-actionable
+  # pending_remote_approval. We transition the approval to :expired, upsert
+  # it for audit, clear pending state, emit audit events, and persist the
+  # snapshot — all without executing anything.
+  defp handle_expired_remote_approval(state, approval, source) do
+    {:ok, expired_approval} = Approval.transition(approval, :expired)
+    approvals = ApprovalGate.upsert_approval(state.approvals || [], expired_approval)
+
+    previous_status = state.status
+
+    {expiry_event, state} =
+      emit_session_event(
+        state,
+        source,
+        :remote_execution_approval_expired,
+        ApprovalGate.remote_approval_event_data(expired_approval),
+        visibility: :internal
+      )
+
+    {status_event, state} =
+      if previous_status == :awaiting_remote_execution_approval do
+        emit_session_event(
+          state,
+          :conductor,
+          :session_status_changed,
+          %{from: :awaiting_remote_execution_approval, to: :idle},
+          visibility: :internal
+        )
+      else
+        {nil, state}
+      end
+
+    events = [expiry_event, status_event] |> Enum.reject(&is_nil/1)
+
+    state =
+      state
+      |> Map.put(:pending_remote_approval, nil)
+      |> Map.put(:approvals, approvals)
+      |> Map.put(:status, :idle)
+      |> append_session_events(events)
+      |> maybe_persist_snapshot()
+
+    {{:error, :approval_expired}, state}
+  end
+
+  defp remote_lifecycle_event_type(:approved), do: :remote_execution_approved
+  defp remote_lifecycle_event_type(:rejected), do: :remote_execution_rejected
 
   # -- Patch proposal handlers (PR17) ------------------------------------------
 
@@ -1791,11 +2058,15 @@ defmodule Muse.SessionServer do
         # cannot be restored, downgrade to :idle to avoid a stuck session.
         pending_patch = restore_pending_patch(Map.get(data, "pending_patch"))
 
+        # Phase B: restore pending remote approval from snapshot
+        pending_remote_approval =
+          restore_pending_remote_approval(Map.get(data, "pending_remote_approval"))
+
         safe_status =
-          if status == :awaiting_patch_approval and is_nil(pending_patch) do
-            :idle
-          else
-            status
+          cond do
+            status == :awaiting_patch_approval and is_nil(pending_patch) -> :idle
+            status == :awaiting_remote_execution_approval and is_nil(pending_remote_approval) -> :idle
+            true -> status
           end
 
         %{
@@ -1807,7 +2078,8 @@ defmodule Muse.SessionServer do
             approvals: approvals,
             approval_binding: approval_binding,
             active_approval: active_approval,
-            pending_patch: pending_patch
+            pending_patch: pending_patch,
+            pending_remote_approval: pending_remote_approval
         }
 
       _ ->
@@ -1902,6 +2174,16 @@ defmodule Muse.SessionServer do
 
   defp restore_pending_patch(_data), do: nil
 
+  defp restore_pending_remote_approval(nil), do: nil
+
+  defp restore_pending_remote_approval(data) when is_map(data) do
+    Approval.from_map(data)
+  rescue
+    _ -> nil
+  end
+
+  defp restore_pending_remote_approval(_data), do: nil
+
   defp restore_plans(plans_data) when is_map(plans_data) do
     plans_data
     |> Enum.reduce(%{}, fn {id, plan_data}, acc ->
@@ -1931,9 +2213,10 @@ defmodule Muse.SessionServer do
   defp put_restored_plan(plans, _plan, _active_plan_id), do: plans
 
   defp maybe_persist_snapshot(state) do
-    # Persist plan/patch-related state as a session snapshot.
-    # Only writes when a plan or pending_patch exists to avoid unnecessary I/O.
-    if state.plan != nil or state.pending_patch != nil do
+    # Persist plan/patch/remote-approval-related state as a session snapshot.
+    # Only writes when a plan, pending_patch, or pending_remote_approval exists
+    # to avoid unnecessary I/O.
+    if state.plan != nil or state.pending_patch != nil or state.pending_remote_approval != nil do
       data =
         %{
           status: Atom.to_string(state.status),
@@ -1949,6 +2232,7 @@ defmodule Muse.SessionServer do
             |> Enum.into(%{})
         }
         |> maybe_put_pending_patch(state)
+        |> maybe_put_pending_remote_approval(state)
 
       case SessionStore.save_session(state.session_id, data) do
         :ok -> :ok
@@ -1969,12 +2253,24 @@ defmodule Muse.SessionServer do
 
   defp maybe_put_pending_patch(data, _state), do: data
 
+  defp maybe_put_pending_remote_approval(data, %{pending_remote_approval: %Approval{} = approval}) do
+    Map.put(data, :pending_remote_approval, Approval.to_map(approval))
+  end
+
+  defp maybe_put_pending_remote_approval(data, %{pending_remote_approval: %{} = approval}) do
+    Map.put(data, :pending_remote_approval, approval)
+  end
+
+  defp maybe_put_pending_remote_approval(data, _state), do: data
+
   defp safely_atom_status(str) when is_binary(str) do
     case str do
       "idle" -> :idle
       "running" -> :running
       "awaiting_plan_approval" -> :awaiting_plan_approval
       "awaiting_patch_approval" -> :awaiting_patch_approval
+      "awaiting_remote_execution_approval" -> :awaiting_remote_execution_approval
+      "awaiting_shell_approval" -> :awaiting_shell_approval
       "planning" -> :planning
       _ -> :idle
     end
