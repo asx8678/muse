@@ -36,7 +36,7 @@ New to the Muse codebase? Start here:
 | Patch apply and rollback | ✅ Implemented (PR18) | `/apply patch`, `patch_apply`, checkpoints, `/rollback checkpoint <id>` |
 | Test runner | ✅ Implemented (PR19) | Preset-only safe commands with bounded output/timeouts |
 | Reviewing/Testing Muses | ✅ Implemented (PR19) | Registered profiles, review findings, verification reporting |
-| Memory compaction | ✅ Implemented (PR21) | Memory Muse, `memory.md`, handoff support |
+| Memory compaction | ✅ Implemented (PR21) | Memory Muse, `memory.json`, handoff support |
 | Restoration support | ✅ Implemented (PR21) | Checkpoint listing/restore request commands and Restoration Muse profile |
 | Auth layer | ✅ Implemented | API key, bearer command, Codex cache bridge |
 | SSE provider | ✅ Implemented | HTTP SSE streaming for OpenAI-compatible |
@@ -438,7 +438,7 @@ end
       tool_calls.jsonl
       approvals.jsonl
       patches.jsonl
-      memory.md
+      memory.json
       artifacts/
       checkpoints/
         <checkpoint_id>/

@@ -405,10 +405,10 @@ Test runner in PR19 is **preset-gated and restricted**. It does **not**:
 
 Memory compaction summarizes and truncates session history to fit within context limits. The compaction process:
 
-- **Redacts secrets from memory summaries.** `Muse.Memory.Compactor` applies the same redaction rules as `EventPayloadRedactor`.
+- **Redacts secrets from memory summaries.** `Muse.Memory` compaction applies the same redaction rules as `EventPayloadRedactor`.
 - **Never stores raw credentials.** Memory artifacts contain redacted summaries only.
 - **Preserves audit trail.** Compaction events (`:memory_compacted`) record what was summarized without including secret content.
-- **Compact artifacts are workspace-safe.** Memory files under `.muse/sessions/<id>/memory/` do not contain secrets.
+- **Compact artifacts are workspace-safe.** Memory artifacts stored as `.muse/sessions/<id>/memory.json` do not contain secrets.
 
 ### Handoff and restoration safety
 

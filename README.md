@@ -188,8 +188,10 @@ accept relative paths → reject absolute → normalize → resolve symlinks →
 confirm inside workspace → enforce permission policy → enforce secret-file
 policy → block writes through symlinks → emit audit event.
 
-See [`docs/security.md`](docs/security.md) for the full security model and
-[`docs/architecture.md`](docs/architecture.md) for approval flows.
+See [`docs/security.md`](docs/security.md) for the full security model,
+[`docs/architecture.md`](docs/architecture.md) for approval flows, and
+[`docs/phase4-persistence.md`](docs/phase4-persistence.md) for session persistence,
+export/import, memory safety, and workspace profile isolation.
 
 ---
 
@@ -257,6 +259,12 @@ Inside the `muse>` REPL:
 | `/memory` | Show session memory summary |
 | `/memory compact` | Compact session context into safe durable memory |
 | `/memory clear` | Clear session memory |
+| `/export session` | Copy current session export JSON to clipboard (secrets redacted) |
+| `/import session` | Import a session from a `.muse-session` file (e.g. `/import session path/to/file`) |
+| `/workspace create` | Create a workspace profile (e.g. `/workspace create myproject /path/to/root`) |
+| `/workspace list` | List all workspace profiles |
+| `/workspace switch` | Switch active workspace profile (affects new session persistence paths) |
+| `/workspace info` | Show detailed workspace profile and session store info |
 | `/handoff <muse_id>` | Request an explicit handoff to another allowed Muse |
 | `/checkpoints` | List Muse Checkpoints available for the current session |
 | `/restore <checkpoint_id>` | Show a Restoration Muse checkpoint restore request; no files are modified without approval |
