@@ -255,6 +255,10 @@ echo "/quit" | muse --no-web
 
 # Web-only mode starts (if port 4000 is free)
 timeout 5 muse --web-only --port 4005 || true
+
+# Optional: verify telemetry export is off by default
+MUSE_TELEMETRY_EXPORT=stdout timeout 5 muse --no-web 2>&1 | head -1
+# Should produce no output unless a telemetry event fires during startup
 ```
 
 If you built from source or a release tarball for TUI:

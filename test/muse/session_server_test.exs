@@ -917,6 +917,120 @@ defmodule Muse.SessionServerTest do
     end
   end
 
+  describe "session telemetry" do
+    test "session_created telemetry is emitted for new session" do
+      ref = make_ref()
+
+      :telemetry.attach(
+        {:test, :session_created, ref},
+        Muse.Telemetry.session_created(),
+        fn _name, _measures, metadata, config ->
+          send(config[:pid], {:session_created, metadata})
+        end,
+        %{pid: self()}
+      )
+
+      try do
+        _pid = start_server("telemetry-created")
+
+        assert_receive {:session_created, meta}
+
+        assert meta[:session_id] == "telemetry-created" or
+                 meta["session_id"] == "telemetry-created"
+      after
+        :telemetry.detach({:test, :session_created, ref})
+      end
+    end
+
+    test "session_loaded telemetry is emitted for session with persisted snapshot" do
+      session_id = "telemetry-loaded"
+
+      # Persist a snapshot so SessionStore.load_session succeeds
+      plan =
+        Muse.Plan.new(
+          id: "#{session_id}-plan",
+          session_id: session_id,
+          objective: "Test loaded session telemetry",
+          status: :draft
+        )
+
+      {:ok, plan} = Muse.Plan.transition(plan, :awaiting_approval)
+      persist_plan_snapshot(session_id, plan)
+
+      ref = make_ref()
+
+      :telemetry.attach(
+        {:test, :session_loaded, ref},
+        Muse.Telemetry.session_loaded(),
+        fn _name, _measures, metadata, config ->
+          send(config[:pid], {:session_loaded, metadata})
+        end,
+        %{pid: self()}
+      )
+
+      try do
+        _pid = start_server(session_id)
+
+        assert_receive {:session_loaded, meta}
+        assert meta[:session_id] == session_id or meta["session_id"] == session_id
+      after
+        :telemetry.detach({:test, :session_loaded, ref})
+      end
+    end
+
+    test "session_ended telemetry is emitted on normal shutdown" do
+      ref = make_ref()
+
+      :telemetry.attach(
+        {:test, :session_ended, ref},
+        Muse.Telemetry.session_ended(),
+        fn _name, measures, metadata, config ->
+          send(config[:pid], {:session_ended, measures, metadata})
+        end,
+        %{pid: self()}
+      )
+
+      try do
+        pid = start_server("telemetry-ended")
+        GenServer.stop(pid, :normal)
+
+        assert_receive {:session_ended, measures, meta}
+        assert meta[:session_id] == "telemetry-ended" or meta["session_id"] == "telemetry-ended"
+        assert meta[:status] == "shutdown" or meta[:status] == :shutdown
+        # duration_ms should be non-negative
+        dur = measures[:duration_ms] || measures["duration_ms"]
+        assert is_integer(dur) and dur >= 0
+      after
+        :telemetry.detach({:test, :session_ended, ref})
+      end
+    end
+
+    test "session_ended telemetry is emitted on abnormal shutdown" do
+      ref = make_ref()
+
+      :telemetry.attach(
+        {:test, :session_ended_abnormal, ref},
+        Muse.Telemetry.session_ended(),
+        fn _name, _measures, metadata, config ->
+          send(config[:pid], {:session_ended_abnormal, metadata})
+        end,
+        %{pid: self()}
+      )
+
+      try do
+        pid = start_server("telemetry-abnormal-shutdown")
+        # GenServer.stop with an abnormal reason triggers terminate/2
+        # (which emits session_ended telemetry) without needing trap_exit.
+        GenServer.stop(pid, :abnormal)
+
+        assert_receive {:session_ended_abnormal, meta}
+        assert meta[:status] == "crashed" or meta[:status] == :crashed
+      after
+        :telemetry.detach({:test, :session_ended_abnormal, ref})
+      end
+    end
+  end
+
   # -- PR07b: TurnRunner / async integration -----------------------------------
 
   describe "async turn execution — PR07b" do

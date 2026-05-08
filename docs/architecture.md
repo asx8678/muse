@@ -2292,8 +2292,88 @@ All telemetry events use `:telemetry.execute/3`. Attach handlers in `Muse.Applic
 | `[:muse, :provider, :error]` | — | `%{session_id, turn_id, error_type}` |
 | `[:muse, :session, :created]` | — | `%{session_id, workspace}` |
 | `[:muse, :session, :loaded]` | — | `%{session_id}` |
+| `[:muse, :session, :ended]` | `%{duration_ms}` | `%{session_id, status, reason?}` |
 | `[:muse, :approval, :granted]` | — | `%{session_id, kind, id}` |
 | `[:muse, :approval, :rejected]` | — | `%{session_id, kind, id}` |
+
+### Telemetry Export
+
+`Muse.Telemetry.Export` ships telemetry events to an external sink for
+monitoring, debugging, or audit. Export is **off by default** and enabled
+via environment variables — no code changes required.
+
+#### Export modes
+
+| `MUSE_TELEMETRY_EXPORT` | Behavior |
+|---|---|
+| Unset, blank, `off`, `false`, `0` | No export (default) |
+| `stdout` | One JSON object per event, written to `IO.puts/1` |
+| `file` | JSONL appended to the path in `MUSE_TELEMETRY_FILE` |
+
+```bash
+# Stdout export
+MUSE_TELEMETRY_EXPORT=stdout mix muse
+
+# File export
+MUSE_TELEMETRY_EXPORT=file \
+  MUSE_TELEMETRY_FILE=/var/log/muse-telemetry.jsonl \
+  mix muse
+```
+
+Attachment is idempotent — calling `Muse.Telemetry.Export.attach/2` when a
+handler is already attached detaches the old handler first and re-attaches.
+`Muse.Telemetry.Export.detach/0` is always safe to call.
+
+#### Envelope format
+
+Each exported event is a JSON object (one per line in file mode):
+
+```json
+{
+  "event": "muse.turn.stop",
+  "timestamp": "2025-05-25T14:32:01.234567Z",
+  "measurements": {"duration_ms": 142},
+  "metadata": {"session_id": "s_abc", "turn_id": "t_1", "status": "ok"}
+}
+```
+
+Field definitions:
+
+| Field | Type | Description |
+|---|---|---|
+| `event` | string | Dot-joined telemetry event name (e.g. `muse.turn.stop`) |
+| `timestamp` | string | ISO 8601 UTC timestamp |
+| `measurements` | object | Numeric measurements (e.g. `duration_ms`, token counts) |
+| `metadata` | object | Event metadata (session_id, tool_name, provider, model, etc.) |
+
+#### Redaction in export
+
+All metadata and measurements pass through a **defense-in-depth** pipeline
+before emission:
+
+1. `MetadataSanitizer.sanitize/1` — redacts values at known-sensitive keys
+2. `EventPayloadRedactor.redact/1` — pattern-matches and redacts secret
+   strings (API keys, Bearer tokens, JWTs, passwords, private keys) in
+   any string value, even if they appear in unexpected locations
+
+This double-pass ensures that raw secrets never appear in exported output,
+even if raw metadata bypasses the typed helper functions. See
+[`docs/security.md` §4](security.md#4-redaction-rules) for the full
+redaction rule set.
+
+#### Error containment
+
+Export handlers **swallow all errors** (`try/rescue/catch` around the
+entire envelope-build + dispatch path). A failing export (disk full,
+permission denied, JSON encode error) must never crash the calling
+process or detach the `:telemetry` handler.
+
+#### File permissions
+
+When writing to a file, `Muse.Telemetry.Export` attempts to set `0o600`
+(owner read/write only) permissions via `:file.change_mode/2`. This
+is a best-effort operation — failures (Windows, read-only filesystems)
+are silently ignored and do not affect export behavior.
 
 ### Implementation Approach
 
@@ -2301,6 +2381,7 @@ All telemetry events use `:telemetry.execute/3`. Attach handlers in `Muse.Applic
 - Attach handlers in `Muse.Application` for logging and metrics
 - Keep handlers lightweight — delegate heavy work to separate processes
 - Never include secrets, API keys, or tokens in telemetry metadata
+- Export handlers swallow all errors so telemetry never crashes the app
 
 ---
 

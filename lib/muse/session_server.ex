@@ -62,6 +62,7 @@ defmodule Muse.SessionServer do
   }
 
   alias Muse.Conductor.TurnRunner
+  alias Muse.Telemetry, as: MuseTelemetry
 
   # -- Public API ---------------------------------------------------------------
 
@@ -408,6 +409,8 @@ defmodule Muse.SessionServer do
     # If we reach init, the name was successfully registered.
     # `seq` is a session-local monotonic counter starting at 0; each
     # emitted event increments it, so the first event gets seq=1.
+    session_start_time = System.monotonic_time(:millisecond)
+
     initial = %{
       session_id: session_id,
       status: :idle,
@@ -434,14 +437,43 @@ defmodule Muse.SessionServer do
       from: nil,
       turn_start_time: nil,
       session_events_before_turn: [],
-      cancellation_requested: false
+      cancellation_requested: false,
+      # Telemetry: session lifetime tracking
+      session_start_time: session_start_time
     }
 
-    # Attempt to restore plan from persisted snapshot (non-fatal on failure)
+    # Attempt to restore plan from persisted snapshot (non-fatal on failure).
+    # Check whether a persisted snapshot exists BEFORE calling
+    # restore_plan_from_snapshot so we have an explicit signal for telemetry
+    # rather than relying on state inequality.
+    snapshot_exists? =
+      case SessionStore.load_session(store_base_dir, session_id) do
+        {:ok, _data} -> true
+        _ -> false
+      end
+
     state = restore_plan_from_snapshot(initial)
+
+    # Check whether persisted memory exists BEFORE calling restore_memory.
+    # Only count valid, parseable memory as "exists" — corrupt or unsafe
+    # memory that restore_memory would reject does not count as loaded.
+    memory_exists? =
+      case SessionStore.load_memory(store_base_dir, session_id) do
+        {:ok, mem} when is_map(mem) -> true
+        _ -> false
+      end
 
     # Attempt to restore memory from persisted artifact (non-fatal on failure)
     state = restore_memory(state)
+
+    # A session is classified as "loaded" if it has a persisted snapshot
+    # OR persisted memory (or both). This ensures memory-only restored
+    # sessions emit session_loaded rather than session_created.
+    loaded? = snapshot_exists? or memory_exists?
+
+    # Emit session lifecycle telemetry (non-fatal — never crash init)
+    emit_session_lifecycle_telemetry(session_id, workspace, loaded?)
+
     {:ok, state}
   end
 
@@ -2553,6 +2585,72 @@ defmodule Muse.SessionServer do
     _ = SessionStore.delete_memory(store_base_dir, session_id)
     :ok
   end
+
+  # -- Telemetry: session lifecycle --------------------------------------------
+
+  defp emit_session_lifecycle_telemetry(session_id, _workspace, true = _snapshot_exists?) do
+    try do
+      :telemetry.execute(
+        MuseTelemetry.session_loaded(),
+        %{},
+        MuseTelemetry.session_loaded_metadata(session_id: session_id)
+      )
+    catch
+      _kind, _reason -> :ok
+    end
+  end
+
+  defp emit_session_lifecycle_telemetry(session_id, workspace, false = _snapshot_exists?) do
+    try do
+      :telemetry.execute(
+        MuseTelemetry.session_created(),
+        %{},
+        MuseTelemetry.session_created_metadata(session_id: session_id, workspace: workspace)
+      )
+    catch
+      _kind, _reason -> :ok
+    end
+  end
+
+  @impl true
+  def terminate(reason, state) do
+    emit_session_ended_telemetry(reason, state)
+    :ok
+  end
+
+  defp emit_session_ended_telemetry(reason, state) do
+    try do
+      session_id = state.session_id
+      session_start = Map.get(state, :session_start_time)
+
+      duration =
+        if session_start do
+          max(System.monotonic_time(:millisecond) - session_start, 0)
+        else
+          0
+        end
+
+      status = session_ended_status(reason)
+
+      :telemetry.execute(
+        MuseTelemetry.session_ended(),
+        MuseTelemetry.session_ended_measurements(duration),
+        MuseTelemetry.session_ended_metadata(
+          session_id: session_id,
+          status: status,
+          reason: reason
+        )
+      )
+    catch
+      # terminate/2 must never crash — the process is already shutting down.
+      _kind, _reason -> :ok
+    end
+  end
+
+  defp session_ended_status(:normal), do: :shutdown
+  defp session_ended_status(:shutdown), do: :shutdown
+  defp session_ended_status({:shutdown, _}), do: :shutdown
+  defp session_ended_status(_), do: :crashed
 
   defp restore_memory(state) do
     if is_nil(state.memory) do

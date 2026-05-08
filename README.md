@@ -537,6 +537,49 @@ issues are atomically claimed and attached as an event in the state log.
 
 ---
 
+## Observability & Telemetry Export
+
+Muse emits structured telemetry events (`:telemetry.execute/3`) for key
+lifecycle moments: turn start/stop/exception, provider start/stop/error,
+tool start/stop/exception, session created/loaded/ended, and approval
+granted/rejected. By default these events are consumed only by internal
+handlers (logging, metrics).
+
+**Telemetry export** lets you ship these events to an external sink for
+monitoring, debugging, or audit:
+
+| `MUSE_TELEMETRY_EXPORT` | Behavior |
+|---|---|
+| Unset, blank, `off`, `false`, `0` | No export (default) |
+| `stdout` | One JSON object per event, printed to stdout |
+| `file` | JSONL appended to `MUSE_TELEMETRY_FILE` path |
+
+```bash
+# Stdout export (debugging)
+MUSE_TELEMETRY_EXPORT=stdout mix muse
+
+# File export (audit trail)
+MUSE_TELEMETRY_EXPORT=file \
+  MUSE_TELEMETRY_FILE=/var/log/muse-telemetry.jsonl \
+  mix muse
+```
+
+Each exported envelope is a JSON object with four top-level keys:
+`event`, `timestamp`, `measurements`, `metadata`. All metadata and
+measurements pass through defense-in-depth redaction
+(`MetadataSanitizer` + `EventPayloadRedactor`) — raw API keys, tokens,
+JWTs, and private keys never appear in exported output. File exports
+attempt restrictive `0600` permissions; permission failures are non-fatal.
+Export handlers swallow all errors so telemetry should never crash the
+application.
+
+See [`docs/architecture.md` §9](docs/architecture.md#9-telemetry) for
+the full event table and envelope format, and
+[`docs/security.md`](docs/security.md) for redaction and file-permission
+security notes.
+
+---
+
 ## UI
 
 Muse uses a dark-only modern chat-first Muse workspace with calm neutral
@@ -628,6 +671,13 @@ See [`docs/testing.md`](docs/testing.md) for the full testing strategy.
 | Hot reload not firing | Confirm you're in source mode (`mix muse`, not `./muse`), and `--no-watch` isn't set |
 | `/reload` says "DevReloader not available" | Same cause as above — escript mode disables the reloader |
 | `./muse --tui` fails with NIF error | Escript cannot load native NIFs — use `mix muse --tui` or build a release (`MIX_ENV=prod mix release`) |
+| Provider returns auth error | Run `/auth status` in the REPL; check `MUSE_OPENAI_API_KEY`, `MUSE_OPENROUTER_API_KEY`, or `MUSE_ANTHROPIC_API_KEY` env vars |
+| Provider not responding / unknown model | Run `/provider status` in the REPL; verify `MUSE_PROVIDER`, `MUSE_MODEL`, and `MUSE_*_BASE_URL` env vars |
+| Session looks stuck or stale | Run `/session` to inspect status, active plan, and pending patch; `/events` to review the event log |
+| Need debug-level logging | Start with `mix muse --verbose` for debug console output |
+| Telemetry export not producing output | Verify `MUSE_TELEMETRY_EXPORT` is set to `stdout` or `file`; for file mode, also set `MUSE_TELEMETRY_FILE` to a writable path |
+| Telemetry export file not created | Check the `MUSE_TELEMETRY_FILE` path exists and is writable; parent directory must exist |
+| Can't tell if export is active | Start with `mix muse --verbose`; export attachment status is logged at startup |
 
 ---
 

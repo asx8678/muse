@@ -25,6 +25,8 @@
 11. [Auth Security Rules](#11-auth-security-rules)
 12. [Prompt Security](#12-prompt-security)
 13. [External WebSocket Channel Security (PR16)](#13-external-websocket-channel-security-pr16)
+14. [SSH Remote Execution Security (Phase D)](#14-ssh-remote-execution-security-phase-d)
+15. [Telemetry Export Security (Phase 6)](#15-telemetry-export-security-phase-6)
 
 ---
 
@@ -78,6 +80,14 @@ Every item must be verified before the Muse Runtime reaches MVP. Status reflects
 - [x] Tool outputs are capped (enforced by `EventDisplay.safe_data/1`)
 - [x] Provider errors do not leak secrets (enforced by error payload redaction)
 - [x] Configuration validated at startup (enforced by `ProviderConfig.validate/1`)
+
+### Telemetry Export
+
+- [x] Telemetry export metadata is sanitized + redacted before emission
+- [x] Telemetry export measurements are sanitized + redacted before emission
+- [x] File export attempts restrictive `0600` permissions (non-fatal on failure)
+- [x] Export handlers swallow all errors (never crash the app or detach `:telemetry`)
+- [x] Export defaults to off; no data emitted without explicit configuration
 
 ### Process Safety
 
@@ -693,3 +703,85 @@ SSH execution is only accessible through internal `Runner.run/3` with valid appr
 - No connection pooling / reuse (future)
 - No Docker or Kubernetes runners
 - No live SSH integration in default tests
+
+---
+
+## 15. Telemetry Export Security (Phase 6)
+
+`Muse.Telemetry.Export` ships telemetry events to external sinks (stdout or
+JSONL file). Because export output may leave the application process
+(archived logs, shipped to monitoring, inspected in a text editor), the
+same security invariants that apply to events and logs also apply to
+exported telemetry.
+
+### 15.1 Redaction of Metadata and Measurements
+
+All exported envelopes pass through a **defense-in-depth** redaction
+pipeline before emission:
+
+1. **`MetadataSanitizer.sanitize/1`** — structural key-level redaction.
+   Strips or masks values at known-sensitive keys (e.g. `api_key`,
+   `authorization`, `token`, `secret`, `password`, `credential`).
+
+2. **`EventPayloadRedactor.redact/1`** — pattern-based string redaction.
+   Scans all string values (not just known keys) for secret patterns:
+   API keys (`sk-*`, `key-*`), Bearer tokens, JWTs, private key markers,
+   and URL-embedded credentials. Replaces matches with `…REDACTED`
+   placeholders.
+
+This double pass is applied to **both** `metadata` and `measurements`
+fields. Although measurements should only contain numeric values
+(`duration_ms`, token counts), a bug or misuse could inject strings;
+the defense-in-depth approach catches this.
+
+**Invariant:** Raw API keys, Bearer tokens, JWTs, private keys, and
+other recognized secret strings must **never** appear in exported
+envelope output, regardless of where they originate in the telemetry
+payload.
+
+### 15.2 File Export Permission Behavior
+
+When export mode is `file`, the handler:
+
+- Appends one JSON object per line (JSONL) to the configured path.
+- Attempts to set file permissions to `0o600` (owner read/write only)
+  via `:file.change_mode/2` after each write.
+- **Permission failures are non-fatal.** On Windows, read-only
+  filesystems, or any other platform where `chmod` fails, export
+  continues silently — it does not block or crash the application.
+- **Parent directory permissions are the user's responsibility.**
+  Muse creates the export file but does not create or chmod parent
+  directories. Users should ensure the containing directory is
+  appropriately restricted (e.g. `0700` for a dedicated log directory).
+
+### 15.3 Error Containment
+
+The export handler wraps the entire envelope-build + dispatch path in
+`try/rescue/catch`. This guarantees:
+
+- **Export errors never crash the application.** A failing export
+  (disk full, permission denied, JSON encode error) is silently
+  swallowed.
+- **`:telemetry` handler is never detached by errors.** The `:telemetry`
+  library detaches handlers that raise; swallowing all errors prevents
+  this.
+- **Silent failure is intentional.** Telemetry export is an observability
+  aid, not a critical path. A missing export line is far preferable to
+  a crashed Muse runtime.
+
+### 15.4 Export Mode Default-Off
+
+`MUSE_TELEMETRY_EXPORT` defaults to off. The following values all disable
+export: unset, blank, `off`, `false`, `0`. Export is only active when
+explicitly set to `stdout` or `file`. This prevents accidental data
+emission in environments where export is not intended.
+
+### 15.5 Security Checklist Addition
+
+Add to the MVP security checklist:
+
+- [x] Telemetry export metadata is sanitized + redacted before emission
+- [x] Telemetry export measurements are sanitized + redacted before emission
+- [x] File export attempts restrictive `0600` permissions (non-fatal on failure)
+- [x] Export handlers swallow all errors (never crash the app or detach `:telemetry`)
+- [x] Export defaults to off; no data emitted without explicit configuration

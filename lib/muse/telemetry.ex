@@ -252,6 +252,41 @@ defmodule Muse.Telemetry do
     |> sanitize_metadata()
   end
 
+  @doc "Event name: `[:muse, :session, :ended]`"
+  @spec session_ended() :: :telemetry.event_name()
+  def session_ended, do: [:muse, :session, :ended]
+
+  @doc """
+  Measurements for `[:muse, :session, :ended]`.
+
+  Accepts `duration_ms` (total session lifetime in milliseconds).
+  """
+  @spec session_ended_measurements(duration_ms :: non_neg_integer()) :: :telemetry.measurements()
+  def session_ended_measurements(duration_ms)
+      when is_integer(duration_ms) and duration_ms >= 0 do
+    %{duration_ms: duration_ms}
+  end
+
+  @doc """
+  Metadata for `[:muse, :session, :ended]`.
+
+  Accepts `session_id`, `status`, and an optional `reason`.
+  Sanitized before return.
+  """
+  @spec session_ended_metadata(keyword()) :: :telemetry.metadata()
+  def session_ended_metadata(opts) when is_list(opts) do
+    base = %{session_id: opts[:session_id], status: opts[:status]}
+
+    base =
+      if opts[:reason] do
+        Map.put(base, :reason, redact_reason(opts[:reason]))
+      else
+        base
+      end
+
+    sanitize_metadata(base)
+  end
+
   # -- Approval events ----------------------------------------------------------
 
   @doc "Event name: `[:muse, :approval, :granted]`"
@@ -292,6 +327,7 @@ defmodule Muse.Telemetry do
       provider_error(),
       session_created(),
       session_loaded(),
+      session_ended(),
       approval_granted(),
       approval_rejected()
     ]

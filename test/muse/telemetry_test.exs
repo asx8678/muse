@@ -48,6 +48,10 @@ defmodule Muse.TelemetryTest do
       assert Telemetry.session_loaded() == [:muse, :session, :loaded]
     end
 
+    test "session_ended returns correct event name" do
+      assert Telemetry.session_ended() == [:muse, :session, :ended]
+    end
+
     test "approval_granted returns correct event name" do
       assert Telemetry.approval_granted() == [:muse, :approval, :granted]
     end
@@ -58,9 +62,9 @@ defmodule Muse.TelemetryTest do
   end
 
   describe "all_event_names/0" do
-    test "returns all 13 canonical event names" do
+    test "returns all 14 canonical event names" do
       names = Telemetry.all_event_names()
-      assert length(names) == 13
+      assert length(names) == 14
     end
 
     test "each event name is a list of atoms" do
@@ -239,9 +243,59 @@ defmodule Muse.TelemetryTest do
       assert meta.workspace == "/tmp"
     end
 
+    test "session_ended is in all_event_names" do
+      assert Telemetry.session_ended() in Telemetry.all_event_names()
+    end
+
     test "session_loaded_metadata includes session_id" do
       meta = Telemetry.session_loaded_metadata(session_id: "sess_1")
       assert meta.session_id == "sess_1"
+    end
+
+    test "session_ended_measurements returns duration_ms" do
+      assert Telemetry.session_ended_measurements(5000) == %{duration_ms: 5000}
+    end
+
+    test "session_ended_measurements raises on negative" do
+      assert_raise FunctionClauseError, fn ->
+        Telemetry.session_ended_measurements(-1)
+      end
+    end
+
+    test "session_ended_metadata includes session_id and status" do
+      meta = Telemetry.session_ended_metadata(session_id: "sess_1", status: :shutdown)
+      assert meta.session_id == "sess_1"
+      assert meta.status == "shutdown"
+    end
+
+    test "session_ended_metadata includes reason when provided" do
+      meta =
+        Telemetry.session_ended_metadata(
+          session_id: "sess_1",
+          status: :crashed,
+          reason: :abnormal
+        )
+
+      assert meta.reason == "abnormal"
+    end
+
+    test "session_ended_metadata omits reason key when nil" do
+      meta = Telemetry.session_ended_metadata(session_id: "sess_1", status: :shutdown)
+      refute Map.has_key?(meta, :reason)
+    end
+
+    test "session_ended_metadata redacts secrets in reason string" do
+      meta =
+        Telemetry.session_ended_metadata(
+          session_id: "sess_1",
+          status: :crashed,
+          reason: "crashed with key sk-test-12345"
+        )
+
+      refute meta.reason =~ "sk-test-12345",
+             "Secret leaked through session_ended_metadata reason"
+
+      assert meta.reason =~ "[REDACTED]"
     end
 
     test "approval_metadata includes session_id, kind, id" do

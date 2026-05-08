@@ -41,6 +41,7 @@ defmodule Muse.Application do
       case Supervisor.start_link(children, strategy: :one_for_one, name: Muse.Supervisor) do
         {:ok, _pid} = result ->
           validate_provider_config()
+          attach_telemetry_export()
           result
 
         other ->
@@ -171,6 +172,15 @@ defmodule Muse.Application do
   end
 
   # -- Provider config validation ---------------------------------------------
+
+  # -- Telemetry export --------------------------------------------------------
+
+  defp attach_telemetry_export do
+    case Muse.Telemetry.Export.attach_from_env() do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
 
   @doc """
   Validate the current provider configuration and emit diagnostics for

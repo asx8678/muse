@@ -6,13 +6,13 @@ Documentation directory for the Muse Universal Runtime. Start with [../README.md
 
 | Document | Purpose |
 |---|---|
-| [architecture.md](architecture.md) | Runtime architecture, process model, data models, module map, tools, Conductor, CLI/TUI/LiveView, telemetry, approvals, patch/checkpoint/rollback. |
+| [architecture.md](architecture.md) | Runtime architecture, process model, data models, module map, tools, Conductor, CLI/TUI/LiveView, telemetry, telemetry export, approvals, patch/checkpoint/rollback. |
 | [audits/liveview-screen-reader-audit-checklist.md](audits/liveview-screen-reader-audit-checklist.md) | Human-executable screen-reader audit runbook for the LiveView interface (muse-1rq). |
 | [audits/liveview-wcag-2.1-aa-2026-05-06.md](audits/liveview-wcag-2.1-aa-2026-05-06.md) | WCAG 2.1 AA structural audit report with automated/KB findings (muse-1rq). |
 | [prompts.md](prompts.md) | Muse profiles, role prompts, core runtime prompt, and project-rules loading behavior. |
 | [provider-roadmap.md](provider-roadmap.md) | Fake-provider-first provider roadmap, provider configuration, OpenAI-compatible mappings, transports, and auth. |
 | [testing.md](testing.md) | Offline-first testing strategy, provider contracts, fixtures, integration/safety/product-language tests, first fake-provider demo. |
-| [security.md](security.md) | MVP security checklist, workspace safety, secret denylist, redaction, approval/security rules. |
+| [security.md](security.md) | MVP security checklist, workspace safety, secret denylist, redaction, approval/security rules, telemetry export security. |
 | [phase4-persistence.md](phase4-persistence.md) | Phase 4 session persistence, export/import, retention, memory safety, workspace profile isolation. |
 
 ## Recommended reading paths
@@ -32,9 +32,9 @@ Documentation directory for the Muse Universal Runtime. Start with [../README.md
 
 ### 🛡️ Safety & security reviewers
 
-1. [security.md](security.md) — Full security model: MVP checklist, workspace path policy, secret denylist, redaction, approval lifecycle
+1. [security.md](security.md) — Full security model: MVP checklist, workspace path policy, secret denylist, redaction, approval lifecycle, telemetry export security
 2. [phase4-persistence.md](phase4-persistence.md) — Session persistence, memory validation, export/import safety, workspace isolation
-3. [architecture.md](architecture.md) — Approval flows §11, tool system §6, plan lifecycle §0
+3. [architecture.md](architecture.md) — Approval flows §11, tool system §6, telemetry export §9, plan lifecycle §0
 4. [../README.md#safety--approval-model](../README.md#safety--approval-model) — High-level safety overview
 
 ### 👩‍💻 Contributors
@@ -57,9 +57,9 @@ Documentation directory for the Muse Universal Runtime. Start with [../README.md
 
 | Document | Canonical for |
 |---|---|
-| [architecture.md](architecture.md) | Runtime process architecture, module map, data models, normalized event types, Conductor behavior, tool system, streaming API, telemetry, approvals, patch/checkpoint/rollback behavior. |
+| [architecture.md](architecture.md) | Runtime process architecture, module map, data models, normalized event types, Conductor behavior, tool system, streaming API, telemetry, telemetry export, approvals, patch/checkpoint/rollback behavior. |
 | [prompts.md](prompts.md) | Muse profiles, prompt templates, Muse role behavior, and project-rules loading behavior. |
 | [provider-roadmap.md](provider-roadmap.md) | Provider sequencing, fake-provider behavior, provider configuration, OpenAI-compatible wire mapping, transports, and auth roadmap. |
 | [testing.md](testing.md) | Testing strategy and acceptance checks. Provider/event assertions reference the canonical normalized event types in architecture.md. |
-| [security.md](security.md) | Workspace safety, secret handling, redaction, approval/security rules, and MVP security checklist. |
+| [security.md](security.md) | Workspace safety, secret handling, redaction, approval/security rules, telemetry export security, and MVP security checklist. |
 | [phase4-persistence.md](phase4-persistence.md) | Session persistence, export/import, retention, memory validation, and workspace profile boundaries. |

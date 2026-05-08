@@ -33,6 +33,7 @@ defmodule Muse.Tool.Runner do
   """
 
   alias Muse.ApprovalGate
+  alias Muse.Telemetry, as: MuseTelemetry
   alias Muse.Tool.{Registry, Result, Spec}
 
   # @default_output_limit available if needed later
@@ -69,6 +70,9 @@ defmodule Muse.Tool.Runner do
     start_time = System.monotonic_time(:millisecond)
     muse_id = context[:muse_id]
 
+    # Emit telemetry: tool start
+    emit_telemetry_tool_start(tool_name, context)
+
     # Emit start event
     emit_event(
       :tool_call_started,
@@ -81,50 +85,33 @@ defmodule Muse.Tool.Runner do
       context
     )
 
-    result =
-      with :ok <- check_blocked(tool_name),
-           {:ok, spec} <- check_registered(tool_name),
-           :ok <- check_muse_allowed(spec, muse_id),
-           :ok <- check_approval(spec, context),
-           :ok <- check_required_args(spec, args),
-           {:ok, context_with_workspace} <- ensure_workspace(context),
-           {:ok, final_result} <- execute_handler(spec, args, context_with_workspace, call_id) do
-        cap_and_redact_result(final_result, spec)
-      else
-        {:blocked, reason} ->
-          r = Result.blocked(tool_name, reason)
+    {result, _exception?} =
+      try do
+        result = execute_tool_pipeline(tool_name, args, context, call_id, muse_id)
+        {result, false}
+      rescue
+        exception ->
+          # Unexpected exception in Runner validation code (not handler code).
+          # Handler exceptions are caught inside execute_handler/4 with their
+          # own tool_exception telemetry. This clause is a safety net for bugs
+          # in check_* functions.
+          emit_telemetry_tool_exception(tool_name, exception, context)
 
-          emit_event(
-            :tool_call_blocked,
-            %{
-              tool_call_id: call_id,
-              tool_name: tool_name,
-              muse_id: muse_id,
-              reason: reason
-            },
-            context
-          )
-
-          r
-
-        {:error, reason} ->
-          r = Result.error(tool_name, reason)
-
-          emit_event(
-            :tool_call_failed,
-            %{
-              tool_call_id: call_id,
-              tool_name: tool_name,
-              muse_id: muse_id,
-              error: reason
-            },
-            context
-          )
-
-          r
+          r = Result.error(tool_name, "tool execution error: #{Exception.message(exception)}")
+          {r, true}
+      catch
+        kind, reason ->
+          # Safety net for throws/exits from Runner code (not handler code).
+          safe_reason = safe_catch_reason(kind, reason)
+          emit_telemetry_tool_exception_raw(tool_name, safe_reason, context)
+          r = Result.error(tool_name, "tool execution error: #{safe_reason}")
+          {r, true}
       end
 
     elapsed = System.monotonic_time(:millisecond) - start_time
+
+    # Emit telemetry: tool stop
+    emit_telemetry_tool_stop(tool_name, elapsed, result.success, context)
 
     emit_event(
       :tool_call_completed,
@@ -144,6 +131,52 @@ defmodule Muse.Tool.Runner do
 
   def run(tool_name, _args, _context) do
     Result.error(to_string(tool_name), "invalid tool call: tool_name must be a string")
+  end
+
+  # -- Tool pipeline (extracted for rescue boundary) ----------------------------
+
+  defp execute_tool_pipeline(tool_name, args, context, call_id, muse_id) do
+    with :ok <- check_blocked(tool_name),
+         {:ok, spec} <- check_registered(tool_name),
+         :ok <- check_muse_allowed(spec, muse_id),
+         :ok <- check_approval(spec, context),
+         :ok <- check_required_args(spec, args),
+         {:ok, context_with_workspace} <- ensure_workspace(context),
+         {:ok, final_result} <- execute_handler(spec, args, context_with_workspace, call_id) do
+      cap_and_redact_result(final_result, spec)
+    else
+      {:blocked, reason} ->
+        r = Result.blocked(tool_name, reason)
+
+        emit_event(
+          :tool_call_blocked,
+          %{
+            tool_call_id: call_id,
+            tool_name: tool_name,
+            muse_id: muse_id,
+            reason: reason
+          },
+          context
+        )
+
+        r
+
+      {:error, reason} ->
+        r = Result.error(tool_name, reason)
+
+        emit_event(
+          :tool_call_failed,
+          %{
+            tool_call_id: call_id,
+            tool_name: tool_name,
+            muse_id: muse_id,
+            error: reason
+          },
+          context
+        )
+
+        r
+    end
   end
 
   # -- Validation steps ---------------------------------------------------------
@@ -223,7 +256,18 @@ defmodule Muse.Tool.Runner do
       end
     rescue
       e ->
+        # Emit telemetry for the handler exception BEFORE converting to
+        # the safe {:error, _} tuple that the pipeline swallows.
+        emit_telemetry_tool_exception(name, e, context)
         {:error, "tool execution error: #{Exception.message(e)}"}
+    catch
+      kind, reason ->
+        # Catch throws and exits from handler code. Emit telemetry with
+        # a safe reason string, then return the normal error tuple so the
+        # Runner's contract (never raises, returns %Result{}) is preserved.
+        safe_reason = safe_catch_reason(kind, reason)
+        emit_telemetry_tool_exception_raw(name, safe_reason, context)
+        {:error, "tool execution error: #{safe_reason}"}
     end
   end
 
@@ -487,6 +531,94 @@ defmodule Muse.Tool.Runner do
   end
 
   defp truncate_value(v, _max), do: v
+
+  # -- Telemetry emission ------------------------------------------------------
+
+  defp emit_telemetry_tool_start(tool_name, context) do
+    try do
+      :telemetry.execute(
+        MuseTelemetry.tool_start(),
+        %{},
+        MuseTelemetry.tool_metadata(
+          session_id: context[:session_id],
+          turn_id: context[:turn_id],
+          tool_name: tool_name
+        )
+      )
+    catch
+      # Never let telemetry crash tool execution (any failure class)
+      _kind, _reason -> :ok
+    end
+  end
+
+  defp emit_telemetry_tool_stop(tool_name, duration_ms, _success?, context) do
+    try do
+      :telemetry.execute(
+        MuseTelemetry.tool_stop(),
+        MuseTelemetry.tool_stop_measurements(duration_ms),
+        MuseTelemetry.tool_metadata(
+          session_id: context[:session_id],
+          turn_id: context[:turn_id],
+          tool_name: tool_name
+        )
+      )
+    catch
+      _kind, _reason -> :ok
+    end
+  end
+
+  defp emit_telemetry_tool_exception(tool_name, exception, context) do
+    try do
+      :telemetry.execute(
+        MuseTelemetry.tool_exception(),
+        %{},
+        MuseTelemetry.tool_exception_metadata(
+          session_id: context[:session_id],
+          turn_id: context[:turn_id],
+          tool_name: tool_name,
+          reason: Exception.message(exception)
+        )
+      )
+    catch
+      _kind, _reason -> :ok
+    end
+  end
+
+  # Variant for catch-clause reasons where we don't have an Exception struct.
+  defp emit_telemetry_tool_exception_raw(tool_name, reason_string, context) do
+    try do
+      :telemetry.execute(
+        MuseTelemetry.tool_exception(),
+        %{},
+        MuseTelemetry.tool_exception_metadata(
+          session_id: context[:session_id],
+          turn_id: context[:turn_id],
+          tool_name: tool_name,
+          reason: reason_string
+        )
+      )
+    catch
+      _kind, _reason -> :ok
+    end
+  end
+
+  # Convert a catch-clause kind/reason into a safe, redacted string.
+  # The inspected text may contain secrets from handler arguments or state;
+  # pass it through Redactor.redact_text/1 before returning.
+  defp safe_catch_reason(:throw, value) do
+    "throw: #{inspect(value, limit: 10, printable_limit: 200)}"
+    |> Muse.Prompt.Redactor.redact_text()
+  end
+
+  defp safe_catch_reason(:exit, reason) do
+    "exit: #{inspect(reason, limit: 10, printable_limit: 200)}"
+    |> Muse.Prompt.Redactor.redact_text()
+  end
+
+  defp safe_catch_reason(kind, reason) do
+    "#{kind}: #{inspect(reason, limit: 10, printable_limit: 200)}"
+    |> Muse.Prompt.Redactor.redact_text()
+  end
 
   # -- Helpers ------------------------------------------------------------------
 
