@@ -16,45 +16,34 @@ defmodule Muse.Conductor.ToolLoop.Dedup do
   @doc """
   Deduplicate tool calls within a single iteration.
 
-  Returns `{unique_calls, cache_updates, dedup_results}` where:
-  - `unique_calls` — calls to actually execute
-  - `cache_updates` — `{key, result}` pairs to add to the cache
-  - `dedup_results` — `Tool.Result` structs for deduplicated calls
+  Returns `{unique_calls, duplicate_calls}` where:
+  - `unique_calls` — first occurrence of each distinct call (to execute)
+  - `duplicate_calls` — subsequent duplicates (to serve from cache)
   """
-  @spec dedup_within_iteration([map()], map()) :: {[map()], [{String.t(), map()}], [map()]}
-  def dedup_within_iteration(calls, cache) when is_list(calls) and is_map(cache) do
-    {unique, cache_updates, dedup_results} =
-      Enum.reduce(calls, {[], [], []}, fn call, {u, cu, dr} ->
-        key = cache_key(call)
+  @spec dedup_within_iteration([map()]) :: {[map()], [map()]}
+  def dedup_within_iteration(calls) do
+    {unique, dups, _seen} =
+      Enum.reduce(calls, {[], [], MapSet.new()}, fn tc, {uniq, dups, seen} ->
+        key = cache_key(tc)
 
-        case Map.get(cache, key) do
-          nil ->
-            {[call | u], cu, dr}
-
-          cached_result ->
-            {u, cu, [build_dedup_result(call, cached_result) | dr]}
+        if MapSet.member?(seen, key) do
+          {uniq, [tc | dups], seen}
+        else
+          {[tc | uniq], dups, MapSet.put(seen, key)}
         end
       end)
 
-    {Enum.reverse(unique), Enum.reverse(cache_updates), Enum.reverse(dedup_results)}
+    {Enum.reverse(unique), Enum.reverse(dups)}
   end
 
   @doc """
   Compute a content-addressed cache key for a tool call.
 
-  Uses the tool name and a hash of the arguments.
+  Returns a `{tool_name, args_fingerprint}` tuple.
   """
-  @spec cache_key(map()) :: String.t()
+  @spec cache_key(map()) :: {String.t(), String.t()}
   def cache_key(%{name: name, arguments: args}) do
-    fingerprint = args_fingerprint(args)
-    "#{name}:#{fingerprint}"
-  end
-
-  def cache_key(call) when is_map(call) do
-    name = Map.get(call, :name) || Map.get(call, "name") || "unknown"
-    args = Map.get(call, :arguments) || Map.get(call, "arguments") || %{}
-    fingerprint = args_fingerprint(args)
-    "#{name}:#{fingerprint}"
+    {name || "unknown", args_fingerprint(args)}
   end
 
   @doc "Extract the hash portion from a cache key tuple."
@@ -75,9 +64,4 @@ defmodule Muse.Conductor.ToolLoop.Dedup do
   end
 
   defp args_fingerprint(args), do: args_fingerprint(%{"raw" => inspect(args)})
-
-  defp build_dedup_result(_call, _cached_result) do
-    # Return a summary indicating this was a deduplicated call
-    %{deduplicated: true}
-  end
 end

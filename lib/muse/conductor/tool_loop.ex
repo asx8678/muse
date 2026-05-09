@@ -71,9 +71,11 @@ defmodule Muse.Conductor.ToolLoop do
   """
 
   alias Muse.Tool
-  alias Muse.LLM.{Event, Message}
+  alias Muse.LLM.Message
   alias Muse.Conductor.StreamCollector
   alias Muse.Conductor.TurnRunner
+  alias Muse.Conductor.LLMEventAdapter
+  alias Muse.Conductor.ToolLoop.Dedup
   alias Muse.Prompt.Redactor
 
   @type event_spec :: {atom(), atom(), map(), keyword()}
@@ -531,18 +533,7 @@ defmodule Muse.Conductor.ToolLoop do
   # Deduplicate within a single iteration: first occurrence is kept as unique,
   # subsequent duplicates are returned separately.
   defp dedup_within_iteration(calls) do
-    {unique, dups, _seen} =
-      Enum.reduce(calls, {[], [], MapSet.new()}, fn tc, {uniq, dups, seen} ->
-        key = cache_key(tc)
-
-        if MapSet.member?(seen, key) do
-          {uniq, [tc | dups], seen}
-        else
-          {[tc | uniq], dups, MapSet.put(seen, key)}
-        end
-      end)
-
-    {Enum.reverse(unique), Enum.reverse(dups)}
+    Dedup.dedup_within_iteration(calls)
   end
 
   # Build dedup results (with lifecycle events) for cached tool calls.
@@ -1132,24 +1123,9 @@ defmodule Muse.Conductor.ToolLoop do
   # We hash the args to keep cache keys bounded and deterministic.
   @doc false
   @spec cache_key(map()) :: {String.t(), String.t()}
-  def cache_key(%{name: name, arguments: args}) do
-    {name || "unknown", args_fingerprint(args)}
-  end
+  def cache_key(tc), do: Dedup.cache_key(tc)
 
-  defp args_fingerprint(nil), do: ""
-
-  defp args_fingerprint(args) when is_map(args) do
-    args
-    |> Enum.sort()
-    |> :erlang.term_to_binary()
-    |> then(&:crypto.hash(:sha256, &1))
-    |> Base.encode16(case: :lower)
-    |> String.slice(0, 16)
-  end
-
-  defp args_fingerprint(args), do: args_fingerprint(%{"raw" => inspect(args)})
-
-  defp cache_key_hash({_name, fingerprint}), do: fingerprint
+  defp cache_key_hash(key), do: Dedup.cache_key_hash(key)
 
   # Classify a tool as read-only (concurrent + cacheable) vs serial
   defp read_only_tool?(nil), do: true
@@ -1165,95 +1141,19 @@ defmodule Muse.Conductor.ToolLoop do
 
   defp read_only_tool?(_), do: true
 
-  # -- LLM event conversion (mirrors Conductor) --------------------------------
+  # -- LLM event conversion (delegated to LLMEventAdapter) --------------------
 
   defp convert_llm_events_to_specs(llm_events) do
-    {specs, _delta_index} =
-      Enum.flat_map_reduce(llm_events, 0, fn llm_event, delta_index ->
-        convert_llm_event(llm_event, delta_index)
-      end)
-
-    specs
-  end
-
-  defp convert_llm_event(%Event{type: :response_started}, delta_index) do
-    {[{:conductor, :provider_response_started, %{}, [visibility: :debug]}], delta_index}
-  end
-
-  defp convert_llm_event(%Event{type: :assistant_delta, text: text}, delta_index) do
-    spec = {:muse, :assistant_delta, %{text: text, index: delta_index}, [visibility: :user]}
-    {[spec], delta_index + 1}
-  end
-
-  defp convert_llm_event(%Event{type: :assistant_completed}, delta_index) do
-    {[], delta_index}
-  end
-
-  defp convert_llm_event(%Event{type: :tool_call_started, tool_call: tc}, delta_index) do
-    spec =
-      {:conductor, :tool_call_requested, %{tool_name: tc.name, tool_call_id: tc.id},
-       [visibility: :debug]}
-
-    {[spec], delta_index}
-  end
-
-  defp convert_llm_event(%Event{type: :tool_call_delta}, delta_index) do
-    {[], delta_index}
-  end
-
-  defp convert_llm_event(%Event{type: :tool_call_completed, tool_call: tc}, delta_index) do
-    spec =
-      {:conductor, :tool_call_completed, %{tool_name: tc.name, tool_call_id: tc.id},
-       [visibility: :debug]}
-
-    {[spec], delta_index}
-  end
-
-  defp convert_llm_event(%Event{type: :response_completed, usage: usage}, delta_index) do
-    summary = summarize_usage(usage)
-    {[{:conductor, :provider_response_completed, summary, [visibility: :debug]}], delta_index}
-  end
-
-  defp convert_llm_event(%Event{type: :provider_error}, delta_index) do
-    {[{:conductor, :provider_error, %{error_type: :provider_error}, [visibility: :debug]}],
-     delta_index}
-  end
-
-  defp convert_llm_event(%Event{type: unknown_type}, delta_index) do
-    {[
-       {:conductor, :provider_event_ignored, %{unhandled_type: unknown_type},
-        [visibility: :debug]}
-     ], delta_index}
-  end
-
-  defp convert_llm_event(other, delta_index) do
-    {[
-       {:conductor, :provider_event_ignored, %{unhandled_type: inspect(other)},
-        [visibility: :debug]}
-     ], delta_index}
+    LLMEventAdapter.convert_llm_events(llm_events)
   end
 
   # Mark the first `count` assistant_delta specs as live-emitted so
   # SessionServer can skip them during final event-spec folding.
-  # Mirrors Conductor.mark_live_emitted_deltas/2.
+  # Delegated to LLMEventAdapter.
   @doc false
   @spec mark_live_emitted_deltas([event_spec()], non_neg_integer()) :: [event_spec()]
-  def mark_live_emitted_deltas(specs, 0), do: specs
-
-  def mark_live_emitted_deltas(specs, count) when count > 0 do
-    {_remaining, marked} =
-      Enum.reduce(specs, {count, []}, fn spec, {n, acc} ->
-        case spec do
-          {:muse, :assistant_delta, data, opts} when n > 0 ->
-            {n - 1, [{:muse, :assistant_delta, data, [{:live_emitted, true} | opts]} | acc]}
-
-          other ->
-            {n, [other | acc]}
-        end
-      end)
-
-    Enum.reverse(marked)
-  end
+  def mark_live_emitted_deltas(specs, count),
+    do: LLMEventAdapter.mark_live_emitted_deltas(specs, count)
 
   # -- Helpers ------------------------------------------------------------------
 
@@ -1311,12 +1211,6 @@ defmodule Muse.Conductor.ToolLoop do
     args
     |> inspect(limit: 5, printable_limit: 100)
     |> Redactor.redact_text()
-  end
-
-  defp summarize_usage(nil), do: %{}
-
-  defp summarize_usage(usage) when is_map(usage) do
-    Map.take(usage, [:prompt_tokens, :completion_tokens, :total_tokens])
   end
 
   # Increment fake_iteration in request options for FakeProvider batch support

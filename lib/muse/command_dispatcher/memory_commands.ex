@@ -144,7 +144,30 @@ defmodule Muse.CommandDispatcher.MemoryCommands do
 
   defp format_memory(_), do: "No memory available."
 
-  defp format_memory_safely(_memory) do
-    "(Non-map memory — display redacted for safety)"
+  defp format_memory_safely(memory) when is_binary(memory) do
+    # Redact binary memory through full pipeline before display.
+    memory
+    |> Muse.EventPayloadRedactor.redact_string()
+    |> Muse.Prompt.Redactor.redact_text()
+  rescue
+    e ->
+      SilentRescue.log_rescued(__MODULE__, :format_memory_safely_binary, e)
+      "Memory display unavailable (redaction error). Content withheld."
+  end
+
+  defp format_memory_safely(memory) do
+    # Non-map, non-binary memory (lists, tuples, etc.) — apply structural
+    # redaction first to catch sensitive-key values in nested terms, then
+    # convert to string and apply string-level pattern redaction.
+    memory
+    |> Muse.EventPayloadRedactor.redact()
+    |> Muse.Prompt.Redactor.redact_term()
+    |> inspect(limit: 20, printable_limit: 500)
+    |> Muse.EventPayloadRedactor.redact_string()
+    |> Muse.Prompt.Redactor.redact_text()
+  rescue
+    e ->
+      SilentRescue.log_rescued(__MODULE__, :format_memory_safely_struct, e)
+      "Memory display unavailable (render error). Content withheld."
   end
 end

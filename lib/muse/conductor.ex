@@ -37,7 +37,7 @@ defmodule Muse.Conductor do
     Turn
   }
 
-  alias Muse.Conductor.{PatchHandling, PlanHandling, StreamCollector, ToolLoop}
+  alias Muse.Conductor.{LLMEventAdapter, PatchHandling, PlanHandling, StreamCollector, ToolLoop}
   alias Muse.LLM.{FakeProvider, ModelRouter, ProviderConfig, ProviderRouter, Response, Message}
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
   alias Muse.Config, as: LLMConfig
@@ -704,100 +704,14 @@ defmodule Muse.Conductor do
 
   # -- LLM event conversion ----------------------------------------------------
 
-  @spec convert_llm_events([Muse.LLM.Event.t()]) :: [event_spec()]
   defp convert_llm_events(llm_events) do
-    {specs, _delta_index} =
-      Enum.flat_map_reduce(llm_events, 0, fn llm_event, delta_index ->
-        convert_llm_event(llm_event, delta_index)
-      end)
-
-    specs
+    LLMEventAdapter.convert_llm_events(llm_events)
   end
 
-  defp convert_llm_event(%Muse.LLM.Event{type: :response_started}, delta_index) do
-    {[{:conductor, :provider_response_started, %{}, [visibility: :debug]}], delta_index}
-  end
-
-  defp convert_llm_event(%Muse.LLM.Event{type: :assistant_delta, text: text}, delta_index) do
-    spec = {:muse, :assistant_delta, %{text: text, index: delta_index}, [visibility: :user]}
-    {[spec], delta_index + 1}
-  end
-
-  defp convert_llm_event(%Muse.LLM.Event{type: :assistant_completed}, delta_index) do
-    # Not emitted as a separate Muse event; the final assistant_message
-    # event (built from the response content) covers the complete text.
-    {[], delta_index}
-  end
-
-  defp convert_llm_event(%Muse.LLM.Event{type: :tool_call_started, tool_call: tc}, delta_index) do
-    spec =
-      {:conductor, :tool_call_requested, %{tool_name: tc.name, tool_call_id: tc.id},
-       [visibility: :debug]}
-
-    {[spec], delta_index}
-  end
-
-  defp convert_llm_event(%Muse.LLM.Event{type: :tool_call_delta}, delta_index) do
-    {[], delta_index}
-  end
-
-  defp convert_llm_event(%Muse.LLM.Event{type: :tool_call_completed, tool_call: tc}, delta_index) do
-    spec =
-      {:conductor, :tool_call_completed, %{tool_name: tc.name, tool_call_id: tc.id},
-       [visibility: :debug]}
-
-    {[spec], delta_index}
-  end
-
-  defp convert_llm_event(%Muse.LLM.Event{type: :response_completed, usage: usage}, delta_index) do
-    summary = summarize_usage(usage)
-    {[{:conductor, :provider_response_completed, summary, [visibility: :debug]}], delta_index}
-  end
-
-  defp convert_llm_event(%Muse.LLM.Event{type: :provider_error}, delta_index) do
-    {[{:conductor, :provider_error, %{error_type: :provider_error}, [visibility: :debug]}],
-     delta_index}
-  end
-
-  # Catch-all: unexpected LLM event types or malformed terms are safely
-  # ignored instead of raising. Emits a debug summary so operators can
-  # spot unknown provider events in logs without crashing the pipeline.
-  defp convert_llm_event(%Muse.LLM.Event{type: unknown_type}, delta_index) do
-    {[
-       {:conductor, :provider_event_ignored, %{unhandled_type: unknown_type},
-        [visibility: :debug]}
-     ], delta_index}
-  end
-
-  defp convert_llm_event(other, delta_index) do
-    {[
-       {:conductor, :provider_event_ignored, %{unhandled_type: inspect(other)},
-        [visibility: :debug]}
-     ], delta_index}
-  end
-
-  # Mark the first `count` assistant_delta specs as live-emitted so
-  # SessionServer can skip them during final event-spec folding.
-  # This prevents duplicate PubSub broadcasts for deltas that were
-  # already sent to the SessionServer via emit_event_fn during streaming.
   @doc false
   @spec mark_live_emitted_deltas([event_spec()], non_neg_integer()) :: [event_spec()]
-  def mark_live_emitted_deltas(specs, 0), do: specs
-
-  def mark_live_emitted_deltas(specs, count) when count > 0 do
-    {_remaining, marked} =
-      Enum.reduce(specs, {count, []}, fn spec, {n, acc} ->
-        case spec do
-          {:muse, :assistant_delta, data, opts} when n > 0 ->
-            {n - 1, [{:muse, :assistant_delta, data, [{:live_emitted, true} | opts]} | acc]}
-
-          other ->
-            {n, [other | acc]}
-        end
-      end)
-
-    Enum.reverse(marked)
-  end
+  def mark_live_emitted_deltas(specs, count),
+    do: LLMEventAdapter.mark_live_emitted_deltas(specs, count)
 
   # -- Turn finalization --------------------------------------------------------
 
@@ -1020,20 +934,12 @@ defmodule Muse.Conductor do
   end
 
   defp parse_plan_output(text) do
-    PlanParser.parse(text, extract: :auto)
+    PlanHandling.parse_plan_output(text)
   end
 
-  # Check if text looks like it is trying to be structured plan JSON.
-  # A generic JSON object (for example {"status": "ok"}) is not enough:
-  # repair should only run when the output carries plan-specific markers.
-  defp looks_like_plan_json?(text) when is_binary(text) do
-    String.contains?(text, "\"objective\"") or
-      String.contains?(text, "\"tasks\"") or
-      String.contains?(text, "'objective'") or
-      String.contains?(text, "'tasks'")
+  defp looks_like_plan_json?(text) do
+    PlanHandling.looks_like_plan_json?(text)
   end
-
-  defp looks_like_plan_json?(_), do: false
 
   defp finalize_as_plan(result, _session, turn, muse, plan, _start_time) do
     plan = PlanHandling.prepare_plan_identity(plan, result.session, turn, muse)
@@ -1433,12 +1339,6 @@ defmodule Muse.Conductor do
   end
 
   # -- Usage helpers ------------------------------------------------------------
-
-  defp summarize_usage(nil), do: %{}
-
-  defp summarize_usage(usage) when is_map(usage) do
-    Map.take(usage, [:prompt_tokens, :completion_tokens, :total_tokens])
-  end
 
   defp extract_token_counts(usage) when is_map(usage) do
     Map.take(usage, [:prompt_tokens, :completion_tokens, :total_tokens])
