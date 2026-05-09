@@ -93,18 +93,20 @@ defmodule Muse.Auth.BearerCommand do
     * The `:command` option is **required**. Without it, `{:error, {:no_command, ...}}`
       is returned.
     * Binary commands are split on whitespace to extract program and args.
-      No shell interpretation is performed unless you explicitly wrap in
-      `"sh -c '...'"`.
+      No shell quoting or interpolation is performed. If shell semantics are
+      required, pass an argv list such as `["sh", "-c", "..."]` so the
+      script remains a single argument.
     * Argv-list commands are passed directly without splitting — safer and
       faster for fixed-argument commands.
     * Stderr is captured into the same stream as stdout (`:stderr_to_stdout`)
       to prevent credential helpers from leaking tokens to the BEAM console.
       Both streams count toward `max_stdout_bytes`. Output parsing takes the
-      last non-empty line, which correctly extracts the token when stderr
-      diagnostics precede the token on stdout.
+      last non-empty line, which extracts the token when stderr diagnostics
+      precede the token on stdout.
     * The `:runner` / `:cmd_fn` option bypasses real execution entirely and is
       intended for test injection. The runner API accepts the full command
-      (binary or list) and returns success/failure tuples.
+      (binary or list), with optional opts for two-arity runners, and returns
+      success/failure tuples.
   """
   @spec resolve(keyword()) :: {:ok, Credential.t()} | {:error, error_reason()}
   def resolve(opts \\ []) when is_list(opts) do
