@@ -2405,20 +2405,15 @@ defmodule Muse.SessionServer do
   end
 
   defp find_patch_in_store(store_base_dir, session_id, patch_id) do
-    case SessionStore.load_patches(store_base_dir, session_id) do
-      {:ok, patches, _meta} ->
-        case Enum.find(patches, fn p ->
-               Map.get(p, "id") == patch_id or Map.get(p, "patch_id") == patch_id
-             end) do
-          nil ->
-            {:error, :no_approved_patch}
-
-          map ->
-            case Patch.from_map(map) do
-              {:ok, patch} -> {:ok, patch}
-              {:error, _} -> {:error, :no_approved_patch}
-            end
+    case SessionStore.find_patch(store_base_dir, session_id, patch_id) do
+      {:ok, map} ->
+        case Patch.from_map(map) do
+          {:ok, patch} -> {:ok, patch}
+          {:error, _} -> {:error, :no_approved_patch}
         end
+
+      {:error, :not_found} ->
+        {:error, :no_approved_patch}
 
       {:error, _} ->
         {:error, :no_approved_patch}

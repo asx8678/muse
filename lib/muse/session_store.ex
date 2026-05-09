@@ -63,6 +63,22 @@ defmodule Muse.SessionStore do
 
   `import_session/3` writes a portable map back to disk, reconstructing
   the session directory. Imported session IDs are validated for path traversal.
+  Imports use streaming writes — entries are encoded and written one line at
+  a time so peak memory is line-bounded.
+
+  ## Streaming Reads (v0.2.1+)
+
+  All JSONL load functions (`load_events/2`, `load_messages/2`, `load_patches/2`)
+  use `File.stream!/1` internally so peak memory is line-bounded rather than
+  proportional to file size. The return API is unchanged.
+
+  Lazy streaming variants (`stream_events/2`, `stream_messages/2`,
+  `stream_patches/2`) return Elixir `Stream` objects for incremental
+  processing without materializing the full list.
+
+  `find_patch/3` locates a single patch by ID, patch_id, or hash using
+  a streaming scan with early termination — unrelated patches are never
+  decoded into memory.
 
   ## Memory Persistence (v0.2.0+)
 
@@ -260,6 +276,156 @@ defmodule Muse.SessionStore do
           {:ok, list(map()), %{skipped: non_neg_integer()}} | {:error, term()}
   def load_patches(base_dir \\ @default_base_dir, session_id) do
     load_jsonl(base_dir, session_id, "patches.jsonl")
+  end
+
+  # ── Streaming reads ────────────────────────────────────────────────────
+
+  @doc """
+  Streams events from the session's `events.jsonl` file, yielding one
+  decoded map at a time.
+
+  Corrupt lines are skipped. The returned stream is lazy — each element
+  is decoded only when consumed, so peak memory is line-bounded.
+
+  Returns:
+    - `{:ok, stream}` — a lazy `Stream` of decoded maps
+    - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
+    - `{:error, :enoent}` if the file does not exist
+    - `{:error, reason}` on other file errors
+
+  ## Example
+
+      {:ok, stream} = SessionStore.stream_events(base_dir, session_id)
+      stream |> Enum.take(10)  # process first 10 events lazily
+  """
+  @spec stream_events(String.t(), String.t()) ::
+          {:ok, Enumerable.t()} | {:error, term()}
+  def stream_events(base_dir \\ @default_base_dir, session_id) do
+    stream_jsonl(base_dir, session_id, "events.jsonl")
+  end
+
+  @doc """
+  Streams messages from the session's `messages.jsonl` file.
+
+  Same semantics as `stream_events/2`.
+  """
+  @spec stream_messages(String.t(), String.t()) ::
+          {:ok, Enumerable.t()} | {:error, term()}
+  def stream_messages(base_dir \\ @default_base_dir, session_id) do
+    stream_jsonl(base_dir, session_id, "messages.jsonl")
+  end
+
+  @doc """
+  Streams patches from the session's `patches.jsonl` file.
+
+  Same semantics as `stream_events/2`.
+  """
+  @spec stream_patches(String.t(), String.t()) ::
+          {:ok, Enumerable.t()} | {:error, term()}
+  def stream_patches(base_dir \\ @default_base_dir, session_id) do
+    stream_jsonl(base_dir, session_id, "patches.jsonl")
+  end
+
+  defp stream_jsonl(base_dir, session_id, file_name) do
+    with :ok <- validate_session_id(session_id) do
+      path = Path.join(session_dir(base_dir, session_id), file_name)
+
+      case File.stat(path) do
+        {:ok, _stat} ->
+          stream =
+            File.stream!(path)
+            |> Stream.map(&String.trim/1)
+            |> Stream.filter(&(&1 != ""))
+            |> Stream.flat_map(fn line ->
+              case Jason.decode(line) do
+                {:ok, decoded} -> [decoded]
+                {:error, _corrupt} -> []
+              end
+            end)
+
+          {:ok, stream}
+
+        {:error, :enoent} ->
+          {:error, :enoent}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  # ── Patch lookup ───────────────────────────────────────────────────────
+
+  @doc """
+  Finds a single patch by ID, patch_id, or hash without loading all patches
+  into memory.
+
+  Uses streaming JSONL read and stops at the first match, so peak memory
+  is line-bounded and unrelated patches are never decoded.
+
+  Returns:
+    - `{:ok, patch_map}` — the first matching decoded patch map
+    - `{:error, :not_found}` if no matching patch exists
+    - `{:error, {:invalid_session_id, id}}` if the session ID is invalid
+    - `{:error, reason}` on file errors
+  """
+  @spec find_patch(String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def find_patch(base_dir \\ @default_base_dir, session_id, target_id) do
+    with :ok <- validate_session_id(session_id) do
+      path = Path.join(session_dir(base_dir, session_id), "patches.jsonl")
+
+      case File.stat(path) do
+        {:error, :enoent} ->
+          {:error, :not_found}
+
+        {:error, reason} ->
+          {:error, reason}
+
+        {:ok, _stat} ->
+          find_patch_in_stream(path, target_id)
+      end
+    end
+  end
+
+  defp find_patch_in_stream(path, target_id) do
+    try do
+      result =
+        path
+        |> File.stream!()
+        |> Enum.reduce_while(:not_found, fn line, _acc ->
+          line = String.trim(line)
+
+          if line == "" do
+            {:cont, :not_found}
+          else
+            case Jason.decode(line) do
+              {:ok, decoded} ->
+                if patch_matches_id?(decoded, target_id) do
+                  {:halt, {:found, decoded}}
+                else
+                  {:cont, :not_found}
+                end
+
+              {:error, _corrupt} ->
+                {:cont, :not_found}
+            end
+          end
+        end)
+
+      case result do
+        {:found, patch} -> {:ok, patch}
+        :not_found -> {:error, :not_found}
+      end
+    rescue
+      File.Error -> {:error, :eio}
+    end
+  end
+
+  defp patch_matches_id?(patch, target_id) do
+    Map.get(patch, "id") == target_id or
+      Map.get(patch, "patch_id") == target_id or
+      Map.get(patch, "hash") == target_id
   end
 
   # ── Listing and deletion ────────────────────────────────────────────────
@@ -636,16 +802,17 @@ defmodule Muse.SessionStore do
            {:ok, import_data} <- prepare_import_data(export) do
         %{
           snapshot: snapshot,
-          events_jsonl: events_jsonl,
-          messages_jsonl: messages_jsonl,
-          patches_jsonl: patches_jsonl,
+          events: events,
+          messages: messages,
+          patches: patches,
           memory: memory
         } = import_data
 
         with :ok <- save_session(base_dir, session_id, snapshot),
-             :ok <- write_jsonl_content(base_dir, session_id, "events.jsonl", events_jsonl),
-             :ok <- write_jsonl_content(base_dir, session_id, "messages.jsonl", messages_jsonl),
-             :ok <- write_jsonl_content(base_dir, session_id, "patches.jsonl", patches_jsonl),
+             :ok <- encode_and_write_jsonl_entries(base_dir, session_id, "events.jsonl", events),
+             :ok <-
+               encode_and_write_jsonl_entries(base_dir, session_id, "messages.jsonl", messages),
+             :ok <- encode_and_write_jsonl_entries(base_dir, session_id, "patches.jsonl", patches),
              :ok <- write_import_memory(base_dir, session_id, memory) do
           {:ok, session_id}
         end
@@ -673,18 +840,18 @@ defmodule Muse.SessionStore do
 
   defp prepare_import_data(export) do
     with {:ok, snapshot} <- import_map(export, "snapshot"),
-         {:ok, events_jsonl} <- prepare_import_jsonl(export, "events"),
-         {:ok, messages_jsonl} <- prepare_import_jsonl(export, "messages"),
-         {:ok, patches_jsonl} <- prepare_import_jsonl(export, "patches"),
+         {:ok, events} <- validate_import_jsonl(export, "events"),
+         {:ok, messages} <- validate_import_jsonl(export, "messages"),
+         {:ok, patches} <- validate_import_jsonl(export, "patches"),
          {:ok, memory} <- import_optional_map(export, "memory"),
          :ok <- validate_session_snapshot(snapshot),
          :ok <- validate_memory(memory) do
       {:ok,
        %{
          snapshot: snapshot,
-         events_jsonl: events_jsonl,
-         messages_jsonl: messages_jsonl,
-         patches_jsonl: patches_jsonl,
+         events: events,
+         messages: messages,
+         patches: patches,
          memory: memory
        }}
     end
@@ -707,7 +874,10 @@ defmodule Muse.SessionStore do
     end
   end
 
-  defp prepare_import_jsonl(export, field) do
+  # Validate import JSONL entries shape and encodability without
+  # building the full JSONL string. Encoding is checked entry-by-entry
+  # so that any encode failure is caught BEFORE any files are written.
+  defp validate_import_jsonl(export, field) do
     entries = Map.get(export, field, [])
 
     cond do
@@ -718,8 +888,27 @@ defmodule Muse.SessionStore do
         {:error, {:invalid_export, "#{field} entries must be maps"}}
 
       true ->
-        encode_jsonl_entries(entries)
+        # Pre-flight: verify every entry is encodable before any I/O
+        case pre_validate_encodable(entries) do
+          :ok -> {:ok, entries}
+          {:error, _reason} = err -> err
+        end
     end
+  end
+
+  # Check that each entry can be scrubbed + encoded without actually
+  # building the output string.  Peak memory is one entry at a time.
+  defp pre_validate_encodable(entries) do
+    Enum.reduce_while(entries, :ok, fn entry, :ok ->
+      entry
+      |> scrub_sensitive_keys()
+      |> encode_for_storage()
+      |> Jason.encode()
+      |> case do
+        {:ok, _json} -> {:cont, :ok}
+        {:error, reason} -> {:halt, {:error, {:encode_failed, reason}}}
+      end
+    end)
   end
 
   defp validate_session_snapshot(snapshot) do
@@ -754,35 +943,36 @@ defmodule Muse.SessionStore do
     end
   end
 
-  defp encode_jsonl_entries(entries) do
-    Enum.reduce_while(entries, {:ok, []}, fn entry, {:ok, acc} ->
-      entry
-      |> scrub_sensitive_keys()
-      |> encode_for_storage()
-      |> Jason.encode()
-      |> case do
-        {:ok, json} -> {:cont, {:ok, [json | acc]}}
-        {:error, reason} -> {:halt, {:error, {:encode_failed, reason}}}
-      end
-    end)
-    |> case do
-      {:ok, []} -> {:ok, ""}
-      {:ok, encoded} -> {:ok, encoded |> Enum.reverse() |> Enum.join("\n") |> Kernel.<>("\n")}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp write_jsonl_content(base_dir, session_id, file_name, content) when is_binary(content) do
+  # Encode entries and write them to disk one line at a time so peak
+  # memory is line-bounded rather than proportional to the total JSONL size.
+  defp encode_and_write_jsonl_entries(base_dir, session_id, file_name, entries) do
     with :ok <- validate_session_id(session_id),
          {:ok, dir} <- ensure_dir(base_dir, session_id) do
       path = Path.join(dir, file_name)
 
-      case File.write(path, content) do
-        :ok -> :ok
+      case File.open(path, [:write, :utf8], fn file ->
+             Enum.reduce_while(entries, :ok, fn entry, :ok ->
+               entry
+               |> scrub_sensitive_keys()
+               |> encode_for_storage()
+               |> Jason.encode()
+               |> case do
+                 {:ok, json} ->
+                   IO.write(file, json <> "\n")
+                   {:cont, :ok}
+
+                 {:error, reason} ->
+                   {:halt, {:error, {:encode_failed, reason}}}
+               end
+             end)
+           end) do
+        {:ok, result} -> result
         {:error, reason} -> {:error, {:write_failed, reason}}
       end
     end
   end
+
+  # ── Private: Memory persistence internals ────────────────────────────
 
   defp write_import_memory(base_dir, session_id, nil) do
     remove_session_file(base_dir, session_id, "memory.json")
@@ -1008,23 +1198,55 @@ defmodule Muse.SessionStore do
   defp load_jsonl(base_dir, session_id, file_name) do
     with :ok <- validate_session_id(session_id) do
       path = Path.join(session_dir(base_dir, session_id), file_name)
+      stream_read_jsonl(path)
+    end
+  end
 
-      case File.read(path) do
-        {:ok, content} ->
-          lines = String.split(content, "\n")
-          {entries, skipped} = parse_jsonl_lines(lines)
-          {:ok, entries, %{skipped: skipped}}
+  # Stream-read a JSONL file line-by-line so peak memory is line-bounded
+  # rather than proportional to the entire file. Preserves the same
+  # return semantics as the old File.read + String.split approach.
+  defp stream_read_jsonl(path) do
+    case File.stat(path) do
+      {:ok, _stat} ->
+        try do
+          {entries, skipped} =
+            path
+            |> File.stream!()
+            |> Enum.reduce({[], 0}, &parse_jsonl_reducer/2)
 
-        {:error, :enoent} ->
-          {:ok, [], %{skipped: 0}}
+          {:ok, Enum.reverse(entries), %{skipped: skipped}}
+        rescue
+          # Guard against races (file deleted between stat and stream open)
+          # or I/O errors during streaming.
+          File.Error ->
+            {:error, :eio}
+        end
 
-        {:error, reason} ->
-          {:error, reason}
+      {:error, :enoent} ->
+        {:ok, [], %{skipped: 0}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp parse_jsonl_reducer(line, {acc, skipped}) do
+    line = String.trim(line)
+
+    if line == "" do
+      {acc, skipped}
+    else
+      case Jason.decode(line) do
+        {:ok, decoded} -> {[decoded | acc], skipped}
+        {:error, _corrupt} -> {acc, skipped + 1}
       end
     end
   end
 
-  defp parse_jsonl_lines(lines) do
+  # Legacy full-materialisation path kept for backwards-compat callers
+  # that split a pre-loaded string (e.g. in-memory test helpers).
+  @doc false
+  def parse_jsonl_lines(lines) do
     {parsed, skipped} =
       Enum.reduce(lines, {[], 0}, fn line, {acc, skipped} ->
         line = String.trim(line)
