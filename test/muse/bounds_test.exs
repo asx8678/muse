@@ -60,6 +60,23 @@ defmodule Muse.BoundsTest do
       assert is_integer(Bounds.toasts())
     end
 
+    test "invalid cap values are ignored safely" do
+      Application.put_env(:muse, :bounds, %{
+        toasts: 0,
+        command_history: "many",
+        session_events: -1,
+        unknown: 123
+      })
+
+      assert is_integer(Bounds.toasts())
+      assert Bounds.toasts() > 0
+      assert is_integer(Bounds.command_history())
+      assert Bounds.command_history() > 0
+      all = Bounds.all()
+      assert all.session_events > 0
+      refute Map.has_key?(all, :unknown)
+    end
+
     test "nil env value is ignored safely" do
       Application.put_env(:muse, :bounds, nil)
       assert is_integer(Bounds.toasts())

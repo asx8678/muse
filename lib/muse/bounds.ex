@@ -122,8 +122,13 @@ defmodule Muse.Bounds do
 
   defp env_overrides do
     case Application.get_env(:muse, :bounds) do
-      overrides when is_map(overrides) -> overrides
-      _ -> %{}
+      overrides when is_map(overrides) ->
+        overrides
+        |> Map.take(Map.keys(@defaults))
+        |> Map.filter(fn {_key, value} -> is_integer(value) and value > 0 end)
+
+      _ ->
+        %{}
     end
   end
 

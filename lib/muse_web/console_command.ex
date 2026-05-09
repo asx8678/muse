@@ -95,7 +95,7 @@ defmodule MuseWeb.ConsoleCommand do
   end
 
   defp apply_effect(socket, {:refresh, :diagnostics}) do
-    assign(socket, diagnostics: BackendBridge.safe_diagnostics())
+    assign(socket, diagnostics: BackendBridge.safe_diagnostics() |> cap_diagnostics())
   end
 
   defp apply_effect(socket, {:refresh, :runtime}) do
@@ -263,4 +263,14 @@ defmodule MuseWeb.ConsoleCommand do
       toasts: Bounds.trim_newest_first(socket.assigns.toasts ++ [toast], Bounds.toasts())
     )
   end
+
+  # Muse.Diagnostics returns diagnostics newest-first. Keep that order and drop
+  # the oldest tail when applying the LiveView-local diagnostics cap.
+  defp cap_diagnostics(diagnostics) when is_list(diagnostics) do
+    diagnostics
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.take(Bounds.diagnostics())
+  end
+
+  defp cap_diagnostics(_diagnostics), do: []
 end

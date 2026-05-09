@@ -54,7 +54,7 @@ defmodule MuseWeb.HomeLive do
     chat_messages = EventStream.chat_messages(events)
     workspace = BackendBridge.safe_workspace_root()
     reload_status = BackendBridge.safe_reload_status()
-    diagnostics = BackendBridge.safe_diagnostics()
+    diagnostics = BackendBridge.safe_diagnostics() |> cap_diagnostics()
     self_healing_issues = BackendBridge.safe_self_healing_issues()
     diagnostic_issue_statuses = compute_issue_statuses(self_healing_issues)
 
@@ -865,8 +865,7 @@ defmodule MuseWeb.HomeLive do
   def handle_info({:muse_diagnostic, diagnostic}, socket) do
     diagnostics =
       [diagnostic | socket.assigns.diagnostics]
-      |> Enum.uniq_by(& &1.id)
-      |> Bounds.trim_newest_first(Bounds.diagnostics())
+      |> cap_diagnostics()
 
     # Do NOT auto-open drawer or schedule collapse
     socket = assign(socket, diagnostics: diagnostics)
@@ -1019,6 +1018,16 @@ defmodule MuseWeb.HomeLive do
   defp compute_issue_statuses(issues) do
     Map.new(issues, fn issue -> {issue.diagnostic_id, issue.status} end)
   end
+
+  # Muse.Diagnostics returns diagnostics newest-first. Keep that order and drop
+  # the oldest tail when applying the LiveView-local diagnostics cap.
+  defp cap_diagnostics(diagnostics) when is_list(diagnostics) do
+    diagnostics
+    |> Enum.uniq_by(& &1.id)
+    |> Enum.take(Bounds.diagnostics())
+  end
+
+  defp cap_diagnostics(_diagnostics), do: []
 
   defp diagnostic_file(%{metadata: meta}) when is_map(meta) do
     Map.get(meta, :file) || Map.get(meta, "file")

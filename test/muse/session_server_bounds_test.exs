@@ -28,6 +28,17 @@ defmodule Muse.SessionServerBoundsTest do
   end
 
   defp start_dependencies(workspace_root) do
+    if Process.whereis(Muse.PubSub) == nil do
+      {:ok, _} =
+        Supervisor.start_link([{Phoenix.PubSub, name: Muse.PubSub}], strategy: :one_for_one)
+    end
+
+    stop_named(Muse.TaskSupervisor)
+    {:ok, _} = Task.Supervisor.start_link(name: Muse.TaskSupervisor)
+
+    stop_named(Muse.SessionRegistry)
+    {:ok, _} = Registry.start_link(keys: :unique, name: Muse.SessionRegistry)
+
     stop_named(Muse.Workspace)
     {:ok, _} = Muse.Workspace.start_link(root: workspace_root)
 
@@ -50,6 +61,8 @@ defmodule Muse.SessionServerBoundsTest do
     stop_named(Muse.Diagnostics)
     stop_named(Muse.State)
     stop_named(Muse.Workspace)
+    stop_named(Muse.SessionRegistry)
+    stop_named(Muse.TaskSupervisor)
   end
 
   defp tmp_workspace do
@@ -75,7 +88,7 @@ defmodule Muse.SessionServerBoundsTest do
   # ---------------------------------------------------------------------------
 
   describe "per-session event cap" do
-    test "status event_count reflects bounded events after many direct appends" do
+    test "status event_count reflects bounded events after many completed turns" do
       cap = Muse.Bounds.session_events()
 
       {:ok, pid} =
@@ -84,21 +97,19 @@ defmodule Muse.SessionServerBoundsTest do
           store_base_dir: Path.join(tmp_workspace(), "sessions")
         )
 
-      # Manually emit many events to exceed the cap
-      state0 = :sys.get_state(pid)
-
-      for i <- 1..(cap + 50) do
-        event = Event.new(:test, :test_event, %{i: i}, seq: i)
-        # Use the public internal emit_session_event
-        {_, new_state} =
-          SessionServer.emit_session_event(state0, :test, :test_event, %{i: i}, turn_id: "t_#{i}")
-
-        # Re-get state for next iteration
-        state0 = :sys.get_state(pid)
+      for i <- 1..20 do
+        assert {:ok, text} = SessionServer.submit(pid, :test, "message #{i}")
+        assert is_binary(text)
       end
 
       final_state = :sys.get_state(pid)
-      assert length(final_state.events) <= cap
+      status = SessionServer.status(pid)
+
+      assert status.event_count == length(final_state.events)
+      assert length(final_state.events) == cap
+
+      assert Enum.map(final_state.events, & &1.seq) ==
+               Enum.to_list((final_state.seq - cap + 1)..final_state.seq)
 
       GenServer.stop(pid, :normal, 1_000)
     end

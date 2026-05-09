@@ -72,6 +72,8 @@ defmodule MuseWeb.HomeLiveBoundsTest do
     {:ok, _} = MuseWeb.Endpoint.start_link()
   end
 
+  defp live_socket(view), do: view.pid |> :sys.get_state() |> Map.fetch!(:socket)
+
   setup do
     ensure_pubsub()
 
@@ -80,6 +82,9 @@ defmodule MuseWeb.HomeLiveBoundsTest do
     File.mkdir_p!(workspace_root)
 
     Muse.Diagnostics.LoggerHandler.remove()
+    stop_named(Muse.SessionRegistry)
+    {:ok, _} = Registry.start_link(keys: :unique, name: Muse.SessionRegistry)
+
     start_workspace(workspace_root)
     start_state()
     start_diagnostics()
@@ -103,6 +108,7 @@ defmodule MuseWeb.HomeLiveBoundsTest do
       stop_named(Muse.Diagnostics)
       stop_named(Muse.State)
       stop_named(Muse.Workspace)
+      stop_named(Muse.SessionRegistry)
       File.rm_rf!(workspace_root)
     end)
 
@@ -115,11 +121,20 @@ defmodule MuseWeb.HomeLiveBoundsTest do
 
   describe "command history bounds" do
     test "command history stays within cap after repeated commands", %{caps: caps} do
-      # Verify the helper directly since LiveView form submit
-      # in test mode may not update command_history reliably
-      result = Muse.Bounds.trim_newest_first(Enum.to_list(1..100), caps.command_history)
-      assert length(result) == caps.command_history
-      assert result == Enum.to_list(96..100)
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      for i <- 1..(caps.command_history + 5) do
+        view
+        |> element("form")
+        |> render_submit(%{"text" => "/unknown_history_#{i}"})
+      end
+
+      expected_range = 6..(caps.command_history + 5)
+      history = live_socket(view).assigns.command_history
+      assert length(history) == caps.command_history
+
+      assert Enum.map(history, & &1.input) ==
+               Enum.map(expected_range, &"/unknown_history_#{&1}")
     end
   end
 
@@ -139,16 +154,15 @@ defmodule MuseWeb.HomeLiveBoundsTest do
         |> render_submit(%{"text" => "/unknown_cmd_#{i}"})
       end
 
-      # Verify toast cap by testing the trim helper directly
-      all_toasts =
-        for i <- 1..(caps.toasts + 5) do
-          %{id: i, message: "toast #{i}", type: :info}
-        end
+      expected_range = 6..(caps.toasts + 5)
+      toasts = live_socket(view).assigns.toasts
+      assert length(toasts) == caps.toasts
 
-      trimmed = Muse.Bounds.trim_newest_first(all_toasts, caps.toasts)
-      assert length(trimmed) == caps.toasts
-      # Newest toasts survive (highest id)
-      assert List.last(trimmed).id == caps.toasts + 5
+      assert Enum.map(toasts, & &1.message) ==
+               Enum.map(
+                 expected_range,
+                 &"Unknown command: /unknown_cmd_#{&1}. Type /help for available commands."
+               )
     end
 
     test "dismiss_toast removes a specific toast" do
@@ -198,10 +212,7 @@ defmodule MuseWeb.HomeLiveBoundsTest do
       send(view.pid, {:muse_event, completed_event})
       _html = render(view)
 
-      # After turn_completed, the streaming buffer for that turn should be cleared
-      # The key test is that the buffer doesn't leak memory — we verify via
-      # the helper's behavior
-      assert true
+      assert live_socket(view).assigns.streaming_buffers == %{}
     end
 
     test "streaming buffer is cleared on turn_failed" do
@@ -230,8 +241,7 @@ defmodule MuseWeb.HomeLiveBoundsTest do
       send(view.pid, {:muse_event, failed_event})
       _html = render(view)
 
-      # After turn_failed, the streaming buffer for that turn should be cleared
-      assert true
+      assert live_socket(view).assigns.streaming_buffers == %{}
     end
 
     test "streaming buffer is cleared on turn_cancelled" do
@@ -260,8 +270,7 @@ defmodule MuseWeb.HomeLiveBoundsTest do
       send(view.pid, {:muse_event, cancelled_event})
       _html = render(view)
 
-      # After turn_cancelled, the streaming buffer for that turn should be cleared
-      assert true
+      assert live_socket(view).assigns.streaming_buffers == %{}
     end
 
     test "streaming buffers are cleared on events_cleared" do
@@ -281,8 +290,7 @@ defmodule MuseWeb.HomeLiveBoundsTest do
       send(view.pid, {:muse_events_cleared})
       _html = render(view)
 
-      # streaming_buffers assign should be empty
-      assert true
+      assert live_socket(view).assigns.streaming_buffers == %{}
     end
 
     test "individual streaming buffer respects byte cap", %{caps: caps} do
@@ -324,14 +332,11 @@ defmodule MuseWeb.HomeLiveBoundsTest do
 
       _html = render(view)
 
-      # The direct test: verify the Bounds helper trims correctly
-      diag_list =
-        for i <- 1..(caps.diagnostics + 5) do
-          %{id: i, message: "diag #{i}"}
-        end
+      diagnostics = live_socket(view).assigns.diagnostics
+      assert length(diagnostics) == caps.diagnostics
 
-      trimmed = Muse.Bounds.trim_newest_first(diag_list, caps.diagnostics)
-      assert length(trimmed) == caps.diagnostics
+      assert Enum.map(diagnostics, & &1.message) ==
+               Enum.map((caps.diagnostics + 5)..6//-1, &"Diagnostic #{&1}")
     end
   end
 

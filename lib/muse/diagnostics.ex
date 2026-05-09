@@ -13,7 +13,6 @@ defmodule Muse.Diagnostics do
   alias Muse.Diagnostics.LoggerHandler
 
   @topic "muse:diagnostics"
-  @default_max 50
 
   # -- Public API ---------------------------------------------------------------
 
@@ -49,7 +48,7 @@ defmodule Muse.Diagnostics do
 
   @impl true
   def init(opts) do
-    max = opts |> Keyword.get(:max, @default_max) |> normalize_max()
+    max = opts |> Keyword.get(:max, Muse.Bounds.diagnostics()) |> normalize_max()
     install_logger_handler? = Keyword.get(opts, :install_logger_handler?, true)
 
     if install_logger_handler? do
@@ -80,7 +79,7 @@ defmodule Muse.Diagnostics do
   # -- Helpers -----------------------------------------------------------------
 
   defp normalize_max(max) when is_integer(max) and max > 0, do: max
-  defp normalize_max(_max), do: @default_max
+  defp normalize_max(_max), do: Muse.Bounds.diagnostics()
 
   defp broadcast(message) do
     case Process.whereis(Muse.PubSub) do
