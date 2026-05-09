@@ -167,6 +167,50 @@ defmodule Muse.Auth.BearerCommandTest do
 
       assert cred.value == "tok-from-cmd-fn"
     end
+
+    test "two-arity runner receives safe opts" do
+      runner = fn "ignored", opts ->
+        assert opts[:source_label] == "runner-label"
+        {:ok, "tok-from-arity-two"}
+      end
+
+      assert {:ok, cred} =
+               BearerCommand.resolve(
+                 command: "ignored",
+                 allow_exec?: true,
+                 runner: runner,
+                 source_label: "runner-label"
+               )
+
+      assert cred.value == "tok-from-arity-two"
+    end
+
+    test "invalid runner returns safe exec_failed instead of crashing" do
+      assert {:error, {:exec_failed, msg}} =
+               BearerCommand.resolve(
+                 command: "ignored",
+                 allow_exec?: true,
+                 runner: :not_a_function
+               )
+
+      assert msg =~ "runner"
+    end
+
+    test "non-binary runner output is rejected without leaking inspected data" do
+      secret = "sk-runner-output-secret"
+      runner = fn _cmd -> {%{token: secret}, 0} end
+
+      result =
+        BearerCommand.resolve(
+          command: "ignored",
+          allow_exec?: true,
+          runner: runner
+        )
+
+      assert {:error, {:exec_failed, msg}} = result
+      assert msg =~ "string"
+      refute inspect(result) =~ secret
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -637,6 +681,32 @@ defmodule Muse.Auth.BearerCommandTest do
 
       assert msg =~ "non-printable"
     end
+
+    test "invalid UTF-8 output fails safely" do
+      runner = fn _cmd -> {<<0xFF, 0xFE, 0xFD>>, 0} end
+
+      assert {:error, {:exec_failed, msg}} =
+               BearerCommand.resolve(
+                 command: "invalid-utf8",
+                 allow_exec?: true,
+                 runner: runner
+               )
+
+      assert msg =~ "UTF-8"
+    end
+
+    test "token lines containing whitespace are rejected" do
+      runner = fn _cmd -> {"tok with spaces", 0} end
+
+      assert {:error, {:exec_failed, msg}} =
+               BearerCommand.resolve(
+                 command: "spacey",
+                 allow_exec?: true,
+                 runner: runner
+               )
+
+      assert msg =~ "whitespace"
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -700,6 +770,19 @@ defmodule Muse.Auth.BearerCommandTest do
       after
         File.rm(non_exec)
       end
+    end
+
+    test "command lookup errors do not include the command text" do
+      secret_command = "sk-secret-command-name"
+
+      result =
+        BearerCommand.resolve(
+          command: secret_command,
+          allow_exec?: true
+        )
+
+      assert {:error, {:exec_failed, _msg}} = result
+      refute inspect(result) =~ secret_command
     end
   end
 

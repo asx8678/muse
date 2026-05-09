@@ -71,10 +71,11 @@ defmodule Muse.Auth.BearerCommand do
       `{:error, {:output_too_large, source_label}}` is returned. This prevents
       memory exhaustion from misconfigured or compromised credential helpers.
     * `:runner` — function injected for test isolation. When provided,
-      `System.cmd/3` is never called. The runner receives the command
-      (binary or argv list) and must return `{output, 0}`, `{:ok, output}`,
-      or `{:error, reason}`. The `:allow_exec?` guard is still enforced.
-      Runner output is also validated against `:max_stdout_bytes`.
+      `System.cmd/3` is never called. A one-arity runner receives the command
+      (binary or argv list); a two-arity runner receives the command and a
+      keyword opts list. It must return `{output, 0}`, `{:ok, output}`, or
+      `{:error, reason}`. The `:allow_exec?` guard is still enforced. Runner
+      output is also validated against `:max_stdout_bytes`.
     * `:cmd_fn` — alias for `:runner` (accepted for convenience).
 
   ## Examples
@@ -189,8 +190,12 @@ defmodule Muse.Auth.BearerCommand do
   # Spawn-based execution for test runner injection.
   # Bounded by timeout and max_stdout_bytes validation.
   defp exec_command(command, timeout_ms, max_stdout, runner, source_label)
-       when is_function(runner, 1) do
+       when is_function(runner, 1) or is_function(runner, 2) do
     exec_with_runner(command, timeout_ms, max_stdout, runner, source_label)
+  end
+
+  defp exec_command(_command, _timeout_ms, _max_stdout, _runner, _source_label) do
+    {:error, {:exec_failed, "runner must be a one- or two-arity function"}}
   end
 
   # -- Port-based bounded execution (real commands) ----------------------------
@@ -245,16 +250,19 @@ defmodule Muse.Auth.BearerCommand do
 
   defp resolve_executable(prog) do
     cond do
+      prog in [nil, ""] ->
+        {:error, "command not found"}
+
       Path.type(prog) == :absolute ->
         cond do
           not safe_absolute_path?(prog) ->
-            {:error, "executable path rejected for safety: #{safe_prog_label(prog)}"}
+            {:error, "executable path rejected for safety"}
 
           not File.exists?(prog) ->
-            {:error, "executable not found: #{safe_prog_label(prog)}"}
+            {:error, "executable not found"}
 
           not is_executable?(prog) ->
-            {:error, "executable not accessible: #{safe_prog_label(prog)}"}
+            {:error, "executable not accessible"}
 
           true ->
             {:ok, prog}
@@ -262,7 +270,7 @@ defmodule Muse.Auth.BearerCommand do
 
       true ->
         case System.find_executable(prog) do
-          nil -> {:error, "command not found: #{safe_prog_label(prog)}"}
+          nil -> {:error, "command not found"}
           path -> {:ok, path}
         end
     end
@@ -371,7 +379,16 @@ defmodule Muse.Auth.BearerCommand do
   end
 
   defp do_exec_with_runner(command, max_stdout, runner, source_label) do
-    case safe_runner_call(fn -> runner.(command) end) do
+    runner_result =
+      cond do
+        is_function(runner, 1) ->
+          safe_runner_call(fn -> runner.(command) end)
+
+        is_function(runner, 2) ->
+          safe_runner_call(fn -> runner.(command, source_label: source_label) end)
+      end
+
+    case runner_result do
       {:ok, {output, 0}} -> validate_runner_output(output, max_stdout, source_label)
       {:ok, {:ok, output}} -> validate_runner_output(output, max_stdout, source_label)
       _other -> {:error, {:exec_failed, "runner failed"}}
@@ -386,8 +403,8 @@ defmodule Muse.Auth.BearerCommand do
     end
   end
 
-  defp validate_runner_output(output, max_stdout, source_label) do
-    validate_runner_output(to_string(output), max_stdout, source_label)
+  defp validate_runner_output(_output, _max_stdout, _source_label) do
+    {:error, {:exec_failed, "runner output must be a string"}}
   end
 
   # ---------------------------------------------------------------------------
@@ -411,33 +428,46 @@ defmodule Muse.Auth.BearerCommand do
   # single-line output (first == last) and robust for merged stderr.
   # ---------------------------------------------------------------------------
 
-  defp parse_output(output) do
-    trimmed = String.trim(output)
-
-    if trimmed == "" do
-      {:error, :empty_output}
+  defp parse_output(output) when is_binary(output) do
+    if String.valid?(output) do
+      output
+      |> String.trim()
+      |> parse_trimmed_output()
     else
-      last =
-        trimmed
-        |> String.split(["\r\n", "\n"])
-        |> Enum.reverse()
-        |> Enum.find(&(String.trim(&1) != ""))
+      {:error, {:exec_failed, "output is not valid UTF-8"}}
+    end
+  end
 
-      case last do
-        nil ->
-          {:error, :empty_output}
+  defp parse_output(_output), do: {:error, {:exec_failed, "output must be a string"}}
 
-        line ->
-          token = String.trim(line)
+  defp parse_trimmed_output(""), do: {:error, :empty_output}
 
-          # Bearer tokens must be printable. Non-printable output indicates
-          # a misconfigured or compromised credential helper.
-          if String.printable?(token) do
-            {:ok, token}
-          else
-            {:error, {:exec_failed, "output contains non-printable characters"}}
-          end
-      end
+  defp parse_trimmed_output(trimmed) do
+    trimmed
+    |> String.split(["\r\n", "\n"])
+    |> Enum.reverse()
+    |> Enum.find(&(String.trim(&1) != ""))
+    |> case do
+      nil ->
+        {:error, :empty_output}
+
+      line ->
+        line
+        |> String.trim()
+        |> validate_token()
+    end
+  end
+
+  defp validate_token(token) do
+    cond do
+      not String.printable?(token) ->
+        {:error, {:exec_failed, "output contains non-printable characters"}}
+
+      String.match?(token, ~r/\s/u) ->
+        {:error, {:exec_failed, "output contains whitespace"}}
+
+      true ->
+        {:ok, token}
     end
   end
 
@@ -450,17 +480,17 @@ defmodule Muse.Auth.BearerCommand do
   defp normalize_max_stdout(bytes) when is_integer(bytes) and bytes > 0, do: bytes
   defp normalize_max_stdout(_bytes), do: @default_max_stdout_bytes
 
-  # Safe program label for error messages — never include full command args.
-  defp safe_prog_label(prog) when is_binary(prog), do: String.slice(prog, 0, 80)
-  defp safe_prog_label(prog), do: inspect(prog, limit: 5, printable_limit: 80)
-
   defp safe_exit_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
-  defp safe_exit_reason(reason), do: inspect(reason, limit: 5, printable_limit: 120)
+  defp safe_exit_reason(_reason), do: "unknown"
 
   # Map process DOWN reasons to safe error messages.
   defp exec_down_reason(:enoent, _source_label), do: "command not found"
   defp exec_down_reason(:normal, _source_label), do: "process exited normally without result"
-  defp exec_down_reason(reason, _source_label), do: "process crashed: #{safe_exit_reason(reason)}"
+
+  defp exec_down_reason(reason, _source_label) when is_atom(reason),
+    do: "process crashed: #{safe_exit_reason(reason)}"
+
+  defp exec_down_reason(_reason, _source_label), do: "process crashed"
 
   # -- Public configuration accessors -------------------------------------------
 

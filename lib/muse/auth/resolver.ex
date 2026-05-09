@@ -110,7 +110,8 @@ defmodule Muse.Auth.Resolver do
     command = first_present(context, [:bearer_command, :command])
     source_label = option_value(context, :source_label) || "bearer_command"
     runner = option_value(context, :auth_runner)
-    max_stdout = option_value(context, :max_stdout_bytes)
+    timeout_ms = first_present(context, [:timeout_ms, :bearer_command_timeout_ms])
+    max_stdout = first_present(context, [:max_stdout_bytes, :bearer_command_max_stdout_bytes])
 
     # All bearer command resolution goes through BearerCommand.resolve/1
     # to ensure bounded stdout, token shape validation, and secret-safe
@@ -120,6 +121,7 @@ defmodule Muse.Auth.Resolver do
       |> put_present(:command, command)
       |> put_present(:source_label, source_label)
       |> put_present(:allow_exec?, bearer_allow_exec?(context))
+      |> put_present(:timeout_ms, timeout_ms)
       |> put_present(:max_stdout_bytes, max_stdout)
       |> then(fn opts ->
         # When an auth_runner is explicitly provided, the caller intends to

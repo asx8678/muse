@@ -76,6 +76,37 @@ defmodule Muse.Auth.ResolverTest do
                })
     end
 
+    test "bearer_command auth_runner supports prior two-arity runner contract" do
+      runner = fn "ignored", opts ->
+        assert opts[:source_label] == "bearer_command"
+        {:ok, "tok-runner-two-arity"}
+      end
+
+      assert {:ok, credential} =
+               Resolver.resolve(%{
+                 auth: :bearer_command,
+                 bearer_command: "ignored",
+                 auth_runner: runner
+               })
+
+      assert credential.value == "tok-runner-two-arity"
+    end
+
+    test "bearer_command passes timeout_ms through to BearerCommand" do
+      runner = fn _cmd ->
+        :timer.sleep(100)
+        {:ok, "too-late"}
+      end
+
+      assert {:error, {:timeout, "bearer_command"}} =
+               Resolver.resolve(%{
+                 auth: :bearer_command,
+                 bearer_command: "ignored",
+                 auth_runner: runner,
+                 timeout_ms: 10
+               })
+    end
+
     test "codex_cache resolves from temp JSON and carries permission warning" do
       path = tmp_path("codex_auth.json")
       File.write!(path, Jason.encode!(%{"access_token" => "tok-codex-secret"}))
