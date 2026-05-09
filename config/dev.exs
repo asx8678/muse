@@ -16,6 +16,10 @@ config :muse, MuseWeb.Endpoint,
     ]
   ]
 
+# Dev uses loopback — browser access enforced for consistency.
+config :muse, :browser_access, mode: :local_only
+config :muse, :browser_access_enforced, true
+
 config :muse, :logger,
   buffer_level: :debug,
   console_level: :warning

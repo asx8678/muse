@@ -1,6 +1,11 @@
 import Config
 
 if config_env() == :prod do
+  # Browser LiveView access control — validate safe configuration.
+  # Fails closed if endpoint is bound to a non-loopback address
+  # without explicit acknowledgement.
+  MuseWeb.BrowserAccessConfig.assert_safe!()
+
   # External WebSocket channel — opt-in via config or truthy env var for production.
   # Without an explicit opt-in the socket remains disabled.
   # When enabled, valid token hashes MUST be configured or the app fails to start.

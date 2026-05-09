@@ -6,6 +6,7 @@ defmodule MuseWeb.Router do
     plug(:fetch_session)
     plug(:protect_from_forgery)
     plug(:put_secure_browser_headers)
+    plug(MuseWeb.BrowserAccessControl)
   end
 
   scope "/", MuseWeb do

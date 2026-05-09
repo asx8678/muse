@@ -29,6 +29,17 @@ config :esbuild,
 # --- JSON library ---
 config :phoenix, :json_library, Jason
 
+# --- Browser LiveView access control ---
+# Controls who can reach the browser UI (LiveView).
+#   :local_only  — Only loopback addresses (default, safest).
+#   :authenticated — Browser auth required (reserved for future).
+#   :open — Any address (dangerous; only valid behind a reverse proxy).
+#
+# Override at runtime with MUSE_BROWSER_ACCESS env var.
+# The :browser_access_enforced flag lets test env bypass the plug.
+config :muse, :browser_access, mode: :local_only
+config :muse, :browser_access_enforced, true
+
 # --- Optional external WebSocket channel ---
 # Disabled by default.  When enabled, provides an externally-facing
 # Phoenix WebSocket (UserSocket / SessionChannel) bound to whatever

@@ -35,6 +35,13 @@ config :muse, :external_ws,
     }
   ]
 
+# Browser access control is not enforced in test so LiveView tests
+# using build_conn() (remote_ip: 127.0.0.1 by default) and integration
+# tests with custom remote IPs work without additional setup.
+# The enforcement logic is tested directly via enforce_local_only/1.
+config :muse, :browser_access, mode: :local_only
+config :muse, :browser_access_enforced, false
+
 # Prevent the Application supervisor from starting runtime children
 # (Workspace, State, CLI.Repl, Endpoint, DevReloader) during mix test.
 # Existing tests manually start/stop those globally-named processes,

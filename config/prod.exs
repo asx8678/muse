@@ -6,6 +6,12 @@ config :muse, MuseWeb.Endpoint,
   server: true,
   http: [ip: {127, 0, 0, 1}, port: 4000]
 
+# Production: browser UI restricted to loopback by default.
+# Override with MUSE_BROWSER_ACCESS env var if a reverse proxy
+# provides upstream authentication.
+config :muse, :browser_access, mode: :local_only
+config :muse, :browser_access_enforced, true
+
 config :muse, :logger,
   buffer_level: :warning,
   console_level: :warning
