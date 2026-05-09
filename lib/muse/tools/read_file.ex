@@ -22,6 +22,7 @@ defmodule Muse.Tools.ReadFile do
   """
 
   alias Muse.Tool.Result
+  alias Muse.Tool.SafeText
 
   @default_max_lines 500
   @max_bytes 500_000
@@ -55,7 +56,7 @@ defmodule Muse.Tools.ReadFile do
          {:ok, resolved} <- safe_resolve(path, workspace),
          :ok <- check_not_directory(resolved),
          {:ok, content, read_truncated} <- read_text(resolved),
-         {:ok, lines} <- split_lines(content),
+         {:ok, lines} <- SafeText.safe_split_lines(content),
          {:ok, sliced, start_line, end_line} <- slice_lines(lines, args),
          {:ok, output, cap_truncated} <- cap_output(sliced) do
       Result.ok("read_file", %{
@@ -113,25 +114,18 @@ defmodule Muse.Tools.ReadFile do
               {:ok, "", false}
 
             bin when is_binary(bin) ->
-              # Binary detection: check first 8KB for null bytes
-              sample_size = min(byte_size(bin), 8192)
-              <<sample::binary-size(sample_size), _::binary>> = bin
+              truncated = byte_size(bin) > @max_bytes
 
-              if :binary.match(sample, <<0>>) != :nomatch do
-                {:error, "binary files are not supported"}
-              else
-                truncated = byte_size(bin) > @max_bytes
+              # Use SafeText.safe_truncate for UTF-8-boundary-safe truncation
+              content =
+                if truncated do
+                  {:ok, safe_content} = SafeText.safe_truncate(bin, @max_bytes)
+                  safe_content
+                else
+                  bin
+                end
 
-                content =
-                  if truncated do
-                    # Use binary_part for safe truncation (no UTF-8 validation)
-                    binary_part(bin, 0, @max_bytes)
-                  else
-                    bin
-                  end
-
-                {:ok, content, truncated}
-              end
+              {:ok, content, truncated}
           end
         after
           File.close(io_dev)
@@ -146,10 +140,6 @@ defmodule Muse.Tools.ReadFile do
       {:error, reason} ->
         {:error, "file read error: #{inspect(reason)}"}
     end
-  end
-
-  defp split_lines(content) do
-    {:ok, String.split(content, "\n")}
   end
 
   defp slice_lines(lines, args) do
@@ -180,8 +170,8 @@ defmodule Muse.Tools.ReadFile do
     joined = Enum.join(text_lines, "\n")
 
     if byte_size(joined) > @max_bytes do
-      # Use binary_part for safe truncation without UTF-8 boundary issues
-      capped = binary_part(joined, 0, @max_bytes)
+      # UTF-8-boundary-safe truncation
+      {:ok, capped} = SafeText.safe_truncate(joined, @max_bytes)
       {:ok, capped, true}
     else
       {:ok, joined, false}

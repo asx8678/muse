@@ -19,6 +19,7 @@ defmodule Muse.Tools.RepoSearch do
   """
 
   alias Muse.Tool.Result
+  alias Muse.Tool.SafeText
 
   @default_max_results 50
   @max_per_file_bytes 100_000
@@ -176,22 +177,22 @@ defmodule Muse.Tools.RepoSearch do
 
           case data do
             bin when is_binary(bin) ->
-              # Binary detection on first 8KB
-              sample_size = min(byte_size(bin), 8192)
-              <<sample::binary-size(sample_size), _::binary>> = bin
+              # Use SafeText.classify for comprehensive binary/UTF-8 detection
+              case SafeText.classify(bin) do
+                :text ->
+                  content =
+                    if byte_size(bin) > @max_per_file_bytes do
+                      {:ok, safe} = SafeText.safe_truncate(bin, @max_per_file_bytes)
+                      safe
+                    else
+                      bin
+                    end
 
-              if :binary.match(sample, <<0>>) != :nomatch do
-                # Binary file — skip
-                []
-              else
-                content =
-                  if byte_size(bin) > @max_per_file_bytes do
-                    binary_part(bin, 0, @max_per_file_bytes)
-                  else
-                    bin
-                  end
+                  search_lines(content, rel_path, pattern)
 
-                search_lines(content, rel_path, pattern)
+                _classification ->
+                  # Binary, invalid UTF-8, or unsafe text — skip
+                  []
               end
 
             _ ->
@@ -212,7 +213,7 @@ defmodule Muse.Tools.RepoSearch do
     |> Enum.with_index(1)
     |> Enum.filter(fn {line, _idx} -> String.contains?(line, pattern) end)
     |> Enum.map(fn {line, idx} ->
-      %{file: rel_path, line: idx, excerpt: String.slice(line, 0, 200)}
+      %{file: rel_path, line: idx, excerpt: SafeText.safe_slice(line, 200)}
     end)
   end
 

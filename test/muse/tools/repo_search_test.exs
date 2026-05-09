@@ -159,4 +159,64 @@ defmodule Muse.Tools.RepoSearchTest do
       assert length(result.output.results) <= 3
     end
   end
+
+  describe "execute/2 — UTF-8 and binary safety (muse-qw4.13)" do
+    test "skips invalid UTF-8 files without crashing", %{root: root} do
+      # 0xFF is never valid UTF-8
+      File.write!(Path.join(root, "bad_utf8.txt"), <<0xFF, 0xFE, 0xFD>>)
+      # Also include a valid file with the search pattern to prove search still works
+      File.write!(Path.join(root, "good_utf8.ex"), "defmodule Good do\nend\n")
+
+      result = RepoSearch.execute(%{"pattern" => "defmodule"}, %{workspace: root})
+      assert result.success
+      # bad_utf8.txt should be silently skipped
+      refute Enum.any?(result.output.results, &String.contains?(&1.file, "bad_utf8"))
+      # good file still found
+      assert Enum.any?(result.output.results, &String.contains?(&1.file, "good_utf8"))
+    end
+
+    test "skips NUL-containing files without crashing", %{root: root} do
+      File.write!(Path.join(root, "nul_file.txt"), "defmodule" <> <<0>> <> "rest")
+
+      result = RepoSearch.execute(%{"pattern" => "defmodule"}, %{workspace: root})
+      assert result.success
+      refute Enum.any?(result.output.results, &String.contains?(&1.file, "nul_file"))
+    end
+
+    test "skips files with excessive control characters", %{root: root} do
+      control_bytes = for _ <- 1..200, into: <<>>, do: <<0x01>>
+      text = String.duplicate("a", 3000)
+      File.write!(Path.join(root, "ctrl_chars.bin"), control_bytes <> text)
+
+      result = RepoSearch.execute(%{"pattern" => "a"}, %{workspace: root})
+      assert result.success
+      refute Enum.any?(result.output.results, &String.contains?(&1.file, "ctrl_chars"))
+    end
+
+    test "handles valid UTF-8 files with multibyte characters", %{root: root} do
+      File.write!(
+        Path.join(root, "utf8_jp.ex"),
+        "defmodule 日本語 do\n  def hello, do: :world\nend\n"
+      )
+
+      result = RepoSearch.execute(%{"pattern" => "defmodule"}, %{workspace: root})
+      assert result.success
+      jp_results = Enum.filter(result.output.results, &String.contains?(&1.file, "utf8_jp"))
+      assert length(jp_results) > 0
+    end
+
+    test "excerpt in results uses safe_slice for multibyte characters", %{root: root} do
+      # Create a file with multibyte chars so excerpts test grapheme-aware slicing
+      long_line = String.duplicate("日本語", 100)
+      File.write!(Path.join(root, "long_utf8.ex"), "defmodule #{long_line} do\nend\n")
+
+      result = RepoSearch.execute(%{"pattern" => "defmodule"}, %{workspace: root})
+      assert result.success
+      # Excerpts should be valid UTF-8 (grapheme-aware slicing)
+      Enum.each(result.output.results, fn match ->
+        assert String.valid?(match.excerpt)
+        assert byte_size(match.excerpt) <= 800
+      end)
+    end
+  end
 end

@@ -91,31 +91,26 @@ defmodule Muse.Tools.ReadFileTest do
 
   describe "execute/2 — bounded IO and binary safety (PR06 Blocker 4)" do
     test "truncates files exceeding max_bytes", %{root: root} do
-      # Create a file larger than @max_bytes (500_000)
       large_content = String.duplicate("line of text\n", 50_000)
       File.write!(Path.join(root, "huge.ex"), large_content)
 
       result = ReadFile.execute(%{"path" => "huge.ex"}, %{workspace: root})
       assert result.success
       assert result.output.truncated == true
-      # Output should be bounded
       assert byte_size(result.output.content) <= 500_000 + 10_000
     end
 
     test "uses bounded IO — never reads full file into memory", %{root: root} do
-      # Create a very large file to prove bounded read works
       large_content = String.duplicate("x", 1_000_000)
       File.write!(Path.join(root, "giant.ex"), large_content)
 
       result = ReadFile.execute(%{"path" => "giant.ex"}, %{workspace: root})
       assert result.success
       assert result.output.truncated == true
-      # Content must be much smaller than the 1MB file
       assert byte_size(result.output.content) <= 600_000
     end
 
     test "binary file detection works on first 8KB", %{root: root} do
-      # Binary file with null byte in first 8KB
       bin_content = <<0, 1, 2, 3>> <> String.duplicate("x", 16_000)
       File.write!(Path.join(root, "early_binary.bin"), bin_content)
 
@@ -133,10 +128,63 @@ defmodule Muse.Tools.ReadFileTest do
     end
   end
 
+  describe "execute/2 — UTF-8 and binary safety (muse-qw4.13)" do
+    test "rejects invalid UTF-8 file without crashing", %{root: root} do
+      File.write!(Path.join(root, "invalid_utf8.txt"), <<0xFF, 0xFE, 0xFD>>)
+      result = ReadFile.execute(%{"path" => "invalid_utf8.txt"}, %{workspace: root})
+      refute result.success
+      assert result.error =~ "invalid UTF-8"
+    end
+
+    test "rejects file with NUL bytes", %{root: root} do
+      File.write!(Path.join(root, "nul_file.txt"), "hello" <> <<0>> <> "world")
+      result = ReadFile.execute(%{"path" => "nul_file.txt"}, %{workspace: root})
+      refute result.success
+      assert result.error =~ "binary"
+    end
+
+    test "rejects file with excessive control characters", %{root: root} do
+      control_bytes = for _ <- 1..200, into: <<>>, do: <<0x01>>
+      text = String.duplicate("a", 3000)
+      File.write!(Path.join(root, "ctrl_chars.bin"), control_bytes <> text)
+      result = ReadFile.execute(%{"path" => "ctrl_chars.bin"}, %{workspace: root})
+      refute result.success
+      assert result.error =~ "control characters" or result.error =~ "binary"
+    end
+
+    test "valid UTF-8 with multibyte characters works as before", %{root: root} do
+      content = "café 🌍 日本語\nline2\n"
+      File.write!(Path.join(root, "utf8.txt"), content)
+      result = ReadFile.execute(%{"path" => "utf8.txt"}, %{workspace: root})
+      assert result.success
+      assert result.output.content =~ "café"
+      assert result.output.content =~ "日本語"
+    end
+
+    test "truncation respects multibyte UTF-8 boundaries", %{root: root} do
+      # Each "café\n" = 6 bytes, so 84_000 lines = ~504KB > @max_bytes (500_000)
+      large_content = String.duplicate("café\n", 84_000)
+      File.write!(Path.join(root, "utf8_large.txt"), large_content)
+      result = ReadFile.execute(%{"path" => "utf8_large.txt"}, %{workspace: root})
+      assert result.success
+      assert result.output.truncated == true
+      # The output must be valid UTF-8 (no split multibyte chars)
+      assert String.valid?(result.output.content)
+    end
+
+    test "large binary-ish content (no NUL, but invalid UTF-8) returns safe error", %{root: root} do
+      # Invalid UTF-8 sequences without NUL bytes
+      chunk = <<0xC3>> <> String.duplicate("a", 99) <> <<0xFF>>
+      large_binary = String.duplicate(chunk, 100)
+      File.write!(Path.join(root, "bad_utf8_large.bin"), large_binary)
+      result = ReadFile.execute(%{"path" => "bad_utf8_large.bin"}, %{workspace: root})
+      refute result.success
+      assert result.error =~ "invalid UTF-8"
+    end
+  end
+
   describe "execute/2 — start_line past EOF" do
     test "returns empty content cleanly when start_line exceeds file length", %{root: root} do
-      # hello.ex: "line1\nline2\n...\nline5\n" splits to 6 lines;
-      # start_line=100 is well past EOF
       result = ReadFile.execute(%{"path" => "hello.ex", "start_line" => 100}, %{workspace: root})
       assert result.success
       assert result.output.content == ""
@@ -145,8 +193,6 @@ defmodule Muse.Tools.ReadFileTest do
     end
 
     test "start_line at exact EOF returns empty content", %{root: root} do
-      # hello.ex has 6 lines after split (trailing newline creates empty line 6);
-      # start_line=7 is just past the last line
       result = ReadFile.execute(%{"path" => "hello.ex", "start_line" => 7}, %{workspace: root})
       assert result.success
       assert result.output.content == ""
