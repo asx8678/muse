@@ -31,14 +31,13 @@ defmodule Muse.Conductor do
     Patch,
     Plan,
     PlanApprovalRequest,
-    PlanBinding,
     PlanParser,
     Session,
     Telemetry,
     Turn
   }
 
-  alias Muse.Conductor.{StreamCollector, ToolLoop}
+  alias Muse.Conductor.{PatchHandling, PlanHandling, StreamCollector, ToolLoop}
   alias Muse.LLM.{FakeProvider, ModelRouter, ProviderConfig, ProviderRouter, Response, Message}
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
   alias Muse.Config, as: LLMConfig
@@ -1037,7 +1036,7 @@ defmodule Muse.Conductor do
   defp looks_like_plan_json?(_), do: false
 
   defp finalize_as_plan(result, _session, turn, muse, plan, _start_time) do
-    plan = prepare_plan_identity(plan, result.session, turn, muse)
+    plan = PlanHandling.prepare_plan_identity(plan, result.session, turn, muse)
 
     {:ok, plan} = Plan.transition(plan, :awaiting_approval)
     {plan, approval_request} = PlanApprovalRequest.attach(plan)
@@ -1072,7 +1071,7 @@ defmodule Muse.Conductor do
     ]
 
     {:ok, plan_session} = Session.transition(result.session, :awaiting_plan_approval)
-    plan_session = store_plan_in_session(plan_session, plan)
+    plan_session = PlanHandling.store_plan_in_session(plan_session, plan)
 
     plan_result =
       result
@@ -1082,130 +1081,6 @@ defmodule Muse.Conductor do
       |> Map.put(:plan, plan)
 
     {:ok, plan_result}
-  end
-
-  defp prepare_plan_identity(%Plan{} = plan, %Session{} = session, %Turn{} = turn, muse) do
-    plan
-    |> sanitize_provider_plan_control_fields(session, muse)
-    |> put_plan_version(session)
-    |> put_plan_id(turn)
-  end
-
-  @provider_metadata_control_keys MapSet.new([
-                                    "approval",
-                                    "approval_record",
-                                    "approval_audit",
-                                    "approvals",
-                                    "active_approval",
-                                    "approval_binding",
-                                    "approval_request",
-                                    "rejection",
-                                    "rejection_record",
-                                    "rejection_audit",
-                                    "rejections"
-                                  ])
-
-  defp sanitize_provider_plan_control_fields(%Plan{} = plan, %Session{id: session_id}, muse) do
-    %{
-      plan
-      | session_id: session_id,
-        version: nil,
-        created_by: muse_id(muse),
-        approved_at: nil,
-        rejected_at: nil,
-        completed_at: nil,
-        approvals: [],
-        metadata: sanitize_provider_plan_metadata(plan.metadata)
-    }
-  end
-
-  defp sanitize_provider_plan_metadata(metadata) when is_map(metadata) do
-    Map.reject(metadata, fn {key, _value} ->
-      key
-      |> normalize_provider_metadata_key()
-      |> then(&MapSet.member?(@provider_metadata_control_keys, &1))
-    end)
-  end
-
-  defp sanitize_provider_plan_metadata(_metadata), do: %{}
-
-  defp normalize_provider_metadata_key(key) when is_atom(key),
-    do: normalize_provider_metadata_key(Atom.to_string(key))
-
-  defp normalize_provider_metadata_key(key) when is_binary(key) do
-    key
-    |> String.downcase()
-    |> String.replace(~r/[^a-z0-9]+/, "_")
-    |> String.trim("_")
-  end
-
-  defp normalize_provider_metadata_key(key),
-    do: key |> inspect() |> normalize_provider_metadata_key()
-
-  defp muse_id(%{id: muse_id}) when is_atom(muse_id), do: Atom.to_string(muse_id)
-  defp muse_id(%{id: muse_id}) when is_binary(muse_id), do: muse_id
-  defp muse_id(_muse), do: nil
-
-  defp put_plan_version(%Plan{} = plan, %Session{} = session) do
-    %{plan | version: next_plan_version(session)}
-  end
-
-  defp next_plan_version(%Session{plans: plans}) when is_map(plans) and map_size(plans) > 0 do
-    plans
-    |> Map.values()
-    |> Enum.map(&plan_version/1)
-    |> Enum.max(fn -> 0 end)
-    |> Kernel.+(1)
-  end
-
-  defp next_plan_version(_session), do: 1
-
-  defp plan_version(%Plan{version: version}) when is_integer(version), do: version
-  defp plan_version(_plan), do: 0
-
-  defp put_plan_id(%Plan{} = plan, %Turn{id: turn_id}) do
-    put_plan_field_if_blank(plan, :id, generated_plan_id(turn_id))
-  end
-
-  defp put_plan_field_if_blank(plan, field, value) do
-    if blank_plan_field?(Map.get(plan, field)) do
-      Map.put(plan, field, value)
-    else
-      plan
-    end
-  end
-
-  defp blank_plan_field?(nil), do: true
-  defp blank_plan_field?(value) when is_binary(value), do: String.trim(value) == ""
-  defp blank_plan_field?(_value), do: false
-
-  defp generated_plan_id(turn_id) when is_binary(turn_id) do
-    case sanitize_plan_id_part(turn_id) do
-      "" -> random_plan_id()
-      sanitized -> "plan_" <> sanitized
-    end
-  end
-
-  defp generated_plan_id(_turn_id), do: random_plan_id()
-
-  defp random_plan_id do
-    suffix =
-      :crypto.strong_rand_bytes(8)
-      |> Base.encode16(case: :lower)
-
-    "plan_#{suffix}"
-  end
-
-  defp sanitize_plan_id_part(value) do
-    value
-    |> String.trim()
-    |> String.replace(~r/[^A-Za-z0-9_.-]+/, "-")
-  end
-
-  defp store_plan_in_session(%Session{} = session, %Plan{} = plan) do
-    plans = Map.put(session.plans || %{}, plan.id, plan)
-
-    %{session | active_plan_id: plan.id, plans: plans}
   end
 
   # -- Patch proposal capture (PR17) --------------------------------------------
@@ -1220,7 +1095,7 @@ defmodule Muse.Conductor do
       latest_proposal = List.last(proposals)
       session = result.session
 
-      case build_pending_patch(latest_proposal, session) do
+      case PatchHandling.build_pending_patch(latest_proposal, session) do
         {:ok, %Patch{} = pending_patch} ->
           # Transition session to :awaiting_patch_approval instead of :idle.
           {:ok, updated_session} = Session.transition(session, :awaiting_patch_approval)
@@ -1252,68 +1127,6 @@ defmodule Muse.Conductor do
   end
 
   defp maybe_capture_patch_proposal(result, _muse, _opts), do: result
-
-  defp build_pending_patch(proposal, %Session{} = session) when is_map(proposal) do
-    with %Plan{status: :approved} = plan <- active_approved_plan(session),
-         diff when is_binary(diff) and diff != "" <-
-           proposal_get(proposal, :diff) || proposal_get(proposal, :patch_content) do
-      metadata =
-        %{
-          summary: proposal_get(proposal, :summary) || proposal_get(proposal, :description),
-          tool_call_id: proposal_get(proposal, :tool_call_id),
-          proposed_at: DateTime.utc_now()
-        }
-        |> Enum.reject(fn {_key, value} -> is_nil(value) or value == "" end)
-        |> Map.new()
-
-      attrs = [
-        session_id: session.id,
-        plan_id: proposal_get(proposal, :plan_id) || plan.id || session.active_plan_id,
-        plan_version: proposal_get(proposal, :plan_version) || plan.version,
-        plan_hash: proposal_get(proposal, :plan_hash) || PlanBinding.content_hash(plan),
-        diff: diff,
-        metadata: metadata
-      ]
-
-      attrs =
-        maybe_put_patch_id(
-          attrs,
-          proposal_get(proposal, :patch_id) || proposal_get(proposal, :id)
-        )
-
-      attrs = maybe_put_affected_files(attrs, proposal_files(proposal))
-
-      Patch.new(attrs)
-    else
-      _ -> {:error, :invalid_patch_proposal}
-    end
-  end
-
-  defp active_approved_plan(%Session{active_plan_id: active_plan_id, plans: plans})
-       when is_binary(active_plan_id) and is_map(plans) do
-    case Map.get(plans, active_plan_id) do
-      %Plan{status: :approved} = plan -> plan
-      _ -> nil
-    end
-  end
-
-  defp active_approved_plan(_session), do: nil
-
-  defp maybe_put_patch_id(attrs, patch_id) when is_binary(patch_id) and patch_id != "" do
-    Keyword.put(attrs, :id, patch_id)
-  end
-
-  defp maybe_put_patch_id(attrs, _patch_id), do: attrs
-
-  defp maybe_put_affected_files(attrs, files) when is_list(files) and files != [] do
-    Keyword.put(attrs, :affected_files, files)
-  end
-
-  defp maybe_put_affected_files(attrs, _files), do: attrs
-
-  defp proposal_files(proposal) do
-    proposal_get(proposal, :affected_files) || proposal_get(proposal, :target_files) || []
-  end
 
   defp patch_proposed_event_data(%Patch{} = patch, proposal) do
     %{
@@ -1366,6 +1179,10 @@ defmodule Muse.Conductor do
 
   defp proposal_get(map, key) when is_map(map) and is_atom(key) do
     Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp proposal_files(proposal) do
+    proposal_get(proposal, :affected_files) || proposal_get(proposal, :target_files) || []
   end
 
   defp metadata_get(map, key) when is_map(map) and is_atom(key) do

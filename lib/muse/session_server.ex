@@ -64,7 +64,7 @@ defmodule Muse.SessionServer do
   }
 
   alias Muse.Conductor.TurnRunner
-  alias Muse.Telemetry, as: MuseTelemetry
+  alias Muse.SessionServer.{Persistence, StateRestoration, Telemetry}
 
   # -- Public API ---------------------------------------------------------------
 
@@ -568,7 +568,7 @@ defmodule Muse.SessionServer do
         _ -> false
       end
 
-    state = restore_plan_from_snapshot(initial)
+    state = StateRestoration.restore_plan_from_snapshot(initial)
 
     # Check whether persisted memory exists BEFORE calling restore_memory.
     # Only count valid, parseable memory as "exists" — corrupt or unsafe
@@ -580,7 +580,7 @@ defmodule Muse.SessionServer do
       end
 
     # Attempt to restore memory from persisted artifact (non-fatal on failure)
-    state = restore_memory(state)
+    state = StateRestoration.restore_memory(state)
 
     # A session is classified as "loaded" if it has a persisted snapshot
     # OR persisted memory (or both). This ensures memory-only restored
@@ -588,7 +588,7 @@ defmodule Muse.SessionServer do
     loaded? = snapshot_exists? or memory_exists?
 
     # Emit session lifecycle telemetry (non-fatal — never crash init)
-    emit_session_lifecycle_telemetry(session_id, workspace, loaded?)
+    Telemetry.emit_session_lifecycle_telemetry(session_id, workspace, loaded?)
 
     {:ok, state}
   end
@@ -775,7 +775,7 @@ defmodule Muse.SessionServer do
         {:reply, {:error, reason}, state}
 
       {:error, reason} ->
-        log_persistence_failure(:save_memory, state.session_id, reason)
+        Persistence.log_persistence_failure(:save_memory, state.session_id, reason)
         {:reply, {:error, reason}, state}
     end
   end
@@ -783,7 +783,7 @@ defmodule Muse.SessionServer do
   @impl true
   def handle_call(:clear_memory, _from, state) do
     # Remove persisted memory when cleared
-    clear_persisted_memory(state.store_base_dir, state.session_id)
+    Persistence.clear_persisted_memory(state.store_base_dir, state.session_id)
     {:reply, :ok, %{state | memory: nil}}
   end
 
@@ -1311,7 +1311,7 @@ defmodule Muse.SessionServer do
     state =
       if pending_patch != nil and not had_pending_patch_before and
            match?(%Patch{}, pending_patch) do
-        persist_patch(state.store_base_dir, state.session_id, pending_patch)
+        Persistence.persist_patch(state.store_base_dir, state.session_id, pending_patch)
 
         state
       else
@@ -2075,7 +2075,7 @@ defmodule Muse.SessionServer do
         events = [patch_proposed_event, approval_event, status_event] |> Enum.reject(&is_nil/1)
 
         # Persist to patches.jsonl (failure is logged, does not crash the turn)
-        persist_patch(state.store_base_dir, state.session_id, patch)
+        Persistence.persist_patch(state.store_base_dir, state.session_id, patch)
 
         state =
           state
@@ -2657,292 +2657,11 @@ defmodule Muse.SessionServer do
     %{state | events: trimmed, event_count: final_count}
   end
 
-  # -- Plan persistence --------------------------------------------------------
-
-  defp restore_plan_from_snapshot(state) do
-    case SessionStore.load_session(state.store_base_dir, state.session_id) do
-      {:ok, data} ->
-        plan_data = Map.get(data, "plan")
-        plans_data = Map.get(data, "plans", %{})
-        active_plan_id = Map.get(data, "active_plan_id")
-        status_str = Map.get(data, "status", "idle")
-
-        plans = restore_plans(plans_data)
-        plan = restore_plan(plan_data) || active_plan_from_plans(plans, active_plan_id)
-
-        active_id =
-          active_plan_id ||
-            if plan, do: plan.id, else: nil
-
-        plans = put_restored_plan(plans, plan, active_id)
-        status = safely_atom_status(status_str)
-
-        approvals =
-          ApprovalGate.merge_approvals(Map.get(data, "approvals", []), plan_approvals(plan))
-
-        active_approval = active_approval_for_plan(approvals, plan)
-        approval_binding = restore_approval_binding(Map.get(data, "approval_binding"))
-
-        {approvals, plan, plans, active_approval, approval_binding} =
-          ensure_restored_approval_state(
-            status,
-            state.session_id,
-            plan,
-            plans,
-            active_id,
-            approvals,
-            active_approval,
-            approval_binding
-          )
-
-        # PR17 hardening: restore pending_patch from snapshot (Gap E)
-        # Safety: if snapshot status is :awaiting_patch_approval but pending_patch
-        # cannot be restored, downgrade to :idle to avoid a stuck session.
-        pending_patch = restore_pending_patch(Map.get(data, "pending_patch"))
-
-        # Phase B: restore pending remote approval from snapshot
-        pending_remote_approval =
-          restore_pending_remote_approval(Map.get(data, "pending_remote_approval"))
-
-        safe_status =
-          cond do
-            status == :awaiting_patch_approval and is_nil(pending_patch) ->
-              :idle
-
-            status == :awaiting_remote_execution_approval and is_nil(pending_remote_approval) ->
-              :idle
-
-            true ->
-              status
-          end
-
-        %{
-          state
-          | status: safe_status,
-            plan: plan,
-            plans: plans,
-            active_plan_id: active_id,
-            approvals: approvals,
-            approval_binding: approval_binding,
-            active_approval: active_approval,
-            pending_patch: pending_patch,
-            pending_remote_approval: pending_remote_approval
-        }
-
-      _ ->
-        state
-    end
-  rescue
-    e ->
-      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :restore_approval_state, e)
-      state
-  catch
-    :exit, reason ->
-      Muse.Diagnostics.SilentRescue.log_rescued_catch(
-        __MODULE__,
-        :restore_approval_state,
-        :exit,
-        reason
-      )
-
-      state
-  end
-
-  defp restore_approval_binding(binding) when is_map(binding), do: binding
-  defp restore_approval_binding(_binding), do: nil
-
-  defp ensure_restored_approval_state(
-         :awaiting_plan_approval,
-         session_id,
-         %Plan{status: :awaiting_approval} = plan,
-         plans,
-         active_id,
-         approvals,
-         _active_approval,
-         approval_binding
-       ) do
-    workspace = plan_workspace(plan) || current_workspace()
-
-    case ApprovalGate.ensure_pending_plan_approval(session_id, plan, approvals,
-           workspace: workspace,
-           requested_by: :restore,
-           source: :system,
-           metadata: %{event: :restore}
-         ) do
-      {:ok, approval, approvals, plan} ->
-        plans = put_restored_plan(plans, plan, active_id)
-
-        approval_binding =
-          approval_binding || ApprovalGate.capture_binding(plan, workspace: workspace)
-
-        {approvals, plan, plans, approval, approval_binding}
-    end
-  end
-
-  defp ensure_restored_approval_state(
-         _status,
-         _session_id,
-         plan,
-         plans,
-         _active_id,
-         approvals,
-         active_approval,
-         approval_binding
-       ) do
-    {approvals, plan, plans, active_approval, approval_binding}
-  end
-
-  defp plan_approvals(%Plan{} = plan), do: plan.approvals || []
-  defp plan_approvals(_), do: []
-
-  defp active_approval_for_plan(approvals, %Plan{id: plan_id}) when is_binary(plan_id) do
-    approvals
-    |> ApprovalGate.normalize_approvals()
-    |> Enum.reverse()
-    |> Enum.find(&(&1.plan_id == plan_id and &1.status in [:pending, :approved, :rejected]))
-  end
-
-  defp active_approval_for_plan(_approvals, _plan), do: nil
-
-  defp approval_to_map(nil), do: nil
-  defp approval_to_map(%Muse.Approval{} = approval), do: Muse.Approval.to_map(approval)
-  defp approval_to_map(approval) when is_map(approval), do: approval
-
-  defp restore_plan(nil), do: nil
-
-  defp restore_plan(data) when is_map(data) do
-    Plan.from_map(data)
-  rescue
-    e ->
-      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :restore_plan, e)
-      nil
-  end
-
-  defp restore_plan(_), do: nil
-
-  defp restore_pending_patch(nil), do: nil
-
-  defp restore_pending_patch(data) when is_map(data) do
-    case Patch.from_map(data) do
-      {:ok, %Patch{} = patch} -> patch
-      {:error, _} -> nil
-    end
-  rescue
-    e ->
-      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :restore_pending_patch, e)
-      nil
-  end
-
-  defp restore_pending_patch(_data), do: nil
-
-  defp restore_pending_remote_approval(nil), do: nil
-
-  defp restore_pending_remote_approval(data) when is_map(data) do
-    Approval.from_map(data)
-  rescue
-    e ->
-      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :restore_pending_remote_approval, e)
-      nil
-  end
-
-  defp restore_pending_remote_approval(_data), do: nil
-
-  defp restore_plans(plans_data) when is_map(plans_data) do
-    plans_data
-    |> Enum.reduce(%{}, fn {id, plan_data}, acc ->
-      case restore_plan(plan_data) do
-        nil -> acc
-        plan -> Map.put(acc, id, plan)
-      end
-    end)
-  end
-
-  defp restore_plans(_), do: %{}
-
-  defp active_plan_from_plans(plans, active_plan_id) when is_map(plans) do
-    cond do
-      is_binary(active_plan_id) and match?(%Plan{}, Map.get(plans, active_plan_id)) ->
-        Map.fetch!(plans, active_plan_id)
-
-      true ->
-        nil
-    end
-  end
-
-  defp put_restored_plan(plans, %Plan{} = plan, active_plan_id) when is_binary(active_plan_id) do
-    Map.put_new(plans, active_plan_id, plan)
-  end
-
-  defp put_restored_plan(plans, _plan, _active_plan_id), do: plans
-
   defp maybe_persist_snapshot(state) do
-    # Persist plan/patch/remote-approval-related state as a session snapshot.
-    # Only writes when a plan, pending_patch, or pending_remote_approval exists
-    # to avoid unnecessary I/O.
-    if state.plan != nil or state.pending_patch != nil or state.pending_remote_approval != nil do
-      data =
-        %{
-          status: Atom.to_string(state.status),
-          active_muse: state.active_muse,
-          active_plan_id: state.active_plan_id,
-          approval_binding: state.approval_binding,
-          active_approval: approval_to_map(state.active_approval),
-          approvals: Enum.map(state.approvals || [], &approval_to_map/1),
-          plan: state.plan && Plan.to_map(state.plan),
-          plans:
-            state.plans
-            |> Enum.map(fn {id, p} -> {id, Plan.to_map(p)} end)
-            |> Enum.into(%{})
-        }
-        |> maybe_put_pending_patch(state)
-        |> maybe_put_pending_remote_approval(state)
-
-      case SessionStore.save_session(state.store_base_dir, state.session_id, data) do
-        :ok ->
-          :ok
-
-        {:error, reason} ->
-          log_persistence_failure(:save_session, state.session_id, reason)
-      end
-    end
-
+    data = StateRestoration.build_snapshot_data(state)
+    Persistence.persist_snapshot(state.store_base_dir, state.session_id, data)
     state
   end
-
-  defp maybe_put_pending_patch(data, %{pending_patch: %Patch{} = patch}) do
-    Map.put(data, :pending_patch, Patch.to_map(patch))
-  end
-
-  defp maybe_put_pending_patch(data, %{pending_patch: %{} = patch}) do
-    Map.put(data, :pending_patch, patch)
-  end
-
-  defp maybe_put_pending_patch(data, _state), do: data
-
-  defp maybe_put_pending_remote_approval(data, %{pending_remote_approval: %Approval{} = approval}) do
-    Map.put(data, :pending_remote_approval, Approval.to_map(approval))
-  end
-
-  defp maybe_put_pending_remote_approval(data, %{pending_remote_approval: %{} = approval}) do
-    Map.put(data, :pending_remote_approval, approval)
-  end
-
-  defp maybe_put_pending_remote_approval(data, _state), do: data
-
-  defp safely_atom_status(str) when is_binary(str) do
-    case str do
-      "idle" -> :idle
-      "running" -> :running
-      "awaiting_plan_approval" -> :awaiting_plan_approval
-      "awaiting_patch_approval" -> :awaiting_patch_approval
-      "awaiting_remote_execution_approval" -> :awaiting_remote_execution_approval
-      "awaiting_shell_approval" -> :awaiting_shell_approval
-      "planning" -> :planning
-      _ -> :idle
-    end
-  end
-
-  defp safely_atom_status(_), do: :idle
 
   # -- Private helpers ----------------------------------------------------------
 
@@ -3104,190 +2823,9 @@ defmodule Muse.SessionServer do
     "turn_#{hex}"
   end
 
-  # -- Memory persistence helpers ----------------------------------------------
-
-  defp clear_persisted_memory(store_base_dir, session_id) do
-    case SessionStore.delete_memory(store_base_dir, session_id) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        log_persistence_failure(:delete_memory, session_id, reason)
-    end
-  end
-
-  # -- Persistence helpers (T1-12: explicit failure handling) ------------------
-
-  defp persist_patch(store_base_dir, session_id, %Patch{} = patch) do
-    case SessionStore.append_patch(store_base_dir, session_id, Patch.to_map(patch)) do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        log_persistence_failure(:append_patch, session_id, reason)
-    end
-  end
-
-  @spec log_persistence_failure(atom(), String.t(), term()) :: :ok
-  defp log_persistence_failure(operation, session_id, reason) do
-    safe_reason = safe_persistence_reason(reason)
-
-    Logger.warning("Persistence failure",
-      operation: operation,
-      session_id: session_id,
-      reason: safe_reason
-    )
-
-    # Emit an internal diagnostic event so consumers can observe failures.
-    safe_append_state(
-      Event.new(:system, :persistence_failed, %{operation: operation, reason: safe_reason},
-        session_id: session_id,
-        visibility: :internal
-      )
-    )
-
-    :ok
-  end
-
-  # Reduce persistence error reasons to a short, safe, bounded string
-  # that never includes full event/session payloads or secrets.
-  defp safe_persistence_reason({:mkdir_failed, posix, _dir}),
-    do: "mkdir_failed:#{posix}"
-
-  defp safe_persistence_reason({:write_failed, posix}) when is_atom(posix),
-    do: "write_failed:#{posix}"
-
-  defp safe_persistence_reason({:encode_failed, _reason}),
-    do: "encode_failed"
-
-  defp safe_persistence_reason({:invalid_session_id, _id}),
-    do: "invalid_session_id"
-
-  defp safe_persistence_reason({:delete_failed, posix}) when is_atom(posix),
-    do: "delete_failed:#{posix}"
-
-  defp safe_persistence_reason(reason) when is_atom(reason),
-    do: Atom.to_string(reason)
-
-  defp safe_persistence_reason(reason) when is_binary(reason),
-    do: String.slice(reason, 0, 80)
-
-  defp safe_persistence_reason(_),
-    do: "unknown"
-
-  # -- Telemetry: session lifecycle --------------------------------------------
-
-  defp emit_session_lifecycle_telemetry(session_id, _workspace, true = _snapshot_exists?) do
-    try do
-      :telemetry.execute(
-        MuseTelemetry.session_loaded(),
-        %{},
-        MuseTelemetry.session_loaded_metadata(session_id: session_id)
-      )
-    catch
-      _kind, _reason -> :ok
-    end
-  end
-
-  defp emit_session_lifecycle_telemetry(session_id, workspace, false = _snapshot_exists?) do
-    try do
-      :telemetry.execute(
-        MuseTelemetry.session_created(),
-        %{},
-        MuseTelemetry.session_created_metadata(session_id: session_id, workspace: workspace)
-      )
-    catch
-      _kind, _reason -> :ok
-    end
-  end
-
   @impl true
   def terminate(reason, state) do
-    emit_session_ended_telemetry(reason, state)
+    Telemetry.emit_session_ended_telemetry(reason, state)
     :ok
-  end
-
-  defp emit_session_ended_telemetry(reason, state) do
-    try do
-      session_id = state.session_id
-      session_start = Map.get(state, :session_start_time)
-
-      duration =
-        if session_start do
-          max(System.monotonic_time(:millisecond) - session_start, 0)
-        else
-          0
-        end
-
-      status = session_ended_status(reason)
-
-      :telemetry.execute(
-        MuseTelemetry.session_ended(),
-        MuseTelemetry.session_ended_measurements(duration),
-        MuseTelemetry.session_ended_metadata(
-          session_id: session_id,
-          status: status,
-          reason: reason
-        )
-      )
-    catch
-      # terminate/2 must never crash — the process is already shutting down.
-      _kind, _reason -> :ok
-    end
-  end
-
-  defp session_ended_status(:normal), do: :shutdown
-  defp session_ended_status(:shutdown), do: :shutdown
-  defp session_ended_status({:shutdown, _}), do: :shutdown
-  defp session_ended_status(_), do: :crashed
-
-  defp restore_memory(state) do
-    if is_nil(state.memory) do
-      case SessionStore.load_memory(state.store_base_dir, state.session_id) do
-        {:ok, memory} when is_map(memory) ->
-          # Fail-closed: validate loaded memory before trusting it.
-          # Unsafe legacy memory is rejected (set to nil) rather than used.
-          case Memory.validate_loaded_memory(memory) do
-            {:ok, safe_memory} ->
-              %{state | memory: decode_memory(safe_memory)}
-
-            {:error, {:unsafe_memory, _reasons}} ->
-              # Log a warning but don't crash; treat as no valid memory.
-              # The unsafe memory is NOT loaded into process state.
-              state
-          end
-
-        _ ->
-          state
-      end
-    else
-      state
-    end
-  rescue
-    e ->
-      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :restore_memory_state, e)
-      state
-  catch
-    :exit, reason ->
-      Muse.Diagnostics.SilentRescue.log_rescued_catch(
-        __MODULE__,
-        :restore_memory_state,
-        :exit,
-        reason
-      )
-
-      state
-  end
-
-  # Decode memory from JSON-persisted form (string keys) back to
-  # the atom-keyed canonical form expected by Muse.Memory.render/1
-  defp decode_memory(memory) when is_map(memory) do
-    # If the memory already has atom keys (e.g. from Memory.new/1),
-    # it's already in canonical form
-    if Map.has_key?(memory, :user_goal) or Map.has_key?(memory, "user_goal") do
-      memory
-    else
-      memory
-    end
   end
 end
