@@ -754,6 +754,8 @@ defmodule MuseWeb.ConsoleComponents do
   attr(:diagnostic_issue_statuses, :map, default: %{})
   attr(:self_healing_issues, :list, default: [])
   attr(:session_status, :any, default: nil)
+  attr(:submitting?, :boolean, default: false)
+  attr(:streaming_buffers, :map, default: %{})
 
   def context_panel(assigns) do
     ~H"""
@@ -797,7 +799,7 @@ defmodule MuseWeb.ConsoleComponents do
             <% end %>
           </.mini_card>
 
-          <.session_status_card session_status={@session_status} />
+          <.session_status_card session_status={@session_status} submitting?={@submitting?} streaming_buffers={@streaming_buffers} />
 
           <.mini_card title="workspace">
             <div class="mini-card-row"><span class="mini-card-label">path</span> <span class="mini-card-path"><%= short_path(@workspace) %></span></div>
@@ -1267,40 +1269,57 @@ defmodule MuseWeb.ConsoleComponents do
   # -- Session status card (PR20) ------------------------------------------
 
   attr(:session_status, :any, default: nil)
+  attr(:submitting?, :boolean, default: false)
+  attr(:streaming_buffers, :map, default: %{})
 
   def session_status_card(assigns) do
     ~H"""
-    <%= if @session_status do %>
-      <.mini_card title="session" aria_label="Session status">
-        <div class="mini-card-row" role="status" aria-label={"Session status: #{session_status_label(@session_status.status)}"}>
-          <span class={"status-dot #{session_status_dot(@session_status.status)}"} aria-hidden="true"></span>
-          <span><%= session_status_label(@session_status.status) %></span>
-        </div>
-        <%= if @session_status[:active_muse] do %>
-          <div class="mini-card-row" aria-label={"Active Muse: #{@session_status.active_muse}"}>
-            <span class="mini-card-label">Muse</span>
-            <span><%= @session_status.active_muse %></span>
+    <%= cond do %>
+      <% @session_status == nil -> %>
+        <.mini_card title="session" aria_label="Session status">
+          <div class="mini-card-row" role="status" aria-label="Session status: Disconnected">
+            <span class="status-dot status-dot-red" aria-hidden="true"></span>
+            <span>Disconnected</span>
           </div>
-        <% end %>
-        <%= if @session_status[:active_plan_id] do %>
-          <div class="mini-card-row" aria-label={"Active plan: #{short_plan_id(@session_status)}"}>
-            <span class="mini-card-label">plan</span>
-            <span><%= short_plan_id(@session_status) %> <%= plan_status_badge(@session_status) %></span>
+          <div class="mini-card-row mini-card-subtle">Session not available</div>
+        </.mini_card>
+      <% true -> %>
+        <.mini_card title="session" aria_label="Session status">
+          <div class="mini-card-row" role="status" aria-label={"Session status: #{session_status_label(@session_status.status)}"}>
+            <span class={"status-dot #{session_status_dot(@session_status.status)}"} aria-hidden="true"></span>
+            <span><%= session_status_label(@session_status.status) %></span>
           </div>
-        <% end %>
-        <%= if @session_status[:pending_patch] do %>
-          <div class="mini-card-row" role="alert" aria-label="Patch awaiting approval">
-            <span class="mini-card-label">patch</span>
-            <span class="mini-card-pending">pending</span>
-          </div>
-        <% end %>
-        <%= if @session_status[:active_turn_id] do %>
-          <div class="mini-card-row" aria-label="Muse turn running">
-            <span class="mini-card-label">turn</span>
-            <span>running</span>
-          </div>
-        <% end %>
-      </.mini_card>
+          <%= if @session_status[:active_muse] do %>
+            <div class="mini-card-row" aria-label={"Active Muse: #{@session_status.active_muse}"}>
+              <span class="mini-card-label">Muse</span>
+              <span><%= @session_status.active_muse %></span>
+            </div>
+          <% end %>
+          <%= if @session_status[:active_plan_id] do %>
+            <div class="mini-card-row" aria-label={"Active plan: #{short_plan_id(@session_status)}"}>
+              <span class="mini-card-label">plan</span>
+              <span><%= short_plan_id(@session_status) %> <%= plan_status_badge(@session_status) %></span>
+            </div>
+          <% end %>
+          <%= if @session_status[:pending_patch] do %>
+            <div class="mini-card-row" role="alert" aria-label="Patch awaiting approval">
+              <span class="mini-card-label">patch</span>
+              <span class="mini-card-pending">pending</span>
+            </div>
+          <% end %>
+          <%= if @session_status[:active_turn_id] do %>
+            <div class="mini-card-row" aria-label="Muse turn running">
+              <span class="mini-card-label">turn</span>
+              <span>running</span>
+            </div>
+          <% end %>
+          <%= if @submitting? and map_size(@streaming_buffers) > 0 do %>
+            <div class="mini-card-row" aria-label="Streaming in progress">
+              <span class="mini-card-label">stream</span>
+              <span class="mini-card-streaming">streaming…</span>
+            </div>
+          <% end %>
+        </.mini_card>
     <% end %>
     """
   end
@@ -1317,6 +1336,10 @@ defmodule MuseWeb.ConsoleComponents do
   defp session_status_dot(:failed), do: "status-dot-red"
   defp session_status_dot(:error), do: "status-dot-red"
   defp session_status_dot(:cancelled), do: "status-dot-gray"
+  # T3-24: Lifecycle states for connecting/recovering/dead sessions
+  defp session_status_dot(:connecting), do: "status-dot-yellow"
+  defp session_status_dot(:recovering), do: "status-dot-yellow"
+  defp session_status_dot(:dead), do: "status-dot-red"
   defp session_status_dot(_), do: "status-dot-gray"
 
   defp session_status_label(:idle), do: "Idle"
@@ -1331,6 +1354,10 @@ defmodule MuseWeb.ConsoleComponents do
   defp session_status_label(:failed), do: "Failed"
   defp session_status_label(:error), do: "Error"
   defp session_status_label(:cancelled), do: "Cancelled"
+  # T3-24: Lifecycle states for connecting/recovering/dead sessions
+  defp session_status_label(:connecting), do: "Connecting…"
+  defp session_status_label(:recovering), do: "Recovering…"
+  defp session_status_label(:dead), do: "Session lost"
   defp session_status_label(other), do: String.capitalize(to_string(other))
 
   defp short_plan_id(%{plan: %Muse.Plan{} = p}), do: Muse.PlanHistory.display_plan_id(p)

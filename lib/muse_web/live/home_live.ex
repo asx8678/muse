@@ -833,6 +833,48 @@ defmodule MuseWeb.HomeLive do
           socket.assigns.patch_proposal
       end
 
+    # T3-24: Wire internal diagnostic events to user-visible toasts.
+    # Persistence failures, tool call dedup, and session status changes
+    # produce internal/debug events that should surface as toasts so
+    # users can observe degradation or system behavior.
+    socket =
+      case event.type do
+        :persistence_failed ->
+          op = event_data_field(event, :operation) || "unknown"
+          reason = event_data_field(event, :reason) || "unknown"
+
+          add_toast(
+            socket,
+            "Persistence failure (#{op}): #{reason}",
+            :warning
+          )
+
+        :tool_call_dedup ->
+          # Dedup feedback is informational and only shown when dev tools are enabled
+          if AppEnv.dev_tools_enabled?() do
+            tool_name = event_data_field(event, :tool_name) || "unknown"
+
+            add_toast(
+              socket,
+              "Duplicate tool call deduplicated: #{tool_name}",
+              :info
+            )
+          else
+            socket
+          end
+
+        :session_status_changed ->
+          # Refresh session status on lifecycle transitions so the
+          # context panel stays in sync without manual refresh.
+          case fetch_session_status() do
+            nil -> assign(socket, session_status: nil)
+            status -> assign(socket, session_status: status)
+          end
+
+        _ ->
+          socket
+      end
+
     {:noreply,
      assign(socket,
        state: state,
@@ -973,7 +1015,7 @@ defmodule MuseWeb.HomeLive do
       <.app_header workspace={@workspace} reload_status={@reload_status} state={@state} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} sidebar_state={@sidebar_state} />
       <div :if={@sidebar_state == :expanded} class="mobile-sidebar-backdrop" phx-click="set_sidebar_state" phx-value-state="hidden" aria-hidden="true"></div>
       <main id="main-content" tabindex="-1" class={"main-layout sidebar-#{@sidebar_state}"}>
-        <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} agent_snapshot={@agent_snapshot} beam_stats={@beam_stats} logs={@logs} sidebar_state={@sidebar_state} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} session_status={@session_status} />
+        <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} agent_snapshot={@agent_snapshot} beam_stats={@beam_stats} logs={@logs} sidebar_state={@sidebar_state} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} session_status={@session_status} submitting?={@submitting?} streaming_buffers={@streaming_buffers} />
         <.chat_panel messages={@chat_messages} input={@input} submitting?={@submitting?} active_turn_id={@active_turn_id} />
       </main>
       <.diagnostics_popup diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
@@ -1091,4 +1133,12 @@ defmodule MuseWeb.HomeLive do
       {:error, _} -> nil
     end
   end
+
+  # T3-24: Safe data field extraction from event.data.
+  # Handles both atom-keyed and string-keyed maps, returning nil for missing keys.
+  defp event_data_field(%Muse.Event{data: data}, key) when is_map(data) do
+    Map.get(data, key) || Map.get(data, to_string(key))
+  end
+
+  defp event_data_field(_event, _key), do: nil
 end
