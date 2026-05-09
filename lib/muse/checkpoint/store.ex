@@ -24,6 +24,7 @@ defmodule Muse.Checkpoint.Store do
   is detectable (it won't exist or will be malformed).
   """
 
+  alias Muse.Checkpoint.GitMetadata
   alias Muse.{Checkpoint, Workspace}
 
   @default_base_dir ".muse/sessions"
@@ -41,6 +42,7 @@ defmodule Muse.Checkpoint.Store do
 
     * `:base_dir` — override the sessions base directory
     * `:capture_git_stash` — attempt `git stash create` for backup (default: true)
+    * `:git_timeout_ms` — per-command timeout for git metadata calls (default: 5_000)
   """
   @spec create(Checkpoint.t(), keyword()) :: {:ok, Checkpoint.t()} | {:error, term()}
   def create(%Checkpoint{} = checkpoint, opts \\ []) do
@@ -664,57 +666,12 @@ defmodule Muse.Checkpoint.Store do
   # -- Private: git metadata ----------------------------------------------------
 
   defp capture_git_metadata(workspace, opts) do
-    if Keyword.get(opts, :capture_git_stash, true) and is_binary(workspace) do
-      git_meta = %{
-        stash_ref: try_git_stash_create(workspace),
-        head_sha: try_git_rev_parse(workspace),
-        branch: try_git_branch(workspace),
-        dirty: try_git_dirty?(workspace)
-      }
+    git_opts = [
+      capture_git_stash: Keyword.get(opts, :capture_git_stash, true),
+      git_timeout_ms: Keyword.get(opts, :git_timeout_ms, GitMetadata.default_timeout_ms())
+    ]
 
-      {:ok, git_meta}
-    else
-      {:ok, %{stash_ref: nil, head_sha: nil, branch: nil, dirty: nil}}
-    end
-  end
-
-  defp try_git_stash_create(workspace) do
-    case System.cmd("git", ["stash", "create"], cd: workspace, stderr_to_stdout: true) do
-      {output, 0} when is_binary(output) -> String.trim(output)
-      _ -> nil
-    end
-  rescue
-    _ -> nil
-  end
-
-  defp try_git_rev_parse(workspace) do
-    case System.cmd("git", ["rev-parse", "HEAD"], cd: workspace, stderr_to_stdout: true) do
-      {output, 0} -> String.trim(output)
-      _ -> nil
-    end
-  rescue
-    _ -> nil
-  end
-
-  defp try_git_branch(workspace) do
-    case System.cmd("git", ["rev-parse", "--abbrev-ref", "HEAD"],
-           cd: workspace,
-           stderr_to_stdout: true
-         ) do
-      {output, 0} -> String.trim(output)
-      _ -> nil
-    end
-  rescue
-    _ -> nil
-  end
-
-  defp try_git_dirty?(workspace) do
-    case System.cmd("git", ["status", "--porcelain"], cd: workspace, stderr_to_stdout: true) do
-      {output, 0} -> String.trim(output) != ""
-      _ -> nil
-    end
-  rescue
-    _ -> nil
+    GitMetadata.capture(workspace, git_opts)
   end
 
   # -- Private: patch diff ------------------------------------------------------
