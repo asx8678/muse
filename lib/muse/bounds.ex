@@ -35,12 +35,17 @@ defmodule Muse.Bounds do
   @default_streaming_buffer_bytes 512_000
   @default_diagnostics 100
 
+  @default_tool_result_bytes 10_000
+  @default_tool_concurrency 4
+
   @defaults %{
     session_events: @default_session_events,
     command_history: @default_command_history,
     toasts: @default_toasts,
     streaming_buffer_bytes: @default_streaming_buffer_bytes,
-    diagnostics: @default_diagnostics
+    diagnostics: @default_diagnostics,
+    tool_result_bytes: @default_tool_result_bytes,
+    tool_concurrency: @default_tool_concurrency
   }
 
   # -- Public API -------------------------------------------------------------
@@ -70,6 +75,27 @@ defmodule Muse.Bounds do
   @doc "Maximum diagnostics entries in HomeLive."
   @spec diagnostics() :: pos_integer()
   def diagnostics, do: resolve(:diagnostics)
+
+  @doc """
+  Maximum byte size of tool result content fed back to the LLM.
+
+  When a tool result exceeds this limit, the content is truncated to
+  the limit with UTF-8-safe boundary handling and a `:__truncated__`
+  flag is added to the result metadata. This prevents large tool
+  outputs (e.g. long file reads, big search results) from consuming
+  excessive tokens in the conversation.
+  """
+  @spec tool_result_bytes() :: pos_integer()
+  def tool_result_bytes, do: resolve(:tool_result_bytes)
+
+  @doc """
+  Maximum number of read-only tool calls executed concurrently.
+
+  Write/apply/approval tools always run serially. Read-only tools
+  (kind: :read) may run in parallel up to this concurrency cap.
+  """
+  @spec tool_concurrency() :: pos_integer()
+  def tool_concurrency, do: resolve(:tool_concurrency)
 
   @doc "Returns all current bounds as a map (useful for diagnostics/telemetry)."
   @spec all() :: map()

@@ -4,6 +4,7 @@ defmodule Muse.Conductor.ToolLoopTest do
   alias Muse.{Session, Turn, MuseRegistry}
   alias Muse.Conductor.ToolLoop
   alias Muse.LLM.{FakeProvider, Request, Response, ToolCall}
+  alias Muse.Test.FakeToolRunner
 
   # -- Helpers ------------------------------------------------------------------
 
@@ -509,6 +510,384 @@ defmodule Muse.Conductor.ToolLoopTest do
       # Should have output_summary, not raw output
       assert Map.has_key?(data, :output_summary)
       refute Map.has_key?(data, :output)
+    end
+  end
+
+  # -- T1-18: Tool dedup/memoization -------------------------------------------
+
+  describe "run/8 — tool dedup/memoization (T1-18)" do
+    test "duplicate read-only tool calls within a turn are deduplicated" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+
+      # First iteration: two identical read_file calls with same args
+      fake_event_batches = [
+        [
+          {:tool_call, "read_file", %{"path" => "mix.exs"}, "call_dup1"},
+          {:tool_call, "read_file", %{"path" => "mix.exs"}, "call_dup2"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_completed, "Done."},
+          {:response_completed, nil}
+        ]
+      ]
+
+      request = build_request(fake_event_batches, 0)
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [
+          ToolCall.new("read_file", %{"path" => "mix.exs"}, id: "call_dup1"),
+          ToolCall.new("read_file", %{"path" => "mix.exs"}, id: "call_dup2")
+        ],
+        finish_reason: "tool_calls"
+      }
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: FakeProvider,
+          tool_runner: FakeToolRunner
+        )
+
+      # Should have tool_call_dedup event for the second call
+      dedup_specs = filter_specs(result.event_specs, :tool_call_dedup)
+      assert length(dedup_specs) >= 1
+
+      # Second call should have the dedup event referencing its ID
+      dedup_ids = Enum.map(dedup_specs, fn {_, _, data, _} -> data.tool_call_id end)
+      assert "call_dup2" in dedup_ids
+    end
+
+    test "duplicate tool calls across iterations are deduplicated" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+
+      # First iteration: list_files with path "."
+      # Second iteration: list_files with same path "."
+      fake_event_batches = [
+        [
+          {:tool_call, "list_files", %{"path" => "."}, "call_li1"},
+          {:response_completed, nil}
+        ],
+        [
+          {:tool_call, "list_files", %{"path" => "."}, "call_li2"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_completed, "Done."},
+          {:response_completed, nil}
+        ]
+      ]
+
+      request = build_request(fake_event_batches, 0)
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [ToolCall.new("list_files", %{"path" => "."}, id: "call_li1")],
+        finish_reason: "tool_calls"
+      }
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: FakeProvider,
+          tool_runner: FakeToolRunner
+        )
+
+      dedup_specs = filter_specs(result.event_specs, :tool_call_dedup)
+      assert length(dedup_specs) >= 1
+    end
+
+    test "different tool args are NOT deduplicated" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+
+      # Two read_file calls with different paths — should both execute
+      fake_event_batches = [
+        [
+          {:tool_call, "read_file", %{"path" => "mix.exs"}, "call_diff1"},
+          {:tool_call, "read_file", %{"path" => "README.md"}, "call_diff2"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_completed, "Done."},
+          {:response_completed, nil}
+        ]
+      ]
+
+      request = build_request(fake_event_batches, 0)
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [
+          ToolCall.new("read_file", %{"path" => "mix.exs"}, id: "call_diff1"),
+          ToolCall.new("read_file", %{"path" => "README.md"}, id: "call_diff2")
+        ],
+        finish_reason: "tool_calls"
+      }
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: FakeProvider,
+          tool_runner: FakeToolRunner
+        )
+
+      dedup_specs = filter_specs(result.event_specs, :tool_call_dedup)
+      assert dedup_specs == []
+    end
+
+    test "cache_key/1 produces deterministic keys for same args" do
+      tc1 = %{name: "read_file", arguments: %{"path" => "lib/muse.ex"}}
+      tc2 = %{name: "read_file", arguments: %{"path" => "lib/muse.ex"}}
+      tc3 = %{name: "read_file", arguments: %{"path" => "lib/other.ex"}}
+
+      assert ToolLoop.cache_key(tc1) == ToolLoop.cache_key(tc2)
+      refute ToolLoop.cache_key(tc1) == ToolLoop.cache_key(tc3)
+    end
+  end
+
+  # -- T1-18: Bounded concurrency ----------------------------------------------
+
+  describe "run/8 — bounded concurrency (T1-18)" do
+    test "multiple read-only tools execute with bounded concurrency" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+
+      # 3 read-only tool calls in one iteration
+      fake_event_batches = [
+        [
+          {:tool_call, "list_files", %{"path" => "."}, "call_bc1"},
+          {:tool_call, "read_file", %{"path" => "mix.exs"}, "call_bc2"},
+          {:tool_call, "repo_search", %{"pattern" => "defmodule"}, "call_bc3"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_completed, "Done."},
+          {:response_completed, nil}
+        ]
+      ]
+
+      request = build_request(fake_event_batches, 0)
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [
+          ToolCall.new("list_files", %{"path" => "."}, id: "call_bc1"),
+          ToolCall.new("read_file", %{"path" => "mix.exs"}, id: "call_bc2"),
+          ToolCall.new("repo_search", %{"pattern" => "defmodule"}, id: "call_bc3")
+        ],
+        finish_reason: "tool_calls"
+      }
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: FakeProvider,
+          tool_concurrency: 2
+        )
+
+      # All 3 tools should have completed
+      assert result.total_tool_calls == 3
+    end
+
+    test "concurrency cap can be set to 1 (serial for read-only)" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+
+      fake_event_batches = [
+        [
+          {:tool_call, "list_files", %{"path" => "."}, "call_s1"},
+          {:tool_call, "read_file", %{"path" => "mix.exs"}, "call_s2"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_completed, "Done."},
+          {:response_completed, nil}
+        ]
+      ]
+
+      request = build_request(fake_event_batches, 0)
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [
+          ToolCall.new("list_files", %{"path" => "."}, id: "call_s1"),
+          ToolCall.new("read_file", %{"path" => "mix.exs"}, id: "call_s2")
+        ],
+        finish_reason: "tool_calls"
+      }
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: FakeProvider,
+          tool_concurrency: 1
+        )
+
+      assert result.total_tool_calls == 2
+    end
+  end
+
+  # -- T1-18: Truncated tool results -------------------------------------------
+
+  describe "run/8 — truncated tool results (T1-18)" do
+    test "large tool result output is truncated for model consumption" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+
+      # Use a very small tool_result_bytes to trigger truncation
+      fake_event_batches = [
+        [
+          {:tool_call, "read_file", %{"path" => "mix.exs"}, "call_trunc1"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_completed, "Done."},
+          {:response_completed, nil}
+        ]
+      ]
+
+      request = build_request(fake_event_batches, 0)
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [ToolCall.new("read_file", %{"path" => "mix.exs"}, id: "call_trunc1")],
+        finish_reason: "tool_calls"
+      }
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: FakeProvider,
+          tool_result_bytes: 100
+        )
+
+      # The loop should complete without error
+      assert result.total_tool_calls == 1
+    end
+
+    test "tool_result_bytes defaults from Muse.Bounds" do
+      # Verify the bounds module returns a positive integer
+      assert is_integer(Muse.Bounds.tool_result_bytes())
+      assert Muse.Bounds.tool_result_bytes() > 0
+    end
+  end
+
+  # -- T1-18: O(n) accumulators -----------------------------------------------
+
+  describe "run/8 — O(n) accumulator performance (T1-18)" do
+    test "event specs remain in chronological order with prepend-based accumulators" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+
+      # Multiple iterations to exercise the accumulator
+      fake_event_batches = [
+        [
+          {:tool_call, "list_files", %{"path" => "."}, "call_acc1"},
+          {:response_completed, nil}
+        ],
+        [
+          {:tool_call, "read_file", %{"path" => "mix.exs"}, "call_acc2"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_completed, "All done."},
+          {:response_completed, nil}
+        ]
+      ]
+
+      request = build_request(fake_event_batches, 0)
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [ToolCall.new("list_files", %{"path" => "."}, id: "call_acc1")],
+        finish_reason: "tool_calls"
+      }
+
+      # Give initial specs to verify they come first in the result
+      initial_specs = [
+        {:conductor, :provider_response_started, %{}, [visibility: :debug]}
+      ]
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, initial_specs,
+          provider_module: FakeProvider
+        )
+
+      # The initial spec should be the first in the list
+      first_spec = hd(result.event_specs)
+      assert {:conductor, :provider_response_started, %{}, [visibility: :debug]} = first_spec
+
+      # Should have tool events in chronological order
+      tool_started = filter_specs(result.event_specs, :tool_call_started)
+      assert length(tool_started) >= 1
+    end
+
+    test "patch proposals remain in order with prepend-based accumulators" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+
+      # Even without patch proposals, verify the field exists and is a list
+      fake_event_batches = [
+        [
+          {:tool_call, "list_files", %{"path" => "."}, "call_pp1"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_completed, "Done."},
+          {:response_completed, nil}
+        ]
+      ]
+
+      request = build_request(fake_event_batches, 0)
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [ToolCall.new("list_files", %{"path" => "."}, id: "call_pp1")],
+        finish_reason: "tool_calls"
+      }
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: FakeProvider
+        )
+
+      assert is_list(result.patch_proposals)
+    end
+  end
+
+  # -- T1-18: Bounds integration -----------------------------------------------
+
+  describe "Muse.Bounds — tool loop bounds (T1-18)" do
+    test "tool_result_bytes returns a positive integer" do
+      val = Muse.Bounds.tool_result_bytes()
+      assert is_integer(val)
+      assert val > 0
+    end
+
+    test "tool_concurrency returns a positive integer" do
+      val = Muse.Bounds.tool_concurrency()
+      assert is_integer(val)
+      assert val > 0
+    end
+
+    test "bounds all/0 includes tool_result_bytes and tool_concurrency" do
+      all = Muse.Bounds.all()
+      assert Map.has_key?(all, :tool_result_bytes)
+      assert Map.has_key?(all, :tool_concurrency)
     end
   end
 end

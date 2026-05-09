@@ -33,6 +33,23 @@ defmodule Muse.Conductor.ToolLoop do
   Malformed tool calls (missing name, non-map args, etc.) also produce
   safe error results fed back to the model — they never crash the loop.
 
+  ## Tool-loop optimizations (T1-18)
+
+    * **O(n) accumulators** — event specs, patch proposals, and messages use
+      prepend-then-reverse instead of growing-list `++`, avoiding O(n²) cost
+      across iterations.
+    * **Dedup/memoization** — within a single turn, duplicate tool calls
+      (same tool name + identical args) return a cached result instead of
+      re-executing. Only read-only/idempotent tools are cached; write/apply/
+      approval tools always execute.
+    * **Bounded concurrency** — read-only tools execute in parallel (up to
+      `Muse.Bounds.tool_concurrency/0`, default 4) using `Task.async_stream`.
+      Write/patch/interactive/approval tools remain serial.
+    * **Token reduction** — model-facing tool result content is centrally
+      bounded by `Muse.Bounds.tool_result_bytes/0` (default 10KB). Truncated
+      results include a `:__truncated__` flag so the model knows output was
+      cut short.
+
   ## Event specs
 
   All event specs are returned for the caller (SessionServer) to emit
@@ -91,6 +108,10 @@ defmodule Muse.Conductor.ToolLoop do
     * `:limits`          — map of loop limits (see `@default_limits`)
     * `:request_options` — original safe request opts; an explicit
       `:previous_response_id` here is respected instead of provider state
+    * `:tool_concurrency` — override bounded concurrency cap for read-only
+      tools (default from `Muse.Bounds.tool_concurrency/0`)
+    * `:tool_result_bytes` — override max bytes for model-facing tool
+      results (default from `Muse.Bounds.tool_result_bytes/0`)
 
   ## Returns
 
@@ -105,6 +126,8 @@ defmodule Muse.Conductor.ToolLoop do
     tool_runner = Keyword.get(opts, :tool_runner, Tool.Runner)
     limits = Keyword.get(opts, :limits, @default_limits)
     emit_event_fn = Keyword.get(opts, :emit_event_fn)
+    tool_concurrency = Keyword.get(opts, :tool_concurrency, Muse.Bounds.tool_concurrency())
+    tool_result_bytes = Keyword.get(opts, :tool_result_bytes, Muse.Bounds.tool_result_bytes())
 
     state = %{
       session: session,
@@ -116,15 +139,20 @@ defmodule Muse.Conductor.ToolLoop do
       tool_runner: tool_runner,
       limits: limits,
       emit_event_fn: emit_event_fn,
+      tool_concurrency: tool_concurrency,
+      tool_result_bytes: tool_result_bytes,
       messages: request.messages,
-      event_specs: initial_event_specs,
+      # Prepend-based accumulators (reversed at result build)
+      event_specs_acc: initial_event_specs,
+      patch_proposals_acc: [],
       provider_state: initial_response.provider_state || %{},
       previous_response_id_override: previous_response_id_override(opts),
+      # Tool dedup cache: %{cache_key => Tool.Result.t()}
+      tool_cache: %{},
       total_tool_calls: 0,
       iterations: 0,
       limit_reached: false,
-      cancelled: false,
-      patch_proposals: []
+      cancelled: false
     }
 
     # Process the initial response (which has tool calls)
@@ -145,35 +173,42 @@ defmodule Muse.Conductor.ToolLoop do
       {:cancelled, build_result(%{state | cancelled: true}, "Turn cancelled during tool loop.")}
     else
       # Execute tool calls from this response
-      {tool_results, tool_event_specs, new_total, hit_limit?, new_proposals} =
+      {tool_results, tool_event_specs, new_total, hit_limit?, new_proposals, new_cache} =
         execute_tool_calls(state, response.tool_calls)
 
       state = %{
         state
-        | event_specs: state.event_specs ++ tool_event_specs,
-          total_tool_calls: new_total,
-          patch_proposals: state.patch_proposals ++ new_proposals
+        | event_specs_acc: prepend_specs(state.event_specs_acc, tool_event_specs),
+          patch_proposals_acc: new_proposals ++ state.patch_proposals_acc,
+          tool_cache: Map.merge(state.tool_cache, new_cache),
+          total_tool_calls: new_total
       }
 
       state = if hit_limit?, do: mark_limit_reached(state), else: state
 
-      # Feed results back as tool messages
-      tool_messages = build_tool_messages(tool_results)
+      # Feed results back as tool messages (prepend, reverse at build)
+      tool_messages = build_tool_messages(tool_results, state.tool_result_bytes)
       assistant_msg = Message.assistant(response.content)
 
-      new_messages = state.messages ++ [assistant_msg] ++ tool_messages
+      # Messages use chronological order so we reverse the accumulated
+      # list at the end.  Prepend new messages: tool_messages first
+      # (they come after assistant_msg in chronological order, but
+      # prepending means tool_messages then assistant_msg gives the
+      # right order when reversed).
+      new_messages_acc =
+        (tool_messages ++ [assistant_msg]) ++ state.messages
 
       # Rebuild request with updated messages and increment fake_iteration
       # so that FakeProvider with :fake_event_batches returns the next batch.
       # Also carry response.provider_state.previous_response_id into the
       # next request for conversation continuity (OpenAI Responses API).
-      new_request = %{state.request | messages: new_messages}
+      new_request = %{state.request | messages: Enum.reverse(new_messages_acc)}
       new_request = put_previous_response_id(new_request, state)
       new_request = increment_fake_iteration(new_request, state.iterations + 1)
 
       state = %{
         state
-        | messages: new_messages,
+        | messages: new_messages_acc,
           request: new_request,
           iterations: state.iterations + 1
       }
@@ -189,12 +224,12 @@ defmodule Muse.Conductor.ToolLoop do
               state =
                 state
                 |> advance_provider_state(response)
-                |> Map.update!(:event_specs, &(&1 ++ specs))
+                |> prepend_specs_to_acc(specs)
 
               {:ok, build_result(state, text)}
 
             {:error, _reason, specs} ->
-              state = %{state | event_specs: state.event_specs ++ specs}
+              state = prepend_specs_to_acc(state, specs)
               {:ok, build_result(state, fallback_summary(state))}
           end
         else
@@ -219,12 +254,12 @@ defmodule Muse.Conductor.ToolLoop do
         state =
           state
           |> advance_provider_state(response)
-          |> Map.update!(:event_specs, &(&1 ++ specs))
+          |> prepend_specs_to_acc(specs)
 
         {:ok, build_result(state, text)}
 
       {:error, _reason, specs} ->
-        state = %{state | event_specs: state.event_specs ++ specs}
+        state = prepend_specs_to_acc(state, specs)
         {:ok, build_result(state, fallback_summary(state))}
     end
   end
@@ -240,18 +275,18 @@ defmodule Muse.Conductor.ToolLoop do
           state =
             state
             |> advance_provider_state(response)
-            |> Map.update!(:event_specs, &(&1 ++ specs))
+            |> prepend_specs_to_acc(specs)
 
           {:ok, build_result(state, text)}
 
         {:tool_calls, _tc_specs, provider_specs, response} ->
-          state = %{state | event_specs: state.event_specs ++ provider_specs}
+          state = prepend_specs_to_acc(state, provider_specs)
           # Update provider_state from this iteration's response
           state = advance_provider_state(state, response)
           process_tool_call_response(state, response)
 
         {:error, _reason, specs} ->
-          state = %{state | event_specs: state.event_specs ++ specs}
+          state = prepend_specs_to_acc(state, specs)
           {:ok, build_result(state, "Error during provider call in tool loop.")}
       end
     end
@@ -312,7 +347,9 @@ defmodule Muse.Conductor.ToolLoop do
       tool_runner: tool_runner,
       session: session,
       turn: turn,
-      muse: muse
+      muse: muse,
+      tool_cache: cache,
+      tool_concurrency: concurrency_cap
     } = state
 
     max_per_iter =
@@ -320,28 +357,39 @@ defmodule Muse.Conductor.ToolLoop do
 
     max_total = limits[:max_total_tool_calls] || @default_limits.max_total_tool_calls
 
-    remaining_per_iter = max_per_iter
     remaining_total = max_total - total
 
     # Cap the number of tool calls we'll actually execute
     {executable, deferred} =
-      split_at_cap(tool_calls, min(remaining_per_iter, remaining_total))
+      split_at_cap(tool_calls, min(max_per_iter, remaining_total))
 
-    {results, specs, final_total} =
-      Enum.reduce(executable, {[], [], total}, fn tc, {res_acc, spec_acc, t} ->
-        if TurnRunner.cancelled?() do
-          # Short-circuit on cancellation
-          {res_acc, spec_acc, t}
-        else
-          {result, tool_specs, updated_total} =
-            execute_single_tool(tc, tool_runner, session, turn, muse,
-              updated_total: t,
-              max_total: max_total
-            )
-
-          {res_acc ++ [result], spec_acc ++ tool_specs, updated_total}
-        end
+    # Separate read-only (concurrent + cacheable) from serial tools
+    {read_only_calls, serial_calls} =
+      Enum.split_with(executable, fn tc ->
+        read_only_tool?(tc.name)
       end)
+
+    # Execute read-only tools with bounded concurrency + dedup
+    {ro_results, ro_specs, ro_total, ro_proposals, ro_cache} =
+      execute_read_only_tools(read_only_calls, tool_runner, session, turn, muse,
+        total: total,
+        max_total: max_total,
+        cache: cache,
+        concurrency: concurrency_cap
+      )
+
+    # Execute serial tools (write/apply/patch/interactive) — no caching
+    {serial_results, serial_specs, serial_total, serial_proposals} =
+      execute_serial_tools(serial_calls, tool_runner, session, turn, muse,
+        total: ro_total,
+        max_total: max_total
+      )
+
+    all_results = ro_results ++ serial_results
+    all_specs = ro_specs ++ serial_specs
+    final_total = serial_total
+    all_proposals = ro_proposals ++ serial_proposals
+    merged_cache = Map.merge(cache, ro_cache)
 
     # Deferred tool calls become synthetic "limit reached" results
     deferred_results =
@@ -363,24 +411,441 @@ defmodule Muse.Conductor.ToolLoop do
          }), [visibility: :debug]}
       end)
 
-    all_results = results ++ deferred_results
-    all_specs = specs ++ deferred_specs
+    final_results = all_results ++ deferred_results
+    final_specs = all_specs ++ deferred_specs
     hit_limit? = length(deferred) > 0 or final_total >= max_total
 
-    # Collect patch proposals from successful patch_propose calls
-    proposals =
-      executable
-      |> Enum.zip(results)
-      |> Enum.flat_map(fn {tc, result} ->
-        if tc.name == "patch_propose" and result.success do
-          [extract_patch_proposal("patch_propose", normalize_tool_args(tc.arguments), result)]
+    {final_results, final_specs, final_total, hit_limit?, all_proposals, merged_cache}
+  end
+
+  # -- Read-only tool execution (bounded concurrency + dedup) -------------------
+
+  defp execute_read_only_tools(calls, tool_runner, session, turn, muse, opts) do
+    total = Keyword.fetch!(opts, :total)
+    max_total = Keyword.fetch!(opts, :max_total)
+    cache = Keyword.fetch!(opts, :cache)
+    concurrency = Keyword.fetch!(opts, :concurrency)
+
+    if calls == [] do
+      {[], [], total, [], cache}
+    else
+      # Three-way partition:
+      #   1. Already in cache from previous iterations -> dedup result
+      #   2. First occurrence in this iteration -> execute
+      #   3. Duplicate within this iteration (already seen in slot 2) -> will
+      #      either dedup (if first execution succeeded & cached) or execute fresh
+      {cached_from_prev, remaining} =
+        Enum.split_with(calls, fn tc ->
+          Map.has_key?(cache, cache_key(tc))
+        end)
+
+      # Find duplicates within remaining calls (first occurrence executes, rest
+      # are candidates for dedup — but they'll only get dedup results if the
+      # first execution's result is in the cache after execution)
+      {unique_in_iter, dup_in_iter} =
+        dedup_within_iteration(remaining)
+
+      # Return cached results for previous-cache hits
+      prev_cached_results = build_dedup_results(cached_from_prev, cache)
+
+      # Execute unique uncached read-only tools with bounded concurrency
+      {fresh_results, fresh_specs, fresh_total, fresh_proposals, fresh_cache} =
+        if unique_in_iter == [] do
+          {[], [], total, [], %{}}
         else
-          []
+          execute_concurrent_tools(unique_in_iter, tool_runner, session, turn, muse,
+            total: total,
+            max_total: max_total,
+            concurrency: concurrency
+          )
+        end
+
+      # Now build dedup results for within-iteration duplicates using
+      # merged cache. Only calls whose first execution produced a
+      # cacheable (successful) result will get dedup; the rest are
+      # executed fresh.
+      merged_with_fresh = Map.merge(cache, fresh_cache)
+      iter_dup_dedup_results = build_dedup_results(dup_in_iter, merged_with_fresh)
+
+      # Calls that didn't get dedup results (cache miss) need fresh execution
+      deduped_ids = Enum.map(iter_dup_dedup_results, fn {id, _, _} -> id end)
+
+      dup_in_iter_uncached =
+        Enum.reject(dup_in_iter, fn tc ->
+          (tc.id || "tc_unknown") in deduped_ids
+        end)
+
+      {dup_fresh_results, dup_fresh_specs, dup_fresh_total, dup_fresh_proposals, dup_fresh_cache} =
+        if dup_in_iter_uncached == [] do
+          {[], [], fresh_total, [], %{}}
+        else
+          execute_concurrent_tools(dup_in_iter_uncached, tool_runner, session, turn, muse,
+            total: fresh_total,
+            max_total: max_total,
+            concurrency: concurrency
+          )
+        end
+
+      # Merge all results maintaining original call order
+      _all_exec_results = fresh_results ++ dup_fresh_results
+      _all_exec_specs = fresh_specs ++ dup_fresh_specs
+
+      {result_list, spec_list} =
+        merge_all_results_in_order(
+          calls,
+          cached_from_prev,
+          prev_cached_results,
+          unique_in_iter,
+          fresh_results,
+          fresh_specs,
+          dup_in_iter,
+          iter_dup_dedup_results,
+          dup_in_iter_uncached,
+          dup_fresh_results,
+          dup_fresh_specs
+        )
+
+      # Merge caches
+      merged_cache = Map.merge(cache, Map.merge(fresh_cache, dup_fresh_cache))
+
+      # Collect patch proposals from successful patch_propose calls
+      proposals =
+        unique_in_iter
+        |> Enum.zip(fresh_results)
+        |> Enum.flat_map(fn {tc, result} ->
+          if tc.name == "patch_propose" and result.success do
+            [extract_patch_proposal("patch_propose", normalize_tool_args(tc.arguments), result)]
+          else
+            []
+          end
+        end)
+        |> Enum.reject(&is_nil/1)
+
+      all_proposals = proposals ++ fresh_proposals ++ dup_fresh_proposals
+      actual_total = dup_fresh_total
+
+      {result_list, spec_list, actual_total, all_proposals, merged_cache}
+    end
+  end
+
+  # Deduplicate within a single iteration: first occurrence is kept as unique,
+  # subsequent duplicates are returned separately.
+  defp dedup_within_iteration(calls) do
+    {unique, dups, _seen} =
+      Enum.reduce(calls, {[], [], MapSet.new()}, fn tc, {uniq, dups, seen} ->
+        key = cache_key(tc)
+
+        if MapSet.member?(seen, key) do
+          {uniq, [tc | dups], seen}
+        else
+          {[tc | uniq], dups, MapSet.put(seen, key)}
         end
       end)
-      |> Enum.reject(&is_nil/1)
 
-    {all_results, all_specs, final_total, hit_limit?, proposals}
+    {Enum.reverse(unique), Enum.reverse(dups)}
+  end
+
+  # Build dedup results (with lifecycle events) for cached tool calls.
+  # Falls back to an error result if the cache key is not found (e.g.
+  # the original execution failed and the result was not cached).
+  defp build_dedup_results(calls, cache) do
+    Enum.flat_map(calls, fn tc ->
+      key = cache_key(tc)
+      tool_call_id = tc.id || "tc_unknown"
+
+      case Map.fetch(cache, key) do
+        {:ok, result} ->
+          result = %{result | metadata: Map.merge(result.metadata, %{tool_call_id: tool_call_id})}
+
+          dedup_spec =
+            {:conductor, :tool_call_dedup,
+             redact_event_data(%{
+               tool_call_id: tool_call_id,
+               tool_name: tc.name || "unknown",
+               cache_key_hash: cache_key_hash(key)
+             }), [visibility: :debug]}
+
+          started_spec =
+            {:conductor, :tool_call_started,
+             redact_event_data(%{
+               tool_call_id: tool_call_id,
+               tool_name: tc.name || "unknown",
+               args_summary: safe_args_summary(normalize_tool_args(tc.arguments))
+             }), [visibility: :debug]}
+
+          completed_spec =
+            {:conductor, :tool_call_completed,
+             redact_event_data(%{
+               tool_call_id: tool_call_id,
+               tool_name: tc.name || "unknown",
+               success: result.success,
+               output_summary: Tool.Result.safe_summary(result)
+             }), [visibility: :debug]}
+
+          [{tc.id || "tc_unknown", result, [dedup_spec, started_spec, completed_spec]}]
+
+        :error ->
+          # Cache miss — produce a fresh execution instead of dedup
+          []
+      end
+    end)
+  end
+
+  # Merge all results (prev-cached, executed, within-iteration dups, and
+  # uncached-dup-fresh) maintaining original call order.
+  defp merge_all_results_in_order(
+         all_calls,
+         _prev_cached_calls,
+         prev_cached_results,
+         executed_calls,
+         exec_results,
+         exec_specs,
+         _iter_dup_calls,
+         iter_dup_results,
+         dup_uncached_calls,
+         dup_fresh_results,
+         dup_fresh_specs
+       ) do
+    # Build maps from call id -> {result, specs}
+    prev_map =
+      prev_cached_results
+      |> Enum.map(fn {id, result, specs} -> {id, {result, specs}} end)
+      |> Map.new()
+
+    iter_dup_map =
+      iter_dup_results
+      |> Enum.map(fn {id, result, specs} -> {id, {result, specs}} end)
+      |> Map.new()
+
+    exec_map =
+      exec_results
+      |> Enum.zip(executed_calls)
+      |> Enum.map(fn {result, tc} -> {tc.id || "tc_unknown", {result, []}} end)
+      |> Map.new()
+
+    dup_fresh_map =
+      dup_fresh_results
+      |> Enum.zip(dup_uncached_calls)
+      |> Enum.map(fn {result, tc} -> {tc.id || "tc_unknown", {result, []}} end)
+      |> Map.new()
+
+    # Walk original calls in order
+    {result_list, spec_list} =
+      Enum.reduce(all_calls, {[], []}, fn tc, {res, specs} ->
+        id = tc.id || "tc_unknown"
+
+        cond do
+          Map.has_key?(prev_map, id) ->
+            {result, c_specs} = Map.fetch!(prev_map, id)
+            {[result | res], specs ++ c_specs}
+
+          Map.has_key?(iter_dup_map, id) ->
+            {result, c_specs} = Map.fetch!(iter_dup_map, id)
+            {[result | res], specs ++ c_specs}
+
+          Map.has_key?(exec_map, id) ->
+            {result, _} = Map.fetch!(exec_map, id)
+            {[result | res], specs}
+
+          Map.has_key?(dup_fresh_map, id) ->
+            {result, _} = Map.fetch!(dup_fresh_map, id)
+            {[result | res], specs}
+
+          true ->
+            {res, specs}
+        end
+      end)
+
+    {Enum.reverse(result_list), spec_list ++ exec_specs ++ dup_fresh_specs}
+  end
+
+  # Execute read-only tools using bounded Task.async/Task.yield_many.
+  #
+  # When concurrency > 1, batches calls into groups of `concurrency` size,
+  # spawning tasks under Task.Supervisor, then yielding all at once.
+  # When concurrency == 1, runs sequentially (simpler, avoids Task overhead).
+  defp execute_concurrent_tools(calls, tool_runner, session, turn, muse, opts) do
+    total = Keyword.fetch!(opts, :total)
+    max_total = Keyword.fetch!(opts, :max_total)
+    concurrency = Keyword.fetch!(opts, :concurrency)
+
+    if calls == [] do
+      {[], [], total, [], %{}}
+    else
+      num_calls = length(calls)
+
+      if concurrency <= 1 do
+        # Sequential execution — simpler and deterministic
+        execute_tools_sequential(calls, tool_runner, session, turn, muse,
+          total: total,
+          max_total: max_total
+        )
+      else
+        # Bounded parallel execution via Task.Supervisor
+        execute_tools_parallel(calls, tool_runner, session, turn, muse,
+          total: total,
+          max_total: max_total,
+          concurrency: concurrency,
+          num_calls: num_calls
+        )
+      end
+    end
+  end
+
+  # Sequential execution with prepend-based accumulators
+  defp execute_tools_sequential(calls, tool_runner, session, turn, muse, opts) do
+    total = Keyword.fetch!(opts, :total)
+    max_total = Keyword.fetch!(opts, :max_total)
+
+    {results_rev, specs_acc, cache_acc, proposals_rev} =
+      Enum.reduce(calls, {[], [], %{}, []}, fn tc, {res_acc, spec_acc, cache_acc, prop_acc} ->
+        if TurnRunner.cancelled?() do
+          {res_acc, spec_acc, cache_acc, prop_acc}
+        else
+          {result, tool_specs, _new_count} =
+            execute_single_tool(tc, tool_runner, session, turn, muse,
+              updated_total: total,
+              max_total: max_total
+            )
+
+          new_cache =
+            if result.success do
+              Map.put(cache_acc, cache_key(tc), result)
+            else
+              cache_acc
+            end
+
+          proposal =
+            if tc.name == "patch_propose" and result.success do
+              extract_patch_proposal("patch_propose", normalize_tool_args(tc.arguments), result)
+            else
+              nil
+            end
+
+          new_prop_acc = if proposal, do: [proposal | prop_acc], else: prop_acc
+          {[result | res_acc], spec_acc ++ tool_specs, new_cache, new_prop_acc}
+        end
+      end)
+
+    {Enum.reverse(results_rev), specs_acc, total + length(calls), Enum.reverse(proposals_rev),
+     cache_acc}
+  end
+
+  # Bounded parallel execution via Task.Supervisor + yield_many
+  defp execute_tools_parallel(calls, tool_runner, session, turn, muse, opts) do
+    total = Keyword.fetch!(opts, :total)
+    max_total = Keyword.fetch!(opts, :max_total)
+    concurrency = Keyword.fetch!(opts, :concurrency)
+    num_calls = Keyword.fetch!(opts, :num_calls)
+
+    {results, specs, proposals, new_cache} =
+      calls
+      |> Enum.with_index()
+      |> Enum.chunk_every(concurrency)
+      |> Enum.reduce({[], [], [], %{}}, fn batch, {res_acc, spec_acc, prop_acc, cache_acc} ->
+        if TurnRunner.cancelled?() do
+          {res_acc, spec_acc, prop_acc, cache_acc}
+        else
+          batch_start_total = total + length(res_acc)
+
+          tasks =
+            Enum.map(batch, fn {tc, idx} ->
+              Task.Supervisor.async_nolink(Muse.TaskSupervisor, fn ->
+                execute_single_tool(tc, tool_runner, session, turn, muse,
+                  updated_total: batch_start_total + idx,
+                  max_total: max_total
+                )
+              end)
+            end)
+
+          batch_results =
+            tasks
+            |> Task.yield_many(30_000)
+            |> Enum.zip(batch)
+            |> Enum.map(fn
+              {{_task, {:ok, {result, tool_specs, _new_count}}}, {tc, _idx}} ->
+                {result, tool_specs, tc}
+
+              {{task, nil}, {tc, _idx}} ->
+                Task.shutdown(task, :brutal_kill)
+                err = Tool.Result.error(tc.name || "unknown", "tool execution timed out")
+                {err, [], tc}
+
+              {{_task, {:exit, reason}}, {tc, _idx}} ->
+                safe = inspect(reason, limit: 5, printable_limit: 200)
+                err = Tool.Result.error(tc.name || "unknown", "tool execution error: #{safe}")
+                {err, [], tc}
+            end)
+
+          batch_res = Enum.map(batch_results, fn {r, _, _} -> r end)
+          batch_specs = Enum.flat_map(batch_results, fn {_, s, _} -> s end)
+
+          batch_cache =
+            batch_results
+            |> Enum.flat_map(fn {result, _, tc} ->
+              if result.success, do: [{cache_key(tc), result}], else: []
+            end)
+            |> Map.new()
+
+          batch_proposals =
+            batch_results
+            |> Enum.flat_map(fn {result, _, tc} ->
+              if tc.name == "patch_propose" and result.success do
+                [
+                  extract_patch_proposal(
+                    "patch_propose",
+                    normalize_tool_args(tc.arguments),
+                    result
+                  )
+                ]
+              else
+                []
+              end
+            end)
+            |> Enum.reject(&is_nil/1)
+
+          {batch_res ++ res_acc, batch_specs ++ spec_acc, batch_proposals ++ prop_acc,
+           Map.merge(cache_acc, batch_cache)}
+        end
+      end)
+
+    final_total = total + num_calls
+    {Enum.reverse(results), specs, final_total, Enum.reverse(proposals), new_cache}
+  end
+
+  # -- Serial tool execution (write/apply/patch/interactive) --------------------
+
+  defp execute_serial_tools(calls, tool_runner, session, turn, muse, opts) do
+    total = Keyword.fetch!(opts, :total)
+    max_total = Keyword.fetch!(opts, :max_total)
+
+    # Use prepend-based accumulators for O(n) instead of O(n²)
+    {results_rev, specs_rev, final_total, proposals_rev} =
+      Enum.reduce(calls, {[], [], total, []}, fn tc, {res_acc, spec_acc, t, prop_acc} ->
+        if TurnRunner.cancelled?() do
+          # Short-circuit on cancellation
+          {res_acc, spec_acc, t, prop_acc}
+        else
+          {result, tool_specs, updated_total} =
+            execute_single_tool(tc, tool_runner, session, turn, muse,
+              updated_total: t,
+              max_total: max_total
+            )
+
+          # Collect patch proposals from serial tool results too
+          proposal =
+            if tc.name == "patch_propose" and result.success do
+              extract_patch_proposal("patch_propose", normalize_tool_args(tc.arguments), result)
+            else
+              nil
+            end
+
+          new_prop_acc = if proposal, do: [proposal | prop_acc], else: prop_acc
+          {[result | res_acc], tool_specs ++ spec_acc, updated_total, new_prop_acc}
+        end
+      end)
+
+    {Enum.reverse(results_rev), specs_rev, final_total, Enum.reverse(proposals_rev)}
   end
 
   defp execute_single_tool(tc, tool_runner, session, turn, muse, opts) do
@@ -473,7 +938,7 @@ defmodule Muse.Conductor.ToolLoop do
       end
 
     new_total = current_total + 1
-    specs = [started_spec] ++ blocked_spec ++ failed_spec ++ [completed_spec]
+    specs = [completed_spec] ++ blocked_spec ++ failed_spec ++ [started_spec]
 
     {result, specs, new_total}
   end
@@ -499,21 +964,29 @@ defmodule Muse.Conductor.ToolLoop do
 
   # -- Build tool messages for provider -----------------------------------------
 
-  defp build_tool_messages(tool_results) do
+  defp build_tool_messages(tool_results, max_bytes) do
     Enum.map(tool_results, fn result ->
-      content = encode_tool_result(result)
+      content = encode_tool_result(result, max_bytes)
       tool_call_id = get_tool_call_id(result)
       Message.tool(content, tool_call_id)
     end)
   end
 
-  defp encode_tool_result(%Tool.Result{} = result) do
+  defp encode_tool_result(%Tool.Result{} = result, max_bytes) do
     safe = %{
       tool_name: result.tool_name,
       success: result.success,
       error: redact_for_model(result.error),
-      output: summarize_for_model(result.output)
+      output: summarize_for_model(result.output, max_bytes)
     }
+
+    # Add truncation flag if the output was truncated
+    safe =
+      if result.metadata[:__truncated__] do
+        Map.put(safe, :__truncated__, true)
+      else
+        safe
+      end
 
     Jason.encode!(safe)
   rescue
@@ -521,15 +994,39 @@ defmodule Muse.Conductor.ToolLoop do
       Jason.encode!(%{
         tool_name: result.tool_name,
         success: result.success,
-        error: redact_for_model(result.error)
+        error: redact_for_model(result.error),
+        __truncated__: true
       })
   end
 
-  defp summarize_for_model(nil), do: nil
-  defp summarize_for_model(output) when is_binary(output), do: output
-  defp summarize_for_model(output) when is_map(output), do: output
+  defp summarize_for_model(nil, _max_bytes), do: nil
 
-  defp summarize_for_model(output), do: inspect(output, limit: 10, printable_limit: 500)
+  defp summarize_for_model(output, max_bytes) when is_binary(output) do
+    if byte_size(output) > max_bytes do
+      {:ok, truncated} = Muse.Tool.SafeText.safe_truncate(output, max_bytes)
+      truncated
+    else
+      output
+    end
+  end
+
+  defp summarize_for_model(output, max_bytes) when is_map(output) do
+    encoded = Jason.encode!(output)
+
+    if byte_size(encoded) > max_bytes do
+      # Truncate the encoded JSON and add truncation marker
+      {:ok, truncated} = Muse.Tool.SafeText.safe_truncate(encoded, max_bytes - 20)
+      truncated <> "... [__truncated__]"
+    else
+      output
+    end
+  rescue
+    _ -> inspect(output, limit: 10, printable_limit: min(max_bytes, 500))
+  end
+
+  defp summarize_for_model(output, max_bytes) do
+    inspect(output, limit: 10, printable_limit: min(max_bytes, 500))
+  end
 
   defp get_tool_call_id(%Tool.Result{metadata: %{tool_call_id: id}}) when is_binary(id), do: id
   defp get_tool_call_id(_), do: "tc_unknown"
@@ -589,7 +1086,7 @@ defmodule Muse.Conductor.ToolLoop do
          reason: "Tool loop safety limit reached"
        }, [visibility: :debug]}
 
-    %{state | limit_reached: true, event_specs: state.event_specs ++ [spec]}
+    %{state | limit_reached: true, event_specs_acc: [spec | state.event_specs_acc]}
   end
 
   defp fallback_summary(state) do
@@ -601,15 +1098,67 @@ defmodule Muse.Conductor.ToolLoop do
   defp build_result(state, assistant_text) do
     %{
       assistant_text: assistant_text,
-      event_specs: state.event_specs,
+      event_specs: Enum.reverse(state.event_specs_acc),
       tool_results: [],
       iterations: state.iterations,
       total_tool_calls: state.total_tool_calls,
       limit_reached?: state.limit_reached,
       provider_state: state.provider_state,
-      patch_proposals: state.patch_proposals
+      patch_proposals: Enum.reverse(state.patch_proposals_acc)
     }
   end
+
+  # -- Prepend helpers for event specs (O(1) instead of O(n) ++) ---------------
+
+  defp prepend_specs(acc, new_specs) when is_list(new_specs) do
+    # Prepend each spec in reverse order so the final Enum.reverse
+    # restores chronological order.  This is O(length(new_specs))
+    # instead of O(length(acc)).
+    Enum.reduce(new_specs, acc, fn spec, a -> [spec | a] end)
+  end
+
+  defp prepend_specs_to_acc(state, new_specs) do
+    %{state | event_specs_acc: prepend_specs(state.event_specs_acc, new_specs)}
+  end
+
+  # -- Tool dedup helpers -------------------------------------------------------
+
+  # Cache key: {tool_name, args_fingerprint}
+  # We hash the args to keep cache keys bounded and deterministic.
+  @doc false
+  @spec cache_key(map()) :: {String.t(), String.t()}
+  def cache_key(%{name: name, arguments: args}) do
+    {name || "unknown", args_fingerprint(args)}
+  end
+
+  defp args_fingerprint(nil), do: ""
+
+  defp args_fingerprint(args) when is_map(args) do
+    args
+    |> Enum.sort()
+    |> :erlang.term_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
+    |> String.slice(0, 16)
+  end
+
+  defp args_fingerprint(args), do: args_fingerprint(%{"raw" => inspect(args)})
+
+  defp cache_key_hash({_name, fingerprint}), do: fingerprint
+
+  # Classify a tool as read-only (concurrent + cacheable) vs serial
+  defp read_only_tool?(nil), do: true
+
+  defp read_only_tool?(name) when is_binary(name) do
+    case Muse.Tool.Registry.get(name) do
+      %Muse.Tool.Spec{kind: :read} -> true
+      # Unknown/blocked tools are treated as "read-only" for execution
+      # purposes (they'll fail quickly with error/blocked results)
+      _ -> false
+    end
+  end
+
+  defp read_only_tool?(_), do: true
 
   # -- LLM event conversion (mirrors Conductor) --------------------------------
 
