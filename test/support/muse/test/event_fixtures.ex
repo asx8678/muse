@@ -215,10 +215,13 @@ defmodule Muse.Test.EventFixtures do
       acc ->
         turn_id = "t_#{i}"
         base_id = (i - 1) * 2 + 1
-        turn = chat_turn(turn_id, "user #{i}", "assistant #{i}",
-          base_id: base_id,
-          session_id: session_id
-        )
+
+        turn =
+          chat_turn(turn_id, "user #{i}", "assistant #{i}",
+            base_id: base_id,
+            session_id: session_id
+          )
+
         acc ++ turn
     end
   end
@@ -238,10 +241,13 @@ defmodule Muse.Test.EventFixtures do
         turn_id = "t_#{i}"
         base_id = (i - 1) * events_per_turn + 1
         chunks = for j <- 1..chunks_per_turn, do: "chunk_#{i}_#{j} "
-        turn = streaming_turn(turn_id, "user #{i}", chunks,
-          base_id: base_id,
-          session_id: session_id
-        )
+
+        turn =
+          streaming_turn(turn_id, "user #{i}", chunks,
+            base_id: base_id,
+            session_id: session_id
+          )
+
         acc ++ turn
     end
   end
@@ -255,6 +261,7 @@ defmodule Muse.Test.EventFixtures do
   def bulk_legacy_events(n, opts \\ []) when n > 0 do
     for i <- 1..n do
       type = if rem(i, 2) == 1, do: :user_message, else: :assistant_message
+
       event(type, %{text: "legacy #{i}"},
         id: i,
         turn_id: nil,

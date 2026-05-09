@@ -64,9 +64,10 @@ defmodule Muse.Test.FakeToolRunnerTest do
 
   describe "FakeToolRunner — scripting" do
     test "uses script for scripted tools" do
-      script = FakeToolRunner.script(%{
-        "read_file" => {:ok, %{content: "hello world", path: "a.ex"}}
-      })
+      script =
+        FakeToolRunner.script(%{
+          "read_file" => {:ok, %{content: "hello world", path: "a.ex"}}
+        })
 
       context = %{workspace: "/tmp", muse_id: :planning, fake_tool_script: script}
 
@@ -77,9 +78,10 @@ defmodule Muse.Test.FakeToolRunnerTest do
     end
 
     test "uses {:error, reason} from script" do
-      script = FakeToolRunner.script(%{
-        "repo_search" => {:error, "workspace not found"}
-      })
+      script =
+        FakeToolRunner.script(%{
+          "repo_search" => {:error, "workspace not found"}
+        })
 
       context = %{workspace: "/tmp", muse_id: :planning, fake_tool_script: script}
 
@@ -90,9 +92,10 @@ defmodule Muse.Test.FakeToolRunnerTest do
     end
 
     test "uses {:blocked, reason} from script" do
-      script = FakeToolRunner.script(%{
-        "shell_command" => {:blocked, "not allowed for planning"}
-      })
+      script =
+        FakeToolRunner.script(%{
+          "shell_command" => {:blocked, "not allowed for planning"}
+        })
 
       context = %{workspace: "/tmp", muse_id: :planning, fake_tool_script: script}
 
@@ -104,9 +107,10 @@ defmodule Muse.Test.FakeToolRunnerTest do
     end
 
     test "falls through to default for non-scripted tools" do
-      script = FakeToolRunner.script(%{
-        "read_file" => {:ok, %{content: "scripted"}}
-      })
+      script =
+        FakeToolRunner.script(%{
+          "read_file" => {:ok, %{content: "scripted"}}
+        })
 
       context = %{workspace: "/tmp", muse_id: :planning, fake_tool_script: script}
 
@@ -121,9 +125,10 @@ defmodule Muse.Test.FakeToolRunnerTest do
     end
 
     test "plain map value in script wraps as {:ok, output}" do
-      script = FakeToolRunner.script(%{
-        "repo_search" => %{results: [%{file: "a.ex", line: 1}], total: 1, truncated: false}
-      })
+      script =
+        FakeToolRunner.script(%{
+          "repo_search" => %{results: [%{file: "a.ex", line: 1}], total: 1, truncated: false}
+        })
 
       context = %{workspace: "/tmp", muse_id: :planning, fake_tool_script: script}
 

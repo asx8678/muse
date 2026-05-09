@@ -106,7 +106,13 @@ defmodule Muse.Test.FakeProviderVerificationTest do
       {:ok, _response, events} = collect_events(request)
 
       event_types = Enum.map(events, & &1.type)
-      assert event_types == [:assistant_delta, :assistant_delta, :assistant_completed, :response_completed]
+
+      assert event_types == [
+               :assistant_delta,
+               :assistant_delta,
+               :assistant_completed,
+               :response_completed
+             ]
     end
 
     test "scripted tool call emits start and completed events" do

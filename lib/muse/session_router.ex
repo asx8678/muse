@@ -78,6 +78,59 @@ defmodule Muse.SessionRouter do
     end
   end
 
+  # -- Async submit API -------------------------------------------------------
+
+  @doc """
+  Non-blocking submit: starts the turn and returns `{:ok, turn_id}` immediately.
+
+  Unlike `submit/4`, this function does **not** wait for the turn to
+  complete.  Progress and completion are communicated via Muse.State
+  PubSub events (`:turn_started`, `:turn_completed`, `:turn_failed`,
+  `:turn_cancelled`).
+
+  Returns `{:error, :turn_in_progress}` if a turn is already active.
+
+  ## Calling conventions
+
+      # 2-arg: source, text — uses default session id
+      SessionRouter.submit_async(:web, "hello")
+
+      # 3-arg: session_id, source, text
+      SessionRouter.submit_async("my-session", :web, "hello")
+
+      # 4-arg: session_id, source, text, opts
+      SessionRouter.submit_async("my-session", :web, "hello", provider_env: env)
+  """
+
+  # 2-arg: source, text
+  @spec submit_async(atom(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def submit_async(source, text) when is_atom(source) and is_binary(text) do
+    submit_async(@default_session_id, source, text, [])
+  end
+
+  # 3-arg: session_id, source, text
+  @spec submit_async(term(), atom(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def submit_async(session_id, source, text) when is_atom(source) and is_binary(text) do
+    submit_async(session_id, source, text, [])
+  end
+
+  # 3-arg: source, text, opts
+  @spec submit_async(atom(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def submit_async(source, text, opts)
+      when is_atom(source) and is_binary(text) and is_list(opts) do
+    submit_async(@default_session_id, source, text, opts)
+  end
+
+  # 4-arg: session_id, source, text, opts
+  @spec submit_async(term(), atom(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, term()}
+  def submit_async(session_id, source, text, opts)
+      when is_atom(source) and is_binary(text) and is_list(opts) do
+    with {:ok, pid} <- find_or_start_session(session_id) do
+      Muse.SessionServer.submit_async(pid, source, text, opts)
+    end
+  end
+
   @doc """
   Returns the status map for the given session, or `{:error, :not_found}`.
   """

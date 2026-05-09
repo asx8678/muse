@@ -462,7 +462,12 @@ defmodule MuseWeb.HomeLiveTest do
   test "form submit creates user and assistant chat messages" do
     {:ok, view, _html} = live(build_conn(), "/")
 
-    html = view |> element("#command-form") |> render_submit(%{"text" => "from the web"})
+    view |> element("#command-form") |> render_submit(%{"text" => "from the web"})
+
+    # T0-04: submit is now non-blocking; events arrive via PubSub.
+    # Wait for the async turn to complete and events to reach the LiveView.
+    Process.sleep(100)
+    html = render(view)
 
     assert html =~ "from the web"
     assert html =~ "Placeholder response"
@@ -525,7 +530,8 @@ defmodule MuseWeb.HomeLiveTest do
       # Submit via web, which emits events via State
       view |> element("#command-form") |> render_submit(%{"text" => "web delta"})
 
-      # LiveView should show the assistant text
+      # T0-04: submit is now non-blocking; wait for async events via PubSub
+      Process.sleep(100)
       html = render(view)
       assert html =~ "Placeholder response"
     end

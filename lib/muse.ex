@@ -64,4 +64,33 @@ defmodule Muse do
       when is_atom(source) and is_binary(text) and is_list(opts) do
     SessionRouter.submit(source, text, opts)
   end
+
+  @doc """
+  Non-blocking submit: starts a turn and returns immediately.
+
+  Returns `{:ok, turn_id}` when the turn was successfully started, or
+  `{:error, :turn_in_progress}` if a turn is already active.
+
+  Unlike `submit/3`, this function does **not** block the caller.
+  Turn progress and completion are communicated via `Muse.State`
+  PubSub events (`:turn_started`, `:turn_completed`, `:turn_failed`,
+  `:turn_cancelled`).  Use this for LiveView and other non-blocking
+  callers; prefer `submit/3` for CLI/TUI paths that need the result.
+
+  ## Options
+
+  Same as `submit/3` (`:provider_config`, `:provider_env`,
+  `:model_router_opts`, `:provider_module`, `:workspace`).
+
+  ## Examples
+
+      {:ok, turn_id} = Muse.start_submit(:web, "hello")
+      # Listen for :turn_completed/:turn_failed/:turn_cancelled via PubSub
+  """
+  @spec start_submit(atom(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, :turn_in_progress} | {:error, term()}
+  def start_submit(source, text, opts \\ [])
+      when is_atom(source) and is_binary(text) and is_list(opts) do
+    SessionRouter.submit_async(source, text, opts)
+  end
 end

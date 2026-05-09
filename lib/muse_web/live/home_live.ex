@@ -104,7 +104,10 @@ defmodule MuseWeb.HomeLive do
         # PR17: patch proposal panel state (nil when no pending proposal)
         patch_proposal: nil,
         # PR20: session status for context panel
-        session_status: fetch_session_status()
+        session_status: fetch_session_status(),
+        # T0-04: non-blocking submit state
+        submitting?: false,
+        active_turn_id: nil
       )
 
     {:ok, socket}
@@ -127,13 +130,34 @@ defmodule MuseWeb.HomeLive do
           case RuntimeProvider.resolve_opts() do
             {:ok, opts} ->
               try do
-                Muse.submit(:web, msg, opts)
-                state = Muse.State.get()
+                case Muse.start_submit(:web, msg, opts) do
+                  {:ok, turn_id} ->
+                    state = Muse.State.get()
 
-                {:noreply,
-                 socket
-                 |> assign(state: state, input: "")
-                 |> push_clear_command_input()}
+                    {:noreply,
+                     socket
+                     |> assign(
+                       state: state,
+                       input: "",
+                       submitting?: true,
+                       active_turn_id: turn_id
+                     )
+                     |> push_clear_command_input()}
+
+                  {:error, :turn_in_progress} ->
+                    {:noreply,
+                     socket
+                     |> add_toast(
+                       "A turn is already in progress. Please wait for it to finish.",
+                       :warning
+                     )}
+
+                  {:error, reason} ->
+                    {:noreply,
+                     socket
+                     |> assign(input: text)
+                     |> add_toast("Submit failed: #{inspect(reason)}", :error)}
+                end
               rescue
                 e ->
                   socket =
@@ -732,6 +756,17 @@ defmodule MuseWeb.HomeLive do
           socket.assigns.streaming_buffers
       end
 
+    # T0-04: Clear submitting state on turn terminal events
+    {submitting?, active_turn_id, session_status} =
+      case event.type do
+        type when type in [:turn_completed, :turn_failed, :turn_cancelled] ->
+          {false, nil, fetch_session_status()}
+
+        _ ->
+          {socket.assigns.submitting?, socket.assigns.active_turn_id,
+           socket.assigns.session_status}
+      end
+
     # Update patch proposal assign for PR17 patch lifecycle events
     patch_proposal =
       case event.type do
@@ -752,7 +787,10 @@ defmodule MuseWeb.HomeLive do
        state: state,
        reload_status: reload_status,
        streaming_buffers: streaming_buffers,
-       patch_proposal: patch_proposal
+       patch_proposal: patch_proposal,
+       submitting?: submitting?,
+       active_turn_id: active_turn_id,
+       session_status: session_status
      )}
   end
 
@@ -875,7 +913,7 @@ defmodule MuseWeb.HomeLive do
       <div :if={@sidebar_state == :expanded} class="mobile-sidebar-backdrop" phx-click="set_sidebar_state" phx-value-state="hidden" aria-hidden="true"></div>
       <main id="main-content" tabindex="-1" class={"main-layout sidebar-#{@sidebar_state}"}>
         <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} agent_snapshot={@agent_snapshot} beam_stats={@beam_stats} logs={@logs} sidebar_state={@sidebar_state} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} session_status={@session_status} />
-        <.chat_panel messages={chat_messages(@state.events)} input={@input} />
+        <.chat_panel messages={chat_messages(@state.events)} input={@input} submitting?={@submitting?} active_turn_id={@active_turn_id} />
       </main>
       <.diagnostics_popup diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
       <.patch_proposal_panel patch_proposal={@patch_proposal} />

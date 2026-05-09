@@ -54,7 +54,8 @@ defmodule Muse.Test.FakeToolRunner do
   Returns `%Result{}` — same contract as `Muse.Tool.Runner.run/3`.
   """
   @spec run(String.t(), map(), map()) :: Result.t()
-  def run(tool_name, args, context) when is_binary(tool_name) and is_map(args) and is_map(context) do
+  def run(tool_name, args, context)
+      when is_binary(tool_name) and is_map(args) and is_map(context) do
     script = Map.get(context, :fake_tool_script, %{})
 
     case Map.get(script, tool_name) do

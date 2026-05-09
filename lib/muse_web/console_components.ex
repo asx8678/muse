@@ -652,6 +652,8 @@ defmodule MuseWeb.ConsoleComponents do
 
   attr(:messages, :list, required: true)
   attr(:input, :string, required: true)
+  attr(:submitting?, :boolean, default: false)
+  attr(:active_turn_id, :any, default: nil)
 
   def chat_panel(assigns) do
     ~H"""
@@ -673,7 +675,7 @@ defmodule MuseWeb.ConsoleComponents do
           <.chat_messages messages={@messages} />
         <% end %>
       </div>
-      <.chat_composer input={@input} />
+      <.chat_composer input={@input} submitting?={@submitting?} active_turn_id={@active_turn_id} />
     </section>
     """
   end
@@ -710,6 +712,8 @@ defmodule MuseWeb.ConsoleComponents do
   end
 
   attr(:input, :string, required: true)
+  attr(:submitting?, :boolean, default: false)
+  attr(:active_turn_id, :any, default: nil)
 
   def chat_composer(assigns) do
     ~H"""
@@ -719,11 +723,18 @@ defmodule MuseWeb.ConsoleComponents do
           id="chat-input-textarea"
           name="text"
           class="chat-input command-input"
-          placeholder="Ask Muse anything, or type /help..."
+          placeholder={if @submitting?, do: "Muse is thinking...", else: "Ask Muse anything, or type /help..."}
           rows="1"
           aria-label="Message to Muse"
+          disabled={@submitting?}
         ><%= @input %></textarea>
-        <button type="submit" class="primary-button chat-send-button" aria-label="Send message to Muse">Send</button>
+        <button type="submit" class="primary-button chat-send-button" aria-label="Send message to Muse" disabled={@submitting?}>
+          <%= if @submitting? do %>
+            <span class="spinner" aria-hidden="true"></span> Working…
+          <% else %>
+            Send
+          <% end %>
+        </button>
       </form>
     </div>
     """

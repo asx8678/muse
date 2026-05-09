@@ -125,23 +125,33 @@ defmodule Muse.Tools.RepoSearchBaselineTest do
     test "max_results=1 is not slower than scanning everything", %{root: root} do
       # Time a limited search — repeat a few times to reduce variance
       time_limited_us =
-        Enum.min(for _ <- 1..3 do
-          {t, _} =
-            :timer.tc(fn ->
-              RepoSearch.execute(%{"pattern" => "defmodule", "max_results" => 1}, %{workspace: root})
-            end)
-          t
-        end)
+        Enum.min(
+          for _ <- 1..3 do
+            {t, _} =
+              :timer.tc(fn ->
+                RepoSearch.execute(%{"pattern" => "defmodule", "max_results" => 1}, %{
+                  workspace: root
+                })
+              end)
+
+            t
+          end
+        )
 
       # Time an unlimited search (all files) — repeat a few times
       time_full_us =
-        Enum.min(for _ <- 1..3 do
-          {t, _} =
-            :timer.tc(fn ->
-              RepoSearch.execute(%{"pattern" => "defmodule", "max_results" => 999}, %{workspace: root})
-            end)
-          t
-        end)
+        Enum.min(
+          for _ <- 1..3 do
+            {t, _} =
+              :timer.tc(fn ->
+                RepoSearch.execute(%{"pattern" => "defmodule", "max_results" => 999}, %{
+                  workspace: root
+                })
+              end)
+
+            t
+          end
+        )
 
       # The limited search should not take dramatically longer than the full search
       # (allowing for 3x variance for CI/system-noise)

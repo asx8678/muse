@@ -161,7 +161,7 @@ defmodule Muse.SessionServer do
   end
 
   @doc """
-  Submits a user message to the session identified by `pid`.
+  Submits a user message and blocks until the turn completes.
 
   Returns `{:ok, assistant_text}` on success, `{:error, :turn_in_progress}`
   if a turn is already active, or `{:error, :submit_timeout}` if the
@@ -170,6 +170,8 @@ defmodule Muse.SessionServer do
   The actual turn execution happens asynchronously via TurnRunner.
   The caller blocks until the turn completes (or fails/is cancelled),
   but the GenServer itself remains responsive for `status` queries.
+
+  Prefer `submit_async/4` for LiveView and other non-blocking callers.
 
   ## Options
 
@@ -188,6 +190,27 @@ defmodule Muse.SessionServer do
       :exit, {:timeout, _} ->
         {:error, :submit_timeout}
     end
+  end
+
+  @doc """
+  Submits a user message non-blocking: starts the turn and returns immediately.
+
+  Returns `{:ok, turn_id}` when the turn was successfully started, or
+  `{:error, :turn_in_progress}` if a turn is already active.
+
+  Unlike `submit/4`, this function does **not** block the caller.  Turn
+  progress and completion are communicated via `Muse.State` events
+  (published through PubSub), so callers like LiveView can react to
+  `:turn_completed`, `:turn_failed`, and `:turn_cancelled` events
+  without holding a GenServer call open.
+
+  The GenServer stores `from` as `nil` for async submits; task result
+  handlers skip `GenServer.reply` when `from` is nil.
+  """
+  @spec submit_async(pid(), atom(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, :turn_in_progress}
+  def submit_async(pid, source, text, opts \\ []) do
+    GenServer.call(pid, {:submit_async, source, text, opts})
   end
 
   defp resolve_submit_timeout(opts) do
@@ -559,6 +582,18 @@ defmodule Muse.SessionServer do
     end
   end
 
+  # Non-blocking submit: start the turn and return {:ok, turn_id} immediately.
+  # The caller does not wait for the turn to complete; progress and completion
+  # are communicated via Muse.State/PubSub events.
+  @impl true
+  def handle_call({:submit_async, source, text, opts}, _from, state) do
+    if active_turn?(state) do
+      handle_submit_rejected(source, text, state)
+    else
+      do_submit_async(source, text, opts, state)
+    end
+  end
+
   @impl true
   def handle_call(:status, _from, state) do
     reply = %{
@@ -820,6 +855,88 @@ defmodule Muse.SessionServer do
     )
   end
 
+  # Non-blocking submit: starts the turn and returns {:ok, turn_id} immediately.
+  # The `from` field in state is set to nil so that task result handlers
+  # will NOT attempt GenServer.reply.  Completion is communicated via
+  # Muse.State/PubSub events (:turn_completed, :turn_failed, :turn_cancelled).
+  defp do_submit_async(source, text, opts, state) do
+    turn_start_time = System.monotonic_time(:millisecond)
+    turn_id = generate_turn_id()
+
+    turn =
+      Turn.new(
+        session_id: state.session_id,
+        id: turn_id,
+        source: source,
+        user_text: text
+      )
+
+    # 1. Emit user message event with session metadata
+    {user_event, state} =
+      emit_session_event(state, source, :user_message, %{text: text},
+        turn_id: turn_id,
+        visibility: :user
+      )
+
+    session_events = [user_event]
+
+    # Atomically claim queued self-healing issues
+    claimed_issues = safe_claim_queued()
+
+    {self_healing_event, state} =
+      if claimed_issues != [] do
+        {evt, s} =
+          emit_session_event(
+            state,
+            :self_healing,
+            :queued_issues_attached,
+            build_self_healing_data(claimed_issues),
+            turn_id: turn_id,
+            visibility: :debug
+          )
+
+        {evt, s}
+      else
+        {nil, state}
+      end
+
+    session_events =
+      if self_healing_event, do: session_events ++ [self_healing_event], else: session_events
+
+    # 2. Emit turn_started (internal visibility)
+    turn_summary = %{
+      source: source,
+      user_text_length: String.length(text)
+    }
+
+    {turn_started_event, state} =
+      emit_session_event(state, source, :turn_started, turn_summary,
+        turn_id: turn_id,
+        visibility: :internal
+      )
+
+    session_events = session_events ++ [turn_started_event]
+
+    # Transition turn to running
+    {:ok, turn} = Turn.transition(turn, :running)
+
+    # 3. Spawn TurnRunner task for async Conductor execution
+    session = build_turn_session(state, opts)
+    task = TurnRunner.async(session, turn, Keyword.delete(opts, :workspace))
+    runner_pid = task.pid
+    task_ref = task.ref
+
+    # from is nil for async submits — no GenServer.reply on completion
+    {:noreply, state} =
+      start_turn(state, turn_id, runner_pid, task_ref, nil,
+        turn_start_time: turn_start_time,
+        session_events: session_events
+      )
+
+    # Return immediately with the turn_id; caller does not wait for completion
+    {:reply, {:ok, turn_id}, state}
+  end
+
   # Shared turn-start transition used by all submit paths.
   # Sets all active-turn fields atomically in a single state update
   # to prevent partial-write corruption.
@@ -1057,8 +1174,10 @@ defmodule Muse.SessionServer do
       |> Map.put(:events, updated_events)
       |> maybe_persist_snapshot()
 
-    # Reply to the original caller
-    GenServer.reply(state.from, {:ok, result.assistant_text})
+    # Reply to the original caller (only for synchronous submits)
+    if state.from do
+      GenServer.reply(state.from, {:ok, result.assistant_text})
+    end
 
     # Clear turn state
     state = clear_turn_state(state)
@@ -1126,7 +1245,9 @@ defmodule Muse.SessionServer do
     updated_events = state.events ++ session_events
     state = %{state | events: updated_events}
 
-    GenServer.reply(state.from, {:ok, cancel_text})
+    if state.from do
+      GenServer.reply(state.from, {:ok, cancel_text})
+    end
 
     state = clear_turn_state(state)
 
@@ -1175,7 +1296,9 @@ defmodule Muse.SessionServer do
     updated_events = state.events ++ session_events
     state = %{state | events: updated_events}
 
-    GenServer.reply(state.from, {:ok, error_text})
+    if state.from do
+      GenServer.reply(state.from, {:ok, error_text})
+    end
 
     state = clear_turn_state(state)
 
