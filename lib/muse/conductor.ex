@@ -38,7 +38,7 @@ defmodule Muse.Conductor do
     Turn
   }
 
-  alias Muse.Conductor.ToolLoop
+  alias Muse.Conductor.{StreamCollector, ToolLoop}
   alias Muse.LLM.{FakeProvider, ModelRouter, ProviderConfig, ProviderRouter, Response, Message}
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
   alias Muse.Config, as: LLMConfig
@@ -625,41 +625,37 @@ defmodule Muse.Conductor do
       )
     )
 
-    # Collect LLM events during the synchronous stream call using a
-    # process-dictionary key scoped by a unique ref. This is safe for
-    # concurrent use because each call gets its own key.
-    collector_key = {__MODULE__, :llm_events, make_ref()}
-    Process.put(collector_key, [])
-
-    # Track live delta index for immediate emission of assistant_delta events.
-    # When emit_event_fn is provided, assistant_delta specs are forwarded to
-    # SessionServer immediately so they reach PubSub before provider completion.
-    delta_index_key = {__MODULE__, :live_delta_index, collector_key}
-    Process.put(delta_index_key, 0)
+    # Collect LLM events during the stream call using a short-lived
+    # Agent (StreamCollector). This is safe even when the provider
+    # invokes emit_fn from a spawned process — the Agent is shared
+    # across all processes that hold its pid.
+    {:ok, collector} = StreamCollector.start()
 
     emit_fn = fn llm_event ->
-      Process.put(collector_key, [llm_event | Process.get(collector_key)])
+      try do
+        case StreamCollector.record(collector, llm_event) do
+          {:delta, text, idx} when is_function(emit_event_fn, 1) ->
+            # Emit user-visible assistant_delta events live via the callback.
+            # This allows SessionServer to publish deltas to PubSub before the
+            # synchronous provider.stream call returns.
+            spec = {:muse, :assistant_delta, %{text: text, index: idx}, [visibility: :user]}
+            emit_event_fn.(spec)
+            StreamCollector.mark_live_emitted(collector)
 
-      # Emit user-visible assistant_delta events live via the callback.
-      # This allows SessionServer to publish deltas to PubSub before the
-      # synchronous provider.stream call returns.
-      if is_function(emit_event_fn, 1) and
-           match?(%Muse.LLM.Event{type: :assistant_delta}, llm_event) do
-        idx = Process.get(delta_index_key)
-        spec = {:muse, :assistant_delta, %{text: llm_event.text, index: idx}, [visibility: :user]}
-        emit_event_fn.(spec)
-        Process.put(delta_index_key, idx + 1)
+          _ ->
+            :ok
+        end
+      rescue
+        # If the collector Agent has already been stopped (extreme edge case:
+        # provider calls emit_fn after stream returns), discard the event
+        # silently rather than crashing.
+        _ -> :ok
       end
-
-      :ok
     end
 
     result = provider_module.stream(request, emit_fn)
 
-    llm_events = Process.get(collector_key) |> Enum.reverse()
-    live_delta_count = Process.get(delta_index_key, 0)
-    Process.delete(collector_key)
-    Process.delete(delta_index_key)
+    {llm_events, live_delta_count} = StreamCollector.collect(collector)
 
     case result do
       {:ok, response} ->

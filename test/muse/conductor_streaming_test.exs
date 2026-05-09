@@ -588,6 +588,218 @@ defmodule Muse.ConductorStreamingTest do
   end
 
   # ---------------------------------------------------------------------------
+  # 7. Async provider callback — events from another process
+  # ---------------------------------------------------------------------------
+
+  describe "async provider callbacks: cross-process safety (muse-0va)" do
+    # Tests that Conductor and ToolLoop correctly collect events when the
+    # provider invokes emit_fn from a spawned (different) process.
+    #
+    # This is the core bug addressed by muse-0va: the previous process-dictionary
+    # collector silently dropped events when emit_fn was called from another
+    # process because Process.put/get operates on the caller's own dictionary.
+
+    test "Conductor collects all deltas when provider emits from spawned process" do
+      session = build_session()
+      turn = build_turn()
+
+      test_pid = self()
+
+      emit_event_fn = fn spec ->
+        send(test_pid, {:live_spec, spec})
+      end
+
+      # Use the async fake provider that calls emit_fn from a spawned process
+      opts = [
+        provider_module: Muse.Test.AsyncFakeProvider,
+        provider_config: Muse.LLM.ProviderConfig.fake(),
+        request_options: [
+          options: %{
+            fake_events: [
+              {:assistant_delta, "async chunk 1"},
+              {:assistant_delta, " async chunk 2"},
+              {:assistant_completed, "async chunk 1 async chunk 2"},
+              {:response_completed, nil}
+            ]
+          }
+        ],
+        emit_event_fn: emit_event_fn
+      ]
+
+      {:ok, result} = Conductor.run(session, turn, opts)
+
+      # All deltas must be present in final event specs
+      delta_specs =
+        Enum.filter(result.event_specs, fn
+          {:muse, :assistant_delta, _, _} -> true
+          _ -> false
+        end)
+
+      assert length(delta_specs) == 2,
+             "Expected 2 assistant_delta specs, got #{length(delta_specs)}"
+
+      # Live emission must have received them too
+      assert_received {:live_spec,
+                       {:muse, :assistant_delta, %{text: "async chunk 1", index: 0}, _}}
+
+      assert_received {:live_spec,
+                       {:muse, :assistant_delta, %{text: " async chunk 2", index: 1}, _}}
+
+      # All final deltas should be marked live_emitted
+      for {_s, _t, _d, opts} <- delta_specs do
+        assert Keyword.get(opts, :live_emitted) == true
+      end
+    end
+
+    test "Conductor works correctly without emit_event_fn (backward compat, async provider)" do
+      session = build_session()
+      turn = build_turn()
+
+      opts = [
+        provider_module: Muse.Test.AsyncFakeProvider,
+        provider_config: Muse.LLM.ProviderConfig.fake(),
+        request_options: [
+          options: %{
+            fake_events: [
+              {:assistant_delta, "compat"},
+              {:assistant_completed, "compat"},
+              {:response_completed, nil}
+            ]
+          }
+        ]
+      ]
+
+      {:ok, result} = Conductor.run(session, turn, opts)
+
+      delta_specs =
+        Enum.filter(result.event_specs, fn
+          {:muse, :assistant_delta, _, _} -> true
+          _ -> false
+        end)
+
+      assert length(delta_specs) == 1
+      {_s, _t, _d, opts} = hd(delta_specs)
+      # No live_emitted flag since no emit_event_fn
+      refute Keyword.get(opts, :live_emitted, false)
+    end
+
+    test "ToolLoop collects all deltas when provider emits from spawned process" do
+      session = build_session()
+      turn = build_turn()
+
+      test_pid = self()
+
+      emit_event_fn = fn spec ->
+        send(test_pid, {:live_spec, spec})
+      end
+
+      batches = [
+        [
+          {:assistant_delta, "Tool check"},
+          {:tool_call, "list_files", %{"path" => "."}, "tc_async_1"},
+          {:assistant_completed, nil}
+        ],
+        [
+          {:assistant_delta, "Tool done"},
+          {:assistant_completed, "Tool done"},
+          {:response_completed, nil}
+        ]
+      ]
+
+      opts = [
+        provider_module: Muse.Test.AsyncFakeProvider,
+        provider_config: Muse.LLM.ProviderConfig.fake(),
+        request_options: [
+          options: %{
+            fake_event_batches: batches
+          }
+        ],
+        emit_event_fn: emit_event_fn
+      ]
+
+      {:ok, result} = Conductor.run(session, turn, opts)
+
+      # Both deltas must be present
+      delta_specs =
+        Enum.filter(result.event_specs, fn
+          {:muse, :assistant_delta, _, _} -> true
+          _ -> false
+        end)
+
+      assert length(delta_specs) >= 2,
+             "Expected >= 2 assistant_delta specs in tool loop, got #{length(delta_specs)}"
+
+      # Live specs should include both deltas
+      live_specs = receive_all_specs()
+
+      delta_texts =
+        live_specs
+        |> Enum.filter(fn {s, t, _, _} -> s == :muse and t == :assistant_delta end)
+        |> Enum.map(fn {_, _, %{text: text}, _} -> text end)
+
+      assert "Tool check" in delta_texts,
+             "Expected 'Tool check' in #{inspect(delta_texts)}"
+
+      assert "Tool done" in delta_texts,
+             "Expected 'Tool done' in #{inspect(delta_texts)}"
+    end
+
+    test "no duplicate deltas when provider emits from spawned process" do
+      session = build_session()
+      turn = build_turn()
+
+      test_pid = self()
+
+      emit_event_fn = fn spec ->
+        send(test_pid, {:live_spec, spec})
+      end
+
+      opts = [
+        provider_module: Muse.Test.AsyncFakeProvider,
+        provider_config: Muse.LLM.ProviderConfig.fake(),
+        request_options: [
+          options: %{
+            fake_events: [
+              {:assistant_delta, "unique"},
+              {:assistant_completed, "unique"},
+              {:response_completed, nil}
+            ]
+          }
+        ],
+        emit_event_fn: emit_event_fn
+      ]
+
+      {:ok, result} = Conductor.run(session, turn, opts)
+
+      # Count live-emitted specs
+      live_specs = receive_all_specs()
+
+      live_delta_count =
+        Enum.count(live_specs, fn {s, t, _, _} -> s == :muse and t == :assistant_delta end)
+
+      # Count final specs
+      final_delta_count =
+        Enum.count(result.event_specs, fn
+          {:muse, :assistant_delta, _, _} -> true
+          _ -> false
+        end)
+
+      # Live emission should have exactly 1 delta
+      assert live_delta_count == 1
+      # Final specs should have exactly 1 delta
+      assert final_delta_count == 1
+      # The live-emitted delta should be marked so SessionServer skips it
+      [{:muse, :assistant_delta, _data, opts}] =
+        Enum.filter(result.event_specs, fn
+          {:muse, :assistant_delta, _, _} -> true
+          _ -> false
+        end)
+
+      assert Keyword.get(opts, :live_emitted) == true
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
 

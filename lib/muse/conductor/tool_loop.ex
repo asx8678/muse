@@ -55,6 +55,7 @@ defmodule Muse.Conductor.ToolLoop do
 
   alias Muse.Tool
   alias Muse.LLM.{Event, Message}
+  alias Muse.Conductor.StreamCollector
   alias Muse.Conductor.TurnRunner
   alias Muse.Prompt.Redactor
 
@@ -261,33 +262,27 @@ defmodule Muse.Conductor.ToolLoop do
   defp run_iteration(state) do
     %{provider_module: provider_module, request: request, emit_event_fn: emit_event_fn} = state
 
-    collector_key = {__MODULE__, :llm_events, make_ref()}
-    Process.put(collector_key, [])
-
-    # Track live delta index for immediate emission of assistant_delta events.
-    delta_index_key = {__MODULE__, :live_delta_index, collector_key}
-    Process.put(delta_index_key, 0)
+    {:ok, collector} = StreamCollector.start()
 
     emit_fn = fn llm_event ->
-      Process.put(collector_key, [llm_event | Process.get(collector_key)])
+      try do
+        case StreamCollector.record(collector, llm_event) do
+          {:delta, text, idx} when is_function(emit_event_fn, 1) ->
+            spec = {:muse, :assistant_delta, %{text: text, index: idx}, [visibility: :user]}
+            emit_event_fn.(spec)
+            StreamCollector.mark_live_emitted(collector)
 
-      # Emit user-visible assistant_delta events live via the callback.
-      if is_function(emit_event_fn, 1) and match?(%Event{type: :assistant_delta}, llm_event) do
-        idx = Process.get(delta_index_key)
-        spec = {:muse, :assistant_delta, %{text: llm_event.text, index: idx}, [visibility: :user]}
-        emit_event_fn.(spec)
-        Process.put(delta_index_key, idx + 1)
+          _ ->
+            :ok
+        end
+      rescue
+        _ -> :ok
       end
-
-      :ok
     end
 
     result = provider_module.stream(request, emit_fn)
 
-    llm_events = Process.get(collector_key) |> Enum.reverse()
-    live_delta_count = Process.get(delta_index_key, 0)
-    Process.delete(collector_key)
-    Process.delete(delta_index_key)
+    {llm_events, live_delta_count} = StreamCollector.collect(collector)
 
     event_specs =
       llm_events
@@ -547,33 +542,27 @@ defmodule Muse.Conductor.ToolLoop do
     # Disable tools for the final call
     final_request = %{request | tools: [], tool_choice: :none}
 
-    collector_key = {__MODULE__, :final_events, make_ref()}
-    Process.put(collector_key, [])
-
-    # Track live delta index for immediate emission of assistant_delta events.
-    delta_index_key = {__MODULE__, :final_live_delta_index, collector_key}
-    Process.put(delta_index_key, 0)
+    {:ok, collector} = StreamCollector.start()
 
     emit_fn = fn llm_event ->
-      Process.put(collector_key, [llm_event | Process.get(collector_key)])
+      try do
+        case StreamCollector.record(collector, llm_event) do
+          {:delta, text, idx} when is_function(emit_event_fn, 1) ->
+            spec = {:muse, :assistant_delta, %{text: text, index: idx}, [visibility: :user]}
+            emit_event_fn.(spec)
+            StreamCollector.mark_live_emitted(collector)
 
-      # Emit user-visible assistant_delta events live via the callback.
-      if is_function(emit_event_fn, 1) and match?(%Event{type: :assistant_delta}, llm_event) do
-        idx = Process.get(delta_index_key)
-        spec = {:muse, :assistant_delta, %{text: llm_event.text, index: idx}, [visibility: :user]}
-        emit_event_fn.(spec)
-        Process.put(delta_index_key, idx + 1)
+          _ ->
+            :ok
+        end
+      rescue
+        _ -> :ok
       end
-
-      :ok
     end
 
     result = provider_module.stream(final_request, emit_fn)
 
-    llm_events = Process.get(collector_key) |> Enum.reverse()
-    live_delta_count = Process.get(delta_index_key, 0)
-    Process.delete(collector_key)
-    Process.delete(delta_index_key)
+    {llm_events, live_delta_count} = StreamCollector.collect(collector)
 
     event_specs =
       llm_events
