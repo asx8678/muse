@@ -2,7 +2,10 @@ import Config
 
 config :muse, MuseWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
-  server: false
+  server: false,
+  secret_key_base: "test-secret-key-base-deterministic-for-testing-0000000000000000000000",
+  signing_salt: "test-signing-salt",
+  live_view: [signing_salt: "test-lv-signing-salt"]
 
 config :muse, :logger,
   buffer_level: :warning,

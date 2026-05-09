@@ -8,10 +8,12 @@ config :phoenix, :filter_parameters, ["_csrf_token", "csrf_token", "token", "sec
 config :muse, MuseWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],
+  # Dev/test/smoke only — production overrides these in config/runtime.exs.
   secret_key_base:
     "placeholder-secret-key-base-for-dev-do-not-use-in-prod-0000000000000000000000",
+  signing_salt: "dev-salt",
   pubsub_server: Muse.PubSub,
-  live_view: [signing_salt: "placeholder-signing-salt"],
+  live_view: [signing_salt: "dev-lv-signing-salt"],
   render_errors: [
     formats: [html: MuseWeb.ErrorHTML],
     layout: false

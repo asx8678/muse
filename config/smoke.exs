@@ -16,7 +16,10 @@ config :muse, MuseWeb.Endpoint,
   server: true,
   code_reloader: false,
   debug_errors: false,
-  watchers: []
+  watchers: [],
+  secret_key_base: "smoke-secret-key-base-deterministic-for-testing-00000000000000000000",
+  signing_salt: "smoke-signing-salt",
+  live_view: [signing_salt: "smoke-lv-signing-salt"]
 
 # Ensure runtime children start (only test env disables this).
 config :muse, :start_runtime_children?, true

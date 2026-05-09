@@ -21,6 +21,13 @@ if config_env() == :prod do
     config :muse, :websocket_client, Muse.LLM.Transport.WebSocket.MintAdapter
   end
 
+  # --- Primary secret --------------------------------------------------------
+  # MUSE_SECRET_KEY_BASE is the single required production secret.
+  # Cookie signing_salt and LiveView signing_salt are derived from it
+  # using Plug.Crypto.KeyGenerator with stable labels, so redeployments
+  # preserve session validity.  Override individually with
+  # MUSE_SIGNING_SALT / MUSE_LV_SIGNING_SALT if needed.
+
   secret_key_base =
     System.get_env("MUSE_SECRET_KEY_BASE") ||
       raise """
@@ -43,5 +50,34 @@ if config_env() == :prod do
     """
   end
 
-  config :muse, MuseWeb.Endpoint, secret_key_base: secret_key_base
+  # --- Derived salts ----------------------------------------------------------
+  # These are deterministic given the same secret_key_base, so sessions
+  # survive restarts.  Labels are stable and should never be changed
+  # (changing a label invalidates all existing sessions).
+
+  signing_salt =
+    System.get_env("MUSE_SIGNING_SALT") ||
+      MuseWeb.Endpoint.Secrets.derive_salt(secret_key_base, "muse-cookie-signing-salt")
+
+  lv_signing_salt =
+    System.get_env("MUSE_LV_SIGNING_SALT") ||
+      MuseWeb.Endpoint.Secrets.derive_salt(secret_key_base, "muse-liveview-signing-salt")
+
+  config :muse, MuseWeb.Endpoint,
+    secret_key_base: secret_key_base,
+    signing_salt: signing_salt,
+    live_view: [signing_salt: lv_signing_salt]
+
+  # --- Final validation -------------------------------------------------------
+  # Catches any remaining placeholder/dev values and enforces minimum lengths.
+  # We pass the endpoint config explicitly so validation checks the runtime
+  # values we just assembled, not the compiled-in defaults.
+  endpoint_config =
+    [
+      secret_key_base: secret_key_base,
+      signing_salt: signing_salt,
+      live_view: [signing_salt: lv_signing_salt]
+    ]
+
+  MuseWeb.Endpoint.Secrets.validate_production!(endpoint_config)
 end
