@@ -75,6 +75,19 @@ defmodule MuseWeb.ExternalSocketConfig do
     |> normalize_replay_limit()
   end
 
+  @doc """
+  Returns the configured token hash entries for external WebSocket auth.
+
+  Each entry is a map with `:id`, `:hash`, `:scopes`, and `:allowed_sessions`.
+  Returns an empty list when no token hashes are configured.
+  """
+  @spec token_hashes() :: [map()]
+  def token_hashes do
+    app_env()
+    |> Keyword.get(:token_hashes, [])
+    |> List.wrap()
+  end
+
   # -- Helpers -----------------------------------------------------------------
 
   defp app_env, do: Application.get_env(:muse, :external_ws, [])

@@ -15,9 +15,25 @@ config :logger, :default_formatter,
   metadata: []
 
 # Enable external WebSocket channel for test coverage.
+# Test token: "test-token-16chars-ok" → hash below
+# Test restricted token: "test-restricted-token" → hash below
 config :muse, :external_ws,
   enabled: true,
-  replay_limit: 50
+  replay_limit: 50,
+  token_hashes: [
+    %{
+      id: "test-token",
+      hash: "3ab60f846fe880a6219f207e08a2435c8726750b20d27da02b3e935766d2cdde",
+      scopes: ["events:read"],
+      allowed_sessions: :all
+    },
+    %{
+      id: "test-restricted",
+      hash: "7cdcb3f377512175d3b82d7be5891f93458fcdc595f3189cbe8e6f2b30c0c454",
+      scopes: ["events:read"],
+      allowed_sessions: ["sess-allowed"]
+    }
+  ]
 
 # Prevent the Application supervisor from starting runtime children
 # (Workspace, State, CLI.Repl, Endpoint, DevReloader) during mix test.

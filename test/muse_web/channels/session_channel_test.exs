@@ -53,10 +53,38 @@ defmodule MuseWeb.SessionChannelTest do
     start_state()
     start_endpoint()
 
-    # Enable external WS for channel tests
+    # Enable external WS for channel tests with test token hashes
     original_ws = Application.get_env(:muse, :external_ws)
     original_sys = System.get_env("MUSE_EXTERNAL_WS")
-    Application.put_env(:muse, :external_ws, enabled: true, replay_limit: 50)
+
+    test_token_hash =
+      :crypto.hash(:sha256, "test-token-16chars-ok")
+      |> Base.encode16(case: :lower)
+
+    restricted_token_hash =
+      :crypto.hash(:sha256, "test-restricted-token")
+      |> Base.encode16(case: :lower)
+
+    Application.put_env(
+      :muse,
+      :external_ws,
+      enabled: true,
+      replay_limit: 50,
+      token_hashes: [
+        %{
+          id: "test-token",
+          hash: test_token_hash,
+          scopes: ["events:read"],
+          allowed_sessions: :all
+        },
+        %{
+          id: "test-restricted",
+          hash: restricted_token_hash,
+          scopes: ["events:read"],
+          allowed_sessions: ["sess-allowed"]
+        }
+      ]
+    )
 
     on_exit(fn ->
       Application.put_env(:muse, :external_ws, original_ws || [enabled: false, replay_limit: 100])
@@ -75,70 +103,93 @@ defmodule MuseWeb.SessionChannelTest do
   end
 
   # Helper to join the SessionChannel with a UserSocket
-  defp join_session(topic) do
-    socket(MuseWeb.UserSocket, nil, %{})
-    |> subscribe_and_join(MuseWeb.SessionChannel, topic)
+  # Uses Phoenix.ChannelTest.connect/3 to go through UserSocket.connect/3
+  # for proper authentication testing.
+  defp connect_and_join(topic, token \\ "test-token-16chars-ok") do
+    {:ok, socket} = connect(MuseWeb.UserSocket, %{"token" => token})
+    subscribe_and_join(socket, MuseWeb.SessionChannel, topic)
+  end
+
+  # Helper for tests that need to control the socket params directly
+  # (e.g., missing token, invalid token)
+  defp connect_socket(params) do
+    connect(MuseWeb.UserSocket, params)
   end
 
   # -- Join tests ---------------------------------------------------------------
 
   describe "join/3 — topic validation" do
     test "joins successfully with valid session:<session_id> topic" do
-      assert {:ok, _reply, _socket} = join_session("session:abc-123")
+      assert {:ok, _reply, _socket} = connect_and_join("session:abc-123")
     end
 
     test "rejects join with empty session id" do
-      assert {:error, %{reason: "invalid_session_id"}} = join_session("session:")
+      assert {:error, %{reason: "invalid_session_id"}} = connect_and_join("session:")
     end
 
     test "rejects join with dot-only session id" do
-      assert {:error, %{reason: "invalid_session_id"}} = join_session("session:.")
+      assert {:error, %{reason: "invalid_session_id"}} = connect_and_join("session:.")
     end
 
     test "rejects join with dotdot session id" do
-      assert {:error, %{reason: "invalid_session_id"}} = join_session("session:..")
+      assert {:error, %{reason: "invalid_session_id"}} = connect_and_join("session:..")
     end
 
     test "rejects join with path traversal in session id" do
-      assert {:error, %{reason: "invalid_session_id"}} = join_session("session:../escape")
+      assert {:error, %{reason: "invalid_session_id"}} = connect_and_join("session:../escape")
     end
 
     test "rejects join with slash in session id" do
-      assert {:error, %{reason: "invalid_session_id"}} = join_session("session:foo/bar")
+      assert {:error, %{reason: "invalid_session_id"}} = connect_and_join("session:foo/bar")
     end
 
     test "rejects join with backslash in session id" do
-      assert {:error, %{reason: "invalid_session_id"}} = join_session("session:foo\\bar")
+      assert {:error, %{reason: "invalid_session_id"}} = connect_and_join("session:foo\\bar")
     end
 
     test "rejects join with NUL in session id" do
-      assert {:error, %{reason: "invalid_session_id"}} = join_session("session:foo\0bar")
+      assert {:error, %{reason: "invalid_session_id"}} = connect_and_join("session:foo\0bar")
     end
 
     test "rejects join with overly-long session id (> 256 bytes)" do
       too_long = String.duplicate("a", 257)
-      assert {:error, %{reason: "invalid_session_id"}} = join_session("session:" <> too_long)
+      assert {:error, %{reason: "invalid_session_id"}} = connect_and_join("session:" <> too_long)
     end
 
     test "rejects join with non-session topic" do
-      assert {:error, %{reason: "invalid_topic"}} = join_session("other:topic")
+      assert {:error, %{reason: "invalid_topic"}} = connect_and_join("other:topic")
     end
   end
 
   # -- Config guard tests -------------------------------------------------------
 
   describe "join/3 — config guard" do
-    test "rejects join when external WS is disabled" do
+    test "rejects connection when external WS is disabled" do
       System.delete_env("MUSE_EXTERNAL_WS")
-      Application.put_env(:muse, :external_ws, enabled: false)
+      Application.put_env(:muse, :external_ws, enabled: false, token_hashes: [])
 
-      assert {:error, %{reason: "invalid_session_id"}} = join_session("session:valid-id")
+      assert :error = connect_socket(%{"token" => "test-token-16chars-ok"})
     end
 
     test "allows join when external WS is enabled" do
-      Application.put_env(:muse, :external_ws, enabled: true, replay_limit: 50)
+      test_token_hash =
+        :crypto.hash(:sha256, "test-token-16chars-ok")
+        |> Base.encode16(case: :lower)
 
-      assert {:ok, _reply, _socket} = join_session("session:valid-id")
+      Application.put_env(:muse, :external_ws,
+        enabled: true,
+        replay_limit: 50,
+        token_hashes: [
+          %{
+            id: "test-token",
+            hash: test_token_hash,
+            scopes: ["events:read"],
+            allowed_sessions: :all
+          }
+        ]
+      )
+
+      assert {:ok, _reply, _socket} = connect_and_join("session:valid-id")
     end
   end
 
@@ -156,7 +207,7 @@ defmodule MuseWeb.SessionChannelTest do
 
       :ok = Muse.State.append(event)
 
-      assert {:ok, _reply, _socket} = join_session("session:sess-replay")
+      assert {:ok, _reply, _socket} = connect_and_join("session:sess-replay")
 
       assert_push("muse_event", %{"events" => events})
       assert length(events) == 1
@@ -196,7 +247,7 @@ defmodule MuseWeb.SessionChannelTest do
       :ok = Muse.State.append(internal_event)
       :ok = Muse.State.append(sensitive_event)
 
-      assert {:ok, _reply, _socket} = join_session("session:sess-filter")
+      assert {:ok, _reply, _socket} = connect_and_join("session:sess-filter")
 
       assert_push("muse_event", %{"events" => events})
       # Only the user-visible event should appear
@@ -234,7 +285,7 @@ defmodule MuseWeb.SessionChannelTest do
       :ok = Muse.State.append(this_session)
       :ok = Muse.State.append(global_event)
 
-      assert {:ok, _reply, _socket} = join_session("session:sess-mine")
+      assert {:ok, _reply, _socket} = connect_and_join("session:sess-mine")
 
       assert_push("muse_event", %{"events" => events})
       assert length(events) == 1
@@ -248,7 +299,7 @@ defmodule MuseWeb.SessionChannelTest do
 
   describe "handle_info — {:muse_event, event}" do
     test "pushes matching user-visible event to the channel" do
-      assert {:ok, _reply, _socket} = join_session("session:live-sess")
+      assert {:ok, _reply, _socket} = connect_and_join("session:live-sess")
 
       # Consume the replay push first
       assert_push("muse_event", %{"events" => _})
@@ -271,7 +322,7 @@ defmodule MuseWeb.SessionChannelTest do
     end
 
     test "does not push internal events to the channel" do
-      assert {:ok, _reply, _chan_socket} = join_session("session:internal-test")
+      assert {:ok, _reply, _chan_socket} = connect_and_join("session:internal-test")
 
       # Consume the replay push
       assert_push("muse_event", %{"events" => _})
@@ -303,7 +354,7 @@ defmodule MuseWeb.SessionChannelTest do
     end
 
     test "nil session_id events are not forwarded on session topics" do
-      assert {:ok, _reply, _chan_socket} = join_session("session:global-test")
+      assert {:ok, _reply, _chan_socket} = connect_and_join("session:global-test")
 
       # Consume the replay push
       assert_push("muse_event", %{"events" => _})
@@ -340,7 +391,7 @@ defmodule MuseWeb.SessionChannelTest do
 
   describe "handle_info — {:muse_events_cleared}" do
     test "pushes events_cleared message" do
-      assert {:ok, _reply, _chan_socket} = join_session("session:clear-test")
+      assert {:ok, _reply, _chan_socket} = connect_and_join("session:clear-test")
 
       # Consume the replay push
       assert_push("muse_event", %{"events" => _})

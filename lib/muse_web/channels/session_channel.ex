@@ -34,7 +34,7 @@ defmodule MuseWeb.SessionChannel do
   use Phoenix.Channel
 
   alias Muse.EventStream
-  alias MuseWeb.{ExternalEventFilter, ExternalSocketConfig}
+  alias MuseWeb.{ExternalEventFilter, ExternalSocketAuth, ExternalSocketConfig}
 
   @live_event "muse_event"
   @replay_event "muse_event"
@@ -45,14 +45,19 @@ defmodule MuseWeb.SessionChannel do
   @impl true
   def join("session:" <> session_id, _payload, socket) do
     if ExternalSocketConfig.enabled?() and ExternalEventFilter.valid_session_id?(session_id) do
-      :ok = Muse.State.subscribe()
+      with :ok <- authorize_session(socket, session_id) do
+        :ok = Muse.State.subscribe()
 
-      socket = Phoenix.Socket.assign(socket, :session_id, session_id)
+        socket = Phoenix.Socket.assign(socket, :session_id, session_id)
 
-      # Defer replay push to handle_info — Phoenix forbids push during join
-      send(self(), :after_join)
+        # Defer replay push to handle_info — Phoenix forbids push during join
+        send(self(), :after_join)
 
-      {:ok, socket}
+        {:ok, socket}
+      else
+        {:error, :unauthorized_session} ->
+          {:error, %{reason: "unauthorized_session"}}
+      end
     else
       {:error, %{reason: "invalid_session_id"}}
     end
@@ -105,5 +110,14 @@ defmodule MuseWeb.SessionChannel do
   @impl true
   def handle_info(_msg, socket) do
     {:noreply, socket}
+  end
+
+  # -- Private -----------------------------------------------------------------
+
+  defp authorize_session(socket, session_id) do
+    case Map.get(socket.assigns, :external_principal) do
+      nil -> {:error, :unauthorized_session}
+      principal -> ExternalSocketAuth.authorize_session(principal, session_id)
+    end
   end
 end

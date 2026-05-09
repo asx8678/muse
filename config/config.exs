@@ -39,7 +39,8 @@ config :phoenix, :json_library, Jason
 # Enable this with care — the external socket bypasses LiveView.
 config :muse, :external_ws,
   enabled: false,
-  replay_limit: 100
+  replay_limit: 100,
+  token_hashes: []
 
 # --- WebSocket client for LLM transport ---
 # Unset (nil) by default so that dev/test environments remain deterministic.
