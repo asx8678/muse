@@ -55,7 +55,11 @@ defmodule Muse do
       {:ok, text} = Muse.submit(:web, "explain this", opts)
 
   """
-  @spec submit(atom(), String.t(), keyword()) :: {:ok, String.t()}
+  @spec submit(atom(), String.t(), keyword()) ::
+          {:ok, String.t()}
+          | {:error, :turn_in_progress}
+          | {:error, :submit_timeout}
+          | {:error, term()}
   def submit(source, text, opts \\ [])
       when is_atom(source) and is_binary(text) and is_list(opts) do
     SessionRouter.submit(source, text, opts)

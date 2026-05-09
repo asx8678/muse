@@ -44,6 +44,8 @@ defmodule Muse.SessionServer do
 
   use GenServer, restart: :temporary
 
+  require Logger
+
   alias Muse.{
     Approval,
     ApprovalGate,
@@ -139,18 +141,75 @@ defmodule Muse.SessionServer do
   @spec current_workspace_root() :: String.t()
   def current_workspace_root, do: current_runtime_context().workspace
 
+  # Default submit timeout in milliseconds. A finite timeout prevents callers
+  # from blocking indefinitely if the GenServer crashes or the turn never
+  # completes. Can be overridden via the `:timeout` option in `submit/4` or
+  # the `:muse, :submit_timeout_ms` application env key.
+  @default_submit_timeout 30_000
+
+  @doc """
+  Returns `true` if a turn is currently active in the session.
+
+  A turn is considered active when the session status is `:running` AND
+  the runner task ref is non-nil. This is the single-flight guard:
+  callers should check `turn_active?/1` before attempting `submit/4`
+  (the server also checks internally, but this allows pre-validation).
+  """
+  @spec turn_active?(pid()) :: boolean()
+  def turn_active?(pid) do
+    GenServer.call(pid, :turn_active?)
+  end
+
   @doc """
   Submits a user message to the session identified by `pid`.
 
-  Returns `{:ok, assistant_text}` — the same shape as `Muse.submit/2`.
+  Returns `{:ok, assistant_text}` on success, `{:error, :turn_in_progress}`
+  if a turn is already active, or `{:error, :submit_timeout}` if the
+  caller timeout is reached before the turn completes.
 
   The actual turn execution happens asynchronously via TurnRunner.
   The caller blocks until the turn completes (or fails/is cancelled),
   but the GenServer itself remains responsive for `status` queries.
+
+  ## Options
+
+    * `:timeout` — caller timeout in milliseconds (default: #{@default_submit_timeout}).
+      A finite timeout prevents indefinite blocking. Set `:infinity` explicitly
+      only if you need the legacy behavior.
   """
-  @spec submit(pid(), atom(), String.t(), keyword()) :: {:ok, String.t()}
+  @spec submit(pid(), atom(), String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, :turn_in_progress} | {:error, :submit_timeout}
   def submit(pid, source, text, opts \\ []) do
-    GenServer.call(pid, {:submit, source, text, opts}, :infinity)
+    timeout = resolve_submit_timeout(opts)
+
+    try do
+      GenServer.call(pid, {:submit, source, text, opts}, timeout)
+    catch
+      :exit, {:timeout, _} ->
+        {:error, :submit_timeout}
+    end
+  end
+
+  defp resolve_submit_timeout(opts) do
+    case Keyword.get(opts, :timeout) do
+      nil ->
+        :muse
+        |> Application.get_env(:submit_timeout_ms, @default_submit_timeout)
+        |> case do
+          :infinity -> :infinity
+          ms when is_integer(ms) and ms > 0 -> ms
+          _ -> @default_submit_timeout
+        end
+
+      :infinity ->
+        :infinity
+
+      ms when is_integer(ms) and ms > 0 ->
+        ms
+
+      _ ->
+        @default_submit_timeout
+    end
   end
 
   @doc """
@@ -478,13 +537,26 @@ defmodule Muse.SessionServer do
   end
 
   @impl true
+  def handle_call(:turn_active?, _from, state) do
+    {:reply, active_turn?(state), state}
+  end
+
+  @impl true
   def handle_call({:submit, source, text, opts}, from, state) do
-    do_submit(source, text, opts, from, state)
+    if active_turn?(state) do
+      handle_submit_rejected(source, text, state)
+    else
+      do_submit(source, text, opts, from, state)
+    end
   end
 
   # Backward-compatible 3-tuple form for callers using submit/3
   def handle_call({:submit, source, text}, from, state) do
-    do_submit(source, text, [], from, state)
+    if active_turn?(state) do
+      handle_submit_rejected(source, text, state)
+    else
+      do_submit(source, text, [], from, state)
+    end
   end
 
   @impl true
@@ -742,13 +814,25 @@ defmodule Muse.SessionServer do
     # already creates a monitor (ref) that sends {:DOWN, ref, :process, pid, reason}
     # on task exit. We handle both {ref, result} and {:DOWN, ref, ...} below.
 
-    # Transition state to running
+    start_turn(state, turn_id, runner_pid, task_ref, from,
+      turn_start_time: turn_start_time,
+      session_events: session_events
+    )
+  end
+
+  # Shared turn-start transition used by all submit paths.
+  # Sets all active-turn fields atomically in a single state update
+  # to prevent partial-write corruption.
+  defp start_turn(state, turn_id, runner_pid, runner_task, from, opts) do
+    turn_start_time = Keyword.fetch!(opts, :turn_start_time)
+    session_events = Keyword.fetch!(opts, :session_events)
+
     state = %{
       state
       | status: :running,
         active_turn_id: turn_id,
         runner_pid: runner_pid,
-        runner_task: task_ref,
+        runner_task: runner_task,
         from: from,
         turn_start_time: turn_start_time,
         session_events_before_turn: session_events,
@@ -756,6 +840,35 @@ defmodule Muse.SessionServer do
     }
 
     {:noreply, state}
+  end
+
+  # Handle a submit that arrives while a turn is already active.
+  # Emits an internal :submit_rejected event for observability and
+  # returns {:error, :turn_in_progress} to the caller immediately.
+  # The active turn's state is NOT mutated.
+  defp handle_submit_rejected(source, text, state) do
+    {_event, state} =
+      emit_session_event(
+        state,
+        :system,
+        :submit_rejected,
+        %{
+          source: source,
+          user_text_length: String.length(text),
+          active_turn_id: state.active_turn_id
+        },
+        turn_id: state.active_turn_id,
+        visibility: :internal
+      )
+
+    {:reply, {:error, :turn_in_progress}, state}
+  end
+
+  # A turn is active when the session status is :running AND the runner
+  # task ref is non-nil. This is the canonical single-flight guard used
+  # by the internal submit handlers.
+  defp active_turn?(state) do
+    state.status == :running and state.runner_task != nil
   end
 
   defp build_turn_session(state, opts) do
@@ -816,16 +929,37 @@ defmodule Muse.SessionServer do
     {:noreply, state}
   end
 
-  # Ignore task results for stale refs (e.g. after crash recovery)
+  # Stale task result: the ref belongs to a previous turn that has
+  # already been cleared (e.g. after crash recovery or state reset).
+  # Demonitor and log so operators can detect orphaned tasks.
   @impl true
   def handle_info({ref, _result}, state) do
     Process.demonitor(ref, [:flush])
+
+    Logger.warning("Stale task result received",
+      session_id: state.session_id,
+      active_turn_id: state.active_turn_id,
+      active_runner_task: inspect(state.runner_task),
+      stale_ref: inspect(ref),
+      status: state.status
+    )
+
     {:noreply, state}
   end
 
-  # Ignore stale DOWN messages (for non-current tasks)
+  # Stale DOWN: the monitored process belongs to a previous turn.
+  # Log for observability but do not mutate active state.
   @impl true
-  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
+    Logger.warning("Stale DOWN message received",
+      session_id: state.session_id,
+      active_turn_id: state.active_turn_id,
+      active_runner_task: inspect(state.runner_task),
+      stale_ref: inspect(ref),
+      stale_pid: inspect(pid),
+      reason: inspect(reason)
+    )
+
     {:noreply, state}
   end
 
