@@ -6,13 +6,17 @@ defmodule Muse.Execution.Runner do
   `Muse.Execution.Result` structs. All runners must:
 
     * Execute via argv vector — no shell interpolation.
-    * Enforce timeout; close port on expiry (descendant processes may survive).
+    * Enforce timeout; close port on expiry.
+    * On Unix, `LocalRunner` terminates the full process group on
+      timeout via `Muse.Execution.ProcessGroup`. On Windows or
+      other platforms, child processes may survive timeout.
     * Cap and redact output.
     * Return safe results suitable for events/logs.
 
   ## Built-in runners
 
     * `Muse.Execution.LocalRunner` — local execution via Port.open
+      with process-group cleanup on timeout (Unix)
     * `Muse.Execution.RemoteDeniedRunner` — always denies remote execution
     * `Muse.Execution.FakeRemoteRunner` — deterministic fake remote for tests
     * `Muse.Execution.SSHRunner` — SSH remote execution (Phase D)

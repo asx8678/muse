@@ -5,8 +5,12 @@ defmodule Muse.Execution.LocalRunner do
   Executes commands locally via `Port.open({:spawn_executable, path}, ...)`.
   Never uses shell interpolation. Enforces:
 
-    * Timeout — closes the port on timeout; best-effort cleanup
-      (descendant processes may survive port closure).
+    * Timeout — terminates the **full process group** on timeout
+      (Unix) or falls back to port closure only (Windows).
+      On Unix, the spawned process becomes a process group leader
+      (PGID == PID). Children inherit the PGID by default. On
+      timeout, SIGTERM is sent to the whole group, followed by SIGKILL
+      after a grace period. This prevents orphaned child processes.
     * Output capping — caps output at `max_output_bytes`.
     * Secret redaction — redacts secrets via `Muse.Prompt.Redactor`.
     * Safe env — allowlisted base env via `Muse.Execution.Env`;
@@ -15,12 +19,29 @@ defmodule Muse.Execution.LocalRunner do
       keys or unrelated secrets.
     * Non-zero exit — produces `status: :error`, not `status: :ok`.
 
+  ## Process group cleanup (Unix)
+
+  On Unix platforms (macOS, Linux, BSD), the Erlang port driver
+  places each spawned process in its own process group. On timeout,
+  `Muse.Execution.ProcessGroup.terminate_group/2` sends SIGTERM to
+  the entire group (negative PGID), waits a short grace period,
+  then sends SIGKILL to any survivors. This ensures that child
+  processes started by the command (e.g. a shell script that
+  backgrounded workers) are also terminated.
+
+  ## Platform limitations (Windows)
+
+  On Windows, process-group termination is not available. Only the
+  port is closed. Child processes may survive a timeout. The timeout
+  result includes a `:timeout_cleanup` metadata key documenting the
+  limitation.
+
   ## Safety properties
 
     * `System.find_executable/1` for bare executable names.
     * Rejects executables with path traversal or control characters.
     * Rejects absolute paths that don't resolve to an existing executable.
-    * Timeout enforced by closing the port.
+    * Timeout enforced by closing the port plus process group kill.
     * Output capped before returning.
     * Secrets redacted from output.
 
@@ -36,7 +57,7 @@ defmodule Muse.Execution.LocalRunner do
 
   @behaviour Muse.Execution.Runner
 
-  alias Muse.Execution.{Command, Env, Result}
+  alias Muse.Execution.{Command, Env, ProcessGroup, Result}
 
   @impl Muse.Execution.Runner
   def capabilities do
@@ -162,6 +183,24 @@ defmodule Muse.Execution.LocalRunner do
     end
   end
 
+  # On timeout, terminate the full process group before returning.
+  # This is called *after* the receive timeout fires but *before*
+  # the `after` block closes the port, so we still have a valid port
+  # to read the OS PID from.
+  defp terminate_process_group(port) do
+    if ProcessGroup.platform_supported?() do
+      ProcessGroup.terminate_group(port, force_after_ms: 0)
+    else
+      %{
+        platform: :unsupported,
+        pgid_available: false,
+        os_pid: ProcessGroup.get_os_pid(port),
+        pgid: nil,
+        fallback_reason: "process group termination not supported on this platform"
+      }
+    end
+  end
+
   defp build_port_opts(command, _executable_path) do
     base_opts = [
       {:args, command.args},
@@ -190,7 +229,13 @@ defmodule Muse.Execution.LocalRunner do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     if remaining == 0 do
-      {:ok, Result.timed_out(command.id, argv_display: Command.safe_display(command))}
+      cleanup = terminate_process_group(port)
+
+      {:ok,
+       Result.timed_out(command.id,
+         argv_display: Command.safe_display(command),
+         metadata: %{timeout_cleanup: cleanup}
+       )}
     else
       receive do
         {^port, {:data, data}} ->
@@ -209,7 +254,13 @@ defmodule Muse.Execution.LocalRunner do
            )}
       after
         remaining ->
-          {:ok, Result.timed_out(command.id, argv_display: Command.safe_display(command))}
+          cleanup = terminate_process_group(port)
+
+          {:ok,
+           Result.timed_out(command.id,
+             argv_display: Command.safe_display(command),
+             metadata: %{timeout_cleanup: cleanup}
+           )}
       end
     end
   end
@@ -218,10 +269,13 @@ defmodule Muse.Execution.LocalRunner do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     if remaining == 0 do
+      cleanup = terminate_process_group(port)
+
       {:ok,
        Result.timed_out(command.id,
          partial_output: cap_and_redact(acc, max_output),
-         argv_display: Command.safe_display(command)
+         argv_display: Command.safe_display(command),
+         metadata: %{timeout_cleanup: cleanup}
        )}
     else
       receive do
@@ -250,10 +304,13 @@ defmodule Muse.Execution.LocalRunner do
            )}
       after
         remaining ->
+          cleanup = terminate_process_group(port)
+
           {:ok,
            Result.timed_out(command.id,
              partial_output: cap_and_redact(acc, max_output),
-             argv_display: Command.safe_display(command)
+             argv_display: Command.safe_display(command),
+             metadata: %{timeout_cleanup: cleanup}
            )}
       end
     end

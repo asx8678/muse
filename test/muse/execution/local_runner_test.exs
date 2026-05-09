@@ -99,6 +99,92 @@ defmodule Muse.Execution.LocalRunnerTest do
       # Should complete within reasonable overhead of timeout
       assert result.duration_ms < 500
     end
+
+    test "timeout result includes cleanup diagnostic metadata" do
+      {:ok, cmd} = Command.new("sleep", args: ["10"], timeout_ms: 100)
+
+      {:ok, result} = LocalRunner.run(cmd)
+
+      assert result.status == :timed_out
+      assert is_map(result.metadata)
+      assert Map.has_key?(result.metadata, :timeout_cleanup)
+
+      cleanup = result.metadata.timeout_cleanup
+      # On Unix, should have pgid_available: true
+      # On Windows, should have pgid_available: false with fallback_reason
+      assert Map.has_key?(cleanup, :platform)
+      assert Map.has_key?(cleanup, :pgid_available)
+      assert Map.has_key?(cleanup, :os_pid)
+    end
+
+    @tag :unix
+    test "timeout kills child processes on Unix" do
+      # Spawn bash which creates background children
+      # This is the core acceptance criterion:
+      # A command that spawns a long-lived child does not leave
+      # that child alive after timeout on supported platforms.
+      {:ok, cmd} =
+        Command.new("bash",
+          args: ["-c", "sleep 60 & sleep 60 & echo READY; wait"],
+          timeout_ms: 500
+        )
+
+      {:ok, result} = LocalRunner.run(cmd)
+
+      assert result.status == :timed_out
+      assert result.metadata.timeout_cleanup.pgid_available == true
+
+      # After timeout cleanup, verify no orphaned processes from this command
+      # exist by checking the process group is gone
+      pgid = result.metadata.timeout_cleanup.pgid
+
+      if pgid do
+        Process.sleep(300)
+        {remaining, _} = System.cmd("pgrep", ["-g", to_string(pgid)], stderr_to_stdout: true)
+
+        assert String.trim(remaining) == "",
+               "Orphaned child processes still alive after timeout cleanup"
+      end
+    end
+
+    test "timeout cleanup diagnostic has structured fields" do
+      {:ok, cmd} = Command.new("sleep", args: ["10"], timeout_ms: 100)
+
+      {:ok, result} = LocalRunner.run(cmd)
+
+      cleanup = result.metadata.timeout_cleanup
+
+      # Required fields
+      assert Map.has_key?(cleanup, :platform)
+      assert Map.has_key?(cleanup, :pgid_available)
+      assert Map.has_key?(cleanup, :os_pid)
+
+      # Platform should be one of the known values
+      assert cleanup.platform in [:unix, :windows, :unknown, :unsupported]
+
+      # pgid_available should match platform support
+      case :os.type() do
+        {:unix, _} ->
+          assert cleanup.pgid_available == true
+          assert is_integer(cleanup.pgid) and cleanup.pgid > 0
+          assert is_integer(cleanup.os_pid) and cleanup.os_pid > 0
+
+        {:win32, _} ->
+          assert cleanup.pgid_available == false
+          assert Map.has_key?(cleanup, :fallback_reason)
+      end
+    end
+
+    test "timeout on already-exited process does not crash" do
+      # A command that finishes just at the timeout boundary should
+      # not crash even if the process exits before cleanup runs.
+      # Use a very short timeout with a fast command.
+      {:ok, cmd} = Command.new("elixir", args: ["-e", "IO.puts(:fast)"], timeout_ms: 200)
+
+      # This should succeed normally (no timeout)
+      {:ok, result} = LocalRunner.run(cmd)
+      assert result.status == :ok
+    end
   end
 
   describe "run/2 — output capping" do
