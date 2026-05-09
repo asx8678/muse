@@ -1255,12 +1255,7 @@ defmodule Muse.SessionServer do
     state =
       if pending_patch != nil and not had_pending_patch_before and
            match?(%Patch{}, pending_patch) do
-        :ok =
-          SessionStore.append_patch(
-            state.store_base_dir,
-            state.session_id,
-            Patch.to_map(pending_patch)
-          )
+        persist_patch(state.store_base_dir, state.session_id, pending_patch)
 
         state
       else
@@ -2002,9 +1997,8 @@ defmodule Muse.SessionServer do
 
         events = [patch_proposed_event, approval_event, status_event] |> Enum.reject(&is_nil/1)
 
-        # Persist to patches.jsonl
-        :ok =
-          SessionStore.append_patch(state.store_base_dir, state.session_id, Patch.to_map(patch))
+        # Persist to patches.jsonl (failure is logged, does not crash the turn)
+        persist_patch(state.store_base_dir, state.session_id, patch)
 
         state =
           state
@@ -2800,8 +2794,11 @@ defmodule Muse.SessionServer do
         |> maybe_put_pending_remote_approval(state)
 
       case SessionStore.save_session(state.store_base_dir, state.session_id, data) do
-        :ok -> :ok
-        {:error, _} -> :ok
+        :ok ->
+          :ok
+
+        {:error, reason} ->
+          log_persistence_failure(:save_session, state.session_id, reason)
       end
     end
 
@@ -2976,9 +2973,73 @@ defmodule Muse.SessionServer do
   # -- Memory persistence helpers ----------------------------------------------
 
   defp clear_persisted_memory(store_base_dir, session_id) do
-    _ = SessionStore.delete_memory(store_base_dir, session_id)
+    case SessionStore.delete_memory(store_base_dir, session_id) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        log_persistence_failure(:delete_memory, session_id, reason)
+    end
+  end
+
+  # -- Persistence helpers (T1-12: explicit failure handling) ------------------
+
+  defp persist_patch(store_base_dir, session_id, %Patch{} = patch) do
+    case SessionStore.append_patch(store_base_dir, session_id, Patch.to_map(patch)) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        log_persistence_failure(:append_patch, session_id, reason)
+    end
+  end
+
+  @spec log_persistence_failure(atom(), String.t(), term()) :: :ok
+  defp log_persistence_failure(operation, session_id, reason) do
+    safe_reason = safe_persistence_reason(reason)
+
+    Logger.warning("Persistence failure",
+      operation: operation,
+      session_id: session_id,
+      reason: safe_reason
+    )
+
+    # Emit an internal diagnostic event so consumers can observe failures.
+    safe_append_state(
+      Event.new(:system, :persistence_failed, %{operation: operation, reason: safe_reason},
+        session_id: session_id,
+        visibility: :internal
+      )
+    )
+
     :ok
   end
+
+  # Reduce persistence error reasons to a short, safe, bounded string
+  # that never includes full event/session payloads or secrets.
+  defp safe_persistence_reason({:mkdir_failed, posix, _dir}),
+    do: "mkdir_failed:#{posix}"
+
+  defp safe_persistence_reason({:write_failed, posix}) when is_atom(posix),
+    do: "write_failed:#{posix}"
+
+  defp safe_persistence_reason({:encode_failed, _reason}),
+    do: "encode_failed"
+
+  defp safe_persistence_reason({:invalid_session_id, _id}),
+    do: "invalid_session_id"
+
+  defp safe_persistence_reason({:delete_failed, posix}) when is_atom(posix),
+    do: "delete_failed:#{posix}"
+
+  defp safe_persistence_reason(reason) when is_atom(reason),
+    do: Atom.to_string(reason)
+
+  defp safe_persistence_reason(reason) when is_binary(reason),
+    do: String.slice(reason, 0, 80)
+
+  defp safe_persistence_reason(_),
+    do: "unknown"
 
   # -- Telemetry: session lifecycle --------------------------------------------
 
