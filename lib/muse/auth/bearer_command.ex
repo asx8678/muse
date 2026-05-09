@@ -12,25 +12,38 @@ defmodule Muse.Auth.BearerCommand do
       never appears in logs, events, or diagnostic output.
     * Error messages reference the command source label but never include the
       token value, partial token output, or stderr content.
-    * The caller controls whether `System.cmd/3` is allowed (via
+    * The caller controls whether command execution is allowed (via
       `allow_exec?: true`, default `false`) — preventing accidental shell-outs
       in test or inspection-only contexts.
+    * Command execution is bounded: stdout is capped at `max_stdout_bytes`
+      (default 4 096). Output exceeding this limit fails with
+      `{:error, {:output_too_large, source_label}}` before the raw data can
+      exhaust memory.
+    * A finite timeout (`timeout_ms`, default 5 000) terminates the command
+      process group on expiry — no orphaned child processes.
+    * Child processes receive only allowlisted environment variables via
+      `Muse.Execution.Env`; secrets (API keys, tokens) are never inherited.
 
   ## Returns
 
     * `{:ok, %Credential{type: :bearer, source: :command}}` on success.
     * `{:error, reason}` on any failure — missing command, exec failure,
-      empty output, oversized output, or `allow_exec?` set to `false`.
+      empty output, oversized output, timeout, or `allow_exec?` set to `false`.
   """
 
   alias Muse.Auth.Credential
+  alias Muse.Execution.{Env, ProcessGroup}
+
+  @default_max_stdout_bytes 4_096
+  @default_timeout_ms 5_000
+  @force_kill_after_ms 100
 
   @type error_reason ::
           {:not_allowed, String.t()}
           | {:no_command, String.t()}
           | {:exec_failed, String.t()}
           | {:empty_output}
-          | {:output_too_large}
+          | {:output_too_large, String.t()}
           | {:timeout, String.t()}
 
   @doc """
@@ -47,12 +60,19 @@ defmodule Muse.Auth.BearerCommand do
       command (default: `"bearer_command"`). Prevents command strings from
       leaking into log/event output.
     * `:timeout_ms` — positive integer milliseconds, default `5_000`. The
-      command is killed if it does not complete within this duration.
-      If the timeout fires, `{:error, {:timeout, source_label}}` is returned.
+      command process group is killed if it does not complete within this
+      duration. If the timeout fires, `{:error, {:timeout, source_label}}`
+      is returned.
+    * `:max_stdout_bytes` — positive integer, default `4_096`. Maximum stdout
+      bytes accepted from the command. If the command produces more output,
+      the process group is terminated and
+      `{:error, {:output_too_large, source_label}}` is returned. This prevents
+      memory exhaustion from misconfigured or compromised credential helpers.
     * `:runner` — function injected for test isolation. When provided,
       `System.cmd/3` is never called. The runner receives the command
       (binary or argv list) and must return `{output, 0}`, `{:ok, output}`,
       or `{:error, reason}`. The `:allow_exec?` guard is still enforced.
+      Runner output is also validated against `:max_stdout_bytes`.
     * `:cmd_fn` — alias for `:runner` (accepted for convenience).
 
   ## Examples
@@ -72,10 +92,10 @@ defmodule Muse.Auth.BearerCommand do
     * Binary commands are split on whitespace to extract program and args.
       No shell interpretation is performed unless you explicitly wrap in
       `"sh -c '...'"`.
-    * Argv-list commands are passed directly to `System.cmd/3` without
-      splitting — safer and faster for fixed-argument commands.
+    * Argv-list commands are passed directly without splitting — safer and
+      faster for fixed-argument commands.
     * Stderr is discarded; only stdout is read.
-    * The `:runner` / `:cmd_fn` option bypasses `System.cmd/3` entirely and is
+    * The `:runner` / `:cmd_fn` option bypasses real execution entirely and is
       intended for test injection. The runner API accepts the full command
       (binary or list) and returns success/failure tuples.
   """
@@ -84,12 +104,16 @@ defmodule Muse.Auth.BearerCommand do
     command = Keyword.get(opts, :command)
     allow_exec? = Keyword.get(opts, :allow_exec?, false)
     source_label = Keyword.get(opts, :source_label, "bearer_command")
-    timeout_ms = normalize_timeout(Keyword.get(opts, :timeout_ms, 5_000))
+    timeout_ms = normalize_timeout(Keyword.get(opts, :timeout_ms, @default_timeout_ms))
+
+    max_stdout =
+      normalize_max_stdout(Keyword.get(opts, :max_stdout_bytes, @default_max_stdout_bytes))
+
     runner = Keyword.get(opts, :runner) || Keyword.get(opts, :cmd_fn)
 
     with {:ok, cmd} <- validate_command(command, source_label),
          :ok <- check_allowed(allow_exec?, source_label),
-         {:ok, value} <- exec_command(cmd, timeout_ms, runner, source_label) do
+         {:ok, value} <- exec_command(cmd, timeout_ms, max_stdout, runner, source_label) do
       credential = %Credential{
         type: :bearer,
         value: value,
@@ -134,7 +158,7 @@ defmodule Muse.Auth.BearerCommand do
     do: {:error, {:not_allowed, source_label}}
 
   # ---------------------------------------------------------------------------
-  # Execution (no token leakage in errors)
+  # Execution dispatch — port-based for real commands, spawn-based for runners
   # ---------------------------------------------------------------------------
 
   # Normalize a binary or argv-list command to {prog, args}.
@@ -149,18 +173,131 @@ defmodule Muse.Auth.BearerCommand do
 
   defp normalize_command([prog | args]), do: {prog, args}
 
-  # Execute the command with a timeout via spawn/receive.
-  # Both runner and real-exec paths are bounded by the timeout.
-  # Uses spawn (not spawn_link) so that System.cmd exits (e.g. :enoent for
-  # missing executables) are caught as DOWN messages rather than killing
-  # the caller.
-  defp exec_command(command, timeout_ms, runner, source_label) do
+  # Port-based bounded execution for real commands.
+  # Uses Port.open with sanitized env, byte-capped output collection,
+  # and process-group cleanup on timeout/oversized output.
+  defp exec_command(command, timeout_ms, max_stdout, nil, source_label) do
+    exec_with_port(command, timeout_ms, max_stdout, source_label)
+  end
+
+  # Spawn-based execution for test runner injection.
+  # Bounded by timeout and max_stdout_bytes validation.
+  defp exec_command(command, timeout_ms, max_stdout, runner, source_label)
+       when is_function(runner, 1) do
+    exec_with_runner(command, timeout_ms, max_stdout, runner, source_label)
+  end
+
+  # -- Port-based bounded execution (real commands) ----------------------------
+
+  defp exec_with_port(command, timeout_ms, max_stdout, source_label) do
+    {prog, args} = normalize_command(command)
+
+    with {:ok, exe_path} <- resolve_executable(prog) do
+      env = Env.port_env(%{}, inherit?: true)
+
+      port_opts = [
+        {:args, args},
+        :use_stdio,
+        :binary,
+        :exit_status,
+        {:env, env}
+      ]
+
+      port = Port.open({:spawn_executable, exe_path}, port_opts)
+
+      try do
+        deadline = System.monotonic_time(:millisecond) + timeout_ms
+        collect_port_output(port, deadline, max_stdout, 0, "", source_label)
+      after
+        if Port.info(port) != nil, do: Port.close(port)
+      end
+    else
+      {:error, reason} -> {:error, {:exec_failed, reason}}
+    end
+  end
+
+  defp resolve_executable(prog) do
+    cond do
+      Path.type(prog) == :absolute ->
+        if safe_absolute_path?(prog) and File.exists?(prog) do
+          {:ok, prog}
+        else
+          {:error, "executable not found or unsafe: #{safe_prog_label(prog)}"}
+        end
+
+      true ->
+        case System.find_executable(prog) do
+          nil -> {:error, "command not found: #{safe_prog_label(prog)}"}
+          path -> {:ok, path}
+        end
+    end
+  end
+
+  defp safe_absolute_path?(path) do
+    not String.contains?(path, "..") and
+      not String.contains?(path, "~") and
+      not control_chars?(path)
+  end
+
+  defp control_chars?(s) when is_binary(s) do
+    String.match?(s, ~r/[[:cntrl:]]/)
+  end
+
+  defp control_chars?(_), do: false
+
+  # Collect output from a port with byte-level capping and deadline.
+  # Stops collecting and terminates the process group when:
+  #   - Output exceeds max_stdout_bytes → {:error, {:output_too_large, ...}}
+  #   - Deadline passes → {:error, {:timeout, ...}}
+  #   - Process exits 0 → parse_output and validate token
+  #   - Process exits non-zero → {:error, {:exec_failed, ...}}
+  #
+  # The raw stdout is NEVER logged. Only reason/metadata appear in errors.
+  defp collect_port_output(port, deadline, max_stdout, byte_count, acc, source_label) do
+    remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+    if remaining == 0 do
+      cleanup = ProcessGroup.terminate_group(port, force_after_ms: @force_kill_after_ms)
+      _ = cleanup
+      {:error, {:timeout, source_label}}
+    else
+      receive do
+        {^port, {:data, data}} ->
+          new_count = byte_count + byte_size(data)
+
+          if new_count > max_stdout do
+            # Output exceeded the safe limit — kill the process group and fail.
+            # The raw output is intentionally NOT included in the error.
+            cleanup = ProcessGroup.terminate_group(port, force_after_ms: @force_kill_after_ms)
+            _ = cleanup
+            {:error, {:output_too_large, source_label}}
+          else
+            collect_port_output(port, deadline, max_stdout, new_count, acc <> data, source_label)
+          end
+
+        {^port, {:exit_status, 0}} ->
+          parse_output(acc)
+
+        {^port, {:exit_status, status}} ->
+          {:error, {:exec_failed, "command exited with non-zero status (#{status})"}}
+      after
+        remaining ->
+          cleanup = ProcessGroup.terminate_group(port, force_after_ms: @force_kill_after_ms)
+          _ = cleanup
+          {:error, {:timeout, source_label}}
+      end
+    end
+  end
+
+  # -- Spawn-based execution (test runner injection) ---------------------------
+
+  defp exec_with_runner(command, timeout_ms, max_stdout, runner, source_label) do
     caller = self()
     ref = make_ref()
 
     spawn_pid =
       spawn(fn ->
-        result = do_exec(command, runner)
+        result = do_exec_with_runner(command, max_stdout, runner, source_label)
         send(caller, {:cmd_result, ref, result})
       end)
 
@@ -185,32 +322,24 @@ defmodule Muse.Auth.BearerCommand do
     end
   end
 
-  # Dispatch to runner or System.cmd
-  defp do_exec(command, runner) when is_function(runner, 1) do
+  defp do_exec_with_runner(command, max_stdout, runner, source_label) do
     case safe_runner_call(fn -> runner.(command) end) do
-      {:ok, {output, 0}} -> parse_output(output)
-      {:ok, {:ok, output}} -> parse_output(output)
+      {:ok, {output, 0}} -> validate_runner_output(output, max_stdout, source_label)
+      {:ok, {:ok, output}} -> validate_runner_output(output, max_stdout, source_label)
       _other -> {:error, {:exec_failed, "runner failed"}}
     end
   end
 
-  defp do_exec(command, nil) do
-    {prog, args} = normalize_command(command)
-
-    try do
-      result = System.cmd(prog, args, stderr_to_stdout: false)
-
-      case result do
-        {output, 0} -> parse_output(output)
-        {_output, _exit_code} -> {:error, {:exec_failed, "command exited with non-zero status"}}
-      end
-    catch
-      :error, :enoent ->
-        {:error, {:exec_failed, "command not found: #{safe_prog_label(prog)}"}}
-
-      kind, reason ->
-        {:error, {:exec_failed, "execution error (#{kind}): #{safe_exit_reason(reason)}"}}
+  defp validate_runner_output(output, max_stdout, source_label) when is_binary(output) do
+    if byte_size(output) > max_stdout do
+      {:error, {:output_too_large, source_label}}
+    else
+      parse_output(output)
     end
+  end
+
+  defp validate_runner_output(output, max_stdout, source_label) do
+    validate_runner_output(to_string(output), max_stdout, source_label)
   end
 
   # ---------------------------------------------------------------------------
@@ -226,7 +355,7 @@ defmodule Muse.Auth.BearerCommand do
   end
 
   # ---------------------------------------------------------------------------
-  # Output parsing — trim, take first non-empty line
+  # Output parsing — trim, take first non-empty line, validate token shape
   # ---------------------------------------------------------------------------
 
   defp parse_output(output) do
@@ -241,17 +370,31 @@ defmodule Muse.Auth.BearerCommand do
         |> Enum.find(&(String.trim(&1) != ""))
 
       case first do
-        nil -> {:error, :empty_output}
-        line -> {:ok, String.trim(line)}
+        nil ->
+          {:error, :empty_output}
+
+        line ->
+          token = String.trim(line)
+
+          # Bearer tokens must be printable. Non-printable output indicates
+          # a misconfigured or compromised credential helper.
+          if String.printable?(token) do
+            {:ok, token}
+          else
+            {:error, {:exec_failed, "output contains non-printable characters"}}
+          end
       end
     end
   end
 
   # ---------------------------------------------------------------------------
-  # Timeout normalization — positive integer only, else default
+  # Timeout / max_stdout normalization — positive integer only, else default
   # ---------------------------------------------------------------------------
   defp normalize_timeout(ms) when is_integer(ms) and ms > 0, do: ms
-  defp normalize_timeout(_ms), do: 5_000
+  defp normalize_timeout(_ms), do: @default_timeout_ms
+
+  defp normalize_max_stdout(bytes) when is_integer(bytes) and bytes > 0, do: bytes
+  defp normalize_max_stdout(_bytes), do: @default_max_stdout_bytes
 
   # Safe program label for error messages — never include full command args.
   defp safe_prog_label(prog) when is_binary(prog), do: String.slice(prog, 0, 80)
@@ -264,4 +407,18 @@ defmodule Muse.Auth.BearerCommand do
   defp exec_down_reason(:enoent, _source_label), do: "command not found"
   defp exec_down_reason(:normal, _source_label), do: "process exited normally without result"
   defp exec_down_reason(reason, _source_label), do: "process crashed: #{safe_exit_reason(reason)}"
+
+  # -- Public configuration accessors -------------------------------------------
+
+  @doc """
+  Return the default maximum stdout bytes for bearer command execution.
+  """
+  @spec default_max_stdout_bytes() :: pos_integer()
+  def default_max_stdout_bytes, do: @default_max_stdout_bytes
+
+  @doc """
+  Return the default timeout in milliseconds for bearer command execution.
+  """
+  @spec default_timeout_ms() :: pos_integer()
+  def default_timeout_ms, do: @default_timeout_ms
 end

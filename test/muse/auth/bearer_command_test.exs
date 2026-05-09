@@ -3,7 +3,11 @@ defmodule Muse.Auth.BearerCommandTest do
 
   alias Muse.Auth.BearerCommand
 
-  describe "resolve/1" do
+  # ---------------------------------------------------------------------------
+  # Basic resolve/1 tests
+  # ---------------------------------------------------------------------------
+
+  describe "resolve/1 basic" do
     test "returns not_allowed error when allow_exec? is false (default)" do
       assert {:error, {:not_allowed, "bearer_command"}} =
                BearerCommand.resolve(command: "echo tok-secret")
@@ -83,11 +87,13 @@ defmodule Muse.Auth.BearerCommandTest do
                  source_label: "my-custom-label"
                )
     end
+  end
 
-    # -----------------------------------------------------------------------
-    # Runner injection
-    # -----------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Runner injection
+  # ---------------------------------------------------------------------------
 
+  describe "resolve/1 runner injection" do
     test "runner with {output, 0} returns ok credential" do
       runner = fn _cmd -> {"tok-from-runner", 0} end
 
@@ -161,11 +167,13 @@ defmodule Muse.Auth.BearerCommandTest do
 
       assert cred.value == "tok-from-cmd-fn"
     end
+  end
 
-    # -----------------------------------------------------------------------
-    # Argv list command
-    # -----------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Argv list command
+  # ---------------------------------------------------------------------------
 
+  describe "resolve/1 argv list" do
     test "argv list with runner works correctly" do
       runner = fn ["echo", "hello", "world"] -> {"hello-world-token", 0} end
 
@@ -194,18 +202,19 @@ defmodule Muse.Auth.BearerCommandTest do
                  allow_exec?: true
                )
     end
+  end
 
-    # -----------------------------------------------------------------------
-    # Timeout
-    # -----------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Timeout (runner-based)
+  # ---------------------------------------------------------------------------
 
+  describe "resolve/1 timeout via runner" do
     test "timeout returns safe error via injected runner that sleeps" do
       runner = fn _cmd ->
         :timer.sleep(100)
         {"too-late", 0}
       end
 
-      # Use tiny timeout_ms so the runner's sleep triggers timeout
       assert {:error, {:timeout, _label}} =
                BearerCommand.resolve(
                  command: "sleepy",
@@ -230,11 +239,13 @@ defmodule Muse.Auth.BearerCommandTest do
                  source_label: "my-sleepy-label"
                )
     end
+  end
 
-    # -----------------------------------------------------------------------
-    # Invalid/non-positive timeout_ms safely defaults
-    # -----------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Invalid/non-positive timeout_ms safely defaults
+  # ---------------------------------------------------------------------------
 
+  describe "resolve/1 invalid timeout defaults" do
     test "nil timeout_ms defaults to 5000" do
       runner = fn _cmd -> {"tok-from-nil-timeout", 0} end
 
@@ -276,11 +287,13 @@ defmodule Muse.Auth.BearerCommandTest do
 
       assert cred.value == "tok-from-negative-timeout"
     end
+  end
 
-    # -----------------------------------------------------------------------
-    # Multi-line output parsing
-    # -----------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Multi-line output parsing
+  # ---------------------------------------------------------------------------
 
+  describe "resolve/1 multi-line output" do
     test "multi-line output uses first non-empty line" do
       runner = fn _cmd -> {"header-line\n\nsecond-line\nthird", 0} end
 
@@ -306,11 +319,13 @@ defmodule Muse.Auth.BearerCommandTest do
 
       assert cred.value == "tok-padded"
     end
+  end
 
-    # -----------------------------------------------------------------------
-    # Runner edge cases — nonzero exit, empty output
-    # -----------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Runner edge cases
+  # ---------------------------------------------------------------------------
 
+  describe "resolve/1 runner edge cases" do
     test "runner returning {output, nonzero} treated as exec_failed" do
       runner = fn _cmd -> {"some-output", 1} end
 
@@ -331,6 +346,309 @@ defmodule Muse.Auth.BearerCommandTest do
                  allow_exec?: true,
                  runner: runner
                )
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # T1-09: Bounded stdout — output_too_large
+  # ---------------------------------------------------------------------------
+
+  describe "resolve/1 output_too_large (T1-09)" do
+    test "runner output exceeding max_stdout_bytes returns output_too_large" do
+      # 100-byte limit, runner returns 200 bytes
+      huge_output = String.duplicate("a", 200)
+
+      runner = fn _cmd -> {huge_output, 0} end
+
+      assert {:error, {:output_too_large, "bearer_command"}} =
+               BearerCommand.resolve(
+                 command: "huge",
+                 allow_exec?: true,
+                 runner: runner,
+                 max_stdout_bytes: 100
+               )
+    end
+
+    test "output_too_large includes custom source_label" do
+      huge_output = String.duplicate("x", 500)
+
+      runner = fn _cmd -> {huge_output, 0} end
+
+      assert {:error, {:output_too_large, "my-label"}} =
+               BearerCommand.resolve(
+                 command: "huge",
+                 allow_exec?: true,
+                 runner: runner,
+                 max_stdout_bytes: 100,
+                 source_label: "my-label"
+               )
+    end
+
+    test "output exactly at max_stdout_bytes succeeds" do
+      # 100-byte limit, runner returns exactly 100 bytes of valid token
+      token = "tok-" <> String.duplicate("a", 96)
+
+      runner = fn _cmd -> {token, 0} end
+
+      assert {:ok, cred} =
+               BearerCommand.resolve(
+                 command: "exact",
+                 allow_exec?: true,
+                 runner: runner,
+                 max_stdout_bytes: 100
+               )
+
+      assert cred.value == token
+    end
+
+    test "output one byte over max_stdout_bytes fails" do
+      # 100-byte limit, runner returns 101 bytes
+      output = String.duplicate("a", 101)
+
+      runner = fn _cmd -> {output, 0} end
+
+      assert {:error, {:output_too_large, "bearer_command"}} =
+               BearerCommand.resolve(
+                 command: "over",
+                 allow_exec?: true,
+                 runner: runner,
+                 max_stdout_bytes: 100
+               )
+    end
+
+    test "real command producing huge stdout returns output_too_large" do
+      # Use a real command (printf) to generate output exceeding the limit.
+      # This tests the port-based bounded execution path.
+      assert {:error, {:output_too_large, "bearer_command"}} =
+               BearerCommand.resolve(
+                 command: "printf '#{String.duplicate("a", 200)}'",
+                 allow_exec?: true,
+                 max_stdout_bytes: 100
+               )
+    end
+
+    test "default max_stdout_bytes is 4096" do
+      assert BearerCommand.default_max_stdout_bytes() == 4_096
+    end
+
+    test "invalid max_stdout_bytes defaults to 4096" do
+      token = "tok-valid"
+
+      runner = fn _cmd -> {token, 0} end
+
+      assert {:ok, cred} =
+               BearerCommand.resolve(
+                 command: "test",
+                 allow_exec?: true,
+                 runner: runner,
+                 max_stdout_bytes: nil
+               )
+
+      assert cred.value == token
+    end
+
+    test "zero max_stdout_bytes defaults to 4096" do
+      token = "tok-valid"
+
+      runner = fn _cmd -> {token, 0} end
+
+      assert {:ok, cred} =
+               BearerCommand.resolve(
+                 command: "test",
+                 allow_exec?: true,
+                 runner: runner,
+                 max_stdout_bytes: 0
+               )
+
+      assert cred.value == token
+    end
+
+    test "negative max_stdout_bytes defaults to 4096" do
+      token = "tok-valid"
+
+      runner = fn _cmd -> {token, 0} end
+
+      assert {:ok, cred} =
+               BearerCommand.resolve(
+                 command: "test",
+                 allow_exec?: true,
+                 runner: runner,
+                 max_stdout_bytes: -1
+               )
+
+      assert cred.value == token
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # T1-09: Timeout with real command (port-based execution)
+  # ---------------------------------------------------------------------------
+
+  describe "resolve/1 timeout with real command (T1-09)" do
+    test "real command that sleeps times out with explicit error" do
+      assert {:error, {:timeout, "bearer_command"}} =
+               BearerCommand.resolve(
+                 command: "sleep 10",
+                 allow_exec?: true,
+                 timeout_ms: 100
+               )
+    end
+
+    test "timeout with real command includes custom source_label" do
+      assert {:error, {:timeout, "my-timeout-label"}} =
+               BearerCommand.resolve(
+                 command: "sleep 10",
+                 allow_exec?: true,
+                 timeout_ms: 100,
+                 source_label: "my-timeout-label"
+               )
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # T1-09: Secret safety in error messages
+  # ---------------------------------------------------------------------------
+
+  describe "resolve/1 secret safety in errors (T1-09)" do
+    test "output_too_large error never contains the token value" do
+      secret = "sk-super-secret-key-12345"
+      huge_output = secret <> String.duplicate("x", 500)
+
+      runner = fn _cmd -> {huge_output, 0} end
+
+      result =
+        BearerCommand.resolve(
+          command: "secret-cmd",
+          allow_exec?: true,
+          runner: runner,
+          max_stdout_bytes: 100
+        )
+
+      case result do
+        {:error, {:output_too_large, _label}} ->
+          error_str = inspect(result)
+          refute error_str =~ secret
+
+        other ->
+          flunk("Expected output_too_large error, got: #{inspect(other)}")
+      end
+    end
+
+    test "exec_failed error for nonzero exit never contains stdout" do
+      secret = "sk-leaked-in-stderr-or-stdout"
+      runner = fn _cmd -> {secret, 1} end
+
+      result =
+        BearerCommand.resolve(
+          command: "leaky",
+          allow_exec?: true,
+          runner: runner
+        )
+
+      case result do
+        {:error, {:exec_failed, _msg}} ->
+          error_str = inspect(result)
+          refute error_str =~ secret
+
+        other ->
+          flunk("Expected exec_failed error, got: #{inspect(other)}")
+      end
+    end
+
+    test "timeout error never contains partial output" do
+      runner = fn _cmd ->
+        :timer.sleep(100)
+        {"secret-partial-token", 0}
+      end
+
+      result =
+        BearerCommand.resolve(
+          command: "slow-leak",
+          allow_exec?: true,
+          runner: runner,
+          timeout_ms: 10
+        )
+
+      case result do
+        {:error, {:timeout, _label}} ->
+          error_str = inspect(result)
+          refute error_str =~ "secret-partial-token"
+
+        other ->
+          flunk("Expected timeout error, got: #{inspect(other)}")
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # T1-09: Valid small token output succeeds
+  # ---------------------------------------------------------------------------
+
+  describe "resolve/1 valid small token (T1-09)" do
+    test "real echo command produces valid credential" do
+      assert {:ok, cred} =
+               BearerCommand.resolve(
+                 command: "echo valid-small-token",
+                 allow_exec?: true
+               )
+
+      assert cred.type == :bearer
+      assert cred.source == :command
+      assert cred.value == "valid-small-token"
+      assert cred.redacted =~ "REDACTED"
+      refute cred.redacted =~ "valid-small-token"
+    end
+
+    test "argv list command with real echo produces valid credential" do
+      assert {:ok, cred} =
+               BearerCommand.resolve(
+                 command: ["echo", "argv-token"],
+                 allow_exec?: true
+               )
+
+      assert cred.value == "argv-token"
+    end
+
+    test "JWT-shaped token succeeds" do
+      jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.sig123"
+
+      runner = fn _cmd -> {jwt, 0} end
+
+      assert {:ok, cred} =
+               BearerCommand.resolve(
+                 command: "jwt-cmd",
+                 allow_exec?: true,
+                 runner: runner
+               )
+
+      assert cred.value == jwt
+    end
+
+    test "non-printable output fails with exec_failed" do
+      runner = fn _cmd -> {"tok\x00bad", 0} end
+
+      assert {:error, {:exec_failed, msg}} =
+               BearerCommand.resolve(
+                 command: "nonprint",
+                 allow_exec?: true,
+                 runner: runner
+               )
+
+      assert msg =~ "non-printable"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # T1-09: Configuration accessors
+  # ---------------------------------------------------------------------------
+
+  describe "configuration defaults (T1-09)" do
+    test "default_timeout_ms returns 5000" do
+      assert BearerCommand.default_timeout_ms() == 5_000
+    end
+
+    test "default_max_stdout_bytes returns 4096" do
+      assert BearerCommand.default_max_stdout_bytes() == 4_096
     end
   end
 end
