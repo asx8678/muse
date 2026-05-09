@@ -34,6 +34,8 @@ defmodule Muse.Auth.BearerCommand do
   alias Muse.Auth.Credential
   alias Muse.Execution.{Env, ProcessGroup}
 
+  import Bitwise
+
   @default_max_stdout_bytes 4_096
   @default_timeout_ms 5_000
   @force_kill_after_ms 100
@@ -94,7 +96,11 @@ defmodule Muse.Auth.BearerCommand do
       `"sh -c '...'"`.
     * Argv-list commands are passed directly without splitting — safer and
       faster for fixed-argument commands.
-    * Stderr is discarded; only stdout is read.
+    * Stderr is captured into the same stream as stdout (`:stderr_to_stdout`)
+      to prevent credential helpers from leaking tokens to the BEAM console.
+      Both streams count toward `max_stdout_bytes`. Output parsing takes the
+      last non-empty line, which correctly extracts the token when stderr
+      diagnostics precede the token on stdout.
     * The `:runner` / `:cmd_fn` option bypasses real execution entirely and is
       intended for test injection. The runner API accepts the full command
       (binary or list) and returns success/failure tuples.
@@ -192,37 +198,66 @@ defmodule Muse.Auth.BearerCommand do
   defp exec_with_port(command, timeout_ms, max_stdout, source_label) do
     {prog, args} = normalize_command(command)
 
-    with {:ok, exe_path} <- resolve_executable(prog) do
+    with {:ok, exe_path} <- resolve_executable(prog),
+         :ok <- validate_argv(args) do
       env = Env.port_env(%{}, inherit?: true)
 
+      # Use stderr_to_stdout to capture and bound stderr output alongside
+      # stdout. This prevents credential helpers from leaking tokens to
+      # the BEAM's stderr log surface. Both streams count toward
+      # max_stdout_bytes, keeping the bound enforced.
       port_opts = [
         {:args, args},
         :use_stdio,
+        :stderr_to_stdout,
         :binary,
         :exit_status,
         {:env, env}
       ]
 
-      port = Port.open({:spawn_executable, exe_path}, port_opts)
-
       try do
-        deadline = System.monotonic_time(:millisecond) + timeout_ms
-        collect_port_output(port, deadline, max_stdout, 0, "", source_label)
-      after
-        if Port.info(port) != nil, do: Port.close(port)
+        port = Port.open({:spawn_executable, exe_path}, port_opts)
+
+        try do
+          deadline = System.monotonic_time(:millisecond) + timeout_ms
+          collect_port_output(port, deadline, max_stdout, 0, "", source_label)
+        after
+          if Port.info(port) != nil, do: Port.close(port)
+        end
+      catch
+        :error, reason ->
+          {:error, {:exec_failed, "port open failed: #{safe_exit_reason(reason)}"}}
       end
     else
       {:error, reason} -> {:error, {:exec_failed, reason}}
     end
   end
 
+  defp validate_argv(args) when is_list(args) do
+    if Enum.all?(args, &is_binary/1) do
+      :ok
+    else
+      {:error, "all command arguments must be strings"}
+    end
+  end
+
+  defp validate_argv(_), do: {:error, "command arguments must be a list of strings"}
+
   defp resolve_executable(prog) do
     cond do
       Path.type(prog) == :absolute ->
-        if safe_absolute_path?(prog) and File.exists?(prog) do
-          {:ok, prog}
-        else
-          {:error, "executable not found or unsafe: #{safe_prog_label(prog)}"}
+        cond do
+          not safe_absolute_path?(prog) ->
+            {:error, "executable path rejected for safety: #{safe_prog_label(prog)}"}
+
+          not File.exists?(prog) ->
+            {:error, "executable not found: #{safe_prog_label(prog)}"}
+
+          not is_executable?(prog) ->
+            {:error, "executable not accessible: #{safe_prog_label(prog)}"}
+
+          true ->
+            {:ok, prog}
         end
 
       true ->
@@ -230,6 +265,19 @@ defmodule Muse.Auth.BearerCommand do
           nil -> {:error, "command not found: #{safe_prog_label(prog)}"}
           path -> {:ok, path}
         end
+    end
+  end
+
+  # Best-effort executability check. Returns true if the file appears
+  # executable (has execute permission for the current user).
+  defp is_executable?(path) when is_binary(path) do
+    case File.stat(path) do
+      {:ok, %File.Stat{type: :regular, mode: mode}} ->
+        # Check if any execute bit is set (owner, group, or other)
+        band(mode, 0o111) != 0
+
+      _ ->
+        false
     end
   end
 
@@ -355,7 +403,12 @@ defmodule Muse.Auth.BearerCommand do
   end
 
   # ---------------------------------------------------------------------------
-  # Output parsing — trim, take first non-empty line, validate token shape
+  # Output parsing — trim, take last non-empty line, validate token shape
+  #
+  # With :stderr_to_stdout, stderr diagnostics may precede the actual token
+  # on stdout. Bearer tokens are typically the last line of output, so we
+  # take the last non-empty line rather than the first. This is correct for
+  # single-line output (first == last) and robust for merged stderr.
   # ---------------------------------------------------------------------------
 
   defp parse_output(output) do
@@ -364,12 +417,13 @@ defmodule Muse.Auth.BearerCommand do
     if trimmed == "" do
       {:error, :empty_output}
     else
-      first =
+      last =
         trimmed
         |> String.split(["\r\n", "\n"])
+        |> Enum.reverse()
         |> Enum.find(&(String.trim(&1) != ""))
 
-      case first do
+      case last do
         nil ->
           {:error, :empty_output}
 

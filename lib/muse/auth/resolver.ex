@@ -108,20 +108,34 @@ defmodule Muse.Auth.Resolver do
 
   defp resolve_bearer_command(context) do
     command = first_present(context, [:bearer_command, :command])
-    runner = option_value(context, :auth_runner)
     source_label = option_value(context, :source_label) || "bearer_command"
+    runner = option_value(context, :auth_runner)
+    max_stdout = option_value(context, :max_stdout_bytes)
 
-    if runner do
-      resolve_bearer_with_runner(command, runner, source_label)
-    else
-      bearer_opts =
-        []
-        |> put_present(:command, command)
-        |> put_present(:source_label, source_label)
-        |> put_present(:allow_exec?, bearer_allow_exec?(context))
+    # All bearer command resolution goes through BearerCommand.resolve/1
+    # to ensure bounded stdout, token shape validation, and secret-safe
+    # error messages are enforced consistently.
+    bearer_opts =
+      []
+      |> put_present(:command, command)
+      |> put_present(:source_label, source_label)
+      |> put_present(:allow_exec?, bearer_allow_exec?(context))
+      |> put_present(:max_stdout_bytes, max_stdout)
+      |> then(fn opts ->
+        # When an auth_runner is explicitly provided, the caller intends to
+        # execute via injection. Force allow_exec? to true so BearerCommand
+        # doesn't reject it. This preserves the prior behaviour where the
+        # resolver's own runner path did not enforce allow_exec?.
+        if runner do
+          opts
+          |> Keyword.put(:runner, runner)
+          |> Keyword.put(:allow_exec?, true)
+        else
+          opts
+        end
+      end)
 
-      BearerCommand.resolve(bearer_opts)
-    end
+    BearerCommand.resolve(bearer_opts)
   end
 
   defp resolve_codex_cache(context) do
@@ -185,79 +199,12 @@ defmodule Muse.Auth.Resolver do
   defp normalize_app_config(_app_config), do: []
 
   # ---------------------------------------------------------------------------
-  # Bearer command runner support
+  # Bearer command support
   # ---------------------------------------------------------------------------
 
   defp bearer_allow_exec?(context) do
     first_present(context, [:allow_exec?, :bearer_command_allow_exec?]) || false
   end
-
-  defp resolve_bearer_with_runner(nil, _runner, source_label),
-    do: {:error, {:no_command, source_label}}
-
-  defp resolve_bearer_with_runner(command, runner, source_label) when is_function(runner, 1) do
-    runner
-    |> safe_run(fn -> runner.(command) end)
-    |> normalize_runner_result(source_label)
-  end
-
-  defp resolve_bearer_with_runner(command, runner, source_label) when is_function(runner, 2) do
-    runner
-    |> safe_run(fn -> runner.(command, source_label: source_label) end)
-    |> normalize_runner_result(source_label)
-  end
-
-  defp resolve_bearer_with_runner(_command, _runner, _source_label) do
-    {:error, {:invalid_runner, "auth_runner must be a one- or two-arity function"}}
-  end
-
-  defp safe_run(_runner, fun) do
-    {:ok, fun.()}
-  rescue
-    _exception -> {:error, {:exec_failed, "auth_runner raised"}}
-  catch
-    _kind, _reason -> {:error, {:exec_failed, "auth_runner failed"}}
-  end
-
-  defp normalize_runner_result({:ok, {:ok, output}}, source_label),
-    do: output_to_credential(output, source_label)
-
-  defp normalize_runner_result({:ok, {output, 0}}, source_label),
-    do: output_to_credential(output, source_label)
-
-  defp normalize_runner_result({:ok, output}, source_label) when is_binary(output),
-    do: output_to_credential(output, source_label)
-
-  defp normalize_runner_result({:ok, {:error, _reason}}, _source_label),
-    do: {:error, {:exec_failed, "auth_runner failed"}}
-
-  defp normalize_runner_result({:ok, {_output, exit_status}}, _source_label)
-       when is_integer(exit_status),
-       do: {:error, {:exec_failed, "auth_runner exited with non-zero status"}}
-
-  defp normalize_runner_result({:error, reason}, _source_label), do: {:error, reason}
-
-  defp normalize_runner_result(_other, _source_label),
-    do: {:error, {:exec_failed, "auth_runner returned an unsupported result"}}
-
-  defp output_to_credential(output, source_label) when is_binary(output) do
-    token = String.trim_trailing(output)
-
-    if token == "" do
-      {:error, :empty_output}
-    else
-      {:ok,
-       %Credential{
-         type: :bearer,
-         value: token,
-         source: :command,
-         source_ref: source_label,
-         redacted: Credential.redact_value(token)
-       }}
-    end
-  end
-
-  defp output_to_credential(_output, _source_label), do: {:error, :empty_output}
 
   # ---------------------------------------------------------------------------
   # Codex cache options

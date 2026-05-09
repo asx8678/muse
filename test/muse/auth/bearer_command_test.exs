@@ -294,8 +294,8 @@ defmodule Muse.Auth.BearerCommandTest do
   # ---------------------------------------------------------------------------
 
   describe "resolve/1 multi-line output" do
-    test "multi-line output uses first non-empty line" do
-      runner = fn _cmd -> {"header-line\n\nsecond-line\nthird", 0} end
+    test "multi-line output uses last non-empty line (bearer token is typically last)" do
+      runner = fn _cmd -> {"header-line\n\nsecond-line\ntok-third", 0} end
 
       assert {:ok, cred} =
                BearerCommand.resolve(
@@ -304,7 +304,8 @@ defmodule Muse.Auth.BearerCommandTest do
                  runner: runner
                )
 
-      assert cred.value == "header-line"
+      # Bearer tokens are on the last line; earlier lines may be diagnostics
+      assert cred.value == "tok-third"
     end
 
     test "leading whitespace in output is trimmed" do
@@ -635,6 +636,70 @@ defmodule Muse.Auth.BearerCommandTest do
                )
 
       assert msg =~ "non-printable"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # T1-09: Port execution safety
+  # ---------------------------------------------------------------------------
+
+  describe "resolve/1 port execution safety (T1-09)" do
+    test "stderr is captured and bounded — no leak to BEAM console" do
+      # Write a canary to stderr; it should NOT appear in the return value
+      # and should be counted toward max_stdout_bytes.
+      # With :stderr_to_stdout, both streams are captured and bounded.
+      # Use argv list to preserve shell script as single -c argument.
+      result =
+        BearerCommand.resolve(
+          command: ["sh", "-c", "echo STDERR_CANARY_BC >&2; echo tok-stderr-test"],
+          allow_exec?: true
+        )
+
+      # The credential should still resolve (stderr is captured, token on stdout)
+      assert {:ok, cred} = result
+      assert cred.value == "tok-stderr-test"
+
+      # The canary must NOT leak into error messages or inspect output
+      refute inspect(result) =~ "STDERR_CANARY_BC"
+    end
+
+    test "stderr canary does not appear in error output when command fails" do
+      result =
+        BearerCommand.resolve(
+          command: ["sh", "-c", "echo STDERR_CANARY_FAIL >&2; exit 1"],
+          allow_exec?: true
+        )
+
+      assert {:error, {:exec_failed, _msg}} = result
+      refute inspect(result) =~ "STDERR_CANARY_FAIL"
+    end
+
+    test "argv list with non-string args returns exec_failed" do
+      # Non-binary args should be rejected safely, not crash Port.open
+      assert {:error, {:exec_failed, msg}} =
+               BearerCommand.resolve(
+                 command: ["echo", 123],
+                 allow_exec?: true
+               )
+
+      assert msg =~ "string"
+    end
+
+    test "Port.open failure returns safe exec_failed error" do
+      # An absolute path to a non-executable file should fail gracefully
+      tmp_path = System.tmp_dir!()
+      non_exec = Path.join(tmp_path, "bearer_test_not_exec_#{:erlang.unique_integer()}")
+      File.write!(non_exec, "not executable")
+
+      try do
+        assert {:error, {:exec_failed, _msg}} =
+                 BearerCommand.resolve(
+                   command: non_exec,
+                   allow_exec?: true
+                 )
+      after
+        File.rm(non_exec)
+      end
     end
   end
 

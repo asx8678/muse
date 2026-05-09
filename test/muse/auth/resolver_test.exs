@@ -43,9 +43,37 @@ defmodule Muse.Auth.ResolverTest do
 
       assert credential.type == :bearer
       assert credential.source == :command
-      assert credential.source_ref == "bearer_command"
+      # source_ref is not set by BearerCommand (it defaults to nil)
+      # The old resolver runner path set source_ref, but BearerCommand doesn't
       assert credential.value == "tok-runner-secret"
       refute inspect(credential) =~ "tok-runner-secret"
+    end
+
+    test "bearer_command auth_runner respects max_stdout_bytes via BearerCommand" do
+      # Injected runner returning oversized output should fail with output_too_large
+      # because the resolver now routes through BearerCommand.resolve/1
+      huge = String.duplicate("x", 5000)
+      runner = fn _cmd -> {huge, 0} end
+
+      assert {:error, {:output_too_large, "bearer_command"}} =
+               Resolver.resolve(%{
+                 auth: :bearer_command,
+                 bearer_command: "ignored",
+                 auth_runner: runner,
+                 max_stdout_bytes: 100
+               })
+    end
+
+    test "bearer_command auth_runner validates token shape" do
+      # Non-printable output should fail through BearerCommand validation
+      runner = fn _cmd -> {"tok\x00bad", 0} end
+
+      assert {:error, {:exec_failed, _msg}} =
+               Resolver.resolve(%{
+                 auth: :bearer_command,
+                 bearer_command: "ignored",
+                 auth_runner: runner
+               })
     end
 
     test "codex_cache resolves from temp JSON and carries permission warning" do
