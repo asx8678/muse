@@ -11,6 +11,7 @@ defmodule MuseWeb.ConsoleCommand do
   import Phoenix.Component, only: [assign: 2]
   import Phoenix.LiveView, only: [push_event: 3, connected?: 1]
 
+  alias Muse.Bounds
   alias Muse.EventStream
   alias MuseWeb.BackendBridge
   alias Muse.CommandDispatcher
@@ -258,6 +259,8 @@ defmodule MuseWeb.ConsoleCommand do
       Process.send_after(self(), {:dismiss_toast, id}, @toast_timeout_ms)
     end
 
-    assign(socket, toasts: socket.assigns.toasts ++ [toast])
+    assign(socket,
+      toasts: Bounds.trim_newest_first(socket.assigns.toasts ++ [toast], Bounds.toasts())
+    )
   end
 end

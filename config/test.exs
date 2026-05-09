@@ -47,3 +47,12 @@ config :muse, :browser_access_enforced, false
 # Existing tests manually start/stop those globally-named processes,
 # so automatic supervision would cause name conflicts.
 config :muse, :start_runtime_children?, false
+
+# Tighter bounds for deterministic cap-enforcement tests
+config :muse, :bounds, %{
+  session_events: 50,
+  command_history: 5,
+  toasts: 3,
+  streaming_buffer_bytes: 256,
+  diagnostics: 10
+}

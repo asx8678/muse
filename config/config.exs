@@ -61,5 +61,10 @@ config :muse, :external_ws,
 # :websocket_client_not_configured}}.
 config :muse, :websocket_client, nil
 
+# --- Memory bounds for per-session events, UI queues, and buffers ---
+# Override individual keys in env-specific config or at runtime.
+# Keys not explicitly set fall back to the compiled-in defaults in Muse.Bounds.
+config :muse, :bounds, %{}
+
 # --- Environment-specific overrides ---
 import_config "#{config_env()}.exs"

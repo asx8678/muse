@@ -1294,7 +1294,8 @@ defmodule Muse.SessionServer do
 
     session_events = session_events ++ [turn_completed_event]
 
-    updated_events = state.events ++ session_events
+    updated_events =
+      Muse.Bounds.trim_newest_first(state.events ++ session_events, Muse.Bounds.session_events())
 
     state =
       state
@@ -1369,7 +1370,9 @@ defmodule Muse.SessionServer do
 
     session_events = session_events ++ [turn_completed_event]
 
-    updated_events = state.events ++ session_events
+    updated_events =
+      Muse.Bounds.trim_newest_first(state.events ++ session_events, Muse.Bounds.session_events())
+
     state = %{state | events: updated_events}
 
     if state.from do
@@ -1420,7 +1423,10 @@ defmodule Muse.SessionServer do
     session_events = session_events ++ [turn_failed_event]
 
     state = %{state | status: :idle}
-    updated_events = state.events ++ session_events
+
+    updated_events =
+      Muse.Bounds.trim_newest_first(state.events ++ session_events, Muse.Bounds.session_events())
+
     state = %{state | events: updated_events}
 
     if state.from do
@@ -1474,7 +1480,10 @@ defmodule Muse.SessionServer do
     session_events = session_events ++ [turn_failed_event]
 
     state = %{state | status: :idle}
-    updated_events = state.events ++ session_events
+
+    updated_events =
+      Muse.Bounds.trim_newest_first(state.events ++ session_events, Muse.Bounds.session_events())
+
     state = %{state | events: updated_events}
 
     if state.from do
@@ -2570,7 +2579,9 @@ defmodule Muse.SessionServer do
   end
 
   defp append_session_events(state, events) do
-    %{state | events: state.events ++ events}
+    all_events = state.events ++ events
+    capped = Muse.Bounds.trim_newest_first(all_events, Muse.Bounds.session_events())
+    %{state | events: capped}
   end
 
   # -- Plan persistence --------------------------------------------------------

@@ -30,6 +30,7 @@ defmodule MuseWeb.HomeLive do
 
   alias Muse.EventStream
   alias Muse.RuntimeProvider
+  alias Muse.Bounds
   alias MuseWeb.BackendBridge
   alias MuseWeb.ConsoleCommand
 
@@ -210,7 +211,10 @@ defmodule MuseWeb.HomeLive do
 
           {:noreply,
            socket
-           |> assign(command_history: socket.assigns.command_history ++ [entry], input: "")
+           |> assign(
+             command_history: append_command_history(socket.assigns.command_history, entry),
+             input: ""
+           )
            |> push_clear_command_input()}
 
         {:command, action, args} ->
@@ -224,7 +228,10 @@ defmodule MuseWeb.HomeLive do
 
           {:noreply,
            socket
-           |> assign(command_history: socket.assigns.command_history ++ [entry], input: "")
+           |> assign(
+             command_history: append_command_history(socket.assigns.command_history, entry),
+             input: ""
+           )
            |> push_clear_command_input()}
 
         {:unknown, cmd} ->
@@ -234,7 +241,10 @@ defmodule MuseWeb.HomeLive do
 
           {:noreply,
            socket
-           |> assign(command_history: socket.assigns.command_history ++ [entry], input: "")
+           |> assign(
+             command_history: append_command_history(socket.assigns.command_history, entry),
+             input: ""
+           )
            |> push_clear_command_input()}
       end
     end
@@ -856,7 +866,7 @@ defmodule MuseWeb.HomeLive do
     diagnostics =
       [diagnostic | socket.assigns.diagnostics]
       |> Enum.uniq_by(& &1.id)
-      |> Enum.take(50)
+      |> Bounds.trim_newest_first(Bounds.diagnostics())
 
     # Do NOT auto-open drawer or schedule collapse
     socket = assign(socket, diagnostics: diagnostics)
@@ -985,6 +995,10 @@ defmodule MuseWeb.HomeLive do
     }
   end
 
+  defp append_command_history(history, entry) do
+    Bounds.trim_newest_first(history ++ [entry], Bounds.command_history())
+  end
+
   defp push_clear_command_input(socket) do
     push_event(socket, "clear_command_input", %{})
   end
@@ -997,7 +1011,9 @@ defmodule MuseWeb.HomeLive do
       Process.send_after(self(), {:dismiss_toast, id}, @toast_timeout_ms)
     end
 
-    assign(socket, toasts: socket.assigns.toasts ++ [toast])
+    assign(socket,
+      toasts: Bounds.trim_newest_first(socket.assigns.toasts ++ [toast], Bounds.toasts())
+    )
   end
 
   defp compute_issue_statuses(issues) do
@@ -1041,11 +1057,13 @@ defmodule MuseWeb.HomeLive do
     turn_id = event.turn_id
     chunk = delta_chunk(event.data)
     existing = Map.get(buffers, turn_id, "")
-    Map.put(buffers, turn_id, existing <> chunk)
+    appended = existing <> chunk
+    capped = Bounds.trim_streaming_buffer(appended, Bounds.streaming_buffer_bytes())
+    Map.put(buffers, turn_id, capped)
   end
 
   defp update_streaming_buffers(buffers, %Muse.Event{type: type, turn_id: turn_id}, _new_event?)
-       when type in [:assistant_message, :turn_completed] do
+       when type in [:assistant_message, :turn_completed, :turn_failed, :turn_cancelled] do
     Map.delete(buffers, turn_id)
   end
 
