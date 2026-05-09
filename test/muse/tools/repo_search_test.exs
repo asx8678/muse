@@ -226,6 +226,23 @@ defmodule Muse.Tools.RepoSearchTest do
       assert length(jp_results) > 0
     end
 
+    test "per-file bounded search: single file with many matches stops at remaining capacity", %{
+      root: root
+    } do
+      # Create a file with 100 matching lines — with max_results=3 only 3 should be found
+      lines = for i <- 1..100, do: "defmodule Bounded#{i} do"
+      File.write!(Path.join(root, "bounded.ex"), Enum.join(lines, "\n"))
+
+      result =
+        RepoSearch.execute(%{"pattern" => "defmodule", "max_results" => 3}, %{workspace: root})
+
+      assert result.success
+      bounded_results = Enum.filter(result.output.results, &String.contains?(&1.file, "bounded"))
+      # The bounded file should contribute at most 3 matches total (not 100)
+      assert length(result.output.results) <= 3
+      assert length(bounded_results) <= 3
+    end
+
     test "excerpt in results uses safe_slice for multibyte characters", %{root: root} do
       # Create a file with multibyte chars so excerpts test grapheme-aware slicing
       long_line = String.duplicate("日本語", 100)
