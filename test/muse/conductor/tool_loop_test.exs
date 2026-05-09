@@ -890,4 +890,78 @@ defmodule Muse.Conductor.ToolLoopTest do
       assert Map.has_key?(all, :tool_concurrency)
     end
   end
+
+  # -- T1-18: Spec ordering regression test ----------------------------------
+
+  describe "run/8 \u2014 spec ordering (regression for prepend_specs fix)" do
+    test "dedup event specs are in chronological order (dedup \u2192 started \u2192 completed)" do
+      session = build_session()
+      turn = build_turn()
+      muse = build_muse()
+      bundle = build_bundle()
+
+      # Two identical tool calls \u2014 second should be deduped
+      fake_event_batches = [
+        [
+          {:tool_call, "list_files", %{"path" => "."}, "call_ord1"},
+          {:tool_call, "list_files", %{"path" => "."}, "call_ord2"},
+          {:response_completed, nil}
+        ],
+        [
+          {:assistant_completed, "Done."},
+          {:response_completed, nil}
+        ]
+      ]
+
+      request = build_request(fake_event_batches, 0)
+
+      initial_response = %Response{
+        content: nil,
+        tool_calls: [
+          ToolCall.new("list_files", %{"path" => "."}, id: "call_ord1"),
+          ToolCall.new("list_files", %{"path" => "."}, id: "call_ord2")
+        ],
+        finish_reason: "tool_calls"
+      }
+
+      {:ok, result} =
+        ToolLoop.run(session, turn, muse, bundle, request, initial_response, [],
+          provider_module: FakeProvider,
+          tool_runner: FakeToolRunner
+        )
+
+      # Find the dedup event for call_ord2
+      dedup_specs = filter_specs(result.event_specs, :tool_call_dedup)
+      assert length(dedup_specs) >= 1
+
+      dedup_spec =
+        Enum.find(dedup_specs, fn {_, _, data, _} ->
+          data.tool_call_id == "call_ord2"
+        end)
+
+      assert dedup_spec != nil
+
+      # Verify chronological order: dedup \u2192 started \u2192 completed
+      dedup_idx = Enum.find_index(result.event_specs, &(&1 == dedup_spec))
+      started_specs = filter_specs(result.event_specs, :tool_call_started)
+
+      started_for_ord2 =
+        Enum.find(started_specs, fn {_, _, data, _} ->
+          data.tool_call_id == "call_ord2"
+        end)
+
+      started_idx = Enum.find_index(result.event_specs, &(&1 == started_for_ord2))
+      completed_specs = filter_specs(result.event_specs, :tool_call_completed)
+
+      completed_for_ord2 =
+        Enum.find(completed_specs, fn {_, _, data, _} ->
+          data.tool_call_id == "call_ord2"
+        end)
+
+      completed_idx = Enum.find_index(result.event_specs, &(&1 == completed_for_ord2))
+
+      assert dedup_idx < started_idx, "dedup spec must come before started spec"
+      assert started_idx < completed_idx, "started spec must come before completed spec"
+    end
+  end
 end

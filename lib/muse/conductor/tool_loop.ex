@@ -179,7 +179,7 @@ defmodule Muse.Conductor.ToolLoop do
       state = %{
         state
         | event_specs_acc: prepend_specs(state.event_specs_acc, tool_event_specs),
-          patch_proposals_acc: new_proposals ++ state.patch_proposals_acc,
+          patch_proposals_acc: [new_proposals | state.patch_proposals_acc],
           tool_cache: Map.merge(state.tool_cache, new_cache),
           total_tool_calls: new_total
       }
@@ -486,10 +486,6 @@ defmodule Muse.Conductor.ToolLoop do
           )
         end
 
-      # Merge all results maintaining original call order
-      _all_exec_results = fresh_results ++ dup_fresh_results
-      _all_exec_specs = fresh_specs ++ dup_fresh_specs
-
       {result_list, spec_list} =
         merge_all_results_in_order(
           calls,
@@ -521,7 +517,9 @@ defmodule Muse.Conductor.ToolLoop do
         end)
         |> Enum.reject(&is_nil/1)
 
-      all_proposals = proposals ++ fresh_proposals ++ dup_fresh_proposals
+      # proposals comes from unique_in_iter (reversed from original) → reversed in reduce,
+      # so Enum.reverse restores original chronological order matching fresh_proposals
+      all_proposals = Enum.reverse(proposals) ++ fresh_proposals ++ dup_fresh_proposals
       actual_total = dup_fresh_total
 
       {result_list, spec_list, actual_total, all_proposals, merged_cache}
@@ -1111,10 +1109,9 @@ defmodule Muse.Conductor.ToolLoop do
   # -- Prepend helpers for event specs (O(1) instead of O(n) ++) ---------------
 
   defp prepend_specs(acc, new_specs) when is_list(new_specs) do
-    # Prepend each spec in reverse order so the final Enum.reverse
-    # restores chronological order.  This is O(length(new_specs))
-    # instead of O(length(acc)).
-    Enum.reduce(new_specs, acc, fn spec, a -> [spec | a] end)
+    # Prepend new_specs to acc, then reverse at build_result time to restore
+    # chronological order.  O(length(new_specs)) instead of O(length(acc)).
+    Enum.reverse(new_specs) ++ acc
   end
 
   defp prepend_specs_to_acc(state, new_specs) do
