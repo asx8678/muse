@@ -72,7 +72,7 @@ defmodule Muse.Tool.SafeTextTest do
       assert SafeText.classify(dels <> text) == :unsafe_text
     end
 
-    test "only checks first 8KB of data" do
+    test "control density only checks first 8KB of data" do
       # Control chars in bytes after 8KB should not affect classification
       text_8kb = String.duplicate("a", 8192)
       control_tail = for _ <- 1..500, into: <<>>, do: <<0x01>>
@@ -80,14 +80,14 @@ defmodule Muse.Tool.SafeTextTest do
       assert SafeText.classify(text_8kb <> control_tail) == :text
     end
 
-    test "NUL bytes detected in first 8KB sample even with large text after" do
-      # NUL byte at position 100, lots of valid text after
-      content = String.duplicate("a", 100) <> <<0>> <> String.duplicate("b", 20000)
+    test "NUL bytes detected in full bounded data" do
+      # NUL byte after the first 8KB sample still makes the data binary.
+      content = String.duplicate("a", 9000) <> <<0>> <> String.duplicate("b", 1000)
       assert SafeText.classify(content) == :binary_file
     end
 
-    test "invalid UTF-8 in first 8KB is :invalid_utf8 even if later bytes are valid" do
-      content = "valid text " <> <<0xFF>> <> String.duplicate("more valid text ", 1000)
+    test "invalid UTF-8 in full bounded data is :invalid_utf8" do
+      content = String.duplicate("valid text ", 900) <> <<0xFF>> <> "more valid text"
       assert SafeText.classify(content) == :invalid_utf8
     end
 

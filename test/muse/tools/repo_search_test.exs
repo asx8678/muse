@@ -193,6 +193,27 @@ defmodule Muse.Tools.RepoSearchTest do
       refute Enum.any?(result.output.results, &String.contains?(&1.file, "ctrl_chars"))
     end
 
+    test "skips invalid UTF-8 after the first 8KB sample without crashing", %{root: root} do
+      File.write!(Path.join(root, "late_bad_utf8.txt"), String.duplicate("a", 9000) <> <<0xFF>>)
+      File.write!(Path.join(root, "late_good.ex"), "defmodule LateGood do\nend\n")
+
+      result = RepoSearch.execute(%{"pattern" => "defmodule"}, %{workspace: root})
+      assert result.success
+      refute Enum.any?(result.output.results, &String.contains?(&1.file, "late_bad_utf8"))
+      assert Enum.any?(result.output.results, &String.contains?(&1.file, "late_good"))
+    end
+
+    test "skips NUL bytes after the first 8KB sample", %{root: root} do
+      File.write!(
+        Path.join(root, "late_nul.txt"),
+        String.duplicate("a", 9000) <> <<0>> <> "defmodule"
+      )
+
+      result = RepoSearch.execute(%{"pattern" => "defmodule"}, %{workspace: root})
+      assert result.success
+      refute Enum.any?(result.output.results, &String.contains?(&1.file, "late_nul"))
+    end
+
     test "handles valid UTF-8 files with multibyte characters", %{root: root} do
       File.write!(
         Path.join(root, "utf8_jp.ex"),

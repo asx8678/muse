@@ -181,6 +181,24 @@ defmodule Muse.Tools.ReadFileTest do
       refute result.success
       assert result.error =~ "invalid UTF-8"
     end
+
+    test "rejects invalid UTF-8 after the first 8KB sample without crashing", %{root: root} do
+      File.write!(
+        Path.join(root, "late_invalid_utf8.txt"),
+        String.duplicate("a", 9000) <> <<0xFF>>
+      )
+
+      result = ReadFile.execute(%{"path" => "late_invalid_utf8.txt"}, %{workspace: root})
+      refute result.success
+      assert result.error =~ "invalid UTF-8"
+    end
+
+    test "rejects NUL bytes after the first 8KB sample", %{root: root} do
+      File.write!(Path.join(root, "late_nul.txt"), String.duplicate("a", 9000) <> <<0>> <> "tail")
+      result = ReadFile.execute(%{"path" => "late_nul.txt"}, %{workspace: root})
+      refute result.success
+      assert result.error =~ "binary"
+    end
   end
 
   describe "execute/2 — start_line past EOF" do

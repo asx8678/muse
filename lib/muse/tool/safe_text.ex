@@ -35,8 +35,9 @@ defmodule Muse.Tool.SafeText do
   @doc """
   Classify binary data as text or one of several unsafe categories.
 
-  Examines the first `@binary_sample_size` bytes (or fewer if the data
-  is shorter). Returns:
+  Validates NUL bytes and UTF-8 across the provided binary. Control-character
+  density is sampled from the first `@binary_sample_size` bytes (or fewer if
+  the data is shorter). Returns:
 
     * `:text` — valid UTF-8, no NUL bytes, acceptable control-char density
     * `:binary_file` — contains NUL bytes
@@ -64,15 +65,15 @@ defmodule Muse.Tool.SafeText do
     <<sample::binary-size(sample_size), _::binary>> = data
 
     cond do
-      # NUL bytes → definitive binary
-      :binary.match(sample, <<0>>) != :nomatch ->
+      # NUL bytes anywhere in the bounded tool read are a definitive binary indicator.
+      :binary.match(data, <<0>>) != :nomatch ->
         :binary_file
 
-      # Invalid UTF-8 sequences
-      not String.valid?(sample) ->
+      # Validate the full bounded payload before any caller uses String functions.
+      not String.valid?(data) ->
         :invalid_utf8
 
-      # Excessive control characters
+      # Excessive control characters are a heuristic, sampled from the start.
       unsafe_control_density?(sample) ->
         :unsafe_text
 
