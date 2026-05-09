@@ -75,7 +75,14 @@ defmodule MuseWeb.HomeLiveNonBlockingSubmitTest do
 
   defp start_endpoint do
     stop_named(MuseWeb.Endpoint)
-    {:ok, _} = MuseWeb.Endpoint.start_link()
+
+    case MuseWeb.Endpoint.start_link() do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        {:ok, pid}
+    end
   end
 
   defp clean_sessions do

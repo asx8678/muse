@@ -28,16 +28,15 @@ defmodule Muse.SessionServerBoundsTest do
   end
 
   defp start_dependencies(workspace_root) do
-    if Process.whereis(Muse.PubSub) == nil do
-      {:ok, _} =
-        Supervisor.start_link([{Phoenix.PubSub, name: Muse.PubSub}], strategy: :one_for_one)
-    end
+    # Muse.PubSub, Muse.TaskSupervisor, and Muse.SessionRegistry are
+    # Application-supervised (base_children). Do NOT stop/restart them —
+    # doing so crashes Muse.Supervisor, cascading failures to all children.
+    # Instead, verify they are running (Application starts them).
+    assert Process.whereis(Muse.PubSub) != nil,
+           "Muse.PubSub not running — Application base_children not started?"
 
-    stop_named(Muse.TaskSupervisor)
-    {:ok, _} = Task.Supervisor.start_link(name: Muse.TaskSupervisor)
-
-    stop_named(Muse.SessionRegistry)
-    {:ok, _} = Registry.start_link(keys: :unique, name: Muse.SessionRegistry)
+    assert Process.whereis(Muse.TaskSupervisor) != nil, "Muse.TaskSupervisor not running"
+    assert Process.whereis(Muse.SessionRegistry) != nil, "Muse.SessionRegistry not running"
 
     stop_named(Muse.Workspace)
     {:ok, _} = Muse.Workspace.start_link(root: workspace_root)
@@ -61,8 +60,8 @@ defmodule Muse.SessionServerBoundsTest do
     stop_named(Muse.Diagnostics)
     stop_named(Muse.State)
     stop_named(Muse.Workspace)
-    stop_named(Muse.SessionRegistry)
-    stop_named(Muse.TaskSupervisor)
+    # Do NOT stop Muse.SessionRegistry or Muse.TaskSupervisor here —
+    # they are Application-supervised and stopping them crashes Muse.Supervisor.
   end
 
   defp tmp_workspace do

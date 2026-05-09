@@ -69,7 +69,16 @@ defmodule MuseWeb.HomeLiveBoundsTest do
 
   defp start_endpoint do
     stop_named(MuseWeb.Endpoint)
-    {:ok, _} = MuseWeb.Endpoint.start_link()
+
+    case MuseWeb.Endpoint.start_link() do
+      {:ok, pid} ->
+        {:ok, pid}
+
+      {:error, {:already_started, pid}} ->
+        # Previous test's on_exit may not have fully stopped the endpoint.
+        # Use the already-running instance rather than crashing.
+        {:ok, pid}
+    end
   end
 
   defp live_socket(view), do: view.pid |> :sys.get_state() |> Map.fetch!(:socket)
@@ -82,8 +91,11 @@ defmodule MuseWeb.HomeLiveBoundsTest do
     File.mkdir_p!(workspace_root)
 
     Muse.Diagnostics.LoggerHandler.remove()
-    stop_named(Muse.SessionRegistry)
-    {:ok, _} = Registry.start_link(keys: :unique, name: Muse.SessionRegistry)
+
+    # Muse.SessionRegistry is Application-supervised (base_children).
+    # Do NOT stop/restart it — doing so crashes Muse.Supervisor when it
+    # tries to restart the child, cascading failures to PubSub and beyond.
+    # The Application-supervised registry starts empty and is safe to reuse.
 
     start_workspace(workspace_root)
     start_state()
@@ -108,7 +120,6 @@ defmodule MuseWeb.HomeLiveBoundsTest do
       stop_named(Muse.Diagnostics)
       stop_named(Muse.State)
       stop_named(Muse.Workspace)
-      stop_named(Muse.SessionRegistry)
       File.rm_rf!(workspace_root)
     end)
 
