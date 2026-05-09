@@ -105,10 +105,21 @@ defmodule MuseWeb.HomeLive do
         patch_proposal: nil,
         # PR20: session status for context panel
         session_status: fetch_session_status(),
-        # T0-04: non-blocking submit state
+        # T0-04: non-blocking submit state — hydrate from session status
+        # so that browser reconnect/reload during a long turn shows busy state
         submitting?: false,
         active_turn_id: nil
       )
+
+    # T0-04: If session is already running on mount (reconnect), hydrate busy state
+    socket =
+      case socket.assigns.session_status do
+        %{status: :running, active_turn_id: turn_id} when is_binary(turn_id) ->
+          assign(socket, submitting?: true, active_turn_id: turn_id)
+
+        _ ->
+          socket
+      end
 
     {:ok, socket}
   end
@@ -756,11 +767,18 @@ defmodule MuseWeb.HomeLive do
           socket.assigns.streaming_buffers
       end
 
-    # T0-04: Clear submitting state on turn terminal events
+    # T0-04: Clear submitting state on turn terminal events.
+    # Only clear if the terminal event belongs to the currently active turn,
+    # to avoid prematurely clearing state from a stale or unrelated turn.
     {submitting?, active_turn_id, session_status} =
       case event.type do
         type when type in [:turn_completed, :turn_failed, :turn_cancelled] ->
-          {false, nil, fetch_session_status()}
+          if event.turn_id == socket.assigns.active_turn_id do
+            {false, nil, fetch_session_status()}
+          else
+            {socket.assigns.submitting?, socket.assigns.active_turn_id,
+             socket.assigns.session_status}
+          end
 
         _ ->
           {socket.assigns.submitting?, socket.assigns.active_turn_id,

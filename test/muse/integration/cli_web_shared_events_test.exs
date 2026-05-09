@@ -144,6 +144,9 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
 
       view |> element("#command-form") |> render_submit(%{"text" => "hello from web"})
 
+      # T0-04: submit is now non-blocking; wait for async events to complete
+      Process.sleep(100)
+
       # Check events via CLI /events
       output =
         ExUnit.CaptureIO.capture_io(fn ->
@@ -166,6 +169,9 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
 
       view |> element("#command-form") |> render_submit(%{"text" => "web query"})
 
+      # T0-04: submit is now non-blocking; wait for async events to complete
+      Process.sleep(100)
+
       output =
         ExUnit.CaptureIO.capture_io(fn ->
           Muse.CLI.Repl.handle_input("/events", halt?: false)
@@ -179,7 +185,10 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
       {:ok, view, _html} = live(build_conn(), "/")
 
       view |> element("#command-form") |> render_submit(%{"text" => "web first"})
+      # T0-04: wait for first async turn to complete before submitting second
+      Process.sleep(100)
       view |> element("#command-form") |> render_submit(%{"text" => "web second"})
+      Process.sleep(100)
 
       output =
         ExUnit.CaptureIO.capture_io(fn ->
@@ -214,6 +223,9 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
 
       view |> element("#command-form") |> render_submit(%{"text" => "from web side"})
 
+      # T0-04: submit is now non-blocking; wait for async events to complete
+      Process.sleep(100)
+
       # Both events appear in LiveView
       html = render(view)
       assert html =~ "from cli side"
@@ -237,6 +249,9 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
       {:ok, view, _html} = live(build_conn(), "/")
 
       view |> element("#command-form") |> render_submit(%{"text" => "web event"})
+
+      # T0-04: submit is now non-blocking; wait for async events to complete
+      Process.sleep(100)
 
       # Verify order in State directly
       events = Muse.State.events()
