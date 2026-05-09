@@ -740,7 +740,11 @@ defmodule Muse.SessionServer do
       :ok ->
         {:reply, :ok, %{state | memory: memory}}
 
+      {:error, {:unsafe_memory, _reasons} = reason} ->
+        {:reply, {:error, reason}, state}
+
       {:error, reason} ->
+        log_persistence_failure(:save_memory, state.session_id, reason)
         {:reply, {:error, reason}, state}
     end
   end

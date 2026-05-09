@@ -555,7 +555,8 @@ defmodule Muse.PersistenceFailureTest do
       {:ok, base_dir: base_dir, session_id: session_id}
     end
 
-    test "set_memory returns {:error, _} when disk write fails", %{session_id: session_id} do
+    test "set_memory returns {:error, _} and emits diagnostics when disk write fails",
+         %{session_id: session_id} do
       # Start a session server with an impossible base dir
       bad_base = impossible_path()
 
@@ -566,10 +567,23 @@ defmodule Muse.PersistenceFailureTest do
         )
 
       memory = Memory.new(user_goal: "This should fail to persist")
+      Muse.State.clear()
 
       # Fail-closed: validate_and_persist should fail with a disk error
-      result = GenServer.call(pid, {:set_memory, memory})
-      assert match?({:error, _}, result)
+      logs =
+        ExUnit.CaptureLog.capture_log([level: :warning], fn ->
+          result = GenServer.call(pid, {:set_memory, memory})
+          assert match?({:error, _}, result)
+        end)
+
+      assert logs =~ "Persistence failure"
+
+      assert Enum.any?(Muse.State.events(), fn event ->
+               event.type == :persistence_failed and event.source == :system and
+                 event.visibility == :internal and event.session_id == session_id and
+                 event.data[:operation] == :save_memory and is_binary(event.data[:reason]) and
+                 byte_size(event.data[:reason]) < 100
+             end)
 
       # The session server should still be alive
       assert Process.alive?(pid)
