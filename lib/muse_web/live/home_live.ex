@@ -49,6 +49,8 @@ defmodule MuseWeb.HomeLive do
   @impl true
   def mount(_params, _session, socket) do
     state = Muse.State.get()
+    events = state.events
+    chat_messages = EventStream.chat_messages(events)
     workspace = BackendBridge.safe_workspace_root()
     reload_status = BackendBridge.safe_reload_status()
     diagnostics = BackendBridge.safe_diagnostics()
@@ -71,6 +73,9 @@ defmodule MuseWeb.HomeLive do
       socket
       |> assign(
         state: state,
+        # T1-15: local event list and cached chat_messages for incremental updates
+        events: events,
+        chat_messages: chat_messages,
         input: "",
         workspace: workspace,
         reload_status: reload_status,
@@ -143,12 +148,19 @@ defmodule MuseWeb.HomeLive do
               try do
                 case Muse.start_submit(:web, msg, opts) do
                   {:ok, turn_id} ->
+                    # After successful submit, refresh local assigns from State.
+                    # Submit is a rare user action — the hot-path optimization
+                    # is in the PubSub handler which avoids State.get per event.
                     state = Muse.State.get()
+                    events = state.events
+                    chat_messages = EventStream.chat_messages(events)
 
                     {:noreply,
                      socket
                      |> assign(
                        state: state,
+                       events: events,
+                       chat_messages: chat_messages,
                        input: "",
                        submitting?: true,
                        active_turn_id: turn_id
@@ -269,7 +281,7 @@ defmodule MuseWeb.HomeLive do
   def handle_event("copy_event_json", %{"id" => id_str}, socket) do
     case MuseWeb.safe_to_integer(id_str) do
       {:ok, id} ->
-        event = Enum.find(socket.assigns.state.events, &(&1.id == id))
+        event = Enum.find(socket.assigns.events, &(&1.id == id))
 
         if event do
           json = format_event_json(event)
@@ -285,7 +297,7 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("export_events", _params, socket) do
-    events = socket.assigns.state.events
+    events = socket.assigns.events
 
     filtered =
       filtered_events(
@@ -319,8 +331,8 @@ defmodule MuseWeb.HomeLive do
   @impl true
   def handle_event("clear_events", _params, socket) do
     Muse.State.clear()
-    state = Muse.State.get()
-    socket = socket |> assign(state: state) |> add_toast("Events cleared", :info)
+    # State will be refreshed by the {:muse_events_cleared} PubSub message
+    socket = socket |> add_toast("Events cleared", :info)
     {:noreply, socket}
   end
 
@@ -329,8 +341,8 @@ defmodule MuseWeb.HomeLive do
     if Mix.env() != :prod do
       event = Muse.Event.new(:web, :simulated, %{text: "Simulated test event from dev tools"})
       Muse.State.append(event)
-      state = Muse.State.get()
-      socket = socket |> assign(state: state) |> add_toast("Simulated event created", :success)
+      # Event will arrive via PubSub and be handled incrementally
+      socket = add_toast(socket, "Simulated event created", :success)
       {:noreply, socket}
     else
       {:noreply, socket}
@@ -346,11 +358,10 @@ defmodule MuseWeb.HomeLive do
         Muse.Event.new(:web, :error, %{text: "Simulated backend error triggered from dev tools"})
 
       Muse.State.append(event)
-      state = Muse.State.get()
+      # Event will arrive via PubSub and be handled incrementally
 
       socket =
         socket
-        |> assign(state: state)
         |> add_toast("Backend error simulated — check diagnostics", :warning)
 
       {:noreply, socket}
@@ -743,8 +754,16 @@ defmodule MuseWeb.HomeLive do
   end
 
   def handle_info({:muse_event, event}, socket) do
-    state = Muse.State.get()
+    # T1-15: Incremental update — append event to local list, update chat_messages
+    # incrementally instead of fetching full Muse.State on every PubSub event.
+    events = socket.assigns.events ++ [event]
+    state = %{socket.assigns.state | events: events}
     reload_status = BackendBridge.safe_reload_status()
+
+    # Incrementally update chat_messages for chat-affecting events.
+    # The incremental path handles streaming deltas, finals, user messages,
+    # and system events without re-deriving the entire chat history.
+    chat_messages = EventStream.apply_event_to_chat_messages(socket.assigns.chat_messages, event)
 
     # Update streaming buffers for assistant_delta events
     streaming_buffers =
@@ -803,6 +822,8 @@ defmodule MuseWeb.HomeLive do
     {:noreply,
      assign(socket,
        state: state,
+       events: events,
+       chat_messages: chat_messages,
        reload_status: reload_status,
        streaming_buffers: streaming_buffers,
        patch_proposal: patch_proposal,
@@ -815,7 +836,9 @@ defmodule MuseWeb.HomeLive do
   @impl true
   def handle_info({:muse_events_cleared}, socket) do
     state = Muse.State.get()
-    {:noreply, assign(socket, state: state)}
+    events = state.events
+    chat_messages = EventStream.chat_messages(events)
+    {:noreply, assign(socket, state: state, events: events, chat_messages: chat_messages)}
   end
 
   @impl true
@@ -931,7 +954,7 @@ defmodule MuseWeb.HomeLive do
       <div :if={@sidebar_state == :expanded} class="mobile-sidebar-backdrop" phx-click="set_sidebar_state" phx-value-state="hidden" aria-hidden="true"></div>
       <main id="main-content" tabindex="-1" class={"main-layout sidebar-#{@sidebar_state}"}>
         <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} agent_snapshot={@agent_snapshot} beam_stats={@beam_stats} logs={@logs} sidebar_state={@sidebar_state} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} session_status={@session_status} />
-        <.chat_panel messages={chat_messages(@state.events)} input={@input} submitting?={@submitting?} active_turn_id={@active_turn_id} />
+        <.chat_panel messages={@chat_messages} input={@input} submitting?={@submitting?} active_turn_id={@active_turn_id} />
       </main>
       <.diagnostics_popup diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
       <.patch_proposal_panel patch_proposal={@patch_proposal} />
@@ -985,12 +1008,6 @@ defmodule MuseWeb.HomeLive do
   defp diagnostic_line(_), do: nil
 
   # -- Chat-first helpers -----------------------------------------------------
-
-  defp chat_messages(events) do
-    # Use EventStream for structured chat message derivation, which
-    # handles delta deduplication and streaming buffers.
-    EventStream.chat_messages(events)
-  end
 
   defp fetch_session_status do
     case Muse.SessionRouter.status("default") do

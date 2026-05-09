@@ -200,7 +200,7 @@ defmodule Muse.EventStream do
     * `:assistant_delta` events → streaming assistant chunks
     * `:assistant_message` events → final assistant messages
     * plan/approval lifecycle events → concise system status messages
-    * Deduplication: if deltas were streamed (`streamed?: true` in data),
+    * Deduplication: if deltas were streamed (`streamed?` true in data),
       the final `:assistant_message` is suppressed
 
   Each chat message is a map with keys:
@@ -212,6 +212,8 @@ defmodule Muse.EventStream do
     * `:source` — event source
     * `:streaming?` — whether the message is still streaming (has deltas
       but no final `:assistant_message` yet)
+    * `:turn_id` — turn ID for incremental update bookkeeping (nil for
+      legacy events)
 
   Legacy events with `nil` `turn_id` are rendered individually in
   chronological order. Multiple `:assistant_message` finals in a turn
@@ -224,6 +226,130 @@ defmodule Muse.EventStream do
     |> Enum.reject(&internal_event?/1)
     |> group_by_turn_preserving_order()
     |> Enum.flat_map(&turn_to_messages/1)
+  end
+
+  @doc """
+  Apply a single event to an existing chat_messages list incrementally.
+
+  Returns the updated chat_messages list. This avoids re-deriving the
+  entire chat message list from the full event log on every PubSub event,
+  which is especially important for high-frequency streaming deltas.
+
+  For events that don't affect chat (e.g., `:turn_started`,
+  `:turn_completed`), returns the messages unchanged.
+
+  ## Turn ID bookkeeping
+
+  Each message map includes a `:turn_id` field (may be `nil` for legacy
+  events) used to locate the streaming message for incremental delta
+  appends and final-message finalisation.
+  """
+  @spec apply_event_to_chat_messages([map()], Event.t()) :: [map()]
+  def apply_event_to_chat_messages(messages, %Event{} = event) do
+    cond do
+      event.type not in @chat_event_types ->
+        messages
+
+      internal_event?(event) ->
+        messages
+
+      event.type == :user_message ->
+        messages ++ [event_to_chat_message(event)]
+
+      event.type == :assistant_delta ->
+        apply_assistant_delta(messages, event)
+
+      event.type == :assistant_message ->
+        apply_assistant_final(messages, event)
+
+      event.type in @system_event_types ->
+        messages ++ [event_to_system_message(event)]
+
+      true ->
+        messages
+    end
+  end
+
+  # Incrementally apply an assistant_delta to the message list.
+  # For nil-turn deltas, always creates a new streaming message.
+  # For turn-scoped deltas, finds the existing streaming message for the
+  # turn and appends the chunk, or creates a new streaming message.
+  defp apply_assistant_delta(messages, event) do
+    chunk = safe_delta_text(event)
+    turn_id = event.turn_id
+
+    if turn_id == nil do
+      # Nil-turn delta: each one gets its own streaming message
+      messages ++ [single_delta_streaming_message(event)]
+    else
+      case find_streaming_message_index(messages, turn_id) do
+        nil ->
+          # New streaming message for this turn
+          messages ++ [single_delta_streaming_message(event)]
+
+        index ->
+          # Append chunk to existing streaming message
+          existing = Enum.at(messages, index)
+          updated = %{existing | text: existing.text <> chunk}
+          List.replace_at(messages, index, updated)
+      end
+    end
+  end
+
+  # Incrementally apply an assistant_message (final) to the message list.
+  # For nil-turn finals, always appends as a new non-streaming message.
+  # For turn-scoped finals:
+  #   - If a streaming message exists for the turn:
+  #     - If streamed?, finalize the streaming message (keep delta text, set streaming? = false)
+  #     - If not streamed?, finalize streaming message AND add final message alongside
+  #   - If no streaming message exists, add as a new non-streaming message
+  defp apply_assistant_final(messages, event) do
+    turn_id = event.turn_id
+
+    if turn_id == nil do
+      # Nil-turn final: just append as a new message
+      messages ++ [event_to_chat_message(event)]
+    else
+      case find_streaming_message_index(messages, turn_id) do
+        nil ->
+          # No streaming message exists, add as new non-streaming message
+          messages ++ [event_to_chat_message(event)]
+
+        index ->
+          existing = Enum.at(messages, index)
+
+          if streamed?(event) do
+            # Streamed final: finalize streaming message, suppress final
+            updated = %{existing | streaming?: false}
+            List.replace_at(messages, index, updated)
+          else
+            # Non-streamed final: finalize streaming message AND add final alongside
+            finalized = %{existing | streaming?: false}
+            new_msg = event_to_chat_message(event)
+            List.replace_at(messages, index, finalized) ++ [new_msg]
+          end
+      end
+    end
+  end
+
+  # Find the index of the streaming message for the given turn_id.
+  # Returns nil if no such message exists.
+  defp find_streaming_message_index(messages, turn_id) do
+    Enum.find_index(messages, fn msg ->
+      msg[:turn_id] == turn_id and msg[:streaming?] == true
+    end)
+  end
+
+  # Build a streaming message from a single assistant_delta event.
+  defp single_delta_streaming_message(%Event{} = event) do
+    text = safe_delta_text(event)
+
+    %{event_to_chat_message(event) | text: text, streaming?: true}
+  end
+
+  # Extract safe delta text from an event (for incremental appends).
+  defp safe_delta_text(%Event{} = event) do
+    Muse.EventDisplay.safe_text(delta_text(event))
   end
 
   # -- Private helpers ----------------------------------------------------------
@@ -285,26 +411,34 @@ defmodule Muse.EventStream do
   # appearance of each turn_id. Events with nil turn_id are each placed
   # in their own single-event group (keyed by a unique reference) so they
   # don't all get lumped together.
+  #
+  # Single-pass O(n) implementation: builds a map of turn_id → [events]
+  # (prepended for O(1) insertion) alongside an order list, then reverses
+  # each group and materialises the final list in first-appearance order.
   defp group_by_turn_preserving_order(events) do
-    {groups, _seen, _nil_counter} =
-      Enum.reduce(events, {[], MapSet.new(), 0}, fn event, {acc, seen, nil_count} ->
+    {groups_map, order_rev, nil_count} =
+      Enum.reduce(events, {%{}, [], 0}, fn event, {groups, order, nil_count} ->
         turn_id = event.turn_id
 
         if turn_id == nil do
           # Each nil-turn event gets its own unique group
           key = {:nil_turn, nil_count}
-          {[{key, [event]} | acc], seen, nil_count + 1}
+          {Map.put(groups, key, [event]), [key | order], nil_count + 1}
         else
-          if MapSet.member?(seen, turn_id) do
-            {acc, seen, nil_count}
+          if Map.has_key?(groups, turn_id) do
+            # Append to existing group (prepend for O(1), reverse at end)
+            {Map.update!(groups, turn_id, &[event | &1]), order, nil_count}
           else
-            turn_events = Enum.filter(events, &(&1.turn_id == turn_id))
-            {[{turn_id, turn_events} | acc], MapSet.put(seen, turn_id), nil_count}
+            {Map.put(groups, turn_id, [event]), [turn_id | order], nil_count}
           end
         end
       end)
 
-    Enum.reverse(groups)
+    order = Enum.reverse(order_rev)
+
+    Enum.map(order, fn key ->
+      {key, Enum.reverse(Map.get(groups_map, key))}
+    end)
   end
 
   defp maybe_filter_by_session(events, nil), do: events
@@ -371,7 +505,8 @@ defmodule Muse.EventStream do
       text: chat_text(event),
       timestamp: format_timestamp(event.timestamp),
       source: event.source,
-      streaming?: false
+      streaming?: false,
+      turn_id: event.turn_id
     }
   end
 
@@ -382,7 +517,8 @@ defmodule Muse.EventStream do
       text: Muse.EventDisplay.summary(event),
       timestamp: format_timestamp(event.timestamp),
       source: event.source,
-      streaming?: false
+      streaming?: false,
+      turn_id: event.turn_id
     }
   end
 
@@ -401,7 +537,8 @@ defmodule Muse.EventStream do
       text: text,
       timestamp: format_timestamp(first.timestamp),
       source: first.source,
-      streaming?: false
+      streaming?: false,
+      turn_id: first.turn_id
     }
   end
 
@@ -420,7 +557,8 @@ defmodule Muse.EventStream do
       text: text,
       timestamp: format_timestamp(first.timestamp),
       source: first.source,
-      streaming?: true
+      streaming?: true,
+      turn_id: first.turn_id
     }
   end
 

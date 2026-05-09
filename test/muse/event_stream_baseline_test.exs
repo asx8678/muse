@@ -1,10 +1,11 @@
 defmodule Muse.EventStreamBaselineTest do
   @moduledoc """
-  T0-00 Baseline: EventStream.chat_messages/1 on large synthetic event lists.
+  T0-00 Baseline / T1-15 Regression: EventStream.chat_messages/1 on large synthetic event lists.
 
   These tests exercise `chat_messages/1` at scale to:
     1. Confirm it completes without crashing on 1K, 5K, and 20K events.
-    2. Establish rough timing baselines (not strict benchmarks).
+    2. Establish tight timing baselines reflecting the O(n) single-pass grouping
+       (T1-15 replaced the old O(n²) filter-per-turn algorithm).
     3. Detect O(n²) regressions by comparing timings across sizes.
 
   All events are generated deterministically via `Muse.Test.EventFixtures`
@@ -109,7 +110,7 @@ defmodule Muse.EventStreamBaselineTest do
   # ---------------------------------------------------------------------------
 
   describe "chat_messages/1 — rough timing baseline" do
-    test "1K events complete in under 2 seconds" do
+    test "1K events complete in under 500ms" do
       events = EF.bulk_chat_turns(500, session_id: "sess_baseline")
 
       {time_us, messages} =
@@ -118,12 +119,12 @@ defmodule Muse.EventStreamBaselineTest do
       time_ms = div(time_us, 1_000)
 
       assert length(messages) == 1_000
-      # Generous ceiling — just confirming not O(n²) at this scale
-      assert time_ms < 2_000,
+      # Tightened from 2s — O(n) grouping makes this fast
+      assert time_ms < 500,
              "chat_messages/1 took #{time_ms}ms for 1K events — possible O(n²) regression"
     end
 
-    test "5K events complete in under 10 seconds" do
+    test "5K events complete in under 2 seconds" do
       events = EF.bulk_chat_turns(2_500, session_id: "sess_baseline")
 
       {time_us, messages} =
@@ -133,11 +134,11 @@ defmodule Muse.EventStreamBaselineTest do
 
       assert length(messages) == 5_000
 
-      assert time_ms < 10_000,
+      assert time_ms < 2_000,
              "chat_messages/1 took #{time_ms}ms for 5K events — possible O(n²) regression"
     end
 
-    test "20K events complete in under 60 seconds" do
+    test "20K events complete in under 15 seconds" do
       events = EF.bulk_chat_turns(10_000, session_id: "sess_baseline")
 
       {time_us, messages} =
@@ -147,7 +148,7 @@ defmodule Muse.EventStreamBaselineTest do
 
       assert length(messages) == 20_000
 
-      assert time_ms < 60_000,
+      assert time_ms < 15_000,
              "chat_messages/1 took #{time_ms}ms for 20K events — possible O(n²) regression"
     end
   end
