@@ -678,9 +678,9 @@ defmodule Muse.Tool.RunnerTest do
     end
 
     test "rejects boolean where integer expected", %{context: context} do
-      result = Runner.run("read_files", %{"path" => "hello.ex", "max_entries" => true}, context)
-      # Unknown tool since list_files is "list_files" not "list_files"
+      result = Runner.run("list_files", %{"max_entries" => true}, context)
       refute result.success
+      assert result.error =~ "expected integer"
     end
 
     test "rejects integer where boolean expected", %{context: context} do
@@ -709,6 +709,12 @@ defmodule Muse.Tool.RunnerTest do
     test "accepts whole-number float where integer expected", %{context: context} do
       result = Runner.run("read_file", %{"path" => "hello.ex", "start_line" => 1.0}, context)
       assert result.success
+    end
+
+    test "optional nil args are treated as absent before handler execution", %{context: context} do
+      result = Runner.run("read_file", %{"path" => "hello.ex", "max_lines" => nil}, context)
+      assert result.success
+      assert result.output.lines > 0
     end
   end
 
@@ -792,6 +798,13 @@ defmodule Muse.Tool.RunnerTest do
       assert result.error =~ "tool_name must be a string"
     end
 
+    test "non-string non-stringable tool name returns structured error" do
+      result = Runner.run({:read_file, :tuple}, %{"path" => "a.ex"}, %{workspace: "/tmp"})
+      refute result.success
+      assert result.error =~ "tool_name must be a string"
+      assert %Muse.Tool.Result{} = result
+    end
+
     test "empty tool name returns unknown tool error", %{context: context} do
       result = Runner.run("", %{}, context)
       refute result.success
@@ -870,12 +883,12 @@ defmodule Muse.Tool.RunnerTest do
     end
 
     test "unknown tool with long name doesn't produce huge error", %{context: context} do
-      long_name = String.duplicate("x", 500)
+      long_name = String.duplicate("x", 5_000)
       result = Runner.run(long_name, %{}, context)
       refute result.success
-      # Error message must be bounded — not disproportionately larger than the name
-      # Allow reasonable overhead for the "unknown tool: " prefix and redaction markers
-      assert String.length(result.error) < 1000
+      # Error message and echoed tool name must be bounded for model-facing output.
+      assert String.length(result.error) <= 1_001
+      assert String.length(result.tool_name) <= 201
     end
   end
 

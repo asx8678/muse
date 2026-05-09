@@ -36,9 +36,12 @@ defmodule Muse.Tool.Validator do
   @max_string_length 1_000_000
   # Reasonable upper bound for count/limit integer arguments
   @max_integer_value 10_000_000
+  # Bound arrays before tool handlers see them.
+  @max_array_length 1_000
 
   # Keys that represent filesystem paths and need traversal/absolute/null checks
   @path_keys MapSet.new(["path", "file_path"])
+  @path_array_keys MapSet.new(["affected_files"])
 
   @doc """
   Validate all tool input arguments against the spec's schema.
@@ -106,19 +109,19 @@ defmodule Muse.Tool.Validator do
   # -- Type and constraint validation -------------------------------------------
 
   defp validate_types_and_constraints(properties, args) do
-    Enum.reduce_while(args, {:ok, args}, fn {key, value}, {:ok, acc} ->
+    Enum.reduce_while(args, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
       key_str = to_string(key)
       prop_schema = Map.get(properties, key_str)
 
       if prop_schema do
-        # Skip type validation for nil values on optional fields
-        # (required fields already checked; nil on optional fields is absent)
+        # Treat nil optional fields as absent so handlers receive defaults
+        # instead of crashing on explicit nil values from providers.
         if value == nil do
           {:cont, {:ok, acc}}
         else
           case validate_and_coerce_single(key_str, value, prop_schema) do
             {:ok, coerced_value} ->
-              # Update the normalized args with the coerced value and string key
+              # Normalized args always have string keys and coerced values.
               new_acc = Map.put(acc, key_str, coerced_value)
               {:cont, {:ok, new_acc}}
 
@@ -139,6 +142,7 @@ defmodule Muse.Tool.Validator do
     expected_type = schema_prop_type(prop_schema)
 
     with {:ok, coerced} <- validate_type(key, value, expected_type),
+         :ok <- validate_array_constraints(key, coerced, prop_schema, expected_type),
          :ok <- validate_path_constraints(key, coerced, expected_type),
          :ok <- validate_numeric_constraints(key, coerced, expected_type),
          :ok <- validate_string_constraints(key, coerced, expected_type) do
@@ -189,6 +193,66 @@ defmodule Muse.Tool.Validator do
 
   # Unknown type in schema — allow through
   defp validate_type(_key, value, _unknown_type), do: {:ok, value}
+
+  # -- Array constraints ---------------------------------------------------------
+
+  defp validate_array_constraints(key, values, prop_schema, "array") when is_list(values) do
+    with :ok <- validate_array_length(key, values),
+         :ok <- validate_array_items(key, values, schema_items(prop_schema)) do
+      :ok
+    end
+  end
+
+  defp validate_array_constraints(_key, _value, _prop_schema, _type), do: :ok
+
+  defp validate_array_length(key, values) do
+    if length(values) > @max_array_length do
+      {:error, "#{key}: array exceeds maximum length of #{@max_array_length}"}
+    else
+      :ok
+    end
+  end
+
+  defp validate_array_items(_key, _values, nil), do: :ok
+
+  defp validate_array_items(key, values, item_schema) do
+    item_type = schema_prop_type(item_schema)
+
+    values
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {value, index}, :ok ->
+      item_key = "#{key}[#{index}]"
+
+      case validate_array_item(key, item_key, value, item_type) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
+
+  defp validate_array_item(parent_key, item_key, value, item_type) do
+    with {:ok, coerced} <- validate_type(item_key, value, item_type),
+         :ok <- validate_path_array_item_constraints(parent_key, item_key, coerced, item_type),
+         :ok <- validate_string_constraints(item_key, coerced, item_type) do
+      :ok
+    end
+  end
+
+  defp validate_path_array_item_constraints(parent_key, item_key, value, "string")
+       when is_binary(value) do
+    if MapSet.member?(@path_array_keys, parent_key) do
+      with :ok <- check_path_not_absolute(item_key, value),
+           :ok <- check_path_no_traversal(item_key, value),
+           :ok <- check_path_no_null_bytes(item_key, value),
+           :ok <- check_path_length(item_key, value) do
+        :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp validate_path_array_item_constraints(_parent_key, _item_key, _value, _type), do: :ok
 
   # -- Path constraints ----------------------------------------------------------
 
@@ -302,6 +366,10 @@ defmodule Muse.Tool.Validator do
 
   defp schema_prop_type(prop) do
     Map.get(prop, "type") || Map.get(prop, :type)
+  end
+
+  defp schema_items(prop) do
+    Map.get(prop, "items") || Map.get(prop, :items)
   end
 
   # -- Type naming (for error messages) -----------------------------------------

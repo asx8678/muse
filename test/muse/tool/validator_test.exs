@@ -151,6 +151,26 @@ defmodule Muse.Tool.ValidatorTest do
                Validator.validate_args(spec, %{"diff" => "d", "affected_files" => ["a.ex"]})
     end
 
+    test "rejects invalid array item types" do
+      spec = Registry.get("patch_propose")
+
+      assert {:error, msg} =
+               Validator.validate_args(spec, %{"diff" => "d", "affected_files" => [123]})
+
+      assert msg =~ "affected_files[0]"
+      assert msg =~ "expected string"
+    end
+
+    test "rejects overlong arrays" do
+      spec = Registry.get("patch_propose")
+      files = for i <- 1..1001, do: "test/file_#{i}.ex"
+
+      assert {:error, msg} =
+               Validator.validate_args(spec, %{"diff" => "d", "affected_files" => files})
+
+      assert msg =~ "array exceeds maximum length"
+    end
+
     test "rejects string where array expected" do
       spec = Registry.get("patch_propose")
 
@@ -242,6 +262,28 @@ defmodule Muse.Tool.ValidatorTest do
                })
 
       assert msg =~ "absolute"
+    end
+
+    test "rejects traversal and absolute paths inside path arrays" do
+      spec = Registry.get("patch_propose")
+
+      assert {:error, traversal_msg} =
+               Validator.validate_args(spec, %{
+                 "diff" => "d",
+                 "affected_files" => ["lib/../secrets.ex"]
+               })
+
+      assert traversal_msg =~ "affected_files[0]"
+      assert traversal_msg =~ "path traversal"
+
+      assert {:error, absolute_msg} =
+               Validator.validate_args(spec, %{
+                 "diff" => "d",
+                 "affected_files" => ["/etc/passwd"]
+               })
+
+      assert absolute_msg =~ "affected_files[0]"
+      assert absolute_msg =~ "absolute"
     end
   end
 
@@ -366,12 +408,14 @@ defmodule Muse.Tool.ValidatorTest do
     test "handles atom keys in args" do
       spec = Registry.get("read_file")
       # Internal callers might use atom keys
-      assert {:ok, _} = Validator.validate_args(spec, %{path: "a.ex"})
+      assert {:ok, args} = Validator.validate_args(spec, %{path: "a.ex"})
+      assert args == %{"path" => "a.ex"}
     end
 
-    test "handles nil value for non-required field" do
+    test "handles nil value for non-required field by omitting it from normalized args" do
       spec = Registry.get("list_files")
-      assert {:ok, _} = Validator.validate_args(spec, %{"max_entries" => nil})
+      assert {:ok, args} = Validator.validate_args(spec, %{"max_entries" => nil})
+      refute Map.has_key?(args, "max_entries")
     end
 
     test "handles empty args map for tools with no required fields" do

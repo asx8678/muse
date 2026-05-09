@@ -137,7 +137,7 @@ defmodule Muse.Tool.Runner do
         true -> "invalid tool call"
       end
 
-    Result.error(to_string(tool_name), reason)
+    Result.error(tool_name, reason)
   end
 
   # -- Tool pipeline (extracted for rescue boundary) ----------------------------

@@ -57,7 +57,7 @@ defmodule Muse.Tool.Result do
       %{content: "hello"}
 
   """
-  @spec ok(String.t(), term(), map()) :: t()
+  @spec ok(term(), term(), map()) :: t()
   def ok(tool_name, output \\ nil, metadata \\ %{}) do
     %__MODULE__{
       success: true,
@@ -80,7 +80,7 @@ defmodule Muse.Tool.Result do
       "blocked: write tools not allowed"
 
   """
-  @spec error(String.t(), String.t(), map()) :: t()
+  @spec error(term(), String.t(), map()) :: t()
   def error(tool_name, error_message, metadata \\ %{}) do
     %__MODULE__{
       success: false,
@@ -103,7 +103,7 @@ defmodule Muse.Tool.Result do
       "blocked: write tools not allowed for planning muse"
 
   """
-  @spec blocked(String.t(), String.t(), map()) :: t()
+  @spec blocked(term(), String.t(), map()) :: t()
   def blocked(tool_name, reason, metadata \\ %{}) do
     error(tool_name, "blocked: #{reason}", metadata)
   end
@@ -138,25 +138,42 @@ defmodule Muse.Tool.Result do
     inspect(output, limit: 5, printable_limit: max_len)
   end
 
-  defp safe_tool_name(name) when is_binary(name), do: Redactor.redact_text(name)
+  defp safe_tool_name(name) when is_binary(name) do
+    name
+    |> cap_text(200)
+    |> Redactor.redact_text()
+  end
 
   defp safe_tool_name(name) when is_atom(name),
-    do: name |> Atom.to_string() |> Redactor.redact_text()
+    do: name |> Atom.to_string() |> safe_tool_name()
 
   defp safe_tool_name(name) do
     name
     |> inspect(limit: 10, printable_limit: 200)
+    |> cap_text(200)
     |> Redactor.redact_text()
   end
 
   defp safe_error_message(nil), do: nil
-  defp safe_error_message(message) when is_binary(message), do: Redactor.redact_text(message)
+
+  defp safe_error_message(message) when is_binary(message) do
+    message
+    |> cap_text(1_000)
+    |> Redactor.redact_text()
+  end
 
   defp safe_error_message(message) do
     message
     |> inspect(limit: 10, printable_limit: 500)
+    |> cap_text(1_000)
     |> Redactor.redact_text()
   end
+
+  defp cap_text(text, max_bytes) when byte_size(text) > max_bytes do
+    String.slice(text, 0, max_bytes) <> "…"
+  end
+
+  defp cap_text(text, _max_bytes), do: text
 
   defp redact_summary(nil), do: nil
   defp redact_summary(summary) when is_binary(summary), do: Redactor.redact_text(summary)
