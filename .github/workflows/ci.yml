@@ -1,0 +1,79 @@
+# .github/workflows/ci.yml
+#
+# Muse CI — format, compile, audit, test, smoke.
+#
+# All gates run offline with the fake provider.
+# No real LLM provider calls, no API keys, no external network.
+#
+# Local equivalent:
+#   mix ci
+#   ./script/liveview-browser-smoke
+#
+# See README.md § Development Workflow for details.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Format · Compile · Audit · Test · Smoke
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        otp: ["27"]
+        elixir: ["1.17"]
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Erlang/OTP and Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+
+      - name: Cache Mix dependencies and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ci-${{ runner.os }}-otp${{ matrix.otp }}-ex${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ci-${{ runner.os }}-otp${{ matrix.otp }}-ex${{ matrix.elixir }}-
+
+      - name: Install Mix dependencies
+        run: mix deps.get
+
+      # ── Static gates ────────────────────────────────────────────────────
+
+      - name: Check formatting
+        run: mix format --check-formatted
+
+      - name: Compile with warnings as errors
+        run: mix compile --warnings-as-errors
+
+      # ── Dependency / security audit ─────────────────────────────────────
+
+      - name: Audit Hex dependencies (retired packages)
+        run: mix hex.audit
+
+      # ── Test suite ──────────────────────────────────────────────────────
+
+      - name: Run tests
+        run: mix test
+
+      # ── LiveView browser smoke (HTTP-based, no Playwright required) ─────
+
+      - name: Run LiveView browser smoke test
+        run: ./script/liveview-browser-smoke

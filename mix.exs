@@ -16,6 +16,12 @@ defmodule Muse.MixProject do
     ]
   end
 
+  def cli do
+    [
+      preferred_envs: [ci: :test, test: :test]
+    ]
+  end
+
   def application do
     [
       mod: {Muse.Application, []},
@@ -50,7 +56,13 @@ defmodule Muse.MixProject do
   defp aliases do
     [
       "assets.deploy": ["muse.assets"],
-      "assets.build": ["muse.assets"]
+      "assets.build": ["muse.assets"],
+      ci: [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "cmd mix hex.audit",
+        "test"
+      ]
     ]
   end
 

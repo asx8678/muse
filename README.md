@@ -630,17 +630,17 @@ and [`docs/security.md` §13](docs/security.md#13-external-websocket-channel-sec
 # Fetch dependencies
 mix deps.get
 
-# Run the full test suite (offline by default, no API keys needed)
+# Run all CI gates locally (format, compile warnings, hex audit, tests)
+mix ci
+
+# Run just the test suite (offline by default, no API keys needed)
 mix test
 
 # Run a specific test file
 mix test test/muse/command_dispatcher_test.exs
 
-# Check code formatting
-mix format --check-formatted
-
-# Compile with strict warnings (treat warnings as errors)
-mix compile --warnings-as-errors
+# Run the LiveView browser smoke test (HTTP-based, no Playwright required)
+./script/liveview-browser-smoke
 
 # Start Muse (REPL + web interface on http://127.0.0.1:4000)
 mix muse
@@ -648,14 +648,18 @@ mix muse
 
 **CI expectations:**
 
-| Check | Command |
-|---|---|
-| Tests pass | `mix test` |
-| No formatting violations | `mix format --check-formatted` |
-| Clean compile with strict warnings | `mix compile --warnings-as-errors` |
-| Muse-first terminology grep check | No "Active Agent", "Agent Plan", or "Bot" in user-facing surfaces (see [`docs/testing.md`](docs/testing.md#9-product-language-tests)) |
+| Check | Command | CI step |
+|---|---|---|
+| No formatting violations | `mix format --check-formatted` | ✓ |
+| Clean compile with strict warnings | `mix compile --warnings-as-errors` | ✓ |
+| No retired Hex packages | `mix hex.audit` | ✓ |
+| Tests pass | `mix test` | ✓ |
+| LiveView browser smoke | `./script/liveview-browser-smoke` | ✓ |
+| Muse-first terminology grep check | No "Active Agent", "Agent Plan", or "Bot" in user-facing surfaces (see [`docs/testing.md`](docs/testing.md#9-product-language-tests)) | manual |
 
-All CI gates run offline with the fake provider. External/network-dependent tests are opt-in via the `@tag :external` mechanism.
+`mix ci` runs the first four gates in one command. The browser smoke test requires a running server and must be run separately via the orchestration script. All CI gates run offline with the fake provider — no API keys, no external network calls. External/network-dependent tests are opt-in via the `@tag :external` mechanism.
+
+GitHub Actions CI runs the full pipeline on every push to `main` and every pull request targeting `main`. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 See [`docs/testing.md`](docs/testing.md) for the full testing strategy.
 
