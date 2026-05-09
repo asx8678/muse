@@ -66,6 +66,8 @@ defmodule Muse.Conductor.StreamCollector do
       new_state = %{state | events: [event | state.events], delta_index: idx + 1}
       {{:delta, text, idx}, new_state}
     end)
+  catch
+    :exit, _reason -> :ok
   end
 
   def record(pid, %Event{} = event) do
@@ -74,6 +76,8 @@ defmodule Muse.Conductor.StreamCollector do
     end)
 
     :ok
+  catch
+    :exit, _reason -> :ok
   end
 
   @doc """
@@ -93,6 +97,8 @@ defmodule Muse.Conductor.StreamCollector do
     end)
 
     :ok
+  catch
+    :exit, _reason -> :ok
   end
 
   @doc """

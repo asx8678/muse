@@ -132,6 +132,14 @@ defmodule Muse.Conductor.StreamCollectorTest do
       assert events == []
       assert live_emitted_count == 0
     end
+
+    test "late callbacks after collect are safe no-ops" do
+      {:ok, pid} = StreamCollector.start()
+      StreamCollector.collect(pid)
+
+      assert :ok = StreamCollector.record(pid, Event.assistant_delta("late"))
+      assert :ok = StreamCollector.mark_live_emitted(pid)
+    end
   end
 
   describe "cross-process safety" do
