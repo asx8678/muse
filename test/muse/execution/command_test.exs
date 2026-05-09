@@ -122,6 +122,23 @@ defmodule Muse.Execution.CommandTest do
       refute display =~ "sk-test-secret"
       assert display =~ "env:"
     end
+
+    test "never exposes env values in safe_display, only keys with placeholder" do
+      {:ok, cmd} =
+        Command.new("elixir",
+          env: %{
+            "SAFE_VAR" => "safe_value",
+            "SECRET_TOKEN" => "super-secret-value-123"
+          }
+        )
+
+      display = Command.safe_display(cmd)
+
+      # Values should never appear — only keys with =...
+      refute display =~ "safe_value"
+      refute display =~ "super-secret-value-123"
+      assert display =~ "=..."
+    end
   end
 
   describe "local?/1 and remote?/1" do

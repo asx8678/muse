@@ -1,5 +1,5 @@
 defmodule Muse.Execution.LocalRunnerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Muse.Execution.{Command, LocalRunner, Result}
 
@@ -152,8 +152,7 @@ defmodule Muse.Execution.LocalRunnerTest do
   end
 
   describe "run/2 — safe env" do
-    test "uses provided env without inheriting secrets" do
-      # Set a sensitive env var in test env
+    test "does not inherit MUSE_ secrets from BEAM environment" do
       original = System.get_env("MUSE_TEST_SECRET")
 
       try do
@@ -162,16 +161,16 @@ defmodule Muse.Execution.LocalRunnerTest do
         {:ok, cmd} =
           Command.new("elixir",
             args: ["-e", "IO.puts(System.get_env(\"MUSE_TEST_SECRET\") || \"none\")"],
-            env: %{"OTHER_VAR" => "safe_value"},
             timeout_ms: 10_000
           )
 
         {:ok, result} = LocalRunner.run(cmd)
 
-        # With explicit env, MUSE_TEST_SECRET should not be inherited
-        # (Port behavior: explicit env replaces inherited env)
-        # The test env var might or might not appear depending on Port behavior
+        # MUSE_TEST_SECRET should NOT be inherited by the child process.
+        # Env.port_env strips MUSE_ prefixed vars and adds unset markers.
         assert result.status == :ok
+        assert result.output =~ "none"
+        refute result.output =~ "secret-value-123"
       after
         if original do
           System.put_env("MUSE_TEST_SECRET", original)
@@ -179,6 +178,120 @@ defmodule Muse.Execution.LocalRunnerTest do
           System.delete_env("MUSE_TEST_SECRET")
         end
       end
+    end
+
+    test "does not inherit provider API keys from BEAM environment" do
+      original = System.get_env("OPENAI_API_KEY")
+
+      try do
+        System.put_env("OPENAI_API_KEY", "sk-fake-provider-key-for-test")
+
+        {:ok, cmd} =
+          Command.new("elixir",
+            args: ["-e", "IO.puts(System.get_env(\"OPENAI_API_KEY\") || \"none\")"],
+            timeout_ms: 10_000
+          )
+
+        {:ok, result} = LocalRunner.run(cmd)
+
+        # OPENAI_API_KEY should NOT be inherited by the child process.
+        assert result.status == :ok
+        assert result.output =~ "none"
+        refute result.output =~ "sk-fake-provider-key-for-test"
+      after
+        if original do
+          System.put_env("OPENAI_API_KEY", original)
+        else
+          System.delete_env("OPENAI_API_KEY")
+        end
+      end
+    end
+
+    test "does not inherit proxy vars from BEAM environment" do
+      original = System.get_env("http_proxy")
+
+      try do
+        System.put_env("http_proxy", "http://evil.proxy:8080")
+
+        {:ok, cmd} =
+          Command.new("elixir",
+            args: ["-e", "IO.puts(System.get_env(\"http_proxy\") || \"none\")"],
+            timeout_ms: 10_000
+          )
+
+        {:ok, result} = LocalRunner.run(cmd)
+
+        # http_proxy should NOT be inherited by the child process.
+        assert result.status == :ok
+        assert result.output =~ "none"
+        refute result.output =~ "evil.proxy"
+      after
+        if original do
+          System.put_env("http_proxy", original)
+        else
+          System.delete_env("http_proxy")
+        end
+      end
+    end
+
+    test "denied var is removed even if explicitly passed in command env" do
+      {:ok, cmd} =
+        Command.new("elixir",
+          args: ["-e", "IO.puts(System.get_env(\"OPENAI_API_KEY\") || \"none\")"],
+          env: %{"OPENAI_API_KEY" => "sk-should-be-stripped"},
+          timeout_ms: 10_000
+        )
+
+      {:ok, result} = LocalRunner.run(cmd)
+
+      # Even explicitly passed, denylisted keys are stripped
+      assert result.status == :ok
+      assert result.output =~ "none"
+      refute result.output =~ "sk-should-be-stripped"
+    end
+
+    test "allowed safe vars are still available" do
+      {:ok, cmd} =
+        Command.new("elixir",
+          args: ["-e", "IO.puts(System.get_env(\"LANG\") || \"none\")"],
+          timeout_ms: 10_000
+        )
+
+      {:ok, result} = LocalRunner.run(cmd)
+
+      # LANG is a safe default, always set
+      assert result.status == :ok
+      assert result.output =~ "C.UTF-8"
+    end
+
+    test "PATH is available for command execution" do
+      {:ok, cmd} =
+        Command.new("elixir",
+          args: ["-e", "IO.puts(System.get_env(\"PATH\") || \"none\")"],
+          timeout_ms: 10_000
+        )
+
+      {:ok, result} = LocalRunner.run(cmd)
+
+      # PATH must be available for tools to find executables
+      assert result.status == :ok
+      refute result.output =~ "none"
+      assert byte_size(result.output) > 5
+    end
+
+    test "user-provided non-secret env var is available" do
+      {:ok, cmd} =
+        Command.new("elixir",
+          args: ["-e", "IO.puts(System.get_env(\"MY_BUILD_DIR\") || \"none\")"],
+          env: %{"MY_BUILD_DIR" => "/tmp/build"},
+          timeout_ms: 10_000
+        )
+
+      {:ok, result} = LocalRunner.run(cmd)
+
+      # Non-secret user env vars should be available
+      assert result.status == :ok
+      assert result.output =~ "/tmp/build"
     end
   end
 

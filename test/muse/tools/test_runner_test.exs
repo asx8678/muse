@@ -201,6 +201,82 @@ defmodule Muse.Tools.TestRunnerTest do
     end
   end
 
+  describe "safe env — secret isolation" do
+    test "child commands do not receive MUSE_ secrets from BEAM environment", %{
+      context: context,
+      root: root
+    } do
+      # Create a test that prints MUSE_TEST_SECRET if it exists
+      File.write!(Path.join(root, "test/env_leak_test.exs"), """
+      defmodule EnvLeakTest do
+        use ExUnit.Case
+        test "no MUSE secret leaked" do
+          val = System.get_env("MUSE_TEST_SECRET") || "not_found"
+          IO.puts("MUSE_SECRET=" <> val)
+          assert val == "not_found", "MUSE_TEST_SECRET leaked into child process!"
+        end
+      end
+      """)
+
+      original = System.get_env("MUSE_TEST_SECRET")
+
+      try do
+        System.put_env("MUSE_TEST_SECRET", "should-not-leak-into-child")
+
+        result =
+          TestRunner.execute(
+            %{"command" => "mix_test_file", "file_path" => "test/env_leak_test.exs"},
+            context
+          )
+
+        assert result.success
+        assert result.output.status == :passed
+        refute result.output.output_preview =~ "should-not-leak-into-child"
+      after
+        if original do
+          System.put_env("MUSE_TEST_SECRET", original)
+        else
+          System.delete_env("MUSE_TEST_SECRET")
+        end
+      end
+    end
+
+    test "child commands do not receive provider API keys", %{context: context, root: root} do
+      File.write!(Path.join(root, "test/env_provider_test.exs"), """
+      defmodule EnvProviderTest do
+        use ExUnit.Case
+        test "no provider key leaked" do
+          val = System.get_env("OPENAI_API_KEY") || "not_found"
+          IO.puts("OPENAI_KEY=" <> val)
+          assert val == "not_found", "OPENAI_API_KEY leaked into child process!"
+        end
+      end
+      """)
+
+      original = System.get_env("OPENAI_API_KEY")
+
+      try do
+        System.put_env("OPENAI_API_KEY", "sk-fake-provider-key-for-test")
+
+        result =
+          TestRunner.execute(
+            %{"command" => "mix_test_file", "file_path" => "test/env_provider_test.exs"},
+            context
+          )
+
+        assert result.success
+        assert result.output.status == :passed
+        refute result.output.output_preview =~ "sk-fake-provider-key-for-test"
+      after
+        if original do
+          System.put_env("OPENAI_API_KEY", original)
+        else
+          System.delete_env("OPENAI_API_KEY")
+        end
+      end
+    end
+  end
+
   describe "execute/2 — mix_test_file path validation" do
     test "valid test file path runs and reports exit status", %{context: context} do
       result =

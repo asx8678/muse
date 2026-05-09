@@ -9,8 +9,10 @@ defmodule Muse.Execution.LocalRunner do
       (descendant processes may survive port closure).
     * Output capping — caps output at `max_output_bytes`.
     * Secret redaction — redacts secrets via `Muse.Prompt.Redactor`.
-    * Safe env — explicitly provided env replaces inherited env;
-      inherits process env if `env` is not set.
+    * Safe env — allowlisted base env via `Muse.Execution.Env`;
+      user overrides are merged, then denylisted keys are stripped
+      as defense-in-depth. Child processes never inherit provider API
+      keys or unrelated secrets.
     * Non-zero exit — produces `status: :error`, not `status: :ok`.
 
   ## Safety properties
@@ -34,7 +36,7 @@ defmodule Muse.Execution.LocalRunner do
 
   @behaviour Muse.Execution.Runner
 
-  alias Muse.Execution.{Command, Result}
+  alias Muse.Execution.{Command, Env, Result}
 
   @impl Muse.Execution.Runner
   def capabilities do
@@ -176,33 +178,13 @@ defmodule Muse.Execution.LocalRunner do
         cwd -> [{:cd, cwd} | base_opts]
       end
 
-    # Add env if specified (Port expects charlist pairs)
-    opts =
-      case normalize_env_for_port(command.env) do
-        [] -> opts
-        env -> [{:env, env} | opts]
-      end
-
-    opts
+    # Always set sanitized env via Env.port_env/2.
+    # This replaces inherited BEAM environment with an allowlisted base,
+    # merges user-provided overrides, then strips denylisted keys.
+    # Child processes never receive provider API keys or unrelated secrets.
+    env = Env.port_env(command.env, inherit?: true)
+    [{:env, env} | opts]
   end
-
-  defp normalize_env_for_port(env) when is_map(env) do
-    env
-    |> Enum.map(fn {k, v} ->
-      {String.to_charlist(to_string(k)), String.to_charlist(to_string(v))}
-    end)
-  end
-
-  defp normalize_env_for_port(env) when is_list(env) do
-    env
-    |> Enum.map(fn
-      {k, v} -> {String.to_charlist(to_string(k)), String.to_charlist(to_string(v))}
-      _ -> {"", ""}
-    end)
-    |> Enum.reject(fn {k, _} -> k == "" end)
-  end
-
-  defp normalize_env_for_port(_), do: []
 
   defp collect_output(port, deadline, max_output, command) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)

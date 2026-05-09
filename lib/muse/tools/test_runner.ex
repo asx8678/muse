@@ -33,7 +33,7 @@ defmodule Muse.Tools.TestRunner do
   executing. This tool cannot become a generic shell escape hatch.
   """
 
-  alias Muse.Execution.{Command, LocalRunner}
+  alias Muse.Execution.{Command, Env, LocalRunner}
   alias Muse.Execution.Result, as: ExecutionResult
   alias Muse.Prompt.Redactor
   alias Muse.Workspace
@@ -137,7 +137,7 @@ defmodule Muse.Tools.TestRunner do
     case Command.new(executable,
            args: argv,
            cwd: workspace,
-           env: env_to_map(env),
+           env: env,
            timeout_ms: timeout,
            max_output_bytes: @max_output_bytes
          ) do
@@ -156,24 +156,6 @@ defmodule Muse.Tools.TestRunner do
         Result.error("test_runner", "command validation failed: #{reason}")
     end
   end
-
-  defp env_to_map(env) when is_list(env) do
-    # Handle both charlist and binary key/value pairs from Port-style env
-    Map.new(env, fn
-      {k, v} when is_list(k) and is_list(v) ->
-        # Convert charlist pairs to strings
-        {List.to_string(k), List.to_string(v)}
-
-      {k, v} when is_binary(k) and is_binary(v) ->
-        {k, v}
-
-      {k, v} ->
-        {to_string(k), to_string(v)}
-    end)
-  end
-
-  defp env_to_map(env) when is_map(env), do: env
-  defp env_to_map(_), do: %{}
 
   # -- Result construction -------------------------------------------------------
 
@@ -339,19 +321,10 @@ defmodule Muse.Tools.TestRunner do
   defp valid_workspace?(_), do: false
 
   defp safe_env do
-    # Force MIX_ENV=test, strip any network-leaking env vars. Port.open/2 expects
-    # env entries as charlist pairs, unlike System.cmd/3's binary env values.
-    System.get_env()
-    |> Map.new(fn {k, v} -> {to_string(k), to_string(v)} end)
-    |> Map.put("MIX_ENV", "test")
-    |> Map.drop(network_env_keys())
-    |> Enum.map(fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
-  end
-
-  defp network_env_keys do
-    # Strip keys that might provide network escape hatches
-    ~w(HTTP_PROXY HTTPS_PROXY http_proxy https_proxy ALL_PROXY all_proxy
-       NO_PROXY no_proxy FTP_PROXY ftp_proxy SOCKS_PROXY SOCKS_SERVER)
+    # Build safe env via Muse.Execution.Env: allowlisted base vars only,
+    # denylist strips secrets even if accidentally passed, MIX_ENV=test forced.
+    # Returns a plain map — LocalRunner's Env.port_env handles Port conversion.
+    Env.safe_env_map(%{"MIX_ENV" => "test"}, inherit?: true)
   end
 
   defp cap_and_redact(output) when is_binary(output) do
