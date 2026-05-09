@@ -47,6 +47,10 @@ defmodule Muse.Conductor.TurnRunner do
       # Add cancel-check option so Conductor/ToolLoop can poll
       opts_with_cancel = Keyword.put(opts, :cancel_check_fn, &cancelled?/0)
 
+      # The :emit_event_fn callback (if present) is a function that
+      # sends live event specs to the SessionServer process for
+      # immediate PubSub broadcast during provider streaming.
+      # It is passed through to Conductor.run/3 unchanged.
       result = Conductor.run(session, turn, opts_with_cancel)
 
       # If cancelled during execution, return a cancelled result

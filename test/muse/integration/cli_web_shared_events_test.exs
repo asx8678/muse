@@ -261,12 +261,12 @@ defmodule Muse.Integration.CliWebSharedEventsTest do
       expected_single = [
         :user_message,
         :turn_started,
+        :assistant_delta,
         :muse_selected,
         :session_status_changed,
         :prompt_prepared,
         :provider_request_started,
         :provider_response_started,
-        :assistant_delta,
         :provider_response_completed,
         :assistant_message,
         :session_status_changed,

@@ -382,7 +382,7 @@ defmodule Muse.Conductor do
       provider_request_started_spec(request, bundle)
     ]
 
-    case stream_provider(provider_module, request, session, turn) do
+    case stream_provider(provider_module, request, session, turn, opts) do
       {:ok, response, provider_event_specs} ->
         if response_has_tool_calls?(response) do
           # Delegate to ToolLoop for iterative tool execution
@@ -390,7 +390,8 @@ defmodule Muse.Conductor do
             [
               provider_module: provider_module,
               tool_runner: Keyword.get(opts, :tool_runner, Muse.Tool.Runner),
-              limits: Keyword.get(opts, :limits, nil)
+              limits: Keyword.get(opts, :limits, nil),
+              emit_event_fn: Keyword.get(opts, :emit_event_fn)
             ]
             |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
@@ -609,7 +610,8 @@ defmodule Muse.Conductor do
 
   # -- Provider streaming -------------------------------------------------------
 
-  defp stream_provider(provider_module, request, session, turn) do
+  defp stream_provider(provider_module, request, session, turn, opts) do
+    emit_event_fn = Keyword.get(opts, :emit_event_fn)
     provider_start_time = System.monotonic_time(:millisecond)
 
     :telemetry.execute(
@@ -629,15 +631,35 @@ defmodule Muse.Conductor do
     collector_key = {__MODULE__, :llm_events, make_ref()}
     Process.put(collector_key, [])
 
+    # Track live delta index for immediate emission of assistant_delta events.
+    # When emit_event_fn is provided, assistant_delta specs are forwarded to
+    # SessionServer immediately so they reach PubSub before provider completion.
+    delta_index_key = {__MODULE__, :live_delta_index, collector_key}
+    Process.put(delta_index_key, 0)
+
     emit_fn = fn llm_event ->
       Process.put(collector_key, [llm_event | Process.get(collector_key)])
+
+      # Emit user-visible assistant_delta events live via the callback.
+      # This allows SessionServer to publish deltas to PubSub before the
+      # synchronous provider.stream call returns.
+      if is_function(emit_event_fn, 1) and
+           match?(%Muse.LLM.Event{type: :assistant_delta}, llm_event) do
+        idx = Process.get(delta_index_key)
+        spec = {:muse, :assistant_delta, %{text: llm_event.text, index: idx}, [visibility: :user]}
+        emit_event_fn.(spec)
+        Process.put(delta_index_key, idx + 1)
+      end
+
       :ok
     end
 
     result = provider_module.stream(request, emit_fn)
 
     llm_events = Process.get(collector_key) |> Enum.reverse()
+    live_delta_count = Process.get(delta_index_key, 0)
     Process.delete(collector_key)
+    Process.delete(delta_index_key)
 
     case result do
       {:ok, response} ->
@@ -651,7 +673,11 @@ defmodule Muse.Conductor do
           Telemetry.provider_stop_metadata(session_id: session.id, turn_id: turn.id, usage: usage)
         )
 
-        event_specs = convert_llm_events(llm_events)
+        event_specs =
+          llm_events
+          |> convert_llm_events()
+          |> mark_live_emitted_deltas(live_delta_count)
+
         {:ok, response, event_specs}
 
       {:error, reason} ->
@@ -668,8 +694,12 @@ defmodule Muse.Conductor do
         )
 
         event_specs =
-          convert_llm_events(llm_events) ++
-            [{:conductor, :provider_error, %{error_type: :provider_error}, [visibility: :debug]}]
+          llm_events
+          |> convert_llm_events()
+          |> mark_live_emitted_deltas(live_delta_count)
+          |> Kernel.++([
+            {:conductor, :provider_error, %{error_type: :provider_error}, [visibility: :debug]}
+          ])
 
         {:error, reason, event_specs}
     end
@@ -747,6 +777,29 @@ defmodule Muse.Conductor do
        {:conductor, :provider_event_ignored, %{unhandled_type: inspect(other)},
         [visibility: :debug]}
      ], delta_index}
+  end
+
+  # Mark the first `count` assistant_delta specs as live-emitted so
+  # SessionServer can skip them during final event-spec folding.
+  # This prevents duplicate PubSub broadcasts for deltas that were
+  # already sent to the SessionServer via emit_event_fn during streaming.
+  @doc false
+  @spec mark_live_emitted_deltas([event_spec()], non_neg_integer()) :: [event_spec()]
+  def mark_live_emitted_deltas(specs, 0), do: specs
+
+  def mark_live_emitted_deltas(specs, count) when count > 0 do
+    {_remaining, marked} =
+      Enum.reduce(specs, {count, []}, fn spec, {n, acc} ->
+        case spec do
+          {:muse, :assistant_delta, data, opts} when n > 0 ->
+            {n - 1, [{:muse, :assistant_delta, data, [{:live_emitted, true} | opts]} | acc]}
+
+          other ->
+            {n, [other | acc]}
+        end
+      end)
+
+    Enum.reverse(marked)
   end
 
   # -- Turn finalization --------------------------------------------------------

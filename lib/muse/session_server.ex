@@ -520,6 +520,14 @@ defmodule Muse.SessionServer do
       turn_start_time: nil,
       session_events_before_turn: [],
       cancellation_requested: false,
+      # Live streaming: count of assistant_delta specs emitted via emit_event_fn
+      # during provider streaming (before turn completion). Used to skip
+      # already-emitted specs during final event-spec folding.
+      live_emitted_count: 0,
+      # Live streaming: events emitted via emit_event_fn during provider
+      # streaming. Merged into state.events at finalization time to preserve
+      # correct ordering alongside conductor overhead events.
+      live_emitted_events: [],
       # Telemetry: session lifetime tracking
       session_start_time: session_start_time
     }
@@ -839,7 +847,21 @@ defmodule Muse.SessionServer do
     # callers keep the production-safe workspace and fake provider behavior.
     session = build_turn_session(state, opts)
 
-    task = TurnRunner.async(session, turn, Keyword.delete(opts, :workspace))
+    # Build emit_event_fn for live streaming: assistant_delta specs emitted
+    # during provider streaming are sent directly to this GenServer process
+    # so they reach PubSub before the provider call completes.
+    session_server_pid = self()
+
+    emit_event_fn = fn spec ->
+      send(session_server_pid, {:turn_event_spec, turn_id, spec})
+    end
+
+    runner_opts =
+      opts
+      |> Keyword.delete(:workspace)
+      |> Keyword.put(:emit_event_fn, emit_event_fn)
+
+    task = TurnRunner.async(session, turn, runner_opts)
 
     # Store the task ref and runner pid for result handling
     runner_pid = task.pid
@@ -922,7 +944,22 @@ defmodule Muse.SessionServer do
 
     # 3. Spawn TurnRunner task for async Conductor execution
     session = build_turn_session(state, opts)
-    task = TurnRunner.async(session, turn, Keyword.delete(opts, :workspace))
+
+    # Build emit_event_fn for live streaming: assistant_delta specs emitted
+    # during provider streaming are sent directly to this GenServer process
+    # so they reach PubSub before the provider call completes.
+    session_server_pid = self()
+
+    emit_event_fn = fn spec ->
+      send(session_server_pid, {:turn_event_spec, turn_id, spec})
+    end
+
+    runner_opts =
+      opts
+      |> Keyword.delete(:workspace)
+      |> Keyword.put(:emit_event_fn, emit_event_fn)
+
+    task = TurnRunner.async(session, turn, runner_opts)
     runner_pid = task.pid
     task_ref = task.ref
 
@@ -953,7 +990,9 @@ defmodule Muse.SessionServer do
         from: from,
         turn_start_time: turn_start_time,
         session_events_before_turn: session_events,
-        cancellation_requested: false
+        cancellation_requested: false,
+        live_emitted_count: 0,
+        live_emitted_events: []
     }
 
     {:noreply, state}
@@ -1088,6 +1127,58 @@ defmodule Muse.SessionServer do
     {:noreply, state}
   end
 
+  # Live streaming: receive an event spec emitted during provider streaming.
+  # The TurnRunner task sends these via emit_event_fn so that assistant_delta
+  # events reach PubSub before the provider call completes.
+  # Stale specs (from a previous turn_id) are silently ignored.
+  #
+  # Live events are emitted to Muse.State/PubSub immediately for real-time
+  # rendering. They are also accumulated in state.live_emitted_events so
+  # they can be merged into state.events at finalization time (preserving
+  # correct ordering alongside the remaining conductor events).
+  @impl true
+  def handle_info({:turn_event_spec, turn_id, spec}, state) do
+    cond do
+      state.active_turn_id == nil or state.status != :running ->
+        # No active turn — ignore stale spec
+        Logger.debug("Live event spec ignored: no active turn",
+          turn_id: turn_id,
+          spec_type: elem(spec, 1),
+          session_id: state.session_id
+        )
+
+        {:noreply, state}
+
+      turn_id != state.active_turn_id ->
+        # Stale turn — spec from a previous turn; ignore safely
+        Logger.debug("Live event spec ignored: stale turn_id",
+          turn_id: turn_id,
+          active_turn_id: state.active_turn_id,
+          spec_type: elem(spec, 1),
+          session_id: state.session_id
+        )
+
+        {:noreply, state}
+
+      true ->
+        # Active turn — emit immediately to Muse.State/PubSub
+        {source, type, data, opts} = spec
+        merged_opts = Keyword.put(opts, :turn_id, turn_id)
+        {event, state} = emit_session_event(state, source, type, data, merged_opts)
+
+        # Accumulate for inclusion in state.events at finalization.
+        # This preserves correct ordering: live deltas appear after
+        # session_events_before_turn but before conductor overhead events.
+        state = %{
+          state
+          | live_emitted_events: state.live_emitted_events ++ [event],
+            live_emitted_count: state.live_emitted_count + 1
+        }
+
+        {:noreply, state}
+    end
+  end
+
   # Ignore any other messages
   @impl true
   def handle_info(_msg, state) do
@@ -1101,8 +1192,13 @@ defmodule Muse.SessionServer do
     session_events = state.session_events_before_turn
 
     # Fold Conductor event specs through emit_session_event
+    # (skips specs already emitted live during streaming)
     {conductor_events, state} = emit_event_specs(state, result.event_specs, turn_id)
-    session_events = session_events ++ conductor_events
+
+    # Merge live-emitted events into the session events list.
+    # Live-emitted deltas arrive before conductor overhead events,
+    # preserving the user-perceived streaming order.
+    session_events = session_events ++ state.live_emitted_events ++ conductor_events
 
     # Use the session status from the Conductor result (may be :awaiting_plan_approval)
     session_status = result.session.status
@@ -1189,9 +1285,9 @@ defmodule Muse.SessionServer do
     turn_id = state.active_turn_id
     session_events = state.session_events_before_turn
 
-    # Fold any partial event specs
+    # Fold any partial event specs (skips live-emitted)
     {conductor_events, state} = emit_event_specs(state, result.event_specs, turn_id)
-    session_events = session_events ++ conductor_events
+    session_events = session_events ++ state.live_emitted_events ++ conductor_events
 
     # Emit tool_loop_cancelled if not already in specs
     {cancel_event, state} =
@@ -1258,9 +1354,9 @@ defmodule Muse.SessionServer do
     turn_id = state.active_turn_id
     session_events = state.session_events_before_turn
 
-    # Fold partial event specs collected before the error
+    # Fold partial event specs collected before the error (skips live-emitted)
     {conductor_events, state} = emit_event_specs(state, event_specs, turn_id)
-    session_events = session_events ++ conductor_events
+    session_events = session_events ++ state.live_emitted_events ++ conductor_events
 
     # Emit a user-visible assistant_message so CLI/State consumers
     # see the failure in the event stream (not just the return value).
@@ -1312,7 +1408,7 @@ defmodule Muse.SessionServer do
 
   defp handle_task_crash(reason, state) do
     turn_id = state.active_turn_id
-    session_events = state.session_events_before_turn
+    session_events = state.session_events_before_turn ++ state.live_emitted_events
 
     error_text = "Error: turn failed (#{reason})"
 
@@ -1368,7 +1464,9 @@ defmodule Muse.SessionServer do
         from: nil,
         turn_start_time: nil,
         session_events_before_turn: [],
-        cancellation_requested: false
+        cancellation_requested: false,
+        live_emitted_count: 0,
+        live_emitted_events: []
     }
   end
 
@@ -2767,9 +2865,16 @@ defmodule Muse.SessionServer do
   defp emit_event_specs(state, event_specs, turn_id) do
     {events_rev, final_state} =
       Enum.reduce(event_specs, {[], state}, fn {source, type, data, opts}, {acc, s} ->
-        merged_opts = Keyword.put(opts, :turn_id, turn_id)
-        {event, new_state} = emit_session_event(s, source, type, data, merged_opts)
-        {[event | acc], new_state}
+        # Skip specs that were already emitted live during provider streaming.
+        # This prevents duplicate PubSub broadcasts for assistant_delta events
+        # that reached PubSub before the provider call completed.
+        if Keyword.get(opts, :live_emitted, false) do
+          {acc, s}
+        else
+          merged_opts = Keyword.put(opts, :turn_id, turn_id)
+          {event, new_state} = emit_session_event(s, source, type, data, merged_opts)
+          {[event | acc], new_state}
+        end
       end)
 
     {Enum.reverse(events_rev), final_state}
