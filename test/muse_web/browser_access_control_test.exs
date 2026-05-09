@@ -17,17 +17,19 @@ defmodule MuseWeb.BrowserAccessControlTest do
     original_enforced = Application.get_env(:muse, :browser_access_enforced)
     original_sys = System.get_env("MUSE_BROWSER_ACCESS")
 
+    # Use :sentinel to distinguish "not set" from "set to false/nil"
+    original_access_val = if original_access != nil, do: original_access, else: :sentinel
+    original_enforced_val = if original_enforced != nil, do: original_enforced, else: :sentinel
+
     on_exit(fn ->
-      if original_access do
-        Application.put_env(:muse, :browser_access, original_access)
-      else
-        Application.delete_env(:muse, :browser_access)
+      case original_access_val do
+        :sentinel -> Application.delete_env(:muse, :browser_access)
+        _ -> Application.put_env(:muse, :browser_access, original_access_val)
       end
 
-      if original_enforced do
-        Application.put_env(:muse, :browser_access_enforced, original_enforced)
-      else
-        Application.delete_env(:muse, :browser_access_enforced)
+      case original_enforced_val do
+        :sentinel -> Application.delete_env(:muse, :browser_access_enforced)
+        _ -> Application.put_env(:muse, :browser_access_enforced, original_enforced_val)
       end
 
       if original_sys do

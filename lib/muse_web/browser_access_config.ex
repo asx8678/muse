@@ -36,22 +36,34 @@ defmodule MuseWeb.BrowserAccessConfig do
   ## Production fail-fast
 
   When the endpoint HTTP bind address is a non-loopback address (e.g.
-  `{0, 0, 0, 0}`) and `mode` is `:local_only`, the application will
-  refuse to start — this prevents an unsafe deployment where the browser
-  UI is accidentally exposed on all interfaces with no authentication.
+  `{0, 0, 0, 0}`, `{192, 168, 1, 10}`) and `mode` is `:local_only`,
+  the application will refuse to start — this prevents an unsafe
+  deployment where the browser UI is accidentally exposed on non-loopback
+  interfaces with no authentication.
 
-  The combination `{0, 0, 0, 0}` + `mode: :open` is also rejected
-  because it exposes the browser UI to the entire network without
-  authentication.
+  Any non-loopback bind + `mode: :open` is also rejected because it
+  exposes the browser UI to non-loopback networks without authentication.
 
-  To bind non-loopback in production, either:
+  To bind non-loopback in production, set `MUSE_BROWSER_UNSAFE_BIND=1`
+  to explicitly acknowledge the risk. Use this ONLY when a reverse proxy
+  provides upstream authentication.
 
-    * Set `MUSE_BROWSER_ACCESS=open` **and** ensure a reverse proxy
-      provides authentication upstream, OR
-    * Set `mode: :authenticated` (once implemented).
+  ## Runtime validation ordering
 
-  In both cases you must also set `MUSE_BROWSER_UNSAFE_BIND=1` to
-  explicitly acknowledge the risk.
+  The CLI `--host` flag can override the endpoint bind address after
+  `config/runtime.exs` runs.  Therefore, `assert_safe!/0` validates
+  the config-time IP, and `assert_safe_for_ip!/1` should be called
+  after `maybe_configure_endpoint/1` applies the effective bind IP.
+  Both checks must pass for safe startup.
+
+  ## LiveView socket boundary
+
+  This module and the `BrowserAccessControl` plug guard the router
+  browser pipeline (HTML/LiveView routes).  The Phoenix LiveView
+  WebSocket transport (`/live`) is mounted at the endpoint level
+  and is not filtered by the router plug.  For `:local_only` mode,
+  the endpoint should bind to a loopback address so that the
+  WebSocket transport is also unreachable from non-loopback clients.
   """
 
   @type mode :: :local_only | :authenticated | :open
@@ -124,20 +136,35 @@ defmodule MuseWeb.BrowserAccessConfig do
   @doc """
   Validates the browser access configuration for production.
 
+  Reads the endpoint IP from application config and delegates to
+  `assert_safe_for_ip!/1`.
+
+  This should be called in `config/runtime.exs` for config-time
+  validation.  For post-startup validation (after `--host` CLI
+  override), call `assert_safe_for_ip!/1` with the effective IP.
+  """
+  @spec assert_safe!() :: :ok
+  def assert_safe!, do: assert_safe_for_ip!(endpoint_ip())
+
+  @doc """
+  Validates the browser access configuration for a specific IP.
+
   Raises if an unsafe combination is detected:
-    * Endpoint bound to non-loopback with `:local_only` mode — requests
-      from non-loopback would be rejected, but the endpoint itself is
+    * IP is non-loopback with `:local_only` mode — requests from
+      non-loopback would be rejected, but the endpoint itself is
       reachable, creating confusing partial access.
-    * Endpoint bound to `{0, 0, 0, 0}` with `:open` mode — browser UI
-      exposed to the entire network without authentication.
+    * IP is non-loopback with `:open` mode — browser UI exposed
+      to non-loopback networks without authentication.
 
   The `MUSE_BROWSER_UNSAFE_BIND` env var (value `"1"`) explicitly
   acknowledges the risk and bypasses the check.  Use this ONLY when
   a reverse proxy provides upstream authentication.
+
+  Call this after `maybe_configure_endpoint/1` applies the CLI
+  `--host` override so the effective bind IP is validated.
   """
-  @spec assert_safe!() :: :ok
-  def assert_safe! do
-    ip = endpoint_ip()
+  @spec assert_safe_for_ip!(:inet.ip_address()) :: :ok
+  def assert_safe_for_ip!(ip) do
     current_mode = mode()
 
     cond do
@@ -147,7 +174,7 @@ defmodule MuseWeb.BrowserAccessConfig do
       non_loopback_ip?(ip) and current_mode == :local_only ->
         raise_unsafe_config(ip, current_mode)
 
-      wildcard_ip?(ip) and current_mode == :open ->
+      non_loopback_ip?(ip) and current_mode == :open ->
         raise_unsafe_config(ip, current_mode)
 
       true ->
@@ -164,10 +191,16 @@ defmodule MuseWeb.BrowserAccessConfig do
   def wildcard_ip?(_), do: false
 
   @doc """
-  Returns `true` if the IP is non-loopback (including wildcard).
+  Returns `true` if the IP is non-loopback (including wildcard and
+  link-local).
+
+  Only actual loopback addresses are considered safe for `:local_only`
+  mode.  Link-local addresses (169.254.x.x) are reachable by other
+  machines on the local link and are therefore non-loopback for
+  access-control purposes.
   """
   @spec non_loopback_ip?(:inet.ip_address()) :: boolean()
-  def non_loopback_ip?(ip), do: not loopback?(ip) and not link_local?(ip)
+  def non_loopback_ip?(ip), do: not loopback?(ip)
 
   @doc """
   Returns the list of valid mode atoms.
@@ -191,9 +224,6 @@ defmodule MuseWeb.BrowserAccessConfig do
       _invalid -> nil
     end
   end
-
-  defp link_local?({169, 254, _, _}), do: true
-  defp link_local?(_), do: false
 
   defp unsafe_bind_acknowledged? do
     System.get_env("MUSE_BROWSER_UNSAFE_BIND") == "1"

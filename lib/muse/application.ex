@@ -35,6 +35,14 @@ defmodule Muse.Application do
 
       Logging.configure(if opts.verbose?, do: :verbose, else: opts.cli_ui)
       maybe_configure_endpoint(opts)
+
+      # Validate browser access safety against the EFFECTIVE bind IP
+      # (after --host override is applied).  This catches unsafe combos
+      # like --host 0.0.0.0 that bypass config/runtime.exs validation.
+      if opts.web? do
+        MuseWeb.BrowserAccessConfig.assert_safe_for_ip!(Muse.Application.parse_host(opts.host))
+      end
+
       children = runtime_children(opts)
       StartupBanner.io_puts(banner_opts(opts))
 

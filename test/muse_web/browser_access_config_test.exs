@@ -10,17 +10,19 @@ defmodule MuseWeb.BrowserAccessConfigTest do
     original_sys = System.get_env("MUSE_BROWSER_ACCESS")
     original_unsafe = System.get_env("MUSE_BROWSER_UNSAFE_BIND")
 
+    # Use :sentinel to distinguish "not set" from "set to false/nil"
+    original_access_val = if original_access != nil, do: original_access, else: :sentinel
+    original_enforced_val = if original_enforced != nil, do: original_enforced, else: :sentinel
+
     on_exit(fn ->
-      if original_access do
-        Application.put_env(:muse, :browser_access, original_access)
-      else
-        Application.delete_env(:muse, :browser_access)
+      case original_access_val do
+        :sentinel -> Application.delete_env(:muse, :browser_access)
+        _ -> Application.put_env(:muse, :browser_access, original_access_val)
       end
 
-      if original_enforced do
-        Application.put_env(:muse, :browser_access_enforced, original_enforced)
-      else
-        Application.delete_env(:muse, :browser_access_enforced)
+      case original_enforced_val do
+        :sentinel -> Application.delete_env(:muse, :browser_access_enforced)
+        _ -> Application.put_env(:muse, :browser_access_enforced, original_enforced_val)
       end
 
       if original_endpoint do
@@ -229,8 +231,8 @@ defmodule MuseWeb.BrowserAccessConfigTest do
       refute BrowserAccessConfig.non_loopback_ip?({127, 0, 0, 1})
     end
 
-    test "link-local 169.254.x.x is not non-loopback (treated as local)" do
-      refute BrowserAccessConfig.non_loopback_ip?({169, 254, 1, 1})
+    test "link-local 169.254.x.x is non-loopback (reachable by other link machines)" do
+      assert BrowserAccessConfig.non_loopback_ip?({169, 254, 1, 1})
     end
   end
 
@@ -277,6 +279,39 @@ defmodule MuseWeb.BrowserAccessConfigTest do
       end
     end
 
+    test "raises when 192.168.x.x + open (non-wildcard non-loopback)" do
+      Application.put_env(:muse, MuseWeb.Endpoint, http: [ip: {192, 168, 1, 10}, port: 4000])
+      Application.put_env(:muse, :browser_access, mode: :open)
+      System.delete_env("MUSE_BROWSER_ACCESS")
+      System.delete_env("MUSE_BROWSER_UNSAFE_BIND")
+
+      assert_raise RuntimeError, ~r/Unsafe browser access configuration/, fn ->
+        BrowserAccessConfig.assert_safe!()
+      end
+    end
+
+    test "raises when 10.x.x.x + open (private network, non-loopback)" do
+      Application.put_env(:muse, MuseWeb.Endpoint, http: [ip: {10, 0, 0, 1}, port: 4000])
+      Application.put_env(:muse, :browser_access, mode: :open)
+      System.delete_env("MUSE_BROWSER_ACCESS")
+      System.delete_env("MUSE_BROWSER_UNSAFE_BIND")
+
+      assert_raise RuntimeError, ~r/Unsafe browser access configuration/, fn ->
+        BrowserAccessConfig.assert_safe!()
+      end
+    end
+
+    test "raises when 169.254.x.x + local_only (link-local is non-loopback)" do
+      Application.put_env(:muse, MuseWeb.Endpoint, http: [ip: {169, 254, 1, 1}, port: 4000])
+      Application.put_env(:muse, :browser_access, mode: :local_only)
+      System.delete_env("MUSE_BROWSER_ACCESS")
+      System.delete_env("MUSE_BROWSER_UNSAFE_BIND")
+
+      assert_raise RuntimeError, ~r/Unsafe browser access configuration/, fn ->
+        BrowserAccessConfig.assert_safe!()
+      end
+    end
+
     test "raises when 192.168.x.x + local_only" do
       Application.put_env(:muse, MuseWeb.Endpoint, http: [ip: {192, 168, 1, 1}, port: 4000])
       Application.put_env(:muse, :browser_access, mode: :local_only)
@@ -308,15 +343,103 @@ defmodule MuseWeb.BrowserAccessConfigTest do
       end
     end
 
-    test "passes when link-local 169.254.x.x + local_only (link-local treated as safe)" do
+    test "passes when link-local 169.254.x.x + MUSE_BROWSER_UNSAFE_BIND=1" do
       Application.put_env(:muse, MuseWeb.Endpoint, http: [ip: {169, 254, 1, 1}, port: 4000])
+      Application.put_env(:muse, :browser_access, mode: :local_only)
+      System.delete_env("MUSE_BROWSER_ACCESS")
+      System.put_env("MUSE_BROWSER_UNSAFE_BIND", "1")
+
+      assert BrowserAccessConfig.assert_safe!() == :ok
+    end
+  end
+
+  # -- assert_safe_for_ip!/1 ---------------------------------------------------
+
+  describe "assert_safe_for_ip!/1" do
+    test "passes when loopback + local_only" do
       Application.put_env(:muse, :browser_access, mode: :local_only)
       System.delete_env("MUSE_BROWSER_ACCESS")
       System.delete_env("MUSE_BROWSER_UNSAFE_BIND")
 
-      # Link-local is treated as non-loopback by loopback?/1 but
-      # non_loopback?/1 returns false for link-local, so assert_safe! passes.
-      assert BrowserAccessConfig.assert_safe!() == :ok
+      assert BrowserAccessConfig.assert_safe_for_ip!({127, 0, 0, 1}) == :ok
+    end
+
+    test "raises when 0.0.0.0 + local_only" do
+      Application.put_env(:muse, :browser_access, mode: :local_only)
+      System.delete_env("MUSE_BROWSER_ACCESS")
+      System.delete_env("MUSE_BROWSER_UNSAFE_BIND")
+
+      assert_raise RuntimeError, ~r/Unsafe browser access configuration/, fn ->
+        BrowserAccessConfig.assert_safe_for_ip!({0, 0, 0, 0})
+      end
+    end
+
+    test "raises when 192.168.1.10 + open" do
+      Application.put_env(:muse, :browser_access, mode: :open)
+      System.delete_env("MUSE_BROWSER_ACCESS")
+      System.delete_env("MUSE_BROWSER_UNSAFE_BIND")
+
+      assert_raise RuntimeError, ~r/Unsafe browser access configuration/, fn ->
+        BrowserAccessConfig.assert_safe_for_ip!({192, 168, 1, 10})
+      end
+    end
+
+    test "passes with MUSE_BROWSER_UNSAFE_BIND=1 for any IP" do
+      Application.put_env(:muse, :browser_access, mode: :open)
+      System.delete_env("MUSE_BROWSER_ACCESS")
+      System.put_env("MUSE_BROWSER_UNSAFE_BIND", "1")
+
+      assert BrowserAccessConfig.assert_safe_for_ip!({0, 0, 0, 0}) == :ok
+    end
+  end
+
+  # -- CLI --host override regression ------------------------------------------
+
+  describe "CLI --host override safety" do
+    test "--host 0.0.0.0 + local_only is caught by assert_safe_for_ip!" do
+      Application.put_env(:muse, :browser_access, mode: :local_only)
+      System.delete_env("MUSE_BROWSER_ACCESS")
+      System.delete_env("MUSE_BROWSER_UNSAFE_BIND")
+
+      # Simulates what Application.start does: parse_host("0.0.0.0")
+      effective_ip = Muse.Application.parse_host("0.0.0.0")
+      assert effective_ip == {0, 0, 0, 0}
+
+      assert_raise RuntimeError, ~r/Unsafe browser access configuration/, fn ->
+        BrowserAccessConfig.assert_safe_for_ip!(effective_ip)
+      end
+    end
+
+    test "--host 0.0.0.0 + open is caught by assert_safe_for_ip!" do
+      Application.put_env(:muse, :browser_access, mode: :open)
+      System.delete_env("MUSE_BROWSER_ACCESS")
+      System.delete_env("MUSE_BROWSER_UNSAFE_BIND")
+
+      effective_ip = Muse.Application.parse_host("0.0.0.0")
+
+      assert_raise RuntimeError, ~r/Unsafe browser access configuration/, fn ->
+        BrowserAccessConfig.assert_safe_for_ip!(effective_ip)
+      end
+    end
+
+    test "--host 0.0.0.0 with MUSE_BROWSER_UNSAFE_BIND=1 passes" do
+      Application.put_env(:muse, :browser_access, mode: :open)
+      System.delete_env("MUSE_BROWSER_ACCESS")
+      System.put_env("MUSE_BROWSER_UNSAFE_BIND", "1")
+
+      effective_ip = Muse.Application.parse_host("0.0.0.0")
+
+      assert BrowserAccessConfig.assert_safe_for_ip!(effective_ip) == :ok
+    end
+
+    test "--host 127.0.0.1 + local_only passes" do
+      Application.put_env(:muse, :browser_access, mode: :local_only)
+      System.delete_env("MUSE_BROWSER_ACCESS")
+      System.delete_env("MUSE_BROWSER_UNSAFE_BIND")
+
+      effective_ip = Muse.Application.parse_host("127.0.0.1")
+
+      assert BrowserAccessConfig.assert_safe_for_ip!(effective_ip) == :ok
     end
   end
 

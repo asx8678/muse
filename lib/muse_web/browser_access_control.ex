@@ -10,7 +10,14 @@ defmodule MuseWeb.BrowserAccessControl do
   This plug is inserted into the `:browser` pipeline in the router,
   **after** `:fetch_session` so that session data is available for
   future authenticated-mode checks, but **before** the LiveView routes
-  so that unauthorized requests never reach the LiveView socket.
+  so that unauthorized routed requests never reach LiveView handlers.
+
+  **Note:** The Phoenix LiveView WebSocket transport (`/live`) is
+  mounted at the endpoint level and bypasses the router pipeline.
+  For `:local_only` mode, ensure the endpoint binds to a loopback
+  address so the WebSocket transport is also unreachable remotely.
+  The router plug guards HTML/LiveView routes and their initial
+  HTTP connections; the transport-layer boundary is the bind IP.
 
   ## Error responses
 
