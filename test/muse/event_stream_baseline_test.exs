@@ -109,7 +109,10 @@ defmodule Muse.EventStreamBaselineTest do
   # chat_messages/1 — rough timing baselines
   # ---------------------------------------------------------------------------
 
+  # Tagged :timing_baseline — absolute timing thresholds flake on slow/loaded CI runners.
+  # Run locally with: mix test --include timing_baseline
   describe "chat_messages/1 — rough timing baseline" do
+    @describetag :timing_baseline
     test "1K events complete in under 500ms" do
       events = EF.bulk_chat_turns(500, session_id: "sess_baseline")
 

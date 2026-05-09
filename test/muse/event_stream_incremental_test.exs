@@ -685,7 +685,10 @@ defmodule Muse.EventStreamIncrementalTest do
   # Performance: O(n) grouping + incremental updates
   # ===========================================================================
 
+  # Tagged :timing_baseline — absolute timing thresholds flake on slow/loaded CI runners.
+  # Run locally with: mix test --include timing_baseline
   describe "O(n) grouping performance" do
+    @describetag :timing_baseline
     test "1K events: grouping is fast (under 500ms)" do
       events = EF.bulk_chat_turns(500, session_id: "sess_perf")
 
