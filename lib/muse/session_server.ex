@@ -1138,12 +1138,23 @@ defmodule Muse.SessionServer do
   # correct ordering alongside the remaining conductor events).
   @impl true
   def handle_info({:turn_event_spec, turn_id, spec}, state) do
+    spec_type = live_spec_type(spec)
+
     cond do
+      not live_event_spec?(spec) ->
+        Logger.debug("Live event spec ignored: invalid spec",
+          turn_id: turn_id,
+          spec_type: spec_type,
+          session_id: state.session_id
+        )
+
+        {:noreply, state}
+
       state.active_turn_id == nil or state.status != :running ->
         # No active turn — ignore stale spec
         Logger.debug("Live event spec ignored: no active turn",
           turn_id: turn_id,
-          spec_type: elem(spec, 1),
+          spec_type: spec_type,
           session_id: state.session_id
         )
 
@@ -1154,7 +1165,18 @@ defmodule Muse.SessionServer do
         Logger.debug("Live event spec ignored: stale turn_id",
           turn_id: turn_id,
           active_turn_id: state.active_turn_id,
-          spec_type: elem(spec, 1),
+          spec_type: spec_type,
+          session_id: state.session_id
+        )
+
+        {:noreply, state}
+
+      state.cancellation_requested ->
+        # Cancellation requested — suppress any further live deltas from the
+        # provider until the runner returns its cancelled result.
+        Logger.debug("Live event spec ignored: cancellation requested",
+          turn_id: turn_id,
+          spec_type: spec_type,
           session_id: state.session_id
         )
 
@@ -1184,6 +1206,16 @@ defmodule Muse.SessionServer do
   def handle_info(_msg, state) do
     {:noreply, state}
   end
+
+  defp live_event_spec?({source, type, data, opts})
+       when is_atom(source) and is_atom(type) and is_map(data) and is_list(opts) do
+    Keyword.keyword?(opts)
+  end
+
+  defp live_event_spec?(_spec), do: false
+
+  defp live_spec_type({_source, type, _data, _opts}) when is_atom(type), do: type
+  defp live_spec_type(_spec), do: :unknown
 
   # -- Task result handlers -----------------------------------------------------
 

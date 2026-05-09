@@ -378,6 +378,55 @@ defmodule Muse.ConductorStreamingTest do
       status = Muse.SessionServer.status(pid)
       assert status.event_count == 0
     end
+
+    test "SessionServer ignores malformed live event specs without crashing" do
+      pid = start_stale_server("malformed-live-spec")
+
+      send(pid, {:turn_event_spec, "turn_bad", :not_an_event_spec})
+
+      Process.sleep(50)
+
+      status = Muse.SessionServer.status(pid)
+      assert status.event_count == 0
+      assert Process.alive?(pid)
+    end
+
+    test "SessionServer suppresses live deltas after cancellation is requested" do
+      pid = start_stale_server("cancel-live-deltas")
+      :ok = Muse.State.subscribe()
+
+      {:ok, _turn_id} =
+        Muse.SessionServer.submit_async(pid, :web, "cancel streaming",
+          provider_module: FakeProvider,
+          provider_config: Muse.LLM.ProviderConfig.fake(),
+          request_options: [
+            options: %{
+              fake_events: [
+                {:assistant_delta, "before cancel"},
+                {:delay, 150},
+                {:assistant_delta, " after cancel"},
+                {:assistant_completed, "before cancel after cancel"},
+                {:response_completed, nil}
+              ]
+            }
+          ]
+        )
+
+      assert_receive {:muse_event, %{type: :assistant_delta, data: %{text: "before cancel"}}},
+                     1_000
+
+      assert :ok = Muse.SessionServer.cancel(pid)
+
+      refute_receive {:muse_event, %{type: :assistant_delta, data: %{text: " after cancel"}}},
+                     300
+
+      assert_receive {:muse_event, %{type: :turn_completed, data: %{cancelled: true}}},
+                     2_000
+
+      refute Enum.any?(State.events(), fn event ->
+               event.type == :assistant_delta and event.data.text == " after cancel"
+             end)
+    end
   end
 
   # ---------------------------------------------------------------------------
