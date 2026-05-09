@@ -46,6 +46,14 @@ defmodule MuseWeb.ExternalSocketConfig do
   @env_true_values ["true", "1", "yes", "on"]
 
   @doc """
+  Returns `true` if `MUSE_EXTERNAL_WS` is explicitly set to a truthy value.
+  """
+  @spec env_enabled?() :: boolean()
+  def env_enabled? do
+    System.get_env("MUSE_EXTERNAL_WS") in @env_true_values
+  end
+
+  @doc """
   Returns `true` if the external WebSocket channel is enabled.
 
   The channel is enabled when **either** of the following is true:
@@ -109,6 +117,6 @@ defmodule MuseWeb.ExternalSocketConfig do
   # App config enabled: false (the safe default) does NOT mask env var.
   # Also handles nil/missing — always check env var as a fallback.
   defp resolve_enabled(_) do
-    System.get_env("MUSE_EXTERNAL_WS") in @env_true_values
+    env_enabled?()
   end
 end

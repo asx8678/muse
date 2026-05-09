@@ -1,11 +1,10 @@
 import Config
 
 if config_env() == :prod do
-  # External WebSocket channel — opt-in via env var for production.
-  # Without this var the socket remains disabled.
-  # When enabled, token hashes MUST be configured or the app fails to start.
-  if System.get_env("MUSE_EXTERNAL_WS") == "true" do
-    config :muse, :external_ws, enabled: true
+  # External WebSocket channel — opt-in via config or truthy env var for production.
+  # Without an explicit opt-in the socket remains disabled.
+  # When enabled, valid token hashes MUST be configured or the app fails to start.
+  if MuseWeb.ExternalSocketConfig.enabled?() do
     MuseWeb.ExternalSocketAuth.assert_configured!()
   end
 

@@ -144,9 +144,40 @@ defmodule MuseWeb.ExternalSocketAuthTest do
     test "raises when enabled with no token hashes" do
       Application.put_env(:muse, :external_ws, enabled: true, token_hashes: [])
 
-      assert_raise RuntimeError, ~r/External WebSocket is enabled but no token hashes/, fn ->
-        ExternalSocketAuth.assert_configured!()
-      end
+      assert_raise RuntimeError,
+                   ~r/External WebSocket is enabled but no valid token hashes/,
+                   fn ->
+                     ExternalSocketAuth.assert_configured!()
+                   end
+    end
+
+    test "raises when enabled by a documented truthy env var with no token hashes" do
+      System.put_env("MUSE_EXTERNAL_WS", "1")
+      Application.put_env(:muse, :external_ws, enabled: false, token_hashes: [])
+
+      assert_raise RuntimeError,
+                   ~r/External WebSocket is enabled but no valid token hashes/,
+                   fn ->
+                     ExternalSocketAuth.assert_configured!()
+                   end
+    end
+
+    test "raises when token hash entries are malformed" do
+      Application.put_env(:muse, :external_ws,
+        enabled: true,
+        token_hashes: [
+          %{id: "missing-hash"},
+          %{id: "bad-hash", hash: "not-a-sha256-hex-hash"},
+          %{id: "non-binary-hash", hash: 123},
+          "not-a-map"
+        ]
+      )
+
+      assert_raise RuntimeError,
+                   ~r/External WebSocket is enabled but no valid token hashes/,
+                   fn ->
+                     ExternalSocketAuth.assert_configured!()
+                   end
     end
 
     test "does not raise when enabled with token hashes configured" do
@@ -316,6 +347,47 @@ defmodule MuseWeb.ExternalSocketAuthTest do
     test "returns error for invalid token" do
       assert {:error, :invalid_token} =
                ExternalSocketAuth.authenticate(%{"token" => "not-a-valid-token-for-any-entry"})
+    end
+
+    test "returns error instead of crashing when token config entries are malformed" do
+      Application.put_env(:muse, :external_ws,
+        enabled: true,
+        token_hashes: [
+          %{id: "missing-hash"},
+          %{id: "bad-hash", hash: "not-a-sha256-hex-hash"},
+          %{id: "non-binary-hash", hash: 123},
+          "not-a-map"
+        ]
+      )
+
+      assert {:error, :invalid_token} =
+               ExternalSocketAuth.authenticate(%{"token" => "long-enough-token-value"})
+    end
+
+    test "supports atom token param for direct callers" do
+      assert {:ok, %{token_id: "test-token"}} =
+               ExternalSocketAuth.authenticate(%{token: test_token()})
+    end
+
+    test "supports string-keyed token hash entries" do
+      Application.put_env(:muse, :external_ws,
+        enabled: true,
+        token_hashes: [
+          %{
+            "id" => "string-keyed",
+            "hash" => test_token_hash(),
+            "scopes" => ["events:read"],
+            "allowed_sessions" => ["sess-string"]
+          }
+        ]
+      )
+
+      assert {:ok,
+              %{
+                token_id: "string-keyed",
+                scopes: ["events:read"],
+                allowed_sessions: ["sess-string"]
+              }} = ExternalSocketAuth.authenticate(%{"token" => test_token()})
     end
 
     test "returns ok with principal for valid token" do
