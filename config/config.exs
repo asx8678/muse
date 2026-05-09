@@ -61,6 +61,18 @@ config :muse, :external_ws,
 # :websocket_client_not_configured}}.
 config :muse, :websocket_client, nil
 
+# --- Runtime environment flags (replace Mix.env() calls) ---
+# These flags control environment-dependent behavior so the app works
+# correctly in releases where Mix is not available.
+
+# Dev-only tools (simulate buttons, dev sidebar).  Safe default: off.
+# Overridden to true in dev/test/smoke configs.
+config :muse, :dev_tools_enabled, false
+
+# Runtime LLM provider resolution.  On by default (dev/prod behavior);
+# disabled in test/smoke to preserve offline/fake behavior.
+config :muse, :runtime_provider_enabled, true
+
 # --- Memory bounds for per-session events, UI queues, and buffers ---
 # Override individual keys in env-specific config or at runtime.
 # Keys not explicitly set fall back to the compiled-in defaults in Muse.Bounds.

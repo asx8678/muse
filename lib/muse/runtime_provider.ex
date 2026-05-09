@@ -49,6 +49,7 @@ defmodule Muse.RuntimeProvider do
   """
 
   alias Muse.Config
+  alias Muse.Env, as: AppEnv
   alias Muse.LLM.ProviderConfig
 
   @muse_prefix "MUSE_"
@@ -83,11 +84,9 @@ defmodule Muse.RuntimeProvider do
   # Disabled by default in test/smoke to preserve offline/fake behavior.
   # Can be explicitly enabled/disabled via app config:
   #   config :muse, :runtime_provider_enabled, true
+  # Defaults to true when unset (matches historical dev/prod behavior).
   defp runtime_provider_enabled? do
-    case Application.get_env(:muse, :runtime_provider_enabled) do
-      nil -> Mix.env() in [:dev, :prod]
-      explicit -> explicit == true
-    end
+    AppEnv.runtime_provider_enabled?()
   end
 
   defp resolve_runtime_opts do

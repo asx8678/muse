@@ -31,6 +31,7 @@ defmodule MuseWeb.HomeLive do
   alias Muse.EventStream
   alias Muse.RuntimeProvider
   alias Muse.Bounds
+  alias Muse.Env, as: AppEnv
   alias MuseWeb.BackendBridge
   alias MuseWeb.ConsoleCommand
 
@@ -349,7 +350,7 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("simulate_event", _params, socket) do
-    if Mix.env() != :prod do
+    if AppEnv.dev_tools_enabled?() do
       event = Muse.Event.new(:web, :simulated, %{text: "Simulated test event from dev tools"})
       Muse.State.append(event)
       # Event will arrive via PubSub and be handled incrementally
@@ -362,7 +363,7 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("simulate_backend_error", _params, socket) do
-    if Mix.env() != :prod do
+    if AppEnv.dev_tools_enabled?() do
       BackendBridge.safe_emit_simulated_error()
 
       event =
@@ -588,7 +589,7 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("simulate_log", _params, socket) do
-    if Mix.env() != :prod do
+    if AppEnv.dev_tools_enabled?() do
       case BackendBridge.safe_append_log(
              :info,
              "Simulated log entry from dev tools",

@@ -33,6 +33,8 @@ defmodule MuseWeb.ConsoleComponents do
       format_log_json: 1
     ]
 
+  alias Muse.Env, as: AppEnv
+
   # -- Legacy/advanced tab components (not rendered by default) -----------------
   # The following tab components are preserved for future/advanced use.
   # They are NOT rendered in the chat-first HomeLive layout.
@@ -223,7 +225,7 @@ defmodule MuseWeb.ConsoleComponents do
               Logs from the backend/runtime will appear here.
             </p>
             <div class="empty-state-actions">
-              <%= if Mix.env() != :prod do %>
+              <%= if AppEnv.dev_tools_enabled?() do %>
                 <button type="button" class="secondary-button" phx-click="simulate_log">Simulate log</button>
               <% end %>
             </div>
@@ -1031,7 +1033,7 @@ defmodule MuseWeb.ConsoleComponents do
   def dev_sidebar(assigns) do
     ~H"""
     <aside class="dev-sidebar">
-      <%= if Mix.env() != :prod do %>
+      <%= if AppEnv.dev_tools_enabled?() do %>
         <section id="dev-tools" class="panel dev-tools-panel">
           <div class="panel-header">
             <h2 class="panel-title">Dev tools</h2>

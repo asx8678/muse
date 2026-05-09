@@ -42,6 +42,12 @@ config :muse, :external_ws,
 config :muse, :browser_access, mode: :local_only
 config :muse, :browser_access_enforced, false
 
+# Dev tools enabled in test so simulate commands/dispatch work.
+config :muse, :dev_tools_enabled, true
+
+# Runtime provider disabled in test to preserve offline/fake behavior.
+config :muse, :runtime_provider_enabled, false
+
 # Prevent the Application supervisor from starting runtime children
 # (Workspace, State, CLI.Repl, Endpoint, DevReloader) during mix test.
 # Existing tests manually start/stop those globally-named processes,

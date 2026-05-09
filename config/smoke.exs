@@ -21,6 +21,12 @@ config :muse, MuseWeb.Endpoint,
 # Ensure runtime children start (only test env disables this).
 config :muse, :start_runtime_children?, true
 
+# Dev tools enabled in smoke for interactive testing.
+config :muse, :dev_tools_enabled, true
+
+# Runtime provider disabled in smoke to preserve offline/fake behavior.
+config :muse, :runtime_provider_enabled, false
+
 # Quiet logging — smoke output should be assertion-focused, not log-spammy.
 config :muse, :logger,
   buffer_level: :warning,

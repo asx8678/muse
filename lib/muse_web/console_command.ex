@@ -12,6 +12,7 @@ defmodule MuseWeb.ConsoleCommand do
   import Phoenix.LiveView, only: [push_event: 3, connected?: 1]
 
   alias Muse.Bounds
+  alias Muse.Env, as: AppEnv
   alias Muse.EventStream
   alias MuseWeb.BackendBridge
   alias Muse.CommandDispatcher
@@ -177,7 +178,7 @@ defmodule MuseWeb.ConsoleCommand do
         assign(socket, active_tab: tab)
 
       "simulate_event" ->
-        if Mix.env() != :prod do
+        if AppEnv.dev_tools_enabled?() do
           event = Muse.Event.new(:web, :simulated, %{text: "Simulated from palette"})
           Muse.State.append(event)
 
@@ -188,7 +189,7 @@ defmodule MuseWeb.ConsoleCommand do
         end
 
       "simulate_backend_error" ->
-        if Mix.env() != :prod do
+        if AppEnv.dev_tools_enabled?() do
           BackendBridge.safe_emit_simulated_error()
           event = Muse.Event.new(:web, :error, %{text: "Simulated from palette"})
           Muse.State.append(event)

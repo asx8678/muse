@@ -20,6 +20,9 @@ config :muse, MuseWeb.Endpoint,
 config :muse, :browser_access, mode: :local_only
 config :muse, :browser_access_enforced, true
 
+# Dev tools (simulate buttons, dev sidebar) enabled in dev.
+config :muse, :dev_tools_enabled, true
+
 config :muse, :logger,
   buffer_level: :debug,
   console_level: :warning

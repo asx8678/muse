@@ -35,6 +35,7 @@ defmodule Muse.CommandDispatcher do
 
   alias Muse.Auth.Status
   alias Muse.Backend
+  alias Muse.Env, as: AppEnv
   alias Muse.WorkspaceProfile
 
   # -- Public API --------------------------------------------------------------
@@ -214,7 +215,7 @@ defmodule Muse.CommandDispatcher do
   # -- Simulate ----------------------------------------------------------------
 
   def dispatch(:simulate_event, _args, _context) do
-    if Mix.env() != :prod do
+    if AppEnv.dev_tools_enabled?() do
       event = Muse.Event.new(:web, :simulated, %{text: "Simulated test event from command"})
       Muse.State.append(event)
 
@@ -226,7 +227,7 @@ defmodule Muse.CommandDispatcher do
   end
 
   def dispatch(:simulate_backend_error, _args, _context) do
-    if Mix.env() != :prod do
+    if AppEnv.dev_tools_enabled?() do
       Backend.safe_emit_simulated_error()
 
       event = Muse.Event.new(:web, :error, %{text: "Simulated backend error from command"})
