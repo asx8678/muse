@@ -657,7 +657,7 @@ mix muse
 | LiveView browser smoke | `./script/liveview-browser-smoke` | ✓ |
 | Muse-first terminology grep check | No "Active Agent", "Agent Plan", or "Bot" in user-facing surfaces (see [`docs/testing.md`](docs/testing.md#9-product-language-tests)) | manual |
 
-`mix ci` runs the first four gates in one command. The browser smoke test requires a running server and must be run separately via the orchestration script. All CI gates run offline with the fake provider — no API keys, no external network calls. External/network-dependent tests are opt-in via the `@tag :external` mechanism.
+`mix ci` runs the first four gates in one command. The browser smoke test requires a running server and must be run separately via the orchestration script. Runtime/test gates use the fake provider — no LLM API keys or provider network calls. External/provider-dependent tests are opt-in via the `@tag :external_provider` mechanism.
 
 GitHub Actions CI runs the full pipeline on every push to `main` and every pull request targeting `main`. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 

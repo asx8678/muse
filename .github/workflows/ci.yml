@@ -2,8 +2,8 @@
 #
 # Muse CI — format, compile, audit, test, smoke.
 #
-# All gates run offline with the fake provider.
-# No real LLM provider calls, no API keys, no external network.
+# Runtime gates use the fake provider.
+# No real LLM provider calls or API keys are required.
 #
 # Local equivalent:
 #   mix ci
@@ -32,6 +32,9 @@ jobs:
         otp: ["27"]
         elixir: ["1.17"]
 
+    env:
+      MIX_ENV: test
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -51,6 +54,11 @@ jobs:
           key: ci-${{ runner.os }}-otp${{ matrix.otp }}-ex${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
           restore-keys: |
             ci-${{ runner.os }}-otp${{ matrix.otp }}-ex${{ matrix.elixir }}-
+
+      - name: Install Hex and Rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
 
       - name: Install Mix dependencies
         run: mix deps.get
