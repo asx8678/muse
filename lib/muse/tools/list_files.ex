@@ -31,7 +31,16 @@ defmodule Muse.Tools.ListFiles do
   """
   @spec execute(map(), map()) :: Result.t()
   def execute(args, context) do
-    workspace = Map.fetch!(context, :workspace)
+    workspace = Map.get(context, :workspace, "")
+
+    if not is_binary(workspace) or workspace == "" do
+      Result.error("list_files", "workspace is required in context")
+    else
+      do_execute(args, workspace)
+    end
+  end
+
+  defp do_execute(args, workspace) do
     rel_path = Map.get(args, "path", ".")
     max_entries = Map.get(args, "max_entries", @default_max_entries)
     allow_hidden = Map.get(args, "allow_hidden", false)
@@ -77,34 +86,45 @@ defmodule Muse.Tools.ListFiles do
   end
 
   defp do_list(resolved, workspace, allow_hidden) do
-    resolved
-    |> File.ls!()
-    |> Enum.reject(fn entry ->
-      full = Path.join(resolved, entry)
+    case File.ls(resolved) do
+      {:ok, entries} ->
+        entries
+        |> Enum.reject(fn entry ->
+          full = Path.join(resolved, entry)
 
-      cond do
-        not allow_hidden and hidden?(entry) -> true
-        Muse.Workspace.secret_path?(full, workspace) -> true
-        Muse.Workspace.ignored_path?(full, workspace, []) -> true
-        true -> false
-      end
-    end)
-    |> Enum.flat_map(fn entry ->
-      full = Path.join(resolved, entry)
-      rel = Path.relative_to(full, workspace)
+          cond do
+            not allow_hidden and hidden?(entry) -> true
+            Muse.Workspace.secret_path?(full, workspace) -> true
+            Muse.Workspace.ignored_path?(full, workspace, []) -> true
+            true -> false
+          end
+        end)
+        |> Enum.flat_map(fn entry ->
+          full = Path.join(resolved, entry)
+          rel = Path.relative_to(full, workspace)
 
-      # Validate each entry resolves safely (catches symlinks that
-      # point outside the workspace even after the above checks).
-      if safe_entry?(rel, workspace, allow_hidden) do
-        if File.dir?(full) do
-          [rel <> "/"]
-        else
-          [rel]
-        end
-      else
+          # Validate each entry resolves safely (catches symlinks that
+          # point outside the workspace even after the above checks).
+          if safe_entry?(rel, workspace, allow_hidden) do
+            if File.dir?(full) do
+              [rel <> "/"]
+            else
+              [rel]
+            end
+          else
+            []
+          end
+        end)
+
+      {:error, :enoent} ->
         []
-      end
-    end)
+
+      {:error, :eacces} ->
+        []
+
+      {:error, _reason} ->
+        []
+    end
   end
 
   defp safe_entry?(rel, workspace, allow_hidden) do

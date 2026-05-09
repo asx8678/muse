@@ -34,7 +34,7 @@ defmodule Muse.Tool.Runner do
 
   alias Muse.ApprovalGate
   alias Muse.Telemetry, as: MuseTelemetry
-  alias Muse.Tool.{Registry, Result, Spec}
+  alias Muse.Tool.{Registry, Result, Spec, Validator}
 
   # @default_output_limit available if needed later
   # @default_output_limit 50_000
@@ -129,8 +129,15 @@ defmodule Muse.Tool.Runner do
     result
   end
 
-  def run(tool_name, _args, _context) do
-    Result.error(to_string(tool_name), "invalid tool call: tool_name must be a string")
+  def run(tool_name, args, _context) do
+    reason =
+      cond do
+        not is_binary(tool_name) -> "invalid tool call: tool_name must be a string"
+        not is_map(args) -> "invalid tool call: arguments must be a map"
+        true -> "invalid tool call"
+      end
+
+    Result.error(to_string(tool_name), reason)
   end
 
   # -- Tool pipeline (extracted for rescue boundary) ----------------------------
@@ -140,9 +147,10 @@ defmodule Muse.Tool.Runner do
          {:ok, spec} <- check_registered(tool_name),
          :ok <- check_muse_allowed(spec, muse_id),
          :ok <- check_approval(spec, context),
-         :ok <- check_required_args(spec, args),
+         {:ok, normalized_args} <- validate_args(spec, args),
          {:ok, context_with_workspace} <- ensure_workspace(context),
-         {:ok, final_result} <- execute_handler(spec, args, context_with_workspace, call_id) do
+         {:ok, final_result} <-
+           execute_handler(spec, normalized_args, context_with_workspace, call_id) do
       cap_and_redact_result(final_result, spec)
     else
       {:blocked, reason} ->
@@ -216,18 +224,10 @@ defmodule Muse.Tool.Runner do
     end
   end
 
-  defp check_required_args(%Spec{input_schema: schema}, args) do
-    required = Map.get(schema, "required") || Map.get(schema, :required) || []
-
-    missing =
-      Enum.filter(required, fn key ->
-        not Map.has_key?(args, key)
-      end)
-
-    if missing == [] do
-      :ok
-    else
-      {:error, "missing required arguments: #{Enum.join(missing, ",")}"}
+  defp validate_args(%Spec{} = spec, args) do
+    case Validator.validate_args(spec, args) do
+      {:ok, normalized_args} -> {:ok, normalized_args}
+      {:error, reason} -> {:error, reason}
     end
   end
 

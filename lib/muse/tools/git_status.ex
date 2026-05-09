@@ -20,14 +20,18 @@ defmodule Muse.Tools.GitStatus do
   """
   @spec execute(map(), map()) :: Result.t()
   def execute(_args, context) do
-    workspace = Map.fetch!(context, :workspace)
+    workspace = Map.get(context, :workspace, "")
 
-    case run_git_status(workspace) do
-      {:ok, output} ->
-        Result.ok("git_status", parse_output(output, workspace))
+    if not is_binary(workspace) or workspace == "" do
+      Result.error("git_status", "workspace is required in context")
+    else
+      case run_git_status(workspace) do
+        {:ok, output} ->
+          Result.ok("git_status", parse_output(output, workspace))
 
-      {:error, reason} ->
-        Result.error("git_status", reason)
+        {:error, reason} ->
+          Result.error("git_status", reason)
+      end
     end
   end
 

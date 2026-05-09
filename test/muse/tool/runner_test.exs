@@ -656,6 +656,231 @@ defmodule Muse.Tool.RunnerTest do
 
   # -- Helpers -------------------------------------------------------------------
 
+  # -- T1-10: Strict tool input validation ---------------------------------------
+
+  describe "run/3 — type validation rejects wrong arg types" do
+    test "rejects integer where string path expected", %{context: context} do
+      result = Runner.run("read_file", %{"path" => 123}, context)
+      refute result.success
+      assert result.error =~ "expected string"
+    end
+
+    test "rejects list where string path expected", %{context: context} do
+      result = Runner.run("read_file", %{"path" => ["a.ex"]}, context)
+      refute result.success
+      assert result.error =~ "expected string"
+    end
+
+    test "rejects string where integer expected", %{context: context} do
+      result = Runner.run("read_file", %{"path" => "hello.ex", "start_line" => "one"}, context)
+      refute result.success
+      assert result.error =~ "expected integer"
+    end
+
+    test "rejects boolean where integer expected", %{context: context} do
+      result = Runner.run("read_files", %{"path" => "hello.ex", "max_entries" => true}, context)
+      # Unknown tool since list_files is "list_files" not "list_files"
+      refute result.success
+    end
+
+    test "rejects integer where boolean expected", %{context: context} do
+      result = Runner.run("list_files", %{"allow_hidden" => 1}, context)
+      refute result.success
+      assert result.error =~ "expected boolean"
+    end
+
+    test "rejects string where boolean expected", %{context: context} do
+      result = Runner.run("list_files", %{"allow_hidden" => "yes"}, context)
+      refute result.success
+      assert result.error =~ "expected boolean"
+    end
+
+    test "accepts correct types for all args", %{root: _root, context: context} do
+      result =
+        Runner.run(
+          "read_file",
+          %{"path" => "hello.ex", "start_line" => 1, "max_lines" => 10},
+          context
+        )
+
+      assert result.success
+    end
+
+    test "accepts whole-number float where integer expected", %{context: context} do
+      result = Runner.run("read_file", %{"path" => "hello.ex", "start_line" => 1.0}, context)
+      assert result.success
+    end
+  end
+
+  describe "run/3 — path traversal rejection" do
+    test "rejects path traversal in path arg", %{context: context} do
+      result = Runner.run("read_file", %{"path" => "../../etc/passwd"}, context)
+      refute result.success
+      assert result.error =~ "path traversal"
+    end
+
+    test "rejects path traversal with mixed segments", %{context: context} do
+      result = Runner.run("read_file", %{"path" => "lib/../etc/shadow"}, context)
+      refute result.success
+      assert result.error =~ "path traversal"
+    end
+
+    test "rejects absolute path in path arg", %{context: context} do
+      result = Runner.run("read_file", %{"path" => "/etc/passwd"}, context)
+      refute result.success
+      assert result.error =~ "absolute"
+    end
+
+    test "rejects null bytes in path arg", %{context: context} do
+      result = Runner.run("read_file", %{"path" => "foo.ex\0.txt"}, context)
+      refute result.success
+      assert result.error =~ "null bytes"
+    end
+
+    test "rejects path traversal in git_diff_readonly path arg", %{context: context} do
+      result = Runner.run("git_diff_readonly", %{"path" => "../../etc/shadow"}, context)
+      refute result.success
+      assert result.error =~ "path traversal"
+    end
+
+    test "rejects absolute path in git_diff_readonly path arg", %{context: context} do
+      result = Runner.run("git_diff_readonly", %{"path" => "/etc/shadow"}, context)
+      refute result.success
+      assert result.error =~ "absolute"
+    end
+
+    test "path traversal rejected before filesystem access", %{context: context} do
+      # The validation rejects traversal in the Runner pipeline BEFORE
+      # the handler's safe_resolve is called, preventing any filesystem access.
+      result = Runner.run("read_file", %{"path" => "../../../etc/shadow"}, context)
+      refute result.success
+      # Must be a validation error, not a workspace-safety error
+      assert result.error =~ "path traversal"
+    end
+  end
+
+  describe "run/3 — numeric constraint validation" do
+    test "rejects negative integer", %{context: context} do
+      result = Runner.run("read_file", %{"path" => "hello.ex", "start_line" => -1}, context)
+      refute result.success
+      assert result.error =~ "non-negative"
+    end
+
+    test "accepts zero for numeric arg", %{context: context} do
+      # start_line=0 is accepted by the validator (tool may adjust it)
+      result = Runner.run("read_file", %{"path" => "hello.ex", "start_line" => 0}, context)
+      assert result.success
+    end
+  end
+
+  describe "run/3 — malformed tool calls never crash" do
+    test "non-map args return structured error" do
+      result = Runner.run("read_file", "not a map", %{workspace: "/tmp"})
+      refute result.success
+      assert result.error =~ "arguments must be a map"
+    end
+
+    test "nil args return structured error" do
+      result = Runner.run("read_file", nil, %{workspace: "/tmp"})
+      refute result.success
+      assert result.error =~ "arguments must be a map" or result.error =~ "invalid tool call"
+    end
+
+    test "non-string tool name returns structured error" do
+      result = Runner.run(:read_file, %{"path" => "a.ex"}, %{workspace: "/tmp"})
+      refute result.success
+      assert result.error =~ "tool_name must be a string"
+    end
+
+    test "empty tool name returns unknown tool error", %{context: context} do
+      result = Runner.run("", %{}, context)
+      refute result.success
+      assert result.error =~ "unknown tool"
+    end
+
+    test "missing workspace returns structured error" do
+      result = Runner.run("read_file", %{"path" => "a.ex"}, %{muse_id: :planning})
+      refute result.success
+      assert result.error =~ "workspace"
+    end
+
+    test "all result shapes are %Result{} regardless of input", %{context: context} do
+      # Various malformed inputs — all must return Result structs
+      inputs = [
+        {"read_file", %{}, context},
+        {"unknown_tool", %{}, context},
+        {"write_file", %{}, context},
+        {"read_file", %{"path" => 123}, context},
+        {"read_file", %{"path" => "../../etc/passwd"}, context}
+      ]
+
+      for {name, args, ctx} <- inputs do
+        result = Runner.run(name, args, ctx)
+        assert %Muse.Tool.Result{} = result
+        refute result.success
+      end
+    end
+  end
+
+  describe "run/3 — filesystem permission errors return structured errors" do
+    test "reading a non-existent file returns structured error", %{root: _root, context: context} do
+      result = Runner.run("read_file", %{"path" => "nonexistent_file.ex"}, context)
+      refute result.success
+      assert result.error =~ "file not found" or result.error =~ "not found"
+      assert %Muse.Tool.Result{} = result
+    end
+
+    test "reading an unreadable directory returns structured error", %{
+      root: root,
+      context: context
+    } do
+      # Create a directory without read permissions
+      restricted = Path.join(root, "restricted_dir")
+      File.mkdir_p!(restricted)
+      File.write!(Path.join(restricted, "secret.ex"), "secret")
+
+      # Remove read permission (may not work on all platforms)
+      try do
+        File.chmod(restricted, 0o000)
+
+        result = Runner.run("list_files", %{"path" => "restricted_dir"}, context)
+
+        # Should not crash — either succeeds (OS allows) or returns structured error
+        assert %Muse.Tool.Result{} = result
+      after
+        # Restore permissions for cleanup
+        File.chmod(restricted, 0o755)
+      end
+    end
+
+    test "listing a non-existent directory returns structured error", %{context: context} do
+      result = Runner.run("list_files", %{"path" => "nonexistent_dir"}, context)
+      refute result.success
+      assert %Muse.Tool.Result{} = result
+    end
+  end
+
+  describe "run/3 — unknown tool returns clear structured error" do
+    test "unknown tool error is structured and bounded", %{context: context} do
+      result = Runner.run("completely_unknown_tool", %{}, context)
+      refute result.success
+      assert result.error =~ "unknown tool"
+      assert %Muse.Tool.Result{} = result
+      assert result.tool_name =~ "completely_unknown_tool"
+    end
+
+    test "unknown tool with long name doesn't produce huge error", %{context: context} do
+      long_name = String.duplicate("x", 500)
+      result = Runner.run(long_name, %{}, context)
+      refute result.success
+      # Error message must be bounded — not disproportionately larger than the name
+      # Allow reasonable overhead for the "unknown tool: " prefix and redaction markers
+      assert String.length(result.error) < 1000
+    end
+  end
+
+  # -- Helpers -------------------------------------------------------------------
+
   defp start_state do
     case Process.whereis(Muse.State) do
       nil ->

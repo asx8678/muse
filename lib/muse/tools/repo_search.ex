@@ -35,8 +35,16 @@ defmodule Muse.Tools.RepoSearch do
   """
   @spec execute(map(), map()) :: Result.t()
   def execute(args, context) do
-    workspace = Map.fetch!(context, :workspace)
+    workspace = Map.get(context, :workspace, "")
 
+    if not is_binary(workspace) or workspace == "" do
+      Result.error("repo_search", "workspace is required in context")
+    else
+      do_execute(args, workspace)
+    end
+  end
+
+  defp do_execute(args, workspace) do
     with {:ok, pattern} <- require_pattern(args) do
       max_results = Map.get(args, "max_results", @default_max_results)
       file_pattern = Map.get(args, "file_pattern")

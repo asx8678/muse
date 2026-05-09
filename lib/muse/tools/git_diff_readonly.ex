@@ -24,7 +24,16 @@ defmodule Muse.Tools.GitDiffReadonly do
   """
   @spec execute(map(), map()) :: Result.t()
   def execute(args, context) do
-    workspace = Map.fetch!(context, :workspace)
+    workspace = Map.get(context, :workspace, "")
+
+    if not is_binary(workspace) or workspace == "" do
+      Result.error("git_diff_readonly", "workspace is required in context")
+    else
+      do_execute(args, workspace)
+    end
+  end
+
+  defp do_execute(args, workspace) do
     cached = Map.get(args, "cached", false)
     rel_path = Map.get(args, "path")
 

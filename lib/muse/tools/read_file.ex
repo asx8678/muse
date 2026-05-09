@@ -41,8 +41,16 @@ defmodule Muse.Tools.ReadFile do
   """
   @spec execute(map(), map()) :: Result.t()
   def execute(args, context) do
-    workspace = Map.fetch!(context, :workspace)
+    workspace = Map.get(context, :workspace, "")
 
+    if not is_binary(workspace) or workspace == "" do
+      Result.error("read_file", "workspace is required in context")
+    else
+      do_execute(args, workspace)
+    end
+  end
+
+  defp do_execute(args, workspace) do
     with {:ok, path} <- require_path(args),
          {:ok, resolved} <- safe_resolve(path, workspace),
          :ok <- check_not_directory(resolved),

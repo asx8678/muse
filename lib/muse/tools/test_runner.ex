@@ -77,7 +77,7 @@ defmodule Muse.Tools.TestRunner do
   """
   @spec execute(map(), map()) :: Result.t()
   def execute(args, context) do
-    workspace = Map.fetch!(context, :workspace)
+    workspace = Map.get(context, :workspace, "")
     command = Map.get(args, "command") || Map.get(args, :command)
 
     cond do
@@ -102,6 +102,8 @@ defmodule Muse.Tools.TestRunner do
   # -- Preset execution ---------------------------------------------------------
 
   defp execute_preset(command, workspace) do
+    # Safe: command is validated against @allowed_presets before this call,
+    # and @file_presets entries are handled separately.
     {executable, base_argv} = Map.fetch!(@safe_presets, command)
     argv = base_argv
     env = safe_env()
