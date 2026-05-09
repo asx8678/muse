@@ -28,7 +28,9 @@ defmodule Muse.Execution.ProcessGroup do
       to avoid TOCTOU races.
     * All kill operations are best-effort. If the process group has
       already exited, the kill is a no-op.
-    * This module never spawns new processes or makes network calls.
+    * Helper commands are invoked through argv-vector `System.cmd/3`
+      with fixed executable names and integer-derived arguments; no shell
+      interpolation or network calls are used.
 
   ## Diagnostics
 
@@ -44,6 +46,7 @@ defmodule Muse.Execution.ProcessGroup do
           :os_pid => non_neg_integer() | nil,
           :pgid => non_neg_integer() | nil,
           optional(:kill_result) => :ok | :enosr | :eperm | :error | {:error, term()},
+          optional(:force_kill_result) => :ok | :enosr | :eperm | :error | {:error, term()},
           optional(:fallback_reason) => String.t()
         }
 
@@ -149,62 +152,98 @@ defmodule Muse.Execution.ProcessGroup do
         }
 
       pid ->
-        terminate_unix_group(pid, force_after_ms)
+        terminate_unix_group(port, pid, force_after_ms)
     end
   end
 
-  defp terminate_unix_group(pid, force_after_ms) do
+  defp terminate_unix_group(port, pid, force_after_ms) do
     case read_pgid(pid) do
-      {:ok, pgid} ->
-        # Send SIGTERM to the whole process group
-        term_result = kill_group(pgid, "TERM")
+      {:ok, ^pid} ->
+        # Send SIGTERM to the whole process group. Only use negative-PGID
+        # signaling when the port process is the process-group leader; otherwise
+        # a Unix/runtime variation could make this kill an unrelated group.
+        term_result = kill_group(pid, "TERM")
 
         Logger.info("Process group terminated on timeout",
-          pgid: pgid,
+          pgid: pid,
           os_pid: pid,
           kill_result: term_result
         )
 
-        # Wait briefly, then SIGKILL any survivors
-        if force_after_ms > 0 do
-          Process.sleep(force_after_ms)
-          kill_group(pgid, "KILL")
-        end
+        force_kill_result = maybe_force_kill_group(pid, force_after_ms)
 
         %{
           platform: :unix,
           pgid_available: true,
           os_pid: pid,
-          pgid: pgid,
+          pgid: pid,
           kill_result: term_result
         }
+        |> maybe_put_force_kill_result(force_kill_result)
 
-      {:error, reason} ->
-        # PGID unavailable (process may have just exited)
-        # Best-effort: try killing just the leader PID
-        term_result = kill_pid(pid, "TERM")
-
-        Logger.warning("Process group cleanup incomplete on timeout",
-          os_pid: pid,
-          fallback_reason: reason,
-          kill_result: term_result
+      {:ok, pgid} ->
+        terminate_leader_only(
+          port,
+          pid,
+          pgid,
+          force_after_ms,
+          "port process is not process-group leader"
         )
 
-        if force_after_ms > 0 do
-          Process.sleep(force_after_ms)
-          kill_pid(pid, "KILL")
-        end
-
-        %{
-          platform: :unix,
-          pgid_available: false,
-          os_pid: pid,
-          pgid: nil,
-          kill_result: term_result,
-          fallback_reason: "pgid unavailable (#{reason}); killed leader only"
-        }
+      {:error, reason} ->
+        terminate_leader_only(port, pid, nil, force_after_ms, "pgid unavailable (#{reason})")
     end
   end
+
+  defp terminate_leader_only(port, pid, pgid, force_after_ms, reason) do
+    term_result = kill_port_pid_if_alive(port, pid, "TERM")
+
+    Logger.warning("Process group cleanup incomplete on timeout",
+      os_pid: pid,
+      pgid: pgid,
+      fallback_reason: reason,
+      kill_result: term_result
+    )
+
+    force_kill_result = maybe_force_kill_pid(port, pid, force_after_ms)
+
+    %{
+      platform: :unix,
+      pgid_available: false,
+      os_pid: pid,
+      pgid: pgid,
+      kill_result: term_result,
+      fallback_reason: "#{reason}; killed leader only"
+    }
+    |> maybe_put_force_kill_result(force_kill_result)
+  end
+
+  defp maybe_force_kill_group(pgid, force_after_ms) when force_after_ms > 0 do
+    Process.sleep(force_after_ms)
+    {:attempted, kill_group(pgid, "KILL")}
+  end
+
+  defp maybe_force_kill_group(_pgid, _force_after_ms), do: :not_attempted
+
+  defp maybe_force_kill_pid(port, pid, force_after_ms) when force_after_ms > 0 do
+    Process.sleep(force_after_ms)
+    {:attempted, kill_port_pid_if_alive(port, pid, "KILL")}
+  end
+
+  defp maybe_force_kill_pid(_port, _pid, _force_after_ms), do: :not_attempted
+
+  defp kill_port_pid_if_alive(port, pid, signal) do
+    case get_os_pid(port) do
+      ^pid -> kill_pid(pid, signal)
+      _ -> :enosr
+    end
+  end
+
+  defp maybe_put_force_kill_result(diagnostic, {:attempted, result}) do
+    Map.put(diagnostic, :force_kill_result, result)
+  end
+
+  defp maybe_put_force_kill_result(diagnostic, :not_attempted), do: diagnostic
 
   # Send a signal to an entire process group (negative PGID).
   # Best-effort: if the group is already gone, the kill fails silently.

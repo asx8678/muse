@@ -59,6 +59,8 @@ defmodule Muse.Execution.LocalRunner do
 
   alias Muse.Execution.{Command, Env, ProcessGroup, Result}
 
+  @timeout_force_after_ms 100
+
   @impl Muse.Execution.Runner
   def capabilities do
     %{
@@ -188,17 +190,7 @@ defmodule Muse.Execution.LocalRunner do
   # the `after` block closes the port, so we still have a valid port
   # to read the OS PID from.
   defp terminate_process_group(port) do
-    if ProcessGroup.platform_supported?() do
-      ProcessGroup.terminate_group(port, force_after_ms: 0)
-    else
-      %{
-        platform: :unsupported,
-        pgid_available: false,
-        os_pid: ProcessGroup.get_os_pid(port),
-        pgid: nil,
-        fallback_reason: "process group termination not supported on this platform"
-      }
-    end
+    ProcessGroup.terminate_group(port, force_after_ms: @timeout_force_after_ms)
   end
 
   defp build_port_opts(command, _executable_path) do

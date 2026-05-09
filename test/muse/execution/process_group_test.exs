@@ -207,6 +207,8 @@ defmodule Muse.Execution.ProcessGroupTest do
       # Should have waited approximately 100ms
       assert elapsed >= 50
       assert diagnostic.pgid_available == true
+      assert Map.has_key?(diagnostic, :force_kill_result)
+      assert diagnostic.force_kill_result in [:ok, :enosr]
     end
   end
 

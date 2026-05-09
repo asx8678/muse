@@ -147,6 +147,37 @@ defmodule Muse.Execution.LocalRunnerTest do
       end
     end
 
+    @tag :unix
+    test "timeout force kills TERM-ignoring process groups on Unix" do
+      {:ok, cmd} =
+        Command.new("bash",
+          args: ["-c", "trap '' TERM; sleep 60 & echo READY; wait"],
+          timeout_ms: 100
+        )
+
+      {:ok, result} = LocalRunner.run(cmd)
+
+      assert result.status == :timed_out
+
+      cleanup = result.metadata.timeout_cleanup
+
+      assert cleanup.pgid_available == true
+      assert cleanup.pgid == cleanup.os_pid
+      assert cleanup.force_kill_result in [:ok, :enosr]
+
+      pgid = cleanup.pgid
+
+      on_exit(fn ->
+        System.cmd("kill", ["-KILL", "-#{pgid}"], stderr_to_stdout: true)
+      end)
+
+      Process.sleep(200)
+      {remaining, _} = System.cmd("pgrep", ["-g", to_string(pgid)], stderr_to_stdout: true)
+
+      assert String.trim(remaining) == "",
+             "TERM-ignoring process group survived timeout cleanup"
+    end
+
     test "timeout cleanup diagnostic has structured fields" do
       {:ok, cmd} = Command.new("sleep", args: ["10"], timeout_ms: 100)
 
@@ -160,7 +191,7 @@ defmodule Muse.Execution.LocalRunnerTest do
       assert Map.has_key?(cleanup, :os_pid)
 
       # Platform should be one of the known values
-      assert cleanup.platform in [:unix, :windows, :unknown, :unsupported]
+      assert cleanup.platform in [:unix, :windows, :unknown]
 
       # pgid_available should match platform support
       case :os.type() do
