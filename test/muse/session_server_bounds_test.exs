@@ -104,10 +104,16 @@ defmodule Muse.SessionServerBoundsTest do
       final_state = :sys.get_state(pid)
       status = SessionServer.status(pid)
 
-      assert status.event_count == length(final_state.events)
-      assert length(final_state.events) == cap
+      # event_count is O(1) — no length() call needed
+      assert status.event_count == final_state.event_count
+      assert final_state.event_count == cap
 
-      assert Enum.map(final_state.events, & &1.seq) ==
+      # Events are stored newest-first internally;
+      # SessionServer.events/1 returns them in chronological order.
+      chron_events = SessionServer.events(pid)
+      assert length(chron_events) == cap
+
+      assert Enum.map(chron_events, & &1.seq) ==
                Enum.to_list((final_state.seq - cap + 1)..final_state.seq)
 
       GenServer.stop(pid, :normal, 1_000)

@@ -244,6 +244,18 @@ defmodule Muse.SessionServer do
   end
 
   @doc """
+  Returns session events in chronological (oldest-first) order.
+
+  Events are stored internally newest-first for O(1) prepend; this function
+  reverses them at the read boundary.  Prefer this over accessing
+  `state.events` directly, which is in newest-first order.
+  """
+  @spec events(pid()) :: [Muse.Event.t()]
+  def events(pid) do
+    GenServer.call(pid, :events)
+  end
+
+  @doc """
   Cancels the currently running turn, if any.
 
   Returns `:ok` if a cancellation signal was sent, or `{:error, :no_active_turn}`
@@ -497,7 +509,11 @@ defmodule Muse.SessionServer do
       session_id: session_id,
       status: :idle,
       seq: 0,
+      # Events stored newest-first for O(1) prepend. Use events_chronological/1
+      # or read via append_session_events for oldest-first view.
       events: [],
+      # Explicit count avoids O(n) length(state.events) calls.
+      event_count: 0,
       active_muse: nil,
       active_plan_id: nil,
       plan: nil,
@@ -603,6 +619,11 @@ defmodule Muse.SessionServer do
   end
 
   @impl true
+  def handle_call(:events, _from, state) do
+    {:reply, Enum.reverse(state.events), state}
+  end
+
+  @impl true
   def handle_call(:status, _from, state) do
     reply = %{
       session_id: state.session_id,
@@ -615,7 +636,7 @@ defmodule Muse.SessionServer do
       approval_binding: state.approval_binding,
       active_approval: state.active_approval,
       seq: state.seq,
-      event_count: length(state.events),
+      event_count: state.event_count,
       active_turn_id: state.active_turn_id,
       runner_pid: state.runner_pid,
       cancellation_requested: state.cancellation_requested,
@@ -802,7 +823,9 @@ defmodule Muse.SessionServer do
         visibility: :user
       )
 
-    session_events = [user_event]
+    # Build session_events in reverse (prepend) for O(1) accumulation;
+    # reversed at consumption in handle_task_result.
+    session_events_rev = [user_event]
 
     # Atomically claim queued self-healing issues
     claimed_issues = safe_claim_queued()
@@ -824,8 +847,10 @@ defmodule Muse.SessionServer do
         {nil, state}
       end
 
-    session_events =
-      if self_healing_event, do: session_events ++ [self_healing_event], else: session_events
+    session_events_rev =
+      if self_healing_event,
+        do: [self_healing_event | session_events_rev],
+        else: session_events_rev
 
     # 2. Emit turn_started (internal visibility)
     turn_summary = %{
@@ -839,7 +864,7 @@ defmodule Muse.SessionServer do
         visibility: :internal
       )
 
-    session_events = session_events ++ [turn_started_event]
+    session_events_rev = [turn_started_event | session_events_rev]
 
     # Transition turn to running
     {:ok, turn} = Turn.transition(turn, :running)
@@ -877,7 +902,7 @@ defmodule Muse.SessionServer do
 
     start_turn(state, turn_id, runner_pid, task_ref, from,
       turn_start_time: turn_start_time,
-      session_events: session_events
+      session_events: session_events_rev
     )
   end
 
@@ -904,7 +929,9 @@ defmodule Muse.SessionServer do
         visibility: :user
       )
 
-    session_events = [user_event]
+    # Build session_events in reverse (prepend) for O(1) accumulation;
+    # reversed at consumption in handle_task_result.
+    session_events_rev = [user_event]
 
     # Atomically claim queued self-healing issues
     claimed_issues = safe_claim_queued()
@@ -926,8 +953,10 @@ defmodule Muse.SessionServer do
         {nil, state}
       end
 
-    session_events =
-      if self_healing_event, do: session_events ++ [self_healing_event], else: session_events
+    session_events_rev =
+      if self_healing_event,
+        do: [self_healing_event | session_events_rev],
+        else: session_events_rev
 
     # 2. Emit turn_started (internal visibility)
     turn_summary = %{
@@ -941,7 +970,7 @@ defmodule Muse.SessionServer do
         visibility: :internal
       )
 
-    session_events = session_events ++ [turn_started_event]
+    session_events_rev = [turn_started_event | session_events_rev]
 
     # Transition turn to running
     {:ok, turn} = Turn.transition(turn, :running)
@@ -971,7 +1000,7 @@ defmodule Muse.SessionServer do
     {:noreply, state} =
       start_turn(state, turn_id, runner_pid, task_ref, nil,
         turn_start_time: turn_start_time,
-        session_events: session_events
+        session_events: session_events_rev
       )
 
     # Return immediately with the turn_id; caller does not wait for completion
@@ -994,6 +1023,9 @@ defmodule Muse.SessionServer do
         from: from,
         turn_start_time: turn_start_time,
         session_events_before_turn: session_events,
+        # Note: session_events is in reverse (newest-first) order from
+        # do_submit / do_submit_async. Reversed when consumed in
+        # handle_task_result variants.
         cancellation_requested: false,
         live_emitted_count: 0,
         live_emitted_events: []
@@ -1195,9 +1227,10 @@ defmodule Muse.SessionServer do
         # Accumulate for inclusion in state.events at finalization.
         # This preserves correct ordering: live deltas appear after
         # session_events_before_turn but before conductor overhead events.
+        # Prepend for O(1); reversed at consumption time in handle_task_result.
         state = %{
           state
-          | live_emitted_events: state.live_emitted_events ++ [event],
+          | live_emitted_events: [event | state.live_emitted_events],
             live_emitted_count: state.live_emitted_count + 1
         }
 
@@ -1225,16 +1258,25 @@ defmodule Muse.SessionServer do
 
   defp handle_task_result({:ok, result}, state) do
     turn_id = state.active_turn_id
-    session_events = state.session_events_before_turn
+    # session_events_before_turn is in reverse (newest-first) order.
+    # live_emitted_events is also in reverse (newest-first) order.
+    # conductor_events from emit_event_specs is in chronological order.
+    # We build the turn's chronological event list and then fold it into
+    # state.events (also newest-first) using append_session_events.
+    session_events_before_turn_rev = state.session_events_before_turn
+    live_emitted_rev = state.live_emitted_events
 
     # Fold Conductor event specs through emit_session_event
     # (skips specs already emitted live during streaming)
     {conductor_events, state} = emit_event_specs(state, result.event_specs, turn_id)
 
-    # Merge live-emitted events into the session events list.
-    # Live-emitted deltas arrive before conductor overhead events,
-    # preserving the user-perceived streaming order.
-    session_events = session_events ++ state.live_emitted_events ++ conductor_events
+    # Build the full chronological turn event list:
+    #   before_turn (chron) ++ live_emitted (chron) ++ conductor ++ final
+    # All components are reversed as needed so the final list is oldest-first.
+    session_events_chron =
+      Enum.reverse(session_events_before_turn_rev) ++
+        Enum.reverse(live_emitted_rev) ++
+        conductor_events
 
     # Use the session status from the Conductor result (may be :awaiting_plan_approval)
     session_status = result.session.status
@@ -1277,7 +1319,7 @@ defmodule Muse.SessionServer do
       end
 
     # Emit turn_completed
-    delta_count = Enum.count(session_events, &(&1.type == :assistant_delta))
+    delta_count = Enum.count(session_events_chron, &(&1.type == :assistant_delta))
     duration_ms = System.monotonic_time(:millisecond) - state.turn_start_time
 
     turn_completed_data = %{
@@ -1292,14 +1334,12 @@ defmodule Muse.SessionServer do
         visibility: :internal
       )
 
-    session_events = session_events ++ [turn_completed_event]
-
-    updated_events =
-      Muse.Bounds.trim_newest_first(state.events ++ session_events, Muse.Bounds.session_events())
+    # Append final event to the chronological turn list
+    session_events_chron = session_events_chron ++ [turn_completed_event]
 
     state =
       state
-      |> Map.put(:events, updated_events)
+      |> append_session_events(session_events_chron)
       |> maybe_persist_snapshot()
 
     # Reply to the original caller (only for synchronous submits)
@@ -1315,11 +1355,19 @@ defmodule Muse.SessionServer do
 
   defp handle_task_result({:cancelled, {:ok, result}}, state) do
     turn_id = state.active_turn_id
-    session_events = state.session_events_before_turn
+
+    # session_events_before_turn and live_emitted_events are in reverse order.
+    # Build the full chronological turn event list.
+    session_events_before_turn_rev = state.session_events_before_turn
+    live_emitted_rev = state.live_emitted_events
 
     # Fold any partial event specs (skips live-emitted)
     {conductor_events, state} = emit_event_specs(state, result.event_specs, turn_id)
-    session_events = session_events ++ state.live_emitted_events ++ conductor_events
+
+    session_events_chron =
+      Enum.reverse(session_events_before_turn_rev) ++
+        Enum.reverse(live_emitted_rev) ++
+        conductor_events
 
     # Emit tool_loop_cancelled if not already in specs
     {cancel_event, state} =
@@ -1332,7 +1380,7 @@ defmodule Muse.SessionServer do
         visibility: :internal
       )
 
-    session_events = session_events ++ [cancel_event]
+    session_events_chron = session_events_chron ++ [cancel_event]
 
     # Emit safe assistant message
     cancel_text = result.assistant_text || "Turn cancelled."
@@ -1347,12 +1395,12 @@ defmodule Muse.SessionServer do
         visibility: :user
       )
 
-    session_events = session_events ++ [assistant_msg_event]
+    session_events_chron = session_events_chron ++ [assistant_msg_event]
 
     state = %{state | status: :idle}
 
     # Emit turn_completed
-    delta_count = Enum.count(session_events, &(&1.type == :assistant_delta))
+    delta_count = Enum.count(session_events_chron, &(&1.type == :assistant_delta))
     duration_ms = System.monotonic_time(:millisecond) - state.turn_start_time
 
     turn_completed_data = %{
@@ -1368,12 +1416,9 @@ defmodule Muse.SessionServer do
         visibility: :internal
       )
 
-    session_events = session_events ++ [turn_completed_event]
+    session_events_chron = session_events_chron ++ [turn_completed_event]
 
-    updated_events =
-      Muse.Bounds.trim_newest_first(state.events ++ session_events, Muse.Bounds.session_events())
-
-    state = %{state | events: updated_events}
+    state = append_session_events(state, session_events_chron)
 
     if state.from do
       GenServer.reply(state.from, {:ok, cancel_text})
@@ -1386,11 +1431,19 @@ defmodule Muse.SessionServer do
 
   defp handle_task_result({:error, %{event_specs: event_specs, reason: reason}}, state) do
     turn_id = state.active_turn_id
-    session_events = state.session_events_before_turn
+
+    # session_events_before_turn and live_emitted_events are in reverse order.
+    # Build the full chronological turn event list.
+    session_events_before_turn_rev = state.session_events_before_turn
+    live_emitted_rev = state.live_emitted_events
 
     # Fold partial event specs collected before the error (skips live-emitted)
     {conductor_events, state} = emit_event_specs(state, event_specs, turn_id)
-    session_events = session_events ++ state.live_emitted_events ++ conductor_events
+
+    session_events_chron =
+      Enum.reverse(session_events_before_turn_rev) ++
+        Enum.reverse(live_emitted_rev) ++
+        conductor_events
 
     # Emit a user-visible assistant_message so CLI/State consumers
     # see the failure in the event stream (not just the return value).
@@ -1409,7 +1462,7 @@ defmodule Muse.SessionServer do
         visibility: :user
       )
 
-    session_events = session_events ++ [error_event]
+    session_events_chron = session_events_chron ++ [error_event]
 
     # Emit turn_failed
     duration_ms = System.monotonic_time(:millisecond) - state.turn_start_time
@@ -1420,14 +1473,11 @@ defmodule Muse.SessionServer do
         visibility: :internal
       )
 
-    session_events = session_events ++ [turn_failed_event]
+    session_events_chron = session_events_chron ++ [turn_failed_event]
 
     state = %{state | status: :idle}
 
-    updated_events =
-      Muse.Bounds.trim_newest_first(state.events ++ session_events, Muse.Bounds.session_events())
-
-    state = %{state | events: updated_events}
+    state = append_session_events(state, session_events_chron)
 
     if state.from do
       GenServer.reply(state.from, {:ok, error_text})
@@ -1445,7 +1495,13 @@ defmodule Muse.SessionServer do
 
   defp handle_task_crash(reason, state) do
     turn_id = state.active_turn_id
-    session_events = state.session_events_before_turn ++ state.live_emitted_events
+
+    # session_events_before_turn and live_emitted_events are in reverse order.
+    session_events_before_turn_rev = state.session_events_before_turn
+    live_emitted_rev = state.live_emitted_events
+
+    session_events_chron =
+      Enum.reverse(session_events_before_turn_rev) ++ Enum.reverse(live_emitted_rev)
 
     error_text = "Error: turn failed (#{reason})"
 
@@ -1459,7 +1515,7 @@ defmodule Muse.SessionServer do
         visibility: :user
       )
 
-    session_events = session_events ++ [error_event]
+    session_events_chron = session_events_chron ++ [error_event]
 
     # Emit turn_failed
     duration_ms =
@@ -1477,14 +1533,11 @@ defmodule Muse.SessionServer do
         visibility: :internal
       )
 
-    session_events = session_events ++ [turn_failed_event]
+    session_events_chron = session_events_chron ++ [turn_failed_event]
 
     state = %{state | status: :idle}
 
-    updated_events =
-      Muse.Bounds.trim_newest_first(state.events ++ session_events, Muse.Bounds.session_events())
-
-    state = %{state | events: updated_events}
+    state = append_session_events(state, session_events_chron)
 
     if state.from do
       GenServer.reply(state.from, {:ok, error_text})
@@ -2578,10 +2631,24 @@ defmodule Muse.SessionServer do
     }
   end
 
-  defp append_session_events(state, events) do
-    all_events = state.events ++ events
-    capped = Muse.Bounds.trim_newest_first(all_events, Muse.Bounds.session_events())
-    %{state | events: capped}
+  # Append chronological (oldest-first) events to the session event log.
+  #
+  # Internal storage is newest-first for O(1) prepend.  This function
+  # reverses the incoming events, prepends them to state.events, then
+  # trims to the configured cap using O(1) count-based trimming.
+  #
+  # Complexity: O(len(events)) — no O(len(state.events)) full-list copy.
+  defp append_session_events(state, events) when is_list(events) do
+    cap = Muse.Bounds.session_events()
+    new_count = state.event_count + length(events)
+
+    # Prepend reversed incoming events (so newest is at head) then trim.
+    # Enum.reverse/1 + prepend is O(len(events)), avoiding O(len(state.events))
+    # from the old state.events ++ events pattern.
+    new_events = Enum.reverse(events) ++ state.events
+    {trimmed, final_count} = Muse.Bounds.trim_prepend(new_events, cap, new_count)
+
+    %{state | events: trimmed, event_count: final_count}
   end
 
   # -- Plan persistence --------------------------------------------------------

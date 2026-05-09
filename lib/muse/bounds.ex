@@ -81,6 +81,11 @@ defmodule Muse.Bounds do
 
   This is the canonical trimming helper so every bounded collection
   uses the same policy: drop oldest first.
+
+  For chronological (oldest-first) lists, `trim_newest_first/2` uses
+  `length/1` + `Enum.take/2` which is O(n).  For hot paths, prefer
+  `trim_prepend/3` which operates on newest-first lists with an explicit
+  count, achieving O(1) prepend + O(1) trim.
   """
   @spec trim_newest_first(list(), pos_integer()) :: list()
   def trim_newest_first(list, count) when is_list(list) and is_integer(count) and count > 0 do
@@ -92,6 +97,56 @@ defmodule Muse.Bounds do
       list
     end
   end
+
+  @doc """
+  Trims a **newest-first** (prepending) list to at most `count` items,
+  dropping the **oldest** entries from the tail.
+
+  When the list is stored newest-first via prepend, the oldest items are
+  at the tail.  Trimming means dropping from the tail.  With an explicit
+  `current_count`, the function can skip traversal when the list is within
+  bounds.  When trimming is needed, a single traversal builds the result
+  from the head, keeping the newest `count` items.
+
+  Returns `{trimmed_list, new_count}` so the caller can maintain the
+  explicit count without calling `length/1`.
+
+  ## Example
+
+      iex> list = [5, 4, 3, 2, 1]  # newest-first
+      iex> {trimmed, count} = Muse.Bounds.trim_prepend(list, 3, 5)
+      iex> trimmed
+      [5, 4, 3]
+      iex> count
+      3
+  """
+  @spec trim_prepend(list(), pos_integer(), non_neg_integer()) :: {list(), non_neg_integer()}
+  def trim_prepend(list, count, current_count)
+      when is_list(list) and is_integer(count) and count > 0 and is_integer(current_count) and
+             current_count >= 0 do
+    if current_count <= count do
+      {list, current_count}
+    else
+      {take_from_head(list, count, []), count}
+    end
+  end
+
+  @doc """
+  Convenience: same as `trim_prepend/3` but uses `length/1` for the
+  current count.  Use this only when the count is not already tracked;
+  prefer the 3-arg version in hot paths.
+  """
+  @spec trim_prepend(list(), pos_integer()) :: {list(), non_neg_integer()}
+  def trim_prepend(list, count) when is_list(list) and is_integer(count) and count > 0 do
+    trim_prepend(list, count, length(list))
+  end
+
+  # Walk the newest-first list collecting `n` items from the head.
+  # This is O(count) and avoids allocating the full list only to drop
+  # the tail.
+  defp take_from_head(_list, 0, acc), do: Enum.reverse(acc)
+  defp take_from_head([], _n, acc), do: Enum.reverse(acc)
+  defp take_from_head([h | t], n, acc), do: take_from_head(t, n - 1, [h | acc])
 
   @doc """
   Trims a streaming buffer string to at most `max_bytes` bytes, keeping

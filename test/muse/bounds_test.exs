@@ -135,4 +135,43 @@ defmodule Muse.BoundsTest do
       assert byte_size(result) <= 100
     end
   end
+
+  describe "trim_prepend/3" do
+    test "returns list unchanged when within cap" do
+      list = [5, 4, 3, 2, 1]
+      assert Bounds.trim_prepend(list, 10, 5) == {list, 5}
+    end
+
+    test "returns list unchanged when exactly at cap" do
+      list = [5, 4, 3, 2, 1]
+      assert Bounds.trim_prepend(list, 5, 5) == {list, 5}
+    end
+
+    test "drops tail entries when over cap" do
+      list = [5, 4, 3, 2, 1]
+      {trimmed, count} = Bounds.trim_prepend(list, 3, 5)
+      assert trimmed == [5, 4, 3]
+      assert count == 3
+    end
+
+    test "empty list returns empty" do
+      assert Bounds.trim_prepend([], 3, 0) == {[], 0}
+    end
+
+    test "single element list" do
+      assert Bounds.trim_prepend([42], 3, 1) == {[42], 1}
+    end
+  end
+
+  describe "trim_prepend/2 (convenience)" do
+    test "delegates to trim_prepend/3 with length" do
+      list = [5, 4, 3, 2, 1]
+      assert Bounds.trim_prepend(list, 3) == {[5, 4, 3], 3}
+    end
+
+    test "within cap returns unchanged" do
+      list = [1, 2, 3]
+      assert Bounds.trim_prepend(list, 5) == {list, 3}
+    end
+  end
 end
