@@ -1,5 +1,5 @@
 defmodule Muse.Tools.TestRunnerTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Muse.Tools.TestRunner
   alias Muse.Tool.Result
