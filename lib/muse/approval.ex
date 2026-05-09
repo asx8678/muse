@@ -437,7 +437,9 @@ defmodule Muse.Approval do
       _other -> []
     end)
   rescue
-    _ -> []
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :normalize_list, e)
+      []
   end
 
   def normalize_list(_values), do: []

@@ -626,7 +626,9 @@ defmodule Muse.Checkpoint.Store do
         :ok
     end
   rescue
-    _ -> :ok
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :reject_snapshot_symlink, e)
+      :ok
   end
 
   # Verify snapshot content hash matches the recorded hash.
@@ -660,7 +662,9 @@ defmodule Muse.Checkpoint.Store do
         :ok
     end
   rescue
-    _ -> :ok
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :reject_symlink_target, e)
+      :ok
   end
 
   # -- Private: git metadata ----------------------------------------------------

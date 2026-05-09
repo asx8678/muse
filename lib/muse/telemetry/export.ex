@@ -163,15 +163,20 @@ defmodule Muse.Telemetry.Export do
   # This function is called by :telemetry for every event. It must never
   # raise, throw, or exit — otherwise :telemetry detaches the handler.
   # We wrap the ENTIRE body (envelope build + dispatch) in a single
-  # try/rescue/catch so ALL failure classes are swallowed.
+  # try/rescue/catch so ALL failure classes are swallowed, but now
+  # with structured diagnostic logging for observability.
   defp handle_event(event_name, measurements, metadata, config) do
     try do
       safe_envelope = build_envelope(event_name, measurements, metadata)
       dispatch(config, safe_envelope)
     rescue
-      _kind -> :ok
+      e ->
+        Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :handle_event, e)
+        :ok
     catch
-      _kind, _reason -> :ok
+      kind, reason ->
+        Muse.Diagnostics.SilentRescue.log_rescued_catch(__MODULE__, :handle_event, kind, reason)
+        :ok
     end
   end
 

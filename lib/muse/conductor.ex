@@ -647,9 +647,11 @@ defmodule Muse.Conductor do
         end
       rescue
         # If the collector Agent has already been stopped (extreme edge case:
-        # provider calls emit_fn after stream returns), discard the event
-        # silently rather than crashing.
-        _ -> :ok
+        # provider calls emit_fn after stream returns), log the diagnostic
+        # and discard the event rather than crashing.
+        e ->
+          Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :emit_fn, e)
+          :ok
       end
     end
 

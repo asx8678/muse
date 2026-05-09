@@ -1089,7 +1089,9 @@ defmodule Muse.ApprovalGate do
         fetch_plan(plans, current_active_plan_id)
     end
   rescue
-    _ -> nil
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :resolve_plan, e)
+      nil
   end
 
   defp fetch_plan(plans, plan_id) when is_map(plans) and not is_nil(plan_id) do
@@ -1099,7 +1101,9 @@ defmodule Muse.ApprovalGate do
       _ -> nil
     end
   rescue
-    _ -> nil
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :fetch_plan, e)
+      nil
   end
 
   defp fetch_plan(_plans, _plan_id), do: nil

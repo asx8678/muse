@@ -217,7 +217,9 @@ defmodule Muse.ActiveWorkspace do
       pid -> if Process.alive?(pid), do: Muse.Workspace.root(), else: nil
     end
   rescue
-    _ -> nil
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :safe_workspace_root, e)
+      nil
   end
 
   defp derive_store_base_dir(nil), do: @default_store_base_dir

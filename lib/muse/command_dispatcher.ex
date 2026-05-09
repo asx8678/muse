@@ -1115,7 +1115,9 @@ defmodule Muse.CommandDispatcher do
             end
         end
       rescue
-        _ -> ""
+        e ->
+          Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :workspace_info_details, e)
+          ""
       end
 
     msg =
@@ -2176,7 +2178,8 @@ defmodule Muse.CommandDispatcher do
     # to avoid leaking raw terms from malformed memory.
     Muse.Memory.render(memory)
   rescue
-    _ ->
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :format_memory, e)
       # Generic withheld message; do not expose exception details
       "Memory display unavailable (render error). " <>
         "Stored memory may contain unsafe data and has been withheld."
@@ -2190,7 +2193,9 @@ defmodule Muse.CommandDispatcher do
     |> Muse.EventPayloadRedactor.redact_string()
     |> Muse.Prompt.Redactor.redact_text()
   rescue
-    _ -> "Memory display unavailable (redaction error). Content withheld."
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :format_memory_safely_binary, e)
+      "Memory display unavailable (redaction error). Content withheld."
   end
 
   defp format_memory_safely(memory) do
@@ -2204,7 +2209,9 @@ defmodule Muse.CommandDispatcher do
     |> Muse.EventPayloadRedactor.redact_string()
     |> Muse.Prompt.Redactor.redact_text()
   rescue
-    _ -> "Memory display unavailable (render error). Content withheld."
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :format_memory_safely_struct, e)
+      "Memory display unavailable (render error). Content withheld."
   end
 
   defp build_session_from_status(status) when is_map(status) do

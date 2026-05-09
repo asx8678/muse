@@ -267,9 +267,19 @@ defmodule Muse.Application do
 
     :ok
   rescue
-    _ -> :ok
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :maybe_emit_diagnostic, e)
+      :ok
   catch
-    :exit, _ -> :ok
+    :exit, reason ->
+      Muse.Diagnostics.SilentRescue.log_rescued_catch(
+        __MODULE__,
+        :maybe_emit_diagnostic,
+        :exit,
+        reason
+      )
+
+      :ok
   end
 
   defp safe_provider_message(message) do

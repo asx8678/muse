@@ -128,9 +128,19 @@ defmodule Muse.SessionServer do
         end
     end
   rescue
-    _ -> default_runtime_context()
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :current_runtime_context, e)
+      default_runtime_context()
   catch
-    :exit, _ -> default_runtime_context()
+    :exit, reason ->
+      Muse.Diagnostics.SilentRescue.log_rescued_catch(
+        __MODULE__,
+        :current_runtime_context,
+        :exit,
+        reason
+      )
+
+      default_runtime_context()
   end
 
   @doc false
@@ -1608,7 +1618,8 @@ defmodule Muse.SessionServer do
     )
     |> inspect(limit: 5, printable_limit: 200)
   rescue
-    _ ->
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :safe_error_summary, e)
       "(error details unavailable)"
   end
 
@@ -2722,9 +2733,19 @@ defmodule Muse.SessionServer do
         state
     end
   rescue
-    _ -> state
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :restore_approval_state, e)
+      state
   catch
-    :exit, _ -> state
+    :exit, reason ->
+      Muse.Diagnostics.SilentRescue.log_rescued_catch(
+        __MODULE__,
+        :restore_approval_state,
+        :exit,
+        reason
+      )
+
+      state
   end
 
   defp restore_approval_binding(binding) when is_map(binding), do: binding
@@ -2792,7 +2813,9 @@ defmodule Muse.SessionServer do
   defp restore_plan(data) when is_map(data) do
     Plan.from_map(data)
   rescue
-    _ -> nil
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :restore_plan, e)
+      nil
   end
 
   defp restore_plan(_), do: nil
@@ -2805,7 +2828,9 @@ defmodule Muse.SessionServer do
       {:error, _} -> nil
     end
   rescue
-    _ -> nil
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :restore_pending_patch, e)
+      nil
   end
 
   defp restore_pending_patch(_data), do: nil
@@ -2815,7 +2840,9 @@ defmodule Muse.SessionServer do
   defp restore_pending_remote_approval(data) when is_map(data) do
     Approval.from_map(data)
   rescue
-    _ -> nil
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :restore_pending_remote_approval, e)
+      nil
   end
 
   defp restore_pending_remote_approval(_data), do: nil
@@ -2925,9 +2952,19 @@ defmodule Muse.SessionServer do
       pid -> if Process.alive?(pid), do: State.append(event), else: :ok
     end
   rescue
-    _ -> :ok
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :safe_append_state, e)
+      :ok
   catch
-    :exit, _ -> :ok
+    :exit, reason ->
+      Muse.Diagnostics.SilentRescue.log_rescued_catch(
+        __MODULE__,
+        :safe_append_state,
+        :exit,
+        reason
+      )
+
+      :ok
   end
 
   defp get_workspace, do: current_workspace_root()
@@ -2951,9 +2988,19 @@ defmodule Muse.SessionServer do
       pid -> if Process.alive?(pid), do: Muse.Workspace.root(), else: nil
     end
   rescue
-    _ -> nil
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :workspace_agent_root_or_nil, e)
+      nil
   catch
-    :exit, _ -> nil
+    :exit, reason ->
+      Muse.Diagnostics.SilentRescue.log_rescued_catch(
+        __MODULE__,
+        :workspace_agent_root_or_nil,
+        :exit,
+        reason
+      )
+
+      nil
   end
 
   defp store_base_dir_for_workspace(nil), do: default_store_base_dir()
@@ -2992,9 +3039,19 @@ defmodule Muse.SessionServer do
       pid -> if Process.alive?(pid), do: Muse.SelfHealingQueue.claim_queued(), else: []
     end
   rescue
-    _ -> []
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :safe_claim_queued, e)
+      []
   catch
-    :exit, _ -> []
+    :exit, reason ->
+      Muse.Diagnostics.SilentRescue.log_rescued_catch(
+        __MODULE__,
+        :safe_claim_queued,
+        :exit,
+        reason
+      )
+
+      []
   end
 
   defp build_self_healing_data(issues) do
@@ -3207,9 +3264,19 @@ defmodule Muse.SessionServer do
       state
     end
   rescue
-    _ -> state
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :restore_memory_state, e)
+      state
   catch
-    :exit, _ -> state
+    :exit, reason ->
+      Muse.Diagnostics.SilentRescue.log_rescued_catch(
+        __MODULE__,
+        :restore_memory_state,
+        :exit,
+        reason
+      )
+
+      state
   end
 
   # Decode memory from JSON-persisted form (string keys) back to

@@ -219,8 +219,12 @@ defmodule Muse.SelfHealingQueue do
       _pid -> Phoenix.PubSub.broadcast(Muse.PubSub, @topic, message)
     end
   rescue
-    _ -> :ok
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :broadcast, e)
+      :ok
   catch
-    :exit, _ -> :ok
+    :exit, reason ->
+      Muse.Diagnostics.SilentRescue.log_rescued_catch(__MODULE__, :broadcast, :exit, reason)
+      :ok
   end
 end

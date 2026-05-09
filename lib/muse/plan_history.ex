@@ -110,9 +110,13 @@ defmodule Muse.PlanHistory do
       _ -> nil
     end
   rescue
-    _ -> nil
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :router_query, e)
+      nil
   catch
-    :exit, _ -> nil
+    :exit, reason ->
+      Muse.Diagnostics.SilentRescue.log_rescued_catch(__MODULE__, :router_query, :exit, reason)
+      nil
   end
 
   defp query_from_map(source) when is_map(source) do
@@ -203,7 +207,9 @@ defmodule Muse.PlanHistory do
   defp normalize_plan_value(plan_map) when is_map(plan_map) do
     Plan.from_map(plan_map)
   rescue
-    _ -> nil
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :normalize_plan_value, e)
+      nil
   end
 
   defp normalize_plan_value(_), do: nil

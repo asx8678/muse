@@ -311,7 +311,9 @@ defmodule Muse.Conductor.ToolLoop do
             :ok
         end
       rescue
-        _ -> :ok
+        e ->
+          Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :emit_fn, e)
+          :ok
       end
     end
 
@@ -988,7 +990,9 @@ defmodule Muse.Conductor.ToolLoop do
 
     Jason.encode!(safe)
   rescue
-    _ ->
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :tool_result_json_encode, e)
+
       Jason.encode!(%{
         tool_name: result.tool_name,
         success: result.success,
@@ -1019,7 +1023,9 @@ defmodule Muse.Conductor.ToolLoop do
       output
     end
   rescue
-    _ -> inspect(output, limit: 10, printable_limit: min(max_bytes, 500))
+    e ->
+      Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :summarize_for_model, e)
+      inspect(output, limit: 10, printable_limit: min(max_bytes, 500))
   end
 
   defp summarize_for_model(output, max_bytes) do
@@ -1051,7 +1057,9 @@ defmodule Muse.Conductor.ToolLoop do
             :ok
         end
       rescue
-        _ -> :ok
+        e ->
+          Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :final_emit_fn, e)
+          :ok
       end
     end
 
