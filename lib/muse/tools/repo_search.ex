@@ -145,10 +145,10 @@ defmodule Muse.Tools.RepoSearch do
         {files, subdirs} = categorize_entries(dir, entries, root)
 
         # Reverse files to preserve File.ls order within this directory.
-        # Reverse subdirs so that first-listed subdir is on top of the
-        # stack (visited first), matching the DFS order of the old
-        # recursive walker.
-        {Enum.reverse(files), {:dirs, Enum.reverse(subdirs) ++ rest, root}}
+        # subdirs is already in reverse File.ls order (built by prepend),
+        # so prepending to rest places the first-listed subdir on top of
+        # the stack, matching the DFS order of the old recursive walker.
+        {Enum.reverse(files), {:dirs, subdirs ++ rest, root}}
 
       {:error, _} ->
         # Skip inaccessible directories — no crash, just continue
