@@ -425,6 +425,58 @@ defmodule Muse.EventStreamIncrementalTest do
       assert Enum.at(msgs2, 1).streaming? == false
     end
 
+    test "duplicate finals in a turn match full re-derive first-final-wins behavior" do
+      events = [
+        make_event(:assistant_message, %{text: "first"},
+          id: 1,
+          turn_id: "t1",
+          seq: 1,
+          timestamp: now()
+        ),
+        make_event(:assistant_message, %{text: "second"},
+          id: 2,
+          turn_id: "t1",
+          seq: 2,
+          timestamp: now()
+        )
+      ]
+
+      full = EventStream.chat_messages(events)
+      incr = incremental_chat_messages(events)
+
+      assert Enum.map(incr, & &1.text) == Enum.map(full, & &1.text)
+      assert Enum.map(incr, & &1.text) == ["first"]
+    end
+
+    test "extra final after streamed final stays suppressed like full re-derive" do
+      events = [
+        make_event(:assistant_delta, %{text: "partial"},
+          id: 1,
+          turn_id: "t1",
+          seq: 1,
+          timestamp: now()
+        ),
+        make_event(:assistant_message, %{text: "partial", streamed?: true},
+          id: 2,
+          turn_id: "t1",
+          seq: 2,
+          timestamp: now()
+        ),
+        make_event(:assistant_message, %{text: "duplicate"},
+          id: 3,
+          turn_id: "t1",
+          seq: 3,
+          timestamp: now()
+        )
+      ]
+
+      full = EventStream.chat_messages(events)
+      incr = incremental_chat_messages(events)
+
+      assert Enum.map(incr, & &1.text) == Enum.map(full, & &1.text)
+      assert Enum.map(incr, & &1.text) == ["partial"]
+    end
+
     test "nil-turn final appends as separate message" do
       delta =
         make_event(:assistant_delta, %{text: "orphan delta"},

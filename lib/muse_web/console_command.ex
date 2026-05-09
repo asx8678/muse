@@ -11,6 +11,7 @@ defmodule MuseWeb.ConsoleCommand do
   import Phoenix.Component, only: [assign: 2]
   import Phoenix.LiveView, only: [push_event: 3, connected?: 1]
 
+  alias Muse.EventStream
   alias MuseWeb.BackendBridge
   alias Muse.CommandDispatcher
 
@@ -20,7 +21,7 @@ defmodule MuseWeb.ConsoleCommand do
 
   defp build_context(socket) do
     %{
-      events: socket.assigns.state.events,
+      events: Map.get(socket.assigns, :events, socket.assigns.state.events),
       logs: socket.assigns.logs,
       diagnostics: socket.assigns.diagnostics,
       agent_snapshot: socket.assigns.agent_snapshot,
@@ -41,6 +42,16 @@ defmodule MuseWeb.ConsoleCommand do
   end
 
   # -- Apply effects to socket -------------------------------------------------
+
+  defp refresh_event_assigns(socket, state) do
+    events = state.events
+
+    assign(socket,
+      state: state,
+      events: events,
+      chat_messages: EventStream.chat_messages(events)
+    )
+  end
 
   defp apply_effects(socket, effects) do
     Enum.reduce(effects, socket, fn effect, sock -> apply_effect(sock, effect) end)
@@ -75,7 +86,7 @@ defmodule MuseWeb.ConsoleCommand do
   end
 
   defp apply_effect(socket, {:refresh, :events}) do
-    assign(socket, state: Muse.State.get())
+    refresh_event_assigns(socket, Muse.State.get())
   end
 
   defp apply_effect(socket, {:refresh, :logs}) do
@@ -169,7 +180,7 @@ defmodule MuseWeb.ConsoleCommand do
           event = Muse.Event.new(:web, :simulated, %{text: "Simulated from palette"})
           Muse.State.append(event)
 
-          assign(socket, state: Muse.State.get())
+          refresh_event_assigns(socket, Muse.State.get())
           |> add_toast("Simulated event from palette", :success)
         else
           socket
@@ -181,7 +192,7 @@ defmodule MuseWeb.ConsoleCommand do
           event = Muse.Event.new(:web, :error, %{text: "Simulated from palette"})
           Muse.State.append(event)
 
-          assign(socket, state: Muse.State.get())
+          refresh_event_assigns(socket, Muse.State.get())
           |> add_toast("Backend error simulated", :warning)
         else
           socket
@@ -189,7 +200,7 @@ defmodule MuseWeb.ConsoleCommand do
 
       "clear_events" ->
         Muse.State.clear()
-        assign(socket, state: Muse.State.get()) |> add_toast("Events cleared", :info)
+        refresh_event_assigns(socket, Muse.State.get()) |> add_toast("Events cleared", :info)
 
       "export_events" ->
         dispatch_command(:export_events, socket) |> elem(1)

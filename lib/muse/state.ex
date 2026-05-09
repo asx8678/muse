@@ -33,6 +33,9 @@ defmodule Muse.State do
   @spec events() :: [Muse.Event.t()]
   def events, do: GenServer.call(__MODULE__, :events)
 
+  @spec max_events() :: non_neg_integer()
+  def max_events, do: GenServer.call(__MODULE__, :max_events)
+
   @spec append(Muse.Event.t()) :: :ok
   def append(event), do: GenServer.call(__MODULE__, {:append, event})
 
@@ -63,6 +66,11 @@ defmodule Muse.State do
   @impl true
   def handle_call(:events, _from, %{events: events} = state) do
     {:reply, Enum.reverse(events), state}
+  end
+
+  @impl true
+  def handle_call(:max_events, _from, %{max_events: max_events} = state) do
+    {:reply, max_events, state}
   end
 
   @impl true

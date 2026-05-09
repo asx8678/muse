@@ -75,6 +75,7 @@ defmodule MuseWeb.HomeLive do
         state: state,
         # T1-15: local event list and cached chat_messages for incremental updates
         events: events,
+        event_limit: Muse.State.max_events(),
         chat_messages: chat_messages,
         input: "",
         workspace: workspace,
@@ -754,37 +755,39 @@ defmodule MuseWeb.HomeLive do
   end
 
   def handle_info({:muse_event, event}, socket) do
-    # T1-15: Incremental update — append event to local list, update chat_messages
-    # incrementally instead of fetching full Muse.State on every PubSub event.
-    events = socket.assigns.events ++ [event]
+    # T1-15: Incremental update — append unseen events to the local bounded
+    # list and update chat_messages without fetching full Muse.State on every
+    # PubSub event. Duplicate events can be queued after an explicit refresh
+    # (for example submit/command refreshes), so only append/apply once per id.
+    new_event? = not event_seen?(socket.assigns.events, event)
+
+    {events, trimmed?} =
+      if new_event? do
+        append_local_event(socket.assigns.events, event, socket.assigns.event_limit)
+      else
+        {socket.assigns.events, false}
+      end
+
     state = %{socket.assigns.state | events: events}
     reload_status = BackendBridge.safe_reload_status()
 
-    # Incrementally update chat_messages for chat-affecting events.
-    # The incremental path handles streaming deltas, finals, user messages,
-    # and system events without re-deriving the entire chat history.
-    chat_messages = EventStream.apply_event_to_chat_messages(socket.assigns.chat_messages, event)
+    # Incrementally update chat_messages for chat-affecting events. If the
+    # local event cap trimmed old events, re-derive from the bounded list so
+    # chat stays exactly consistent with the retained event log.
+    chat_messages =
+      cond do
+        not new_event? ->
+          socket.assigns.chat_messages
 
-    # Update streaming buffers for assistant_delta events
-    streaming_buffers =
-      case event.type do
-        :assistant_delta ->
-          turn_id = event.turn_id
-          chunk = Map.get(event.data, :text, "")
-          existing = Map.get(socket.assigns.streaming_buffers, turn_id, "")
-          Map.put(socket.assigns.streaming_buffers, turn_id, existing <> chunk)
+        trimmed? ->
+          EventStream.chat_messages(events)
 
-        :assistant_message ->
-          # Final message clears the buffer for this turn
-          Map.delete(socket.assigns.streaming_buffers, event.turn_id)
-
-        :turn_completed ->
-          # Turn completed clears the buffer for this turn
-          Map.delete(socket.assigns.streaming_buffers, event.turn_id)
-
-        _ ->
-          socket.assigns.streaming_buffers
+        true ->
+          EventStream.apply_event_to_chat_messages(socket.assigns.chat_messages, event)
       end
+
+    streaming_buffers =
+      update_streaming_buffers(socket.assigns.streaming_buffers, event, new_event?)
 
     # T0-04: Clear submitting state on turn terminal events.
     # Only clear if the terminal event belongs to the currently active turn,
@@ -838,7 +841,14 @@ defmodule MuseWeb.HomeLive do
     state = Muse.State.get()
     events = state.events
     chat_messages = EventStream.chat_messages(events)
-    {:noreply, assign(socket, state: state, events: events, chat_messages: chat_messages)}
+
+    {:noreply,
+     assign(socket,
+       state: state,
+       events: events,
+       chat_messages: chat_messages,
+       streaming_buffers: %{}
+     )}
   end
 
   @impl true
@@ -1008,6 +1018,44 @@ defmodule MuseWeb.HomeLive do
   defp diagnostic_line(_), do: nil
 
   # -- Chat-first helpers -----------------------------------------------------
+
+  defp event_seen?(events, %Muse.Event{id: id}) do
+    Enum.any?(events, &(&1.id == id))
+  end
+
+  defp append_local_event(events, event, limit) when is_integer(limit) and limit >= 0 do
+    events = events ++ [event]
+
+    if length(events) > limit do
+      {Enum.take(events, -limit), true}
+    else
+      {events, false}
+    end
+  end
+
+  defp append_local_event(events, event, _limit), do: {events ++ [event], false}
+
+  defp update_streaming_buffers(buffers, %Muse.Event{type: :assistant_delta}, false), do: buffers
+
+  defp update_streaming_buffers(buffers, %Muse.Event{type: :assistant_delta} = event, true) do
+    turn_id = event.turn_id
+    chunk = delta_chunk(event.data)
+    existing = Map.get(buffers, turn_id, "")
+    Map.put(buffers, turn_id, existing <> chunk)
+  end
+
+  defp update_streaming_buffers(buffers, %Muse.Event{type: type, turn_id: turn_id}, _new_event?)
+       when type in [:assistant_message, :turn_completed] do
+    Map.delete(buffers, turn_id)
+  end
+
+  defp update_streaming_buffers(buffers, _event, _new_event?), do: buffers
+
+  defp delta_chunk(data) when is_map(data),
+    do: Map.get(data, :text) || Map.get(data, "text") || ""
+
+  defp delta_chunk(data) when is_binary(data), do: data
+  defp delta_chunk(_data), do: ""
 
   defp fetch_session_status do
     case Muse.SessionRouter.status("default") do

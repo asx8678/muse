@@ -42,6 +42,10 @@ defmodule Muse.StateTest do
     test "get returns full state with empty events" do
       assert State.get() == %{events: []}
     end
+
+    test "max_events returns configured event cap" do
+      assert State.max_events() == 1_000
+    end
   end
 
   describe "append/1" do

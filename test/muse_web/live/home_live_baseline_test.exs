@@ -74,6 +74,13 @@ defmodule MuseWeb.HomeLiveBaselineTest do
     {:ok, _} = MuseWeb.Endpoint.start_link()
   end
 
+  defp occurrences(html, needle) do
+    html
+    |> String.split(needle)
+    |> length()
+    |> Kernel.-(1)
+  end
+
   setup do
     ensure_pubsub()
 
@@ -151,6 +158,52 @@ defmodule MuseWeb.HomeLiveBaselineTest do
       # The assistant message from deltas should be streaming
       streaming_msgs = Enum.filter(messages, &(&1.streaming? == true))
       assert length(streaming_msgs) >= 1
+    end
+
+    test "ignores duplicate PubSub event already present after refresh" do
+      event =
+        Muse.Event.new(:web, :user_message, %{text: "dedupe marker"},
+          id: 12_345,
+          turn_id: "turn_dedupe",
+          seq: 1,
+          visibility: :user
+        )
+
+      Muse.State.append(event)
+
+      {:ok, view, html} = live(build_conn(), "/")
+      assert occurrences(html, "dedupe marker") == 1
+
+      send(view.pid, {:muse_event, event})
+      html = render(view)
+
+      assert occurrences(html, "dedupe marker") == 1
+    end
+
+    test "local event and chat assigns stay bounded to State max_events" do
+      stop_named(Muse.State)
+      {:ok, _} = Muse.State.start_link(max_events: 3)
+
+      {:ok, view, _html} = live(build_conn(), "/")
+
+      for i <- 1..4 do
+        event =
+          Muse.Event.new(:web, :user_message, %{text: "bounded marker #{i}"},
+            id: 20_000 + i,
+            turn_id: "turn_bound_#{i}",
+            seq: i,
+            visibility: :user
+          )
+
+        send(view.pid, {:muse_event, event})
+      end
+
+      html = render(view)
+
+      refute html =~ "bounded marker 1"
+      assert html =~ "bounded marker 2"
+      assert html =~ "bounded marker 3"
+      assert html =~ "bounded marker 4"
     end
   end
 end

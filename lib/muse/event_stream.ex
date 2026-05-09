@@ -312,8 +312,13 @@ defmodule Muse.EventStream do
     else
       case find_streaming_message_index(messages, turn_id) do
         nil ->
-          # No streaming message exists, add as new non-streaming message
-          messages ++ [event_to_chat_message(event)]
+          # No streaming message exists. Match full chat_messages/1 semantics:
+          # only the first assistant final in a turn is rendered.
+          if finalized_assistant_response?(messages, turn_id) do
+            messages
+          else
+            messages ++ [event_to_chat_message(event)]
+          end
 
         index ->
           existing = Enum.at(messages, index)
@@ -337,6 +342,15 @@ defmodule Muse.EventStream do
   defp find_streaming_message_index(messages, turn_id) do
     Enum.find_index(messages, fn msg ->
       msg[:turn_id] == turn_id and msg[:streaming?] == true
+    end)
+  end
+
+  # True once a turn has any finalized assistant response. This lets the
+  # incremental path preserve chat_messages/1's "first final wins" behavior
+  # for duplicate assistant_message events.
+  defp finalized_assistant_response?(messages, turn_id) do
+    Enum.any?(messages, fn msg ->
+      msg[:turn_id] == turn_id and msg[:role] == :assistant and msg[:streaming?] == false
     end)
   end
 
@@ -416,7 +430,7 @@ defmodule Muse.EventStream do
   # (prepended for O(1) insertion) alongside an order list, then reverses
   # each group and materialises the final list in first-appearance order.
   defp group_by_turn_preserving_order(events) do
-    {groups_map, order_rev, nil_count} =
+    {groups_map, order_rev, _nil_count} =
       Enum.reduce(events, {%{}, [], 0}, fn event, {groups, order, nil_count} ->
         turn_id = event.turn_id
 
