@@ -23,7 +23,7 @@
   --text-secondary: #c8c8cc;
   --text-muted: #9a9aa0;
   --text-subtle: #82828a;
-  --text-placeholder: #92929a;
+  --text-placeholder: #9a9aa0;
   --text-disabled: #636370;
 
   /* ─── Borders ──────────────────────────────────────────────────── */
@@ -2939,6 +2939,12 @@ textarea:focus-visible {
     backdrop-filter: blur(8px);
     padding: 10px 12px;
     border-bottom: 1px solid var(--border);
+  }
+
+  /* Hide collapse-to-rail button on mobile — rail mode unavailable */
+  .context-sidebar-actions .context-icon-btn[title="Collapse to rail"],
+  .context-sidebar-actions button[phx-value-state="rail"] {
+    display: none;
   }
 
   /* Reopen chip hidden on mobile — hamburger toggle replaces it */
