@@ -33,6 +33,18 @@ defmodule Muse.SessionServerTest do
 
     # Clean up any leftover session processes from previous tests
     clean_sessions()
+
+    # Clean stale session snapshots from disk to prevent cross-VM-run
+    # contamination. :erlang.unique_integer([:positive]) resets between
+    # mix test invocations, so the same integer can be generated in
+    # different runs.  Without cleanup, a new session would restore a
+    # stale snapshot (e.g. with pending_remote_approval already set),
+    # causing {:error, :pending_remote_approval_exists} in tests that
+    # expect a clean session.  This cleanup is safe because setup runs
+    # before each test — intra-test persistence (terminate → restart
+    # with same session_id) is not affected.
+    clean_session_store()
+
     :ok
   end
 
@@ -59,6 +71,24 @@ defmodule Muse.SessionServerTest do
         # Wait for processes to fully exit and Registry entries to be cleaned
         Process.sleep(10)
     end
+  end
+
+  defp clean_session_store do
+    base_dir = Muse.SessionServer.current_store_base_dir()
+
+    if File.dir?(base_dir) do
+      # Remove all session subdirectories but keep the base dir itself
+      File.ls!(base_dir)
+      |> Enum.each(fn entry ->
+        path = Path.join(base_dir, entry)
+
+        if File.dir?(path) do
+          File.rm_rf!(path)
+        end
+      end)
+    end
+  rescue
+    _ -> :ok
   end
 
   defp cleanup do
