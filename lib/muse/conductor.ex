@@ -995,7 +995,7 @@ defmodule Muse.Conductor do
   # capture the proposals and transition the session to :awaiting_patch_approval.
   # Full `/approve patch` command lifecycle is owned by lane06.
   defp maybe_capture_patch_proposal(result, %{id: :coding} = _muse, opts) do
-    proposals = Keyword.get(opts, :patch_proposals, [])
+    proposals = Keyword.get(opts, :patch_proposals, []) |> List.flatten()
 
     if proposals != [] do
       latest_proposal = List.last(proposals)
