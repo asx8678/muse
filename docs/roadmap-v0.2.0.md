@@ -113,4 +113,4 @@ Before v0.2.0 release:
 
 ## Next Issue to Start
 
-Begin with **Phase 1** (`muse-6jz`): Release/distribution and CI polish — package artifacts, install docs, CI/CD automation.
+Begin with **Phase 3** (`muse-3bh`): Provider/model routing UX and resilience — health/status commands, actionable error messages, retry/backoff, model listing/validation.
