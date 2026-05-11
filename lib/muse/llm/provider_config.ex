@@ -657,6 +657,11 @@ defmodule Muse.LLM.ProviderConfig do
       supports_streaming: true,
       supports_websockets: false,
       supports_tools: true,
+      headers: %{
+        "HTTP-Referer" =>
+          env_value(env_map, "MUSE_OPENROUTER_REFERER") || "https://github.com/nicktomlin/muse",
+        "X-Title" => env_value(env_map, "MUSE_OPENROUTER_TITLE") || "Muse Runtime"
+      },
       max_tokens_per_session: 100_000,
       max_api_calls_per_minute: 60
     }

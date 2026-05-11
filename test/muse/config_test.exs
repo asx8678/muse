@@ -67,6 +67,8 @@ defmodule Muse.ConfigTest do
       assert config.auth == :api_key
       assert config.env_key == "MUSE_OPENROUTER_API_KEY"
       assert config.model == "anthropic/claude-3.5-sonnet"
+      assert config.headers["HTTP-Referer"] == "https://github.com/nicktomlin/muse"
+      assert config.headers["X-Title"] == "Muse Runtime"
     end
 
     test "MUSE_PROVIDER=ollama resolves with defaults and default model" do
@@ -125,6 +127,48 @@ defmodule Muse.ConfigTest do
 
       assert {:ok, config} = Config.llm_provider_config(env)
       assert config.base_url == "https://custom.openrouter.test/api/v1"
+    end
+
+    test "OpenRouter headers can be overridden via env vars" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_MODEL" => "test",
+        "MUSE_OPENROUTER_REFERER" => "https://example.com/custom",
+        "MUSE_OPENROUTER_TITLE" => "Custom App"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+      assert config.headers["HTTP-Referer"] == "https://example.com/custom"
+      assert config.headers["X-Title"] == "Custom App"
+    end
+
+    test "OpenRouter headers flow into request options" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_MODEL" => "test"
+      }
+
+      assert {:ok, config} = Config.llm_provider_config(env)
+
+      request =
+        Muse.Prompt.ModelPreparer.to_request(
+          %Muse.Prompt.Bundle{
+            id: "pb",
+            session_id: "sess",
+            turn_id: "turn",
+            muse_id: :planning,
+            messages: [%{role: "user", content: "hi"}],
+            tools: [],
+            layers: [],
+            metadata: %{},
+            model: "test",
+            created_at: ~U[2025-01-01 00:00:00Z]
+          },
+          config
+        )
+
+      assert request.options.headers["HTTP-Referer"] == "https://github.com/nicktomlin/muse"
+      assert request.options.headers["X-Title"] == "Muse Runtime"
     end
 
     test "MUSE_OLLAMA_BASE_URL overrides Ollama base URL" do

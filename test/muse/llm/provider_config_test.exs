@@ -578,6 +578,8 @@ defmodule Muse.LLM.ProviderConfigTest do
       assert config.supports_streaming == true
       assert config.supports_websockets == false
       assert config.supports_tools == true
+      assert config.headers["HTTP-Referer"] == "https://github.com/nicktomlin/muse"
+      assert config.headers["X-Title"] == "Muse Runtime"
     end
 
     test "openrouter model from MUSE_OPENROUTER_MODEL" do
@@ -617,6 +619,19 @@ defmodule Muse.LLM.ProviderConfigTest do
 
       assert {:ok, config} = ProviderConfig.load(env)
       assert config.base_url == "https://custom.openrouter.test/api/v1"
+    end
+
+    test "MUSE_OPENROUTER_REFERER and MUSE_OPENROUTER_TITLE override default headers" do
+      env = %{
+        "MUSE_PROVIDER" => "openrouter",
+        "MUSE_MODEL" => "test-model",
+        "MUSE_OPENROUTER_REFERER" => "https://example.com/custom",
+        "MUSE_OPENROUTER_TITLE" => "Custom App"
+      }
+
+      assert {:ok, config} = ProviderConfig.load(env)
+      assert config.headers["HTTP-Referer"] == "https://example.com/custom"
+      assert config.headers["X-Title"] == "Custom App"
     end
 
     test "MUSE_WIRE_API and MUSE_TRANSPORT override defaults" do

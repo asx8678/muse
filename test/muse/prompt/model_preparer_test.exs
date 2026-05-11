@@ -171,6 +171,21 @@ defmodule Muse.Prompt.ModelPreparerTest do
       assert request.transport == :sse
     end
 
+    test "maps ProviderConfig headers to request options", %{bundle: bundle} do
+      config = %Muse.LLM.ProviderConfig{
+        id: "openrouter",
+        model: "m",
+        headers: %{
+          "HTTP-Referer" => "https://github.com/nicktomlin/muse",
+          "X-Title" => "Muse Runtime"
+        }
+      }
+
+      request = ModelPreparer.to_request(bundle, config)
+      assert request.options.headers["HTTP-Referer"] == "https://github.com/nicktomlin/muse"
+      assert request.options.headers["X-Title"] == "Muse Runtime"
+    end
+
     test "unknown provider id maps to :unknown", %{bundle: bundle} do
       config = %Muse.LLM.ProviderConfig{id: "totally_unknown", model: "m"}
       request = ModelPreparer.to_request(bundle, config)
