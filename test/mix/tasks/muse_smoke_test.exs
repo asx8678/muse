@@ -44,12 +44,12 @@ defmodule Mix.Tasks.Muse.SmokeTest do
 
     test "rejects port values below range" do
       assert {:error, message} = Smoke.parse_args(["--port", "0"])
-      assert message =~ "invalid port 0; must be an integer in 1..65535"
+      assert message =~ "invalid port 0; must be in 1..65535"
     end
 
     test "rejects port values above range" do
       assert {:error, message} = Smoke.parse_args(["--port", "65536"])
-      assert message =~ "invalid port 65536; must be an integer in 1..65535"
+      assert message =~ "invalid port 65536; must be in 1..65535"
     end
 
     test "rejects host values that are full URLs" do
