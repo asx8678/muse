@@ -23,7 +23,7 @@
   --text-secondary: #c8c8cc;
   --text-muted: #9a9aa0;
   --text-subtle: #82828a;
-  --text-placeholder: #92929a;
+  --text-placeholder: #8a8a92;
   --text-disabled: #636370;
 
   /* ─── Borders ──────────────────────────────────────────────────── */
@@ -2784,6 +2784,10 @@ textarea:focus-visible {
     display: none;
   }
 
+  .tab-btn {
+    padding: 5px 8px;
+  }
+
   .toast-container {
     left: 16px;
     right: 16px;
@@ -2990,6 +2994,7 @@ textarea:focus-visible {
   .app-header {
     gap: var(--space-2);
     padding-bottom: var(--space-1);
+    flex-wrap: wrap;
   }
 
   .muse-brand__logo {
@@ -3042,6 +3047,15 @@ textarea:focus-visible {
   .prompt-chip {
     font-size: 12px;
     padding: 6px 10px;
+  }
+
+  .tab-btn {
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+
+  .status-bar {
+    overflow-x: hidden;
   }
 
   /* Sidebar overlay narrower on tiny screens */

@@ -230,6 +230,7 @@ defmodule Muse.Script.LiveViewBrowserSmokeTest do
         ;;
       ready_after_preflight)
         if [ "${count}" -ge 2 ]; then
+          echo '<div data-slash-commands></div>'
           exit 0
         fi
         exit 7

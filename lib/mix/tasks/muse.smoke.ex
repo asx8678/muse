@@ -296,6 +296,10 @@ defmodule Mix.Tasks.Muse.Smoke do
     {:ok, port}
   end
 
+  defp validate_port(port) when is_integer(port) do
+    {:error, "invalid port #{port}; must be in 1..#{@max_port}"}
+  end
+
   defp validate_port(port) do
     {:error, "invalid port #{inspect(port)}; must be an integer in 1..#{@max_port}"}
   end

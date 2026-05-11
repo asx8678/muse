@@ -14,6 +14,7 @@
 # Environment:
 #   MUSE_BROWSER_SMOKE_PORT    — HTTP port, 1..65535 and free (default: 4101)
 #   MUSE_BROWSER_SMOKE_HOST    — Local HTTP host: 127.0.0.1, localhost, or 0.0.0.0 (default: 127.0.0.1)
+#                        Also passed as --host to mix muse and mix muse.smoke
 #   MUSE_BROWSER_SMOKE_TIMEOUT — Positive readiness timeout in seconds (default: 60)
 #
 # Prerequisites:
@@ -115,6 +116,21 @@ http_ready() {
         "${BASE_URL}/" >/dev/null 2>&1
 }
 
+verify_muse_response() {
+    local body
+    body="$(curl --fail --silent --show-error \
+        --connect-timeout 2 \
+        --max-time 5 \
+        "${BASE_URL}/" 2>/dev/null)" || return 1
+
+    if ! echo "${body}" | grep -qF 'data-slash-commands'; then
+        echo "ERROR: ${BASE_URL}/ responded but does not appear to be a Muse server." >&2
+        echo "       Missing expected Muse-specific marker (data-slash-commands)." >&2
+        return 1
+    fi
+    return 0
+}
+
 print_server_log() {
     if [ -n "${SMOKE_LOG:-}" ] && [ -f "${SMOKE_LOG}" ]; then
         echo "       Server log (last 80 lines):" >&2
@@ -206,7 +222,7 @@ while [ "${SECONDS}" -lt "${deadline}" ]; do
     elapsed=$((SECONDS - start_seconds))
     fail_if_server_exited
 
-    if http_ready; then
+    if http_ready && verify_muse_response; then
         fail_if_server_exited
         elapsed=$((SECONDS - start_seconds))
         echo "==> Server ready after ${elapsed}s"

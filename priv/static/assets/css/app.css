@@ -23,7 +23,7 @@
   --text-secondary: #c8c8cc;
   --text-muted: #9a9aa0;
   --text-subtle: #82828a;
-  --text-placeholder: #9a9aa0;
+  --text-placeholder: #8a8a92;
   --text-disabled: #636370;
 
   /* ─── Borders ──────────────────────────────────────────────────── */
@@ -2091,6 +2091,33 @@ textarea:focus-visible {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.20);
 }
 
+/* T0-04: Busy/submitting state for non-blocking submit */
+.chat-send-button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.chat-send-button .spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.chat-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 /* ─── Chat messages ─────────────────────────────────────────────── */
 
 .chat-messages {
@@ -2757,6 +2784,10 @@ textarea:focus-visible {
     display: none;
   }
 
+  .tab-btn {
+    padding: 5px 8px;
+  }
+
   .toast-container {
     left: 16px;
     right: 16px;
@@ -2915,11 +2946,16 @@ textarea:focus-visible {
     display: none !important;
   }
 
-  /* Backdrop when sidebar is expanded on mobile */
+  /* Backdrop when sidebar is expanded on mobile.
+     Covers only the area to the right of the sidebar so that clicks
+     reliably target the backdrop and not the sidebar overlay. */
   .mobile-sidebar-backdrop {
     display: block;
     position: fixed;
-    inset: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: min(320px, 85vw);
     z-index: 299;
     background: rgba(0, 0, 0, 0.55);
     -webkit-tap-highlight-color: transparent;
@@ -2941,12 +2977,6 @@ textarea:focus-visible {
     border-bottom: 1px solid var(--border);
   }
 
-  /* Hide collapse-to-rail button on mobile — rail mode unavailable */
-  .context-sidebar-actions .context-icon-btn[title="Collapse to rail"],
-  .context-sidebar-actions button[phx-value-state="rail"] {
-    display: none;
-  }
-
   /* Reopen chip hidden on mobile — hamburger toggle replaces it */
   .context-reopen-chip {
     display: none !important;
@@ -2964,6 +2994,7 @@ textarea:focus-visible {
   .app-header {
     gap: var(--space-2);
     padding-bottom: var(--space-1);
+    flex-wrap: wrap;
   }
 
   .muse-brand__logo {
@@ -3016,6 +3047,15 @@ textarea:focus-visible {
   .prompt-chip {
     font-size: 12px;
     padding: 6px 10px;
+  }
+
+  .tab-btn {
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+
+  .status-bar {
+    overflow-x: hidden;
   }
 
   /* Sidebar overlay narrower on tiny screens */
