@@ -17,7 +17,7 @@
 |---|-------|------|----------|--------|-------------|
 | 1 | Release/distribution and CI polish | `muse-6jz` | P1 | Complete | v0.2.0 epic |
 | 2 | LiveView/TUI/CLI UX and browser QA hardening | `muse-w23` | P2 | Complete (screen-reader audit pending separately) | v0.2.0 epic |
-| 3 | Provider/model routing UX and resilience | `muse-3bh` | P2 | Open | v0.2.0 epic |
+| 3 | Provider/model routing UX and resilience | `muse-3bh` | P2 | Complete | v0.2.0 epic |
 | 4 | Persistent memory/session and multi-workspace foundations | `muse-9sr` | P2 | Open | v0.2.0 epic |
 | 5 | Remote execution approval design spike | `muse-pr5` | P3 | Closed (design delivered) | v0.2.0 epic |
 | 6 | Observability, docs, and release readiness | `muse-4qh` | P2 | Open | Phases 1–4 |
