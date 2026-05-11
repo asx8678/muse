@@ -20,7 +20,7 @@
 | 3 | Provider/model routing UX and resilience | `muse-3bh` | P2 | Complete | v0.2.0 epic |
 | 4 | Persistent memory/session and multi-workspace foundations | `muse-9sr` | P2 | Complete | v0.2.0 epic |
 | 5 | Remote execution approval design spike | `muse-pr5` | P3 | Closed (design delivered) | v0.2.0 epic |
-| 6 | Observability, docs, and release readiness | `muse-4qh` | P2 | Open | Phases 1–4 |
+| 6 | Observability, docs, and release readiness | `muse-4qh` | P2 | Complete (release tag pending — human step) | Phases 1–5 |
 
 ### Phase 1 — Release/distribution and CI polish
 Package artifacts with checksums, install docs for all platforms, CI/CD release automation. No secrets in CI.
@@ -94,22 +94,22 @@ Telemetry/event export, troubleshooting docs, docs refresh, release readiness ch
 ## Quality Gates
 
 Before v0.2.0 release:
-- [ ] All phase acceptance criteria met
-- [ ] `mix test` passes (fake provider only)
-- [ ] `mix format --check-formatted` passes
-- [ ] `mix compile --warnings-as-errors` passes
-- [ ] Browser QA suite passes
-- [ ] Install pathway verified
-- [ ] No secrets leaked anywhere in output/logs/export
-- [ ] Remote execution still denied by default
+- [x] All phase acceptance criteria met
+- [x] `mix test` passes (fake provider only)
+- [x] `mix format --check-formatted` passes
+- [x] `mix compile --warnings-as-errors` passes
+- [x] Browser QA suite passes
+- [x] Install pathway verified
+- [x] No secrets leaked anywhere in output/logs/export
+- [x] Remote execution still denied by default
 
 ## Release Criteria
 
-- [ ] Tag v0.2.0 (annotated/signed)
-- [ ] Release notes published on GitHub
-- [ ] Escript artifact with SHA256 checksum published
-- [ ] Install docs updated for new release
-- [ ] All docs refreshed to reflect v0.2.0 changes
+- [ ] Tag v0.2.0 (annotated/signed) — human step
+- [ ] Release notes published on GitHub — human step
+- [x] Escript artifact with SHA256 checksum published
+- [x] Install docs updated for new release
+- [x] All docs refreshed to reflect v0.2.0 changes
 
 ## Next Issue to Start
 
