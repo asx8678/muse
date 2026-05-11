@@ -37,6 +37,7 @@ defmodule Muse.CommandDispatcher do
   alias Muse.Backend
   alias Muse.CommandDispatcher.{MemoryCommands, WorkspaceCommands}
   alias Muse.Env, as: AppEnv
+  alias Muse.LLM.CostTracker
 
   # -- Public API --------------------------------------------------------------
 
@@ -638,6 +639,44 @@ defmodule Muse.CommandDispatcher do
         {:error, {:invalid_session_id, id}} ->
           {:error, invalid_session_id_error(id), []}
       end
+    end
+  end
+
+  def dispatch(:cost, _args, context) do
+    session_id = context_session_id(context)
+
+    case Muse.SessionRouter.status(session_id) do
+      {:ok, status} ->
+        metadata = Map.get(status, :metadata) || %{}
+        usage = Map.get(metadata, :total_usage)
+
+        if is_nil(usage) or (usage[:turns] || 0) == 0 do
+          {:ok,
+           "Cost data not yet available. Token usage is tracked during provider calls. Submit a message to a Muse to start tracking.",
+           []}
+        else
+          model_id = Map.get(metadata, :model_id)
+          cost = CostTracker.calculate_cost(model_id, usage)
+          cost_str = CostTracker.render_cost(cost)
+
+          input = Map.get(usage, :input_tokens, 0)
+          output = Map.get(usage, :output_tokens, 0)
+          turns = Map.get(usage, :turns, 0)
+
+          turn_word = if turns == 1, do: "turn", else: "turns"
+
+          {:ok,
+           "Session cost: #{cost_str} (#{input} input + #{output} output tokens across #{turns} #{turn_word})",
+           []}
+        end
+
+      {:error, :not_found} ->
+        {:ok,
+         "Cost data not yet available. Token usage is tracked during provider calls. Submit a message to a Muse to start tracking.",
+         []}
+
+      {:error, {:invalid_session_id, id}} ->
+        {:error, invalid_session_id_error(id), []}
     end
   end
 
@@ -1951,7 +1990,8 @@ defmodule Muse.CommandDispatcher do
       plans: Map.get(status, :plans) || Map.get(status, "plans", %{}),
       approvals: Map.get(status, :approvals) || Map.get(status, "approvals", []),
       checkpoints: Map.get(status, :checkpoints) || Map.get(status, "checkpoints", []),
-      artifacts: Map.get(status, :artifacts) || Map.get(status, "artifacts", [])
+      artifacts: Map.get(status, :artifacts) || Map.get(status, "artifacts", []),
+      metadata: Map.get(status, :metadata) || Map.get(status, "metadata", %{})
     )
   end
 

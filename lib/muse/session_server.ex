@@ -536,6 +536,7 @@ defmodule Muse.SessionServer do
       memory: nil,
       checkpoints: [],
       artifacts: [],
+      metadata: %{},
       workspace: workspace,
       store_base_dir: store_base_dir,
       # TurnRunner state
@@ -655,6 +656,7 @@ defmodule Muse.SessionServer do
       memory: state.memory,
       checkpoints: state.checkpoints,
       artifacts: state.artifacts,
+      metadata: state[:metadata],
       workspace: state.workspace,
       store_base_dir: state.store_base_dir
     }
@@ -1086,7 +1088,8 @@ defmodule Muse.SessionServer do
         approvals: state.approvals || [],
         memory: state.memory,
         checkpoints: state.checkpoints || [],
-        artifacts: state.artifacts || []
+        artifacts: state.artifacts || [],
+        metadata: state[:metadata] || %{}
     }
   end
 
@@ -1305,7 +1308,8 @@ defmodule Muse.SessionServer do
       state
       | status: session_status,
         active_muse: Atom.to_string(result.selected_muse.id),
-        pending_patch: pending_patch
+        pending_patch: pending_patch,
+        metadata: Map.get(result.session, :metadata) || state[:metadata] || %{}
     }
 
     state =
@@ -1407,7 +1411,11 @@ defmodule Muse.SessionServer do
 
     session_events_chron = session_events_chron ++ [assistant_msg_event]
 
-    state = %{state | status: :idle}
+    state = %{
+      state
+      | status: :idle,
+        metadata: Map.get(result.session, :metadata) || state[:metadata] || %{}
+    }
 
     # Emit turn_completed
     delta_count = Enum.count(session_events_chron, &(&1.type == :assistant_delta))

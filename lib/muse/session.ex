@@ -50,7 +50,8 @@ defmodule Muse.Session do
     checkpoints: [],
     tool_calls: [],
     artifacts: [],
-    pending_patch: nil
+    pending_patch: nil,
+    metadata: nil
   ]
 
   @type status ::
@@ -87,7 +88,8 @@ defmodule Muse.Session do
           checkpoints: list(),
           tool_calls: list(),
           artifacts: list(),
-          pending_patch: Muse.Patch.t() | nil
+          pending_patch: Muse.Patch.t() | nil,
+          metadata: map() | nil
         }
 
   @doc """
@@ -152,7 +154,8 @@ defmodule Muse.Session do
       active_task_id: Keyword.get(opts, :active_task_id),
       provider_state: Keyword.get(opts, :provider_state),
       created_at: Keyword.get(opts, :created_at, now),
-      updated_at: Keyword.get(opts, :updated_at, now)
+      updated_at: Keyword.get(opts, :updated_at, now),
+      metadata: Keyword.get(opts, :metadata)
     }
   end
 

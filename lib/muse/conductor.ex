@@ -383,6 +383,8 @@ defmodule Muse.Conductor do
 
     case stream_provider(provider_module, request, session, turn, opts) do
       {:ok, response, provider_event_specs} ->
+        session = accumulate_token_usage(session, response, request.model)
+
         if response_has_tool_calls?(response) do
           # Delegate to ToolLoop for iterative tool execution
           tool_loop_opts =
@@ -1339,6 +1341,32 @@ defmodule Muse.Conductor do
   end
 
   # -- Usage helpers ------------------------------------------------------------
+
+  defp accumulate_token_usage(session, response, model_id) do
+    usage = (response && response.usage) || %{}
+    token_counts = extract_token_counts(usage)
+
+    input_tokens = Map.get(token_counts, :prompt_tokens, 0) || 0
+    output_tokens = Map.get(token_counts, :completion_tokens, 0) || 0
+
+    metadata = session.metadata || %{}
+
+    current_usage =
+      Map.get(metadata, :total_usage, %{input_tokens: 0, output_tokens: 0, turns: 0})
+
+    new_usage = %{
+      input_tokens: (current_usage[:input_tokens] || 0) + input_tokens,
+      output_tokens: (current_usage[:output_tokens] || 0) + output_tokens,
+      turns: (current_usage[:turns] || 0) + 1
+    }
+
+    new_metadata =
+      metadata
+      |> Map.put(:total_usage, new_usage)
+      |> Map.put(:model_id, model_id)
+
+    %{session | metadata: new_metadata}
+  end
 
   defp extract_token_counts(usage) when is_map(usage) do
     Map.take(usage, [:prompt_tokens, :completion_tokens, :total_tokens])

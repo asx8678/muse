@@ -61,6 +61,7 @@ defmodule Muse.Commands do
     {"/rollback", :rollback, "Roll back to last good generation"},
     {"/auth status", :auth_status, "Show auth credential status (redacted, read-only)"},
     {"/session", :session_status, "Show Muse session status, active plan, and pending patch"},
+    {"/cost", :cost, "Show estimated session cost based on token usage"},
     {"/memory", :memory, "Show session memory summary"},
     {"/memory compact", :memory_compact, "Compact session context into memory (Memory Muse)"},
     {"/memory clear", :memory_clear, "Clear session memory"},

@@ -413,7 +413,8 @@ defmodule Muse.CommandsTest do
       # PR21: Added /memory, /memory compact, /memory clear, /handoff, /checkpoints, /restore
       # Phase B: Added /approve remote, /reject remote
       # Phase 3: Added /provider status, /provider models
-      assert length(cmds) == 62
+      # v0.3.0: Added /cost
+      assert length(cmds) == 63
 
       for {cmd, desc} <- cmds do
         assert is_binary(cmd)
@@ -452,7 +453,8 @@ defmodule Muse.CommandsTest do
       # PR21: Added /memory, /memory compact, /memory clear, /handoff, /checkpoints, /restore
       # Phase B: Added /approve remote, /reject remote
       # Phase 3: Added /provider status, /provider models
-      assert length(cmds) == 62
+      # v0.3.0: Added /cost
+      assert length(cmds) == 63
 
       for cmd <- cmds do
         assert Map.has_key?(cmd, :command)
