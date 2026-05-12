@@ -1993,9 +1993,12 @@ textarea:focus-visible {
   scrollbar-gutter: stable;
 }
 
-.chat-tab-content-process,
-.chat-tab-content-detail {
+.chat-tab-pane {
   min-height: 100%;
+}
+
+.chat-tab-pane:not(.chat-tab-pane-active) {
+  display: none;
 }
 
 @media (min-width: 1200px) {

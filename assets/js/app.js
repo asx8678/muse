@@ -1061,29 +1061,39 @@ const DiagnosticsDrawer = {
 //
 // Scrolls the chat container to the bottom when new messages arrive
 // or content changes. Uses MutationObserver to detect DOM changes
-// inside the chat messages container.
+// inside the chat messages container. Only auto-scrolls when the
+// Process tab is active; detail tabs retain their scroll position.
 
 const ChatAutoScroll = {
   mounted() {
     this._scrollContainer = this.el;
     this._observer = new MutationObserver(() => {
-      this._scrollToBottom();
+      if (this._processPaneActive()) {
+        this._scrollToBottom();
+      }
     });
     this._observer.observe(this.el, {
       childList: true,
       subtree: true,
       characterData: true
     });
-    // Initial scroll to bottom on mount
-    this._scrollToBottom();
+    if (this._processPaneActive()) {
+      this._scrollToBottom();
+    }
   },
   updated() {
-    this._scrollToBottom();
+    if (this._processPaneActive()) {
+      this._scrollToBottom();
+    }
   },
   destroyed() {
     if (this._observer) {
       this._observer.disconnect();
     }
+  },
+  _processPaneActive() {
+    const pane = this.el.querySelector("#chat-tab-pane-process");
+    return pane && pane.classList.contains("chat-tab-pane-active");
   },
   _scrollToBottom() {
     if (this._scrollContainer) {
