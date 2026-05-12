@@ -109,9 +109,13 @@ defmodule Muse.CLI.Repl do
   end
 
   defp submit_message(text) do
-    Muse.CLI.StreamPrinter.stream_submit(:cli, text)
+    case Muse.RuntimeProvider.resolve_opts() do
+      {:ok, opts} ->
+        Muse.CLI.StreamPrinter.stream_submit(:cli, text, opts)
 
-    :ok
+      {:error, reason} ->
+        IO.puts(:stderr, "Provider config error: #{reason}")
+    end
   end
 
   defp dispatch_and_print(action, args, _opts) do

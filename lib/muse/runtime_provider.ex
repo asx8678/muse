@@ -90,7 +90,13 @@ defmodule Muse.RuntimeProvider do
   end
 
   defp resolve_runtime_opts do
-    env_map = System.get_env()
+    # Prefer profile values over existing env vars so that ~/.muse/config.json
+    # takes precedence over stale shell environment.
+    env_map =
+      case Muse.LLM.ProfileLoader.merged_env() do
+        {:ok, merged} -> merged
+        {:error, _} -> System.get_env()
+      end
 
     # Always resolve through Config.llm_provider_config/1 which honors both
     # env vars (MUSE_PROVIDER, etc.) and app config (config :muse, :llm, ...).

@@ -341,8 +341,14 @@ defmodule Muse.CLI.Tui do
   defp dispatch(:empty, state), do: {:noreply, state}
 
   defp dispatch({:message, msg}, state) do
-    Muse.submit(:tui, msg)
-    {:noreply, %{state | status: "Sent: #{msg}"}}
+    case Muse.RuntimeProvider.resolve_opts() do
+      {:ok, opts} ->
+        Muse.submit(:tui, msg, opts)
+        {:noreply, %{state | status: "Sent: #{msg}"}}
+
+      {:error, reason} ->
+        {:noreply, %{state | status: "Provider config error: #{reason}"}}
+    end
   end
 
   defp dispatch({:unknown, cmd}, state),

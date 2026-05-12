@@ -340,16 +340,16 @@ defmodule Muse.DevReloader do
   # -- File stat tracking (recent files with modified_count & lines_added) ----
 
   @doc false
-  @spec scan_file_stats(String.t()) :: %{line_count: non_neg_integer()}
+  @spec scan_file_stats(String.t()) :: %{line_count: non_neg_integer(), deleted?: boolean()}
   def scan_file_stats(path) do
     try do
       content = File.read!(path)
       line_count = count_lines(content)
-      %{line_count: line_count}
+      %{line_count: line_count, deleted?: false}
     rescue
-      _ -> %{line_count: 0}
+      _ -> %{line_count: 0, deleted?: true}
     catch
-      _, _ -> %{line_count: 0}
+      _, _ -> %{line_count: 0, deleted?: true}
     end
   end
 
@@ -380,13 +380,23 @@ defmodule Muse.DevReloader do
         old_lc = Map.get(lc_acc, path, 0)
         new_stats = scan_file_stats(path)
         new_lc = new_stats.line_count
-        lines_added = max(new_lc - old_lc, 0)
+        deleted? = new_stats.deleted?
+
+        {lines_added, lines_removed, status} =
+          cond do
+            deleted? -> {0, old_lc, :deleted}
+            old_lc == 0 -> {new_lc, 0, :created}
+            new_lc > old_lc -> {new_lc - old_lc, 0, :modified}
+            true -> {0, old_lc - new_lc, :modified}
+          end
 
         entry = %{
           path: path,
           basename: Path.basename(path),
           modified_count: 1,
           lines_added: lines_added,
+          lines_removed: lines_removed,
+          status: status,
           last_modified_at: now
         }
 
@@ -406,7 +416,9 @@ defmodule Muse.DevReloader do
                 existing
                 | modified_count: existing.modified_count + 1,
                   lines_added: existing.lines_added + entry.lines_added,
-                  last_modified_at: entry.last_modified_at
+                  lines_removed: existing.lines_removed + entry.lines_removed,
+                  last_modified_at: entry.last_modified_at,
+                  status: entry.status
               }
             end)
         end

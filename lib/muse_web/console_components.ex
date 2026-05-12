@@ -19,7 +19,6 @@ defmodule MuseWeb.ConsoleComponents do
       event_meta: 1,
       event_display: 1,
       format_event_json: 1,
-      diagnostic_timestamp: 1,
       format_timestamp: 1
     ]
 
@@ -570,6 +569,22 @@ defmodule MuseWeb.ConsoleComponents do
 
   def format_bytes(_), do: "—"
 
+  defp format_cpu(nil), do: "—"
+  defp format_cpu(pct) when is_float(pct), do: "#{pct}%"
+  defp format_cpu(_), do: "—"
+
+  defp file_status_label(:created), do: "new"
+  defp file_status_label(:deleted), do: "del"
+  defp file_status_label(:modified), do: "edt"
+  defp file_status_label(_), do: ""
+
+  defp format_atom_pct(count, limit) when is_integer(count) and is_integer(limit) and limit > 0 do
+    pct = Float.round(count / limit * 100, 1)
+    "#{count} (#{pct}%)"
+  end
+
+  defp format_atom_pct(_count, _limit), do: "—"
+
   def format_mem_key(key) when is_atom(key) do
     key |> Atom.to_string() |> String.replace("_", " ") |> String.capitalize()
   end
@@ -583,7 +598,6 @@ defmodule MuseWeb.ConsoleComponents do
   attr(:state, :map, required: true)
   attr(:diagnostics, :list, required: true)
   attr(:diagnostics_open?, :boolean, required: true)
-  attr(:agent_runtime, :map, default: nil)
   attr(:sidebar_state, :atom, default: :expanded)
 
   def app_header(assigns) do
@@ -598,12 +612,6 @@ defmodule MuseWeb.ConsoleComponents do
       <div class="status-chips">
         <.status_chip label="backend" tone="green" dot={true} value="connected" />
         <.status_chip label="watcher" tone={watcher_tone(@reload_status)} dot={true} value={watcher_label(@reload_status)} />
-        <.status_chip
-          label="runtime"
-          tone={runtime_tone(@agent_runtime)}
-          dot={true}
-          value={runtime_status_label((@agent_runtime || %{status: :disconnected}).status)}
-        />
         <.status_chip label="workspace" tone="neutral" dot={false} value={short_path(@workspace)} />
         <%= if @diagnostics != [] do %>
           <.status_chip
@@ -656,12 +664,15 @@ defmodule MuseWeb.ConsoleComponents do
   attr(:input, :string, required: true)
   attr(:submitting?, :boolean, default: false)
   attr(:active_turn_id, :any, default: nil)
+  attr(:chat_tabs, :list, default: [])
+  attr(:active_chat_tab, :any, default: :process)
 
   def chat_panel(assigns) do
     ~H"""
     <section class="chat-panel" aria-label="Muse conversation" role="region">
       <div class="muse-bg muse-bg--main" aria-hidden="true"></div>
-      <div class="chat-scroll" id="chat-scroll" role="log" aria-live="polite" aria-label="Conversation history">
+      <.chat_tab_bar tabs={@chat_tabs} active_tab={@active_chat_tab} />
+      <div class="chat-scroll" id="chat-scroll" phx-hook="ChatAutoScroll" role="log" aria-live="polite" :if={@active_chat_tab == :process}>
         <%= if @messages == [] do %>
           <div class="chat-empty">
             <h1>muse</h1>
@@ -677,8 +688,32 @@ defmodule MuseWeb.ConsoleComponents do
           <.chat_messages messages={@messages} />
         <% end %>
       </div>
+      <div class="chat-scroll" id="tab-detail-scroll" role="tabpanel" :if={@active_chat_tab != :process}>
+        <%= render_chat_tab_content(@chat_tabs, @active_chat_tab) %>
+      </div>
       <.chat_composer input={@input} submitting?={@submitting?} active_turn_id={@active_turn_id} />
     </section>
+    """
+  end
+
+  attr(:tabs, :list, default: [])
+  attr(:active_tab, :any, default: :process)
+
+  def chat_tab_bar(assigns) do
+    ~H"""
+    <div class="chat-tab-bar">
+      <button type="button" class={"chat-tab chat-tab-pinned #{if @active_tab == :process, do: "chat-tab-active"}"} phx-click="switch_chat_tab" phx-value-tab="process">
+        <span class="chat-tab-icon">💬</span>
+        <span class="chat-tab-label">Process</span>
+        <span class="chat-tab-pin" title="Always pinned">📌</span>
+      </button>
+      <%= for tab <- @tabs do %>
+        <button type="button" class={"chat-tab #{if @active_tab == tab.id, do: "chat-tab-active"}"} phx-click="switch_chat_tab" phx-value-tab={tab.id}>
+          <span class="chat-tab-label"><%= tab.title %></span>
+          <span class="chat-tab-close" phx-click="close_chat_tab" phx-value-tab={tab.id} phx-stop-propagation title="Close tab">✕</span>
+        </button>
+      <% end %>
+    </div>
     """
   end
 
@@ -742,20 +777,56 @@ defmodule MuseWeb.ConsoleComponents do
     """
   end
 
+  defp render_chat_tab_content(tabs, active_id) do
+    case Enum.find(tabs, &(&1.id == active_id)) do
+      nil -> ""
+      tab -> render_tab_content(tab)
+    end
+  end
+
+  defp render_tab_content(%{type: :diagnostic, data: diagnostic}) do
+    level_class = case diagnostic.level do
+      :error -> "detail-error"
+      :warning -> "detail-warning"
+      :critical -> "detail-critical"
+      _ -> ""
+    end
+
+    assigns = %{}
+
+    ~H"""
+    <div class="detail-panel">
+      <div class={"detail-header #{level_class}"}>
+        <span class="detail-level"><%= String.upcase(to_string(diagnostic.level)) %></span>
+        <time class="detail-timestamp"><%= diagnostic_timestamp(diagnostic.timestamp) %></time>
+      </div>
+      <div class="detail-message"><%= diagnostic.message %></div>
+      <%= if diagnostic.metadata && diagnostic.metadata != %{} do %>
+        <div class="detail-metadata">
+          <h4>Metadata</h4>
+          <pre><%= inspect(diagnostic.metadata, pretty: true, limit: :infinity) %></pre>
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
+  defp render_tab_content(_), do: ""
+
+  defp diagnostic_timestamp(%DateTime{} = dt) do
+    dt |> DateTime.to_iso8601()
+  end
+  defp diagnostic_timestamp(_), do: ""
+
   attr(:workspace, :string, required: true)
   attr(:reload_status, :map, required: true)
   attr(:diagnostics, :list, required: true)
   attr(:diagnostics_open?, :boolean, default: false)
-  attr(:agent_runtime, :map, default: nil)
-  attr(:agent_snapshot, :any, default: nil)
   attr(:beam_stats, :map, default: %{})
   attr(:logs, :list, default: [])
   attr(:sidebar_state, :atom, default: :expanded)
   attr(:diagnostic_issue_statuses, :map, default: %{})
   attr(:self_healing_issues, :list, default: [])
-  attr(:session_status, :any, default: nil)
-  attr(:submitting?, :boolean, default: false)
-  attr(:streaming_buffers, :map, default: %{})
 
   def context_panel(assigns) do
     ~H"""
@@ -782,56 +853,61 @@ defmodule MuseWeb.ConsoleComponents do
             </div>
           </div>
 
-          <.mini_card title="Muse">
-            <% runtime = @agent_runtime || %{status: :disconnected} %>
-            <div class="mini-card-row">
-              <span class={"status-dot #{runtime_status_dot(runtime.status)}"}></span>
-              <span><%= runtime_status_label(runtime.status) %></span>
-            </div>
-            <%= if runtime[:endpoint] && runtime[:endpoint] != "" do %>
-              <div class="mini-card-row"><span class="mini-card-label">endpoint</span> <span><%= runtime.endpoint %></span></div>
-            <% end %>
-            <%= if runtime[:last_error] do %>
-              <div class="mini-card-row mini-card-error"><span class="mini-card-label">last error</span> <span><%= runtime.last_error %></span></div>
-            <% end %>
-            <%= if agent_count(runtime) do %>
-              <div class="mini-card-row"><span class="mini-card-label">Muses</span> <span><%= agent_count(runtime) %></span></div>
-            <% end %>
-          </.mini_card>
-
-          <.session_status_card session_status={@session_status} submitting?={@submitting?} streaming_buffers={@streaming_buffers} />
-
           <.mini_card title="workspace">
-            <div class="mini-card-row"><span class="mini-card-label">path</span> <span class="mini-card-path"><%= short_path(@workspace) %></span></div>
             <div class="mini-card-row">
+              <span class="mini-card-path"><%= short_path(@workspace) %></span>
               <span class={"status-dot #{if @reload_status[:status] == :unavailable, do: "status-dot-gray", else: "status-dot-green"}"}></span>
-              <span><%= watcher_label(@reload_status) %></span>
             </div>
-            <%= if @reload_status[:generation] do %>
-              <div class="mini-card-row"><span class="mini-card-label">gen</span> <span><%= @reload_status[:generation] %></span></div>
-            <% end %>
           </.mini_card>
 
           <.context_diagnostics_card diagnostics={@diagnostics} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
 
-          <.mini_card title="recent files">
-            <%= for file <- recent_files(@reload_status) do %>
-              <div class="mini-card-row mini-card-path"><%= file %></div>
-            <% end %>
-            <%= if recent_files(@reload_status) == [] do %>
-              <div class="mini-card-row mini-card-subtle">none yet</div>
-            <% end %>
-          </.mini_card>
-
-          <.mini_card title="stats">
+          <.mini_card title="beams">
+            <div class="mini-card-row">
+              <span class="mini-card-label">cpu</span>
+              <span><%= format_cpu(@beam_stats[:cpu_current]) %></span>
+            </div>
+            <div class="mini-card-row">
+              <span class="mini-card-label">cpu 1h</span>
+              <span><%= format_cpu(@beam_stats[:cpu_hourly_avg]) %></span>
+            </div>
             <div class="mini-card-row">
               <span class="mini-card-label">memory</span>
               <span><%= format_bytes(@beam_stats[:total_memory] || 0) %></span>
             </div>
             <div class="mini-card-row">
-              <span class="mini-card-label">processes</span>
-              <span><%= @beam_stats[:process_count] || "—" %></span>
+              <span class="mini-card-label">modules</span>
+              <span><%= @beam_stats[:loaded_modules] || 0 %></span>
             </div>
+            <div class="mini-card-row">
+              <span class="mini-card-label">atoms</span>
+              <span><%= format_atom_pct(@beam_stats[:atoms] || 0, @beam_stats[:atom_limit] || 1) %></span>
+            </div>
+            <div class="mini-card-row">
+              <span class="mini-card-label">gc</span>
+              <span><%= @beam_stats[:gc_count] || 0 %></span>
+            </div>
+          </.mini_card>
+
+          <.mini_card title="recent files">
+            <%= for file <- recent_files_rich(@reload_status) do %>
+              <div class="mini-card-row mini-card-file">
+                <span class="mini-card-path"><%= file.basename %></span>
+                <span class="mini-card-status"><%= file_status_label(file.status) %></span>
+                <%= if file.lines_added && file.lines_added > 0 do %>
+                  <span class="mini-card-added">+<%= file.lines_added %></span>
+                <% end %>
+                <%= if file.lines_removed && file.lines_removed > 0 do %>
+                  <span class="mini-card-removed">−<%= file.lines_removed %></span>
+                <% end %>
+                <%= if file.modified_count && file.modified_count > 1 do %>
+                  <span class="mini-card-count">×<%= file.modified_count %></span>
+                <% end %>
+              </div>
+            <% end %>
+            <%= if recent_files_rich(@reload_status) == [] do %>
+              <div class="mini-card-row mini-card-subtle">none yet</div>
+            <% end %>
           </.mini_card>
 
       <% end %>
@@ -860,12 +936,10 @@ defmodule MuseWeb.ConsoleComponents do
         <div class="diagnostic-latest"><%= diagnostic_summary(List.first(@diagnostics)) %></div>
         <div class="diagnostic-card-actions">
           <button type="button" class="mini-card-btn" phx-click="open_diagnostics" aria-expanded="false" aria-controls="diagnostics-drawer">open details</button>
-          <button type="button" class="mini-card-btn" phx-click="copy_diagnostic" phx-value-diagnostic_id={Integer.to_string(List.first(@diagnostics).id)}>copy latest</button>
-          <%= case Map.get(@diagnostic_issue_statuses, List.first(@diagnostics).id) do %>
-            <% nil -> %>
-              <button type="button" class="mini-card-btn" phx-click="queue_diagnostic_fix" phx-value-diagnostic_id={Integer.to_string(List.first(@diagnostics).id)}>queue latest</button>
-            <% _status -> %>
-              <button type="button" class="mini-card-btn" disabled>queued</button>
+          <%= if Enum.any?(@diagnostic_issue_statuses, fn {_id, status} -> status == :saved end) do %>
+            <button type="button" class="mini-card-btn" disabled>saved ✓</button>
+          <% else %>
+            <button type="button" class="mini-card-btn" phx-click="save_to_fix">save to fix</button>
           <% end %>
         </div>
       </.mini_card>
@@ -985,10 +1059,10 @@ defmodule MuseWeb.ConsoleComponents do
                     phx-click="queue_diagnostic_fix"
                     phx-value-diagnostic_id={Integer.to_string(diagnostic.id)}
                   >
-                    Add to next Muse turn
+                    save to fix
                   </button>
                 <% :queued -> %>
-                  <button type="button" class="diagnostic-queued" disabled>Queued for next Muse turn</button>
+                  <button type="button" class="diagnostic-queued" disabled>saved ✓</button>
                 <% :in_progress -> %>
                   <button type="button" class="diagnostic-queued" disabled>In progress</button>
                 <% :fixed -> %>
@@ -1191,12 +1265,6 @@ defmodule MuseWeb.ConsoleComponents do
   defp watcher_tone(%{status: :unavailable}), do: "gray"
   defp watcher_tone(_), do: "green"
 
-  defp runtime_tone(nil), do: "gray"
-  defp runtime_tone(%{status: :connected}), do: "green"
-  defp runtime_tone(%{status: :connecting}), do: "yellow"
-  defp runtime_tone(%{status: :error}), do: "red"
-  defp runtime_tone(_), do: "gray"
-
   defp diagnostic_summary(nil), do: ""
 
   defp diagnostic_summary(%{message: msg}) when is_binary(msg) do
@@ -1209,21 +1277,11 @@ defmodule MuseWeb.ConsoleComponents do
 
   defp diagnostic_summary(d), do: String.slice(to_string(d), 0, 80)
 
-  defp recent_files(%{recent_files: files}) when is_list(files) and files != [] do
-    files |> Enum.take(3) |> Enum.map(&(&1[:basename] || &1[:path] || to_string(&1)))
+  defp recent_files_rich(%{recent_files: files}) when is_list(files) and files != [] do
+    files |> Enum.take(10)
   end
 
-  defp recent_files(reload_status) when is_map(reload_status) do
-    case reload_status[:recent_file] do
-      nil -> []
-      f -> [f]
-    end
-  end
-
-  defp recent_files(_), do: []
-
-  defp agent_count(%{agent_count: count}) when is_integer(count), do: count
-  defp agent_count(_), do: nil
+  defp recent_files_rich(_), do: []
 
   defp chip_dot_class("green"), do: "status-dot-green"
   defp chip_dot_class("success"), do: "status-dot-green"

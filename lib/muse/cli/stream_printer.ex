@@ -51,7 +51,7 @@ defmodule Muse.CLI.StreamPrinter do
     task =
       Task.async(fn ->
         try do
-          Muse.SessionRouter.submit(session_id, source, text)
+          Muse.SessionRouter.submit(session_id, source, text, opts)
         catch
           :exit, reason -> {:exit, reason}
         end

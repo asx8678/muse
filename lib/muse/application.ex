@@ -21,6 +21,13 @@ defmodule Muse.Application do
   @impl true
   def start(_type, _args) do
     if start_runtime_children?() do
+      :ok = Muse.LLM.ProfileLoader.ensure_initialized()
+
+      case Muse.LLM.ProfileLoader.apply_profile() do
+        :ok -> :ok
+        {:error, reason} -> IO.warn("Muse profile load failed: #{inspect(reason)}")
+      end
+
       opts = BootOptions.parse!(Argv.get())
 
       if opts.help? do

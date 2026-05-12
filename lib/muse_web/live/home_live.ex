@@ -68,7 +68,6 @@ defmodule MuseWeb.HomeLive do
       BackendBridge.safe_subscribe_self_healing()
       BackendBridge.safe_subscribe_agent_registry()
       BackendBridge.safe_subscribe_logs()
-      BackendBridge.safe_subscribe_agent_runtime()
     end
 
     socket =
@@ -103,12 +102,14 @@ defmodule MuseWeb.HomeLive do
         log_search: "",
         expanded_log_id: nil,
         # Agent runtime assigns
-        agent_runtime: BackendBridge.safe_agent_runtime_snapshot(),
         # Legacy assigns kept for compatibility
         open_windows: MapSet.new(),
         active_window: nil,
         # Streaming assistant buffer: maps turn_id -> accumulated delta text
         streaming_buffers: %{},
+        # Chat tabs
+        chat_tabs: [],
+        active_chat_tab: :process,
         # PR17: patch proposal panel state (nil when no pending proposal)
         patch_proposal: nil,
         # PR20: session status for context panel
@@ -128,6 +129,11 @@ defmodule MuseWeb.HomeLive do
         _ ->
           socket
       end
+
+    # Auto-refresh BEAM stats every 5 seconds when connected
+    if connected?(socket) do
+      Process.send_after(self(), :refresh_stats, 5_000)
+    end
 
     {:ok, socket}
   end
@@ -439,69 +445,6 @@ defmodule MuseWeb.HomeLive do
   end
 
   @impl true
-  def handle_event("connect_agent_runtime", _params, socket) do
-    case BackendBridge.safe_connect_agent_runtime() do
-      {:error, reason} when is_binary(reason) ->
-        runtime = BackendBridge.safe_agent_runtime_snapshot()
-
-        socket =
-          socket |> assign(agent_runtime: runtime) |> add_toast("Runtime: #{reason}", :warning)
-
-        {:noreply, socket}
-
-      {:error, _} ->
-        socket = socket |> add_toast("Muse runtime unavailable", :warning)
-        {:noreply, socket}
-    end
-  end
-
-  @impl true
-  def handle_event("retry_agent_runtime", _params, socket) do
-    case BackendBridge.safe_retry_agent_runtime() do
-      {:error, reason} when is_binary(reason) ->
-        runtime = BackendBridge.safe_agent_runtime_snapshot()
-
-        socket =
-          socket |> assign(agent_runtime: runtime) |> add_toast("Runtime: #{reason}", :warning)
-
-        {:noreply, socket}
-
-      {:error, _} ->
-        socket = socket |> add_toast("Muse runtime unavailable", :warning)
-        {:noreply, socket}
-    end
-  end
-
-  @impl true
-  def handle_event("disconnect_agent_runtime", _params, socket) do
-    case BackendBridge.safe_disconnect_agent_runtime() do
-      {:ok, _snapshot} ->
-        runtime = BackendBridge.safe_agent_runtime_snapshot()
-
-        socket =
-          socket |> assign(agent_runtime: runtime) |> add_toast("Runtime disconnected", :info)
-
-        {:noreply, socket}
-
-      {:error, _} ->
-        socket = socket |> add_toast("Muse runtime unavailable", :warning)
-        {:noreply, socket}
-    end
-  end
-
-  @impl true
-  def handle_event("set_agent_runtime_endpoint", %{"endpoint" => endpoint}, socket) do
-    case BackendBridge.safe_set_agent_runtime_endpoint(endpoint) do
-      :ok ->
-        runtime = BackendBridge.safe_agent_runtime_snapshot()
-        {:noreply, assign(socket, agent_runtime: runtime)}
-
-      {:error, _} ->
-        {:noreply, socket}
-    end
-  end
-
-  @impl true
   def handle_event("set_log_filter", %{"filter" => filter}, socket) do
     if filter in ~w(all errors warnings info debug) do
       {:noreply, assign(socket, log_filter: filter)}
@@ -645,6 +588,20 @@ defmodule MuseWeb.HomeLive do
     {:noreply, assign(socket, sidebar_state: new_state)}
   end
 
+  @impl true
+  def handle_event("switch_chat_tab", %{"tab" => tab_id}, socket) do
+    id = if tab_id == "process", do: :process, else: String.to_integer(tab_id)
+    {:noreply, assign(socket, active_chat_tab: id)}
+  end
+
+  @impl true
+  def handle_event("close_chat_tab", %{"tab" => tab_id}, socket) do
+    id = String.to_integer(tab_id)
+    tabs = Enum.reject(socket.assigns.chat_tabs, &(&1.id == id))
+    active = if socket.assigns.active_chat_tab == id, do: :process, else: socket.assigns.active_chat_tab
+    {:noreply, assign(socket, chat_tabs: tabs, active_chat_tab: active)}
+  end
+
   # -- Patch proposal handlers (PR17) ------------------------------------------
 
   @impl true
@@ -656,7 +613,27 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("open_diagnostics", _params, socket) do
-    {:noreply, assign(socket, diagnostics_open?: true)}
+    # Open the latest diagnostic as a chat tab
+    case List.first(socket.assigns.diagnostics) do
+      nil ->
+        {:noreply, socket}
+
+      diagnostic ->
+        tab = %{
+          id: diagnostic.id,
+          type: :diagnostic,
+          title: "#{String.upcase(to_string(diagnostic.level))}: #{String.slice(diagnostic.message, 0, 40)}#{if String.length(diagnostic.message) > 40, do: "...", else: ""}",
+          data: diagnostic
+        }
+
+        # Replace existing tab with same id or add new
+        tabs =
+          socket.assigns.chat_tabs
+          |> Enum.reject(&(&1.id == tab.id))
+          |> Kernel.++([tab])
+
+        {:noreply, assign(socket, chat_tabs: tabs, active_chat_tab: tab.id)}
+    end
   end
 
   @impl true
@@ -673,31 +650,61 @@ defmodule MuseWeb.HomeLive do
             {:noreply, socket}
 
           diagnostic ->
-            case BackendBridge.safe_queue_diagnostic(diagnostic) do
-              {:ok, issue} ->
+            # Save to file for future automated fixing
+            case Muse.Diagnostics.Storage.save_one(diagnostic) do
+              {:ok, path} ->
+                BackendBridge.safe_queue_diagnostic(diagnostic)
+
                 self_healing_issues =
-                  [issue | socket.assigns.self_healing_issues]
+                  [%{diagnostic_id: id, status: :queued} | socket.assigns.self_healing_issues]
                   |> Enum.uniq_by(& &1.diagnostic_id)
 
                 statuses = Map.put(socket.assigns.diagnostic_issue_statuses, id, :queued)
+                filename = Path.basename(path)
 
                 {:noreply,
-                 assign(socket,
+                 socket
+                 |> assign(
                    self_healing_issues: self_healing_issues,
                    diagnostic_issue_statuses: statuses
-                 )}
+                 )
+                 |> add_toast("Saved to #{filename}", :success)}
 
-              {:error, :duplicate} ->
-                statuses = Map.put(socket.assigns.diagnostic_issue_statuses, id, :queued)
-                {:noreply, assign(socket, diagnostic_issue_statuses: statuses)}
-
-              {:error, _} ->
-                {:noreply, socket}
+              {:error, reason} ->
+                {:noreply, add_toast(socket, "Failed to save diagnostic: #{reason}", :error)}
             end
         end
 
       :error ->
         {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def handle_event("save_to_fix", _params, socket) do
+    diagnostics = socket.assigns.diagnostics
+
+    if diagnostics == [] do
+      {:noreply, add_toast(socket, "No diagnostics to save", :warning)}
+    else
+      case Muse.Diagnostics.Storage.save(diagnostics) do
+        {:ok, path} ->
+          filename = Path.basename(path)
+
+          # Mark all as saved
+          statuses =
+            Enum.reduce(diagnostics, socket.assigns.diagnostic_issue_statuses, fn d, acc ->
+              Map.put(acc, d.id, :saved)
+            end)
+
+          {:noreply,
+           socket
+           |> assign(diagnostic_issue_statuses: statuses)
+           |> add_toast("Saved #{length(diagnostics)} diagnostics to #{filename}", :success)}
+
+        {:error, reason} ->
+          {:noreply, add_toast(socket, "Failed to save diagnostics: #{reason}", :error)}
+      end
     end
   end
 
@@ -938,11 +945,6 @@ defmodule MuseWeb.HomeLive do
   end
 
   @impl true
-  def handle_info({:muse_agent_runtime_updated, snapshot}, socket) do
-    {:noreply, assign(socket, agent_runtime: snapshot)}
-  end
-
-  @impl true
   def handle_info({:muse_agent_registry_updated, snapshot}, socket) do
     {:noreply, assign(socket, agent_snapshot: snapshot)}
   end
@@ -1000,6 +1002,12 @@ defmodule MuseWeb.HomeLive do
   end
 
   @impl true
+  def handle_info(:refresh_stats, socket) do
+    Process.send_after(self(), :refresh_stats, 5_000)
+    {:noreply, assign(socket, beam_stats: Muse.BeamStats.snapshot())}
+  end
+
+  @impl true
   def handle_info(_msg, socket) do
     {:noreply, socket}
   end
@@ -1012,11 +1020,11 @@ defmodule MuseWeb.HomeLive do
     <div id="muse-shell" class="app-shell" phx-hook="KeyboardShortcuts">
       <a href="#main-content" class="skip-link">Skip to main content</a>
       <div id="clipboard-handler" phx-hook="ClipboardHandler" style="display:none" aria-hidden="true"></div>
-      <.app_header workspace={@workspace} reload_status={@reload_status} state={@state} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} sidebar_state={@sidebar_state} />
+      <.app_header workspace={@workspace} reload_status={@reload_status} state={@state} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} sidebar_state={@sidebar_state} />
       <div :if={@sidebar_state == :expanded} class="mobile-sidebar-backdrop" phx-click="set_sidebar_state" phx-value-state="hidden" aria-hidden="true"></div>
       <main id="main-content" tabindex="-1" class={"main-layout sidebar-#{@sidebar_state}"}>
-        <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} agent_runtime={@agent_runtime} agent_snapshot={@agent_snapshot} beam_stats={@beam_stats} logs={@logs} sidebar_state={@sidebar_state} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} session_status={@session_status} submitting?={@submitting?} streaming_buffers={@streaming_buffers} />
-        <.chat_panel messages={@chat_messages} input={@input} submitting?={@submitting?} active_turn_id={@active_turn_id} />
+        <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} beam_stats={@beam_stats} logs={@logs} sidebar_state={@sidebar_state} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
+        <.chat_panel messages={@chat_messages} input={@input} submitting?={@submitting?} active_turn_id={@active_turn_id} chat_tabs={@chat_tabs} active_chat_tab={@active_chat_tab} />
       </main>
       <.diagnostics_popup diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
       <.patch_proposal_panel patch_proposal={@patch_proposal} />

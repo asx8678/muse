@@ -1057,6 +1057,41 @@ const DiagnosticsDrawer = {
   }
 };
 
+// ─── ChatAutoScroll hook ──────────────────────────────────────────
+//
+// Scrolls the chat container to the bottom when new messages arrive
+// or content changes. Uses MutationObserver to detect DOM changes
+// inside the chat messages container.
+
+const ChatAutoScroll = {
+  mounted() {
+    this._scrollContainer = this.el;
+    this._observer = new MutationObserver(() => {
+      this._scrollToBottom();
+    });
+    this._observer.observe(this.el, {
+      childList: true,
+      subtree: true,
+      characterData: true
+    });
+    // Initial scroll to bottom on mount
+    this._scrollToBottom();
+  },
+  updated() {
+    this._scrollToBottom();
+  },
+  destroyed() {
+    if (this._observer) {
+      this._observer.disconnect();
+    }
+  },
+  _scrollToBottom() {
+    if (this._scrollContainer) {
+      this._scrollContainer.scrollTop = this._scrollContainer.scrollHeight;
+    }
+  }
+};
+
 // ─── Hooks & LiveSocket ───────────────────────────────────────────
 
 let Hooks = {
@@ -1067,7 +1102,8 @@ let Hooks = {
   CommandPalette,
   MobileSidebar,
   DiagnosticsDrawer,
-  ClipboardHandler
+  ClipboardHandler,
+  ChatAutoScroll
 };
 
 let csrfToken = document.querySelector("meta[name='csrf-token']")?.getAttribute("content")
