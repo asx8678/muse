@@ -1825,7 +1825,7 @@ textarea:focus-visible {
 
 /* Compact header overrides */
 .app-header {
-  padding: 10px 0;
+  padding: 6px 0;
   margin-bottom: 4px;
   border-bottom: none;
   position: relative;
@@ -2637,9 +2637,9 @@ textarea:focus-visible {
 .muse-brand {
   display: flex;
   align-items: center;
-  gap: .75rem;
+  gap: .375rem;
   min-width: 0;
-  padding-block: .5rem;
+  padding-block: .25rem;
 }
 
 .muse-brand__label {
