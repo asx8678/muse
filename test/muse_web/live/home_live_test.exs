@@ -595,7 +595,7 @@ defmodule MuseWeb.HomeLiveTest do
     open_diagnostics_drawer(view)
     html = render(view)
 
-    assert html =~ "Add to next Muse turn"
+    assert html =~ "save to fix"
     assert html =~ "diagnostic-actions"
     assert html =~ "Copy error"
     assert html =~ "Jump to file"
@@ -748,7 +748,7 @@ defmodule MuseWeb.HomeLiveTest do
 
   # -- Self-healing diagnostic tests ------------------------------------------
 
-  test "clicking Add to next Muse turn queues the diagnostic" do
+  test "clicking save to fix queues the diagnostic" do
     diagnostic = Muse.Diagnostics.emit(:warning, "queue me")
 
     {:ok, view, _html} = live(build_conn(), "/")
@@ -762,7 +762,7 @@ defmodule MuseWeb.HomeLiveTest do
     |> render_click()
 
     html = render(view)
-    assert html =~ "Queued for next Muse turn"
+    assert html =~ "saved ✓"
   end
 
   test "queued diagnostic renders disabled state" do

@@ -165,6 +165,8 @@ defmodule Muse.Backend do
     :exit, _ -> :ok
   end
 
+  @queue_timeout_ms 5_000
+
   def safe_queue_diagnostic(diagnostic) do
     case Process.whereis(Muse.SelfHealingQueue) do
       nil ->
@@ -172,7 +174,11 @@ defmodule Muse.Backend do
 
       pid ->
         if Process.alive?(pid) do
-          case Muse.SelfHealingQueue.add_diagnostic(diagnostic) do
+          case GenServer.call(
+                 Muse.SelfHealingQueue,
+                 {:add_diagnostic, diagnostic},
+                 @queue_timeout_ms
+               ) do
             %Muse.SelfHealingIssue{} = issue -> {:ok, issue}
             {:error, :duplicate} -> {:error, :duplicate}
             {:error, reason} -> {:error, reason}
@@ -184,6 +190,7 @@ defmodule Muse.Backend do
   rescue
     e -> {:error, Exception.message(e)}
   catch
+    :exit, {:timeout, _} -> {:error, :timeout}
     :exit, _ -> {:error, :queue_unavailable}
   end
 

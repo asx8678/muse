@@ -88,6 +88,7 @@ defmodule MuseWeb.HomeLive do
         diagnostic_issue_statuses: diagnostic_issue_statuses,
         beam_stats: Muse.BeamStats.snapshot(),
         agent_snapshot: BackendBridge.safe_agent_snapshot(),
+        agent_runtime: BackendBridge.safe_agent_runtime_snapshot(),
         # Sprint 1 assigns
         tabs: @tabs,
         active_tab: "events",
@@ -613,7 +614,9 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("open_diagnostics", _params, socket) do
-    # Open the latest diagnostic as a chat tab
+    # Open the diagnostics drawer and the latest diagnostic as a chat tab
+    socket = assign(socket, diagnostics_open?: true)
+
     case List.first(socket.assigns.diagnostics) do
       nil ->
         {:noreply, socket}
@@ -653,11 +656,18 @@ defmodule MuseWeb.HomeLive do
             # Save to file for future automated fixing
             case Muse.Diagnostics.Storage.save_one(diagnostic) do
               {:ok, path} ->
-                BackendBridge.safe_queue_diagnostic(diagnostic)
+                result = BackendBridge.safe_queue_diagnostic(diagnostic)
 
                 self_healing_issues =
-                  [%{diagnostic_id: id, status: :queued} | socket.assigns.self_healing_issues]
-                  |> Enum.uniq_by(& &1.diagnostic_id)
+                  case result do
+                    {:ok, %Muse.SelfHealingIssue{} = issue} ->
+                      [issue | socket.assigns.self_healing_issues]
+                      |> Enum.uniq_by(& &1.diagnostic_id)
+
+                    _ ->
+                      [%{diagnostic_id: id, status: :queued} | socket.assigns.self_healing_issues]
+                      |> Enum.uniq_by(& &1.diagnostic_id)
+                  end
 
                 statuses = Map.put(socket.assigns.diagnostic_issue_statuses, id, :queued)
                 filename = Path.basename(path)
@@ -748,6 +758,70 @@ defmodule MuseWeb.HomeLive do
                })}
             else
               {:noreply, add_toast(socket, "No file location in this diagnostic", :warning)}
+            end
+        end
+
+      :error ->
+        {:noreply, add_toast(socket, "Invalid diagnostic ID", :error)}
+    end
+  end
+
+  @impl true
+  def handle_event("diagnostic_agent_action", %{"diagnostic_id" => id_str, "action" => action}, socket) do
+    case MuseWeb.safe_to_integer(id_str) do
+      {:ok, id} ->
+        case Enum.find(socket.assigns.diagnostics, &(&1.id == id)) do
+          nil ->
+            {:noreply, add_toast(socket, "Diagnostic not found", :error)}
+
+          diagnostic ->
+            prompt = build_diagnostic_prompt(diagnostic, action)
+
+            # Create a synthetic user message so the prompt shows in chat immediately
+            user_msg = %{
+              id: System.unique_integer([:positive, :monotonic]),
+              role: :user,
+              text: prompt,
+              timestamp: format_timestamp(DateTime.utc_now()),
+              source: :web,
+              streaming?: false,
+              turn_id: nil
+            }
+
+            chat_messages = socket.assigns.chat_messages ++ [user_msg]
+
+            case RuntimeProvider.resolve_opts() do
+              {:ok, opts} ->
+                try do
+                  case Muse.start_submit(:web, prompt, opts) do
+                    {:ok, turn_id} ->
+                      state = Muse.State.get()
+                      events = state.events
+
+                      {:noreply,
+                       socket
+                       |> assign(
+                         state: state,
+                         events: events,
+                         chat_messages: chat_messages,
+                         submitting?: true,
+                         active_turn_id: turn_id
+                       )
+                       |> add_toast("Sending diagnostic to agent...", :info)}
+
+                    {:error, :turn_in_progress} ->
+                      {:noreply,
+                       add_toast(socket, "A turn is already in progress. Please wait.", :warning)}
+
+                    {:error, reason} ->
+                      {:noreply, add_toast(socket, "Submit failed: #{inspect(reason)}", :error)}
+                  end
+                rescue
+                  e -> {:noreply, add_toast(socket, Exception.message(e), :error)}
+                end
+
+              {:error, reason} ->
+                {:noreply, add_toast(socket, "Provider config error: #{reason}", :error)}
             end
         end
 
@@ -925,7 +999,20 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_info({:muse_diagnostics_cleared}, socket) do
-    {:noreply, assign(socket, diagnostics: [], diagnostics_open?: false)}
+    # Remove diagnostic-type chat tabs since their source data is gone
+    chat_tabs = Enum.reject(socket.assigns.chat_tabs, &(&1.type == :diagnostic))
+    active_chat_tab =
+      if Enum.any?(chat_tabs, &(&1.id == socket.assigns.active_chat_tab)),
+        do: socket.assigns.active_chat_tab,
+        else: List.first(chat_tabs) && List.first(chat_tabs).id
+
+    {:noreply,
+     assign(socket,
+       diagnostics: [],
+       diagnostics_open?: false,
+       chat_tabs: chat_tabs,
+       active_chat_tab: active_chat_tab
+     )}
   end
 
   @impl true
@@ -951,7 +1038,7 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_info({:self_healing_issue_added, issue}, socket) do
-    if Enum.any?(socket.assigns.self_healing_issues, &(&1.id == issue.id)) do
+    if Enum.any?(socket.assigns.self_healing_issues, &(&1.diagnostic_id == issue.diagnostic_id)) do
       statuses = Map.put(socket.assigns.diagnostic_issue_statuses, issue.diagnostic_id, :queued)
       {:noreply, assign(socket, diagnostic_issue_statuses: statuses)}
     else
@@ -973,7 +1060,7 @@ defmodule MuseWeb.HomeLive do
   def handle_info({:self_healing_issue_updated, issue}, socket) do
     self_healing_issues =
       Enum.map(socket.assigns.self_healing_issues, fn existing ->
-        if existing.id == issue.id, do: issue, else: existing
+      if existing.diagnostic_id == issue.diagnostic_id, do: issue, else: existing
       end)
 
     statuses =
@@ -1092,6 +1179,58 @@ defmodule MuseWeb.HomeLive do
   end
 
   defp diagnostic_line(_), do: nil
+
+  defp build_diagnostic_prompt(diagnostic, action) do
+    message = diagnostic.message
+    level = Atom.to_string(diagnostic.level)
+    metadata_str = inspect(diagnostic.metadata, limit: :infinity, printable_limit: 3000)
+
+    case action do
+      "analyze" ->
+        """
+        Analyze this diagnostic issue from my development environment:
+
+        Level: #{level}
+        Message: #{message}
+        Metadata: #{metadata_str}
+
+        Please analyze the root cause of this issue. Focus on:
+        1. What the error or warning means
+        2. What conditions likely triggered it
+        3. What parts of the codebase are involved
+        Provide a thorough analysis.\
+        """
+
+      "suggest" ->
+        """
+        Suggest a fix for this diagnostic issue from my development environment:
+
+        Level: #{level}
+        Message: #{message}
+        Metadata: #{metadata_str}
+
+        Please suggest specific steps to fix this issue. Include:
+        1. The exact files that need changes
+        2. What code to modify or add
+        3. Any configuration changes needed
+        4. The reasoning behind each suggested change
+        Be specific and actionable.\
+        """
+
+      "fix" ->
+        """
+        Fix this diagnostic issue from my development environment:
+
+        Level: #{level}
+        Message: #{message}
+        Metadata: #{metadata_str}
+
+        Please investigate the relevant files in my project and apply the necessary fixes.
+        Look at the code, understand the problem from the diagnostic message above, and
+        make the changes needed to resolve it.\
+        """
+    end
+  end
 
   # -- Chat-first helpers -----------------------------------------------------
 

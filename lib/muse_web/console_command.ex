@@ -29,7 +29,7 @@ defmodule MuseWeb.ConsoleCommand do
       agent_snapshot: socket.assigns.agent_snapshot,
       workspace: socket.assigns.workspace,
       reload_status: socket.assigns.reload_status,
-      agent_runtime: socket.assigns.agent_runtime,
+      agent_runtime: Map.get(socket.assigns, :agent_runtime, nil),
       beam_stats: socket.assigns.beam_stats,
       event_filter: socket.assigns.event_filter,
       event_search: socket.assigns.event_search,

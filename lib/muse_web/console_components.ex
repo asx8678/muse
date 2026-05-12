@@ -672,7 +672,7 @@ defmodule MuseWeb.ConsoleComponents do
     <section class="chat-panel" aria-label="Muse conversation" role="region">
       <div class="muse-bg muse-bg--main" aria-hidden="true"></div>
       <.chat_tab_bar tabs={@chat_tabs} active_tab={@active_chat_tab} />
-      <div class="chat-scroll" id="chat-scroll" role="log" aria-live="polite" phx-hook="ChatAutoScroll">
+      <div class="chat-scroll" id="chat-scroll" role="log" aria-live="polite" aria-label="Conversation history" phx-hook="ChatAutoScroll">
         <div class={if @active_chat_tab == :process, do: "chat-tab-pane chat-tab-pane-active", else: "chat-tab-pane"} id="chat-tab-pane-process">
           <%= if @messages == [] do %>
             <div class="chat-empty">
@@ -782,12 +782,13 @@ defmodule MuseWeb.ConsoleComponents do
   end
 
   defp render_tab_content(%{type: :diagnostic, data: diagnostic}) do
-    level_class = case diagnostic.level do
-      :error -> "detail-error"
-      :warning -> "detail-warning"
-      :critical -> "detail-critical"
-      _ -> ""
-    end
+    level_class =
+      case diagnostic.level do
+        :error -> "detail-error"
+        :warning -> "detail-warning"
+        :critical -> "detail-critical"
+        _ -> ""
+      end
 
     assigns = %{diagnostic: diagnostic, level_class: level_class}
 
@@ -804,6 +805,17 @@ defmodule MuseWeb.ConsoleComponents do
           <pre><%= inspect(@diagnostic.metadata, pretty: true, limit: :infinity) %></pre>
         </div>
       <% end %>
+      <div class="diagnostic-agent-actions">
+        <button type="button" class="agent-action-btn" phx-click="diagnostic_agent_action" phx-value-diagnostic_id={Integer.to_string(@diagnostic.id)} phx-value-action="analyze">
+          🔍 Analyze
+        </button>
+        <button type="button" class="agent-action-btn" phx-click="diagnostic_agent_action" phx-value-diagnostic_id={Integer.to_string(@diagnostic.id)} phx-value-action="suggest">
+          💡 Suggest fix
+        </button>
+        <button type="button" class="agent-action-btn" phx-click="diagnostic_agent_action" phx-value-diagnostic_id={Integer.to_string(@diagnostic.id)} phx-value-action="fix">
+          🔧 Fix this
+        </button>
+      </div>
     </div>
     """
   end
@@ -813,6 +825,7 @@ defmodule MuseWeb.ConsoleComponents do
   defp diagnostic_timestamp(%DateTime{} = dt) do
     dt |> DateTime.to_iso8601()
   end
+
   defp diagnostic_timestamp(_), do: ""
 
   attr(:workspace, :string, required: true)
@@ -936,7 +949,7 @@ defmodule MuseWeb.ConsoleComponents do
           <%= if Enum.any?(@diagnostic_issue_statuses, fn {_id, status} -> status == :saved end) do %>
             <button type="button" class="mini-card-btn" disabled>saved ✓</button>
           <% else %>
-            <button type="button" class="mini-card-btn" phx-click="save_to_fix">save to fix</button>
+            <button type="button" class="mini-card-btn" phx-click="save_to_fix" phx-disable-with="saving...">save to fix</button>
           <% end %>
         </div>
       </.mini_card>
@@ -1055,6 +1068,7 @@ defmodule MuseWeb.ConsoleComponents do
                     class="diagnostic-action-btn"
                     phx-click="queue_diagnostic_fix"
                     phx-value-diagnostic_id={Integer.to_string(diagnostic.id)}
+                    phx-disable-with="saving..."
                   >
                     save to fix
                   </button>
