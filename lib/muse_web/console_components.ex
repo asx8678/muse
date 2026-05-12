@@ -792,19 +792,19 @@ defmodule MuseWeb.ConsoleComponents do
       _ -> ""
     end
 
-    assigns = %{}
+    assigns = %{diagnostic: diagnostic, level_class: level_class}
 
     ~H"""
     <div class="detail-panel">
-      <div class={"detail-header #{level_class}"}>
-        <span class="detail-level"><%= String.upcase(to_string(diagnostic.level)) %></span>
-        <time class="detail-timestamp"><%= diagnostic_timestamp(diagnostic.timestamp) %></time>
+      <div class={"detail-header #{@level_class}"}>
+        <span class="detail-level"><%= String.upcase(to_string(@diagnostic.level)) %></span>
+        <time class="detail-timestamp"><%= diagnostic_timestamp(@diagnostic.timestamp) %></time>
       </div>
-      <div class="detail-message"><%= diagnostic.message %></div>
-      <%= if diagnostic.metadata && diagnostic.metadata != %{} do %>
+      <div class="detail-message"><%= @diagnostic.message %></div>
+      <%= if @diagnostic.metadata && @diagnostic.metadata != %{} do %>
         <div class="detail-metadata">
           <h4>Metadata</h4>
-          <pre><%= inspect(diagnostic.metadata, pretty: true, limit: :infinity) %></pre>
+          <pre><%= inspect(@diagnostic.metadata, pretty: true, limit: :infinity) %></pre>
         </div>
       <% end %>
     </div>
