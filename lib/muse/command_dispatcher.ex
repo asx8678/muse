@@ -855,6 +855,52 @@ defmodule Muse.CommandDispatcher do
     end
   end
 
+  # -- Provider test (connectivity check, opt-in) -----------------------------
+
+  def dispatch(:provider_test, args, context) do
+    if present_args?(args) do
+      {:error, "Error: usage: /provider test", []}
+    else
+      env_map = Map.get(context, :env) || Map.get(context, :env_map)
+
+      opts =
+        [connectivity_check?: true]
+        |> maybe_put_env(env_map)
+        |> maybe_put_config_source(context)
+
+      status =
+        case context_provider_config(context) do
+          %Muse.LLM.ProviderConfig{} = config ->
+            Muse.LLM.ProviderStatus.from_config(config, opts)
+
+          nil ->
+            Muse.LLM.ProviderStatus.report(opts)
+        end
+
+      output =
+        case status.status do
+          :ok ->
+            "✓ Provider #{status.provider_name || status.provider_id || "unknown"} is ok (fake/offline)."
+
+          :reachable ->
+            "✓ Provider #{status.provider_name || status.provider_id || "unknown"} is reachable."
+
+          :unreachable ->
+            Muse.LLM.ProviderStatus.render(status)
+
+          :configured ->
+            "Provider #{status.provider_name || status.provider_id || "unknown"} is configured but not verified. " <>
+              "Connectivity check did not run (possible internal error)."
+
+          :misconfigured ->
+            Muse.LLM.ProviderStatus.render(status)
+        end
+
+      status_type = if status.status in [:ok, :reachable], do: :ok, else: :error
+      {status_type, output, []}
+    end
+  end
+
   # -- Provider models ---------------------------------------------------------
 
   def dispatch(:provider_models, args, context) do

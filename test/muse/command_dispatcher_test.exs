@@ -1806,6 +1806,65 @@ defmodule Muse.CommandDispatcherTest do
     end
   end
 
+  describe "dispatch/3 — :provider_test" do
+    test "rejects extra args with usage error" do
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:provider_test, "extra", %{})
+
+      assert output =~ "usage: /provider test"
+    end
+
+    test "reports fake provider as ok (no network call)" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:provider_test, nil, %{env: %{}})
+
+      # Fake provider: status is :ok, not :reachable — but we render the full status
+      assert is_binary(output)
+    end
+
+    test "uses provider_config from context when present" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:provider_test, nil, %{
+          provider_config: openai_provider_config()
+        })
+
+      # With openai config and connectivity_check?: true,
+      # the status will be :reachable or :unreachable depending on network.
+      # We just verify it returns output without crashing.
+      assert is_binary(output)
+    end
+
+    test "output never contains API keys or secrets" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:provider_test, nil, %{
+          env: %{
+            "MUSE_PROVIDER" => "openrouter",
+            "MUSE_OPENROUTER_MODEL" => "anthropic/claude-3.5-sonnet",
+            "MUSE_OPENROUTER_API_KEY" => "sk-test-secret-key-12345"
+          }
+        })
+
+      refute output =~ "sk-test-secret-key-12345"
+    end
+
+    test "returns error for misconfigured provider" do
+      {:error, output, _effects} =
+        CommandDispatcher.dispatch(:provider_test, nil, %{
+          env: %{"MUSE_PROVIDER" => "nonexistent_provider"}
+        })
+
+      assert output =~ "misconfigured"
+    end
+
+    test "fake provider test returns ok status with checkmark" do
+      {:ok, output, _effects} =
+        CommandDispatcher.dispatch(:provider_test, nil, %{env: %{}})
+
+      assert output =~ "✓"
+      assert output =~ "ok (fake/offline)"
+    end
+  end
+
   # -- Export/Import session commands -------------------------------------------
 
   describe "export session" do

@@ -290,6 +290,10 @@ defmodule Muse.CommandsTest do
       assert Commands.parse("/provider models") == {:command, :provider_models}
     end
 
+    test "parses /provider test" do
+      assert Commands.parse("/provider test") == {:command, :provider_test}
+    end
+
     test "/provider alone is unknown" do
       assert Commands.parse("/provider") == {:unknown, "/provider"}
     end
@@ -387,6 +391,7 @@ defmodule Muse.CommandsTest do
       assert text =~ "/approve remote"
       assert text =~ "/reject remote"
       assert text =~ "/provider status"
+      assert text =~ "/provider test"
       assert text =~ "/provider models"
     end
 
@@ -412,9 +417,9 @@ defmodule Muse.CommandsTest do
       assert is_list(cmds)
       # PR21: Added /memory, /memory compact, /memory clear, /handoff, /checkpoints, /restore
       # Phase B: Added /approve remote, /reject remote
-      # Phase 3: Added /provider status, /provider models
+      # Phase 3: Added /provider status, /provider models, /provider test
       # v0.3.0: Added /cost
-      assert length(cmds) == 63
+      assert length(cmds) == 64
 
       for {cmd, desc} <- cmds do
         assert is_binary(cmd)
@@ -441,6 +446,7 @@ defmodule Muse.CommandsTest do
       assert "/reject remote" in cmd_names
       assert "/auth status" in cmd_names
       assert "/provider status" in cmd_names
+      assert "/provider test" in cmd_names
       assert "/provider models" in cmd_names
       assert "/workspace switch" in cmd_names
     end
@@ -452,9 +458,9 @@ defmodule Muse.CommandsTest do
       assert is_list(cmds)
       # PR21: Added /memory, /memory compact, /memory clear, /handoff, /checkpoints, /restore
       # Phase B: Added /approve remote, /reject remote
-      # Phase 3: Added /provider status, /provider models
+      # Phase 3: Added /provider status, /provider models, /provider test
       # v0.3.0: Added /cost
-      assert length(cmds) == 63
+      assert length(cmds) == 64
 
       for cmd <- cmds do
         assert Map.has_key?(cmd, :command)
@@ -479,6 +485,7 @@ defmodule Muse.CommandsTest do
       assert "/reject remote" in cmd_names
       assert "/auth status" in cmd_names
       assert "/provider status" in cmd_names
+      assert "/provider test" in cmd_names
       assert "/provider models" in cmd_names
       assert "/workspace switch" in cmd_names
 

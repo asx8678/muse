@@ -69,6 +69,8 @@ defmodule Muse.Commands do
     {"/checkpoints", :checkpoints, "List available checkpoints for restoration"},
     {"/restore", :restore, "Restore from a checkpoint (Restoration Muse)"},
     {"/provider status", :provider_status, "Show provider configuration and connectivity status"},
+    {"/provider test", :provider_test,
+     "Test provider connectivity (makes real network call, opt-in)"},
     {"/provider models", :provider_models, "List known models for the configured provider"},
     {"/export session", :export_session,
      "Copy current session export JSON to clipboard (.muse-session content, secrets redacted)"},

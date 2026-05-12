@@ -59,6 +59,20 @@ defmodule Muse.LLM.ExternalProviderTest do
     end
   end
 
+  describe "/provider test command (requires network)" do
+    test "dispatches :provider_test and returns reachable or unreachable status" do
+      config = resolve_test_provider_config()
+      context = %{provider_config: config}
+
+      {_status, output, _effects} = Muse.CommandDispatcher.dispatch(:provider_test, nil, context)
+
+      assert is_binary(output)
+      # Output should not contain secrets regardless of outcome
+      refute output =~ "sk-"
+      refute output =~ "api_key"
+    end
+  end
+
   # -- Helpers ----------------------------------------------------------------
 
   defp resolve_test_provider_config do
