@@ -401,7 +401,16 @@ defmodule Muse.Tool.RegistryTest do
       assert spec.kind == :read
       assert spec.risk == :low
       assert spec.permission == :read
-      assert spec.allowed_muses == [:planning, :coding, :testing, :reviewing, :restoration, :memory]
+
+      assert spec.allowed_muses == [
+               :planning,
+               :coding,
+               :testing,
+               :reviewing,
+               :restoration,
+               :memory
+             ]
+
       assert spec.requires_approval == false
     end
 
@@ -455,7 +464,16 @@ defmodule Muse.Tool.RegistryTest do
       assert spec.kind == :read
       assert spec.risk == :low
       assert spec.permission == :read
-      assert spec.allowed_muses == [:planning, :coding, :testing, :reviewing, :restoration, :memory]
+
+      assert spec.allowed_muses == [
+               :planning,
+               :coding,
+               :testing,
+               :reviewing,
+               :restoration,
+               :memory
+             ]
+
       assert spec.requires_approval == false
     end
 

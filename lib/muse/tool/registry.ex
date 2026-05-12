@@ -590,66 +590,117 @@ defmodule Muse.Tool.Registry do
                          )
 
   @eval_elixir_spec Spec.new!(
-    name: "eval_elixir",
-    description: "Execute Elixir code in the project's runtime context with IEx.Helpers available. Returns evaluated result and captured IO. Use for quick experiments, checking module structure, or inspecting runtime state. Requires approval due to shell execution risk.",
-    handler: Muse.Tools.EvalElixir,
-    input_schema: %{
-      type: "object",
-      properties: %{
-        code: %{type: "string", description: "Elixir code to evaluate (required)"},
-        arguments: %{type: "array", items: %{}, description: "Optional list of values available as the `args` variable in the evaluated code"},
-        timeout: %{type: "integer", description: "Max execution time in milliseconds (default: 30000, max: 300000)"}
-      },
-      required: ["code"]
-    },
-    kind: :shell,
-    risk: :high,
-    permission: :shell,
-    allowed_roles: [:planning, :coding, :testing],
-    allowed_muses: [:planning, :coding, :testing],
-    requires_approval: true,
-    output_limit: 50_000
-  )
+                      name: "eval_elixir",
+                      description:
+                        "Execute Elixir code in the project's runtime context with IEx.Helpers available. Returns evaluated result and captured IO. Use for quick experiments, checking module structure, or inspecting runtime state. Requires approval due to shell execution risk.",
+                      handler: Muse.Tools.EvalElixir,
+                      input_schema: %{
+                        type: "object",
+                        properties: %{
+                          code: %{
+                            type: "string",
+                            description: "Elixir code to evaluate (required)"
+                          },
+                          arguments: %{
+                            type: "array",
+                            items: %{},
+                            description:
+                              "Optional list of values available as the `args` variable in the evaluated code"
+                          },
+                          timeout: %{
+                            type: "integer",
+                            description:
+                              "Max execution time in milliseconds (default: 30000, max: 300000)"
+                          }
+                        },
+                        required: ["code"]
+                      },
+                      kind: :shell,
+                      risk: :high,
+                      permission: :shell,
+                      allowed_roles: [:planning, :coding, :testing],
+                      allowed_muses: [:planning, :coding, :testing],
+                      requires_approval: true,
+                      output_limit: 50_000
+                    )
 
   @get_source_location_spec Spec.new!(
-    name: "get_source_location",
-    description: "Resolve a Module, Module.function, or Module.function/arity reference to its source file path and line number via BEAM bytecode introspection. Supports dep:PackageName prefix for dependency roots.",
-    handler: Muse.Tools.GetSourceLocation,
-    input_schema: %{
-      type: "object",
-      properties: %{
-        reference: %{type: "string", description: "Module, Module.function, or Module.function/arity reference (e.g. Enum, Enum.map, Enum.map/2). Supports dep:PackageName prefix."}
-      },
-      required: ["reference"]
-    },
-    kind: :read,
-    risk: :low,
-    permission: :read,
-    allowed_roles: [:planning, :coding, :testing, :reviewing, :restoration, :memory],
-    allowed_muses: [:planning, :coding, :testing, :reviewing, :restoration, :memory],
-    requires_approval: false,
-    output_limit: 50_000
-  )
+                              name: "get_source_location",
+                              description:
+                                "Resolve a Module, Module.function, or Module.function/arity reference to its source file path and line number via BEAM bytecode introspection. Supports dep:PackageName prefix for dependency roots.",
+                              handler: Muse.Tools.GetSourceLocation,
+                              input_schema: %{
+                                type: "object",
+                                properties: %{
+                                  reference: %{
+                                    type: "string",
+                                    description:
+                                      "Module, Module.function, or Module.function/arity reference (e.g. Enum, Enum.map, Enum.map/2). Supports dep:PackageName prefix."
+                                  }
+                                },
+                                required: ["reference"]
+                              },
+                              kind: :read,
+                              risk: :low,
+                              permission: :read,
+                              allowed_roles: [
+                                :planning,
+                                :coding,
+                                :testing,
+                                :reviewing,
+                                :restoration,
+                                :memory
+                              ],
+                              allowed_muses: [
+                                :planning,
+                                :coding,
+                                :testing,
+                                :reviewing,
+                                :restoration,
+                                :memory
+                              ],
+                              requires_approval: false,
+                              output_limit: 50_000
+                            )
 
   @get_docs_spec Spec.new!(
-    name: "get_docs",
-    description: "Fetch formatted Markdown documentation for a Module, Module.function/arity, or callback (c:Module.callback/arity). Works for Elixir and Erlang modules loaded in the runtime.",
-    handler: Muse.Tools.GetDocs,
-    input_schema: %{
-      type: "object",
-      properties: %{
-        reference: %{type: "string", description: "Module, Module.function, Module.function/arity, or c:Module.callback/arity (e.g. Enum, Enum.map/2, c:GenServer.handle_call/3)"}
-      },
-      required: ["reference"]
-    },
-    kind: :read,
-    risk: :low,
-    permission: :read,
-    allowed_roles: [:planning, :coding, :testing, :reviewing, :restoration, :memory],
-    allowed_muses: [:planning, :coding, :testing, :reviewing, :restoration, :memory],
-    requires_approval: false,
-    output_limit: 100_000
-  )
+                   name: "get_docs",
+                   description:
+                     "Fetch formatted Markdown documentation for a Module, Module.function/arity, or callback (c:Module.callback/arity). Works for Elixir and Erlang modules loaded in the runtime.",
+                   handler: Muse.Tools.GetDocs,
+                   input_schema: %{
+                     type: "object",
+                     properties: %{
+                       reference: %{
+                         type: "string",
+                         description:
+                           "Module, Module.function, Module.function/arity, or c:Module.callback/arity (e.g. Enum, Enum.map/2, c:GenServer.handle_call/3)"
+                       }
+                     },
+                     required: ["reference"]
+                   },
+                   kind: :read,
+                   risk: :low,
+                   permission: :read,
+                   allowed_roles: [
+                     :planning,
+                     :coding,
+                     :testing,
+                     :reviewing,
+                     :restoration,
+                     :memory
+                   ],
+                   allowed_muses: [
+                     :planning,
+                     :coding,
+                     :testing,
+                     :reviewing,
+                     :restoration,
+                     :memory
+                   ],
+                   requires_approval: false,
+                   output_limit: 100_000
+                 )
 
   # -- Internal index -----------------------------------------------------------
 

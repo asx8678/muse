@@ -25,7 +25,9 @@ defmodule Muse.Tools.CreateFileTest do
     end
 
     test "successful file creation returns ok with path and byte_size", %{root: root} do
-      result = CreateFile.execute(%{"path" => "test.txt", "content" => "hello world"}, %{workspace: root})
+      result =
+        CreateFile.execute(%{"path" => "test.txt", "content" => "hello world"}, %{workspace: root})
+
       assert result.success
       assert result.output.path == "test.txt"
       assert result.output.byte_size == 11
