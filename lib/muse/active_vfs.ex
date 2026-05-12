@@ -202,6 +202,34 @@ defmodule Muse.ActiveVFS do
   end
 
   @doc """
+  Releases the lock on a file held by the given agent.
+
+  Unlike `commit/4`, this does not create a new version. The file content
+  remains unchanged and the lock is simply released.
+
+  Returns `:ok` if the lock was released.
+  Returns `{:error, :not_locked}` if the file is not currently locked.
+  Returns `{:error, :wrong_agent}` if the caller does not hold the lock.
+  Returns `{:error, :not_found}` if the file has no entry in the VFS.
+
+  """
+  @spec release_lock(file_path(), agent_id()) :: :ok | {:error, term()}
+  def release_lock(path, agent_id) do
+    GenServer.call(__MODULE__, {:release_lock, path, agent_id})
+  end
+
+  @doc """
+  Releases all locks held by the given agent across all files.
+
+  Returns the list of file paths whose locks were released.
+
+  """
+  @spec release_all_for_agent(agent_id()) :: [file_path()]
+  def release_all_for_agent(agent_id) do
+    GenServer.call(__MODULE__, {:release_all_for_agent, agent_id})
+  end
+
+  @doc """
   Returns whether a file is currently locked, and by whom.
 
   Returns `{:ok, nil}` if the file is not locked.
@@ -349,6 +377,42 @@ defmodule Muse.ActiveVFS do
   @impl true
   def handle_call(:root, _from, state) do
     {:reply, state.root, state}
+  end
+
+  @impl true
+  def handle_call({:release_lock, path, agent_id}, _from, state) do
+    case Map.fetch(state.files, path) do
+      {:ok, entry} ->
+        cond do
+          entry.locked_by == nil ->
+            {:reply, {:error, :not_locked}, state}
+
+          entry.locked_by != agent_id ->
+            {:reply, {:error, :wrong_agent}, state}
+
+          true ->
+            new_entry = %{entry | locked_by: nil, locked_at: nil}
+            new_state = put_in(state.files[path], new_entry)
+            {:reply, :ok, new_state}
+        end
+
+      :error ->
+        {:reply, {:error, :not_found}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:release_all_for_agent, agent_id}, _from, state) do
+    {released, new_files} =
+      Enum.reduce(state.files, {[], state.files}, fn {path, entry}, {acc, files} ->
+        if entry.locked_by == agent_id do
+          {[path | acc], Map.put(files, path, %{entry | locked_by: nil, locked_at: nil})}
+        else
+          {acc, files}
+        end
+      end)
+
+    {:reply, released, %{state | files: new_files}}
   end
 
   @impl true
