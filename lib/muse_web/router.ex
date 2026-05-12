@@ -9,6 +9,17 @@ defmodule MuseWeb.Router do
     plug(MuseWeb.BrowserAccessControl)
   end
 
+  pipeline :api do
+    plug(:accepts, ["json"])
+  end
+
+  scope "/" do
+    pipe_through(:api)
+    forward("/socket/mcp-remote-client", Muse.Weft.Endpoints.McpClientHandler)
+    forward("/proxy", Muse.Weft.Proxy.Http)
+    forward("/download", Muse.Weft.Proxy.Download)
+  end
+
   scope "/", MuseWeb do
     pipe_through(:browser)
 

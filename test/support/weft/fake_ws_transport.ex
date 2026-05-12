@@ -37,12 +37,12 @@ defmodule Muse.Weft.Test.FakeWsTransport do
   @spec join_channel(String.t(), String.t(), module() | nil) ::
           {:ok, Phoenix.Socket.t(), Phoenix.Socket.t()}
           | {:error, map()}
-  def join_channel(topic, token \\ "test-token-16chars-ok", channel_module \\ nil) do
+  def join_channel(topic, token \\ "test-token-16chars-ok", channel_module \\ nil, payload \\ %{}) do
     {:ok, socket} = connect(MuseWeb.UserSocket, %{"token" => token})
 
     mod = channel_module || resolve_channel_module(topic)
 
-    case subscribe_and_join(socket, mod, topic) do
+    case subscribe_and_join(socket, mod, topic, payload) do
       {:ok, _reply, channel_socket} ->
         {:ok, socket, channel_socket}
 
@@ -148,8 +148,8 @@ defmodule Muse.Weft.Test.FakeWsTransport do
   # New Weft channel types (mcp:, watch:, terminal:) are routed to
   # SessionChannel as placeholders until dedicated channel modules exist.
   defp resolve_channel_module("session:" <> _), do: MuseWeb.SessionChannel
-  defp resolve_channel_module("mcp:" <> _), do: MuseWeb.SessionChannel
-  defp resolve_channel_module("watch:" <> _), do: MuseWeb.SessionChannel
-  defp resolve_channel_module("terminal:" <> _), do: MuseWeb.SessionChannel
+  defp resolve_channel_module("mcp:" <> _), do: Muse.Weft.Channels.McpChannel
+  defp resolve_channel_module("watch:" <> _), do: Muse.Weft.Channels.WatchChannel
+  defp resolve_channel_module("terminal:" <> _), do: Muse.Weft.Channels.TerminalChannel
   defp resolve_channel_module(_), do: MuseWeb.SessionChannel
 end

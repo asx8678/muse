@@ -143,6 +143,8 @@ defmodule Muse.Application do
         children
       end
 
+    children = children ++ maybe_mcp_tables()
+
     children
   end
 
@@ -395,6 +397,28 @@ defmodule Muse.Application do
   end
 
   defp suppress_noisy_endpoint_opts(current, _opts), do: current
+
+  # -- MCP tables --------------------------------------------------------------
+
+  defp maybe_mcp_tables do
+    if mcp_enabled?() do
+      [
+        {Task,
+         fn ->
+           Muse.Weft.Channels.McpChannel.ensure_tables()
+           Process.sleep(:infinity)
+         end}
+      ]
+    else
+      []
+    end
+  end
+
+  defp mcp_enabled? do
+    Application.get_env(:muse, :weft, [])
+    |> Keyword.get(:enabled_channels, [])
+    |> Enum.member?("mcp")
+  end
 
   # -- Configurable helpers (test-injectable) ------------------------------------
 

@@ -31,6 +31,8 @@ defmodule Muse.Tools.GetAshResources do
 
   alias Muse.Tool.Result
 
+  @compile {:no_warn_undefined, Ash.Info}
+
   @tool_name "get_ash_resources"
 
   @spec execute(map(), map()) :: Result.t()

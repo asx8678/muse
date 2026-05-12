@@ -5,7 +5,7 @@ defmodule Muse.Tool.RegistryTest do
 
   describe "all/0" do
     test "returns all 20 registered tool specs" do
-      assert length(Registry.all()) == 20
+      assert length(Registry.all()) == 25
     end
 
     test "keeps registered specs within the no-approval safe tool surface" do
@@ -14,6 +14,8 @@ defmodule Muse.Tool.RegistryTest do
         "patch_apply",
         "rollback_checkpoint",
         "eval_elixir",
+        "execute_sql",
+        "search_hex_docs",
         "test_runner",
         "spawn_sub_agents",
         "create_file"
@@ -50,7 +52,12 @@ defmodule Muse.Tool.RegistryTest do
                "rollback_checkpoint",
                "test_runner",
                "spawn_sub_agents",
-               "create_file"
+               "create_file",
+               "execute_sql",
+               "get_ecto_schemas",
+               "get_ash_resources",
+               "search_hex_docs",
+               "get_logs"
              ]
     end
   end
@@ -127,7 +134,7 @@ defmodule Muse.Tool.RegistryTest do
     test "returns OpenAI-compatible schemas for planning muse" do
       schemas = Registry.provider_schemas(:planning)
 
-      assert length(schemas) == 14
+      assert length(schemas) == 18
 
       for schema <- schemas do
         assert schema["type"] == "function"
@@ -231,7 +238,7 @@ defmodule Muse.Tool.RegistryTest do
   describe "tool_names/0" do
     test "returns all registered tool names" do
       names = Registry.tool_names()
-      assert length(names) == 20
+      assert length(names) == 25
       assert "read_file" in names
       assert "query_matrix" in names
       assert "get_project_soul" in names
@@ -243,6 +250,11 @@ defmodule Muse.Tool.RegistryTest do
       assert "rollback_checkpoint" in names
       assert "test_runner" in names
       assert "spawn_sub_agents" in names
+      assert "execute_sql" in names
+      assert "get_ecto_schemas" in names
+      assert "get_ash_resources" in names
+      assert "search_hex_docs" in names
+      assert "get_logs" in names
     end
   end
 

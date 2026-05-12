@@ -29,6 +29,8 @@ defmodule Muse.Tools.ExecuteSql do
 
   alias Muse.Tool.Result
 
+  @compile {:no_warn_undefined, [Ecto.Adapters.SQL, DBConnection.ConnectionError]}
+
   @tool_name "execute_sql"
   @max_rows 50
 

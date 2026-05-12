@@ -47,8 +47,12 @@ defmodule Muse.MuseRegistry do
       "get_project_soul",
       "load_workspace_files",
       "eval_elixir",
+      "get_ash_resources",
+      "get_docs",
+      "get_ecto_schemas",
+      "get_logs",
       "get_source_location",
-      "get_docs"
+      "search_hex_docs"
     ],
     permissions: %{
       read: true,
@@ -83,15 +87,20 @@ defmodule Muse.MuseRegistry do
       "get_project_soul",
       "load_workspace_files",
       "eval_elixir",
-      "get_source_location",
+      "get_ash_resources",
       "get_docs",
+      "get_ecto_schemas",
+      "get_logs",
+      "get_source_location",
+      "search_hex_docs",
       "patch_propose",
       "patch_apply",
       "test_runner",
       "execute_in_shadow",
       "test_in_shadow",
       "spawn_sub_agents",
-      "create_file"
+      "create_file",
+      "execute_sql"
     ],
     permissions: %{
       read: true,
@@ -158,11 +167,13 @@ defmodule Muse.MuseRegistry do
       "git_status",
       "git_diff_readonly",
       "eval_elixir",
-      "get_source_location",
-      "get_docs",
-      "test_runner",
       "execute_in_shadow",
-      "test_in_shadow"
+      "execute_sql",
+      "get_docs",
+      "get_logs",
+      "get_source_location",
+      "test_in_shadow",
+      "test_runner"
     ],
     permissions: %{
       read: true,

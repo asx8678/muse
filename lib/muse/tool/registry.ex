@@ -702,6 +702,109 @@ defmodule Muse.Tool.Registry do
                    output_limit: 100_000
                  )
 
+  @execute_sql_spec Spec.new!(
+    name: "execute_sql",
+    description:
+      "Execute a read-only SQL SELECT query against the project's Ecto database. Discovers Ecto repos from the workspace project config. Mutation queries are blocked. Results capped at 50 rows.",
+    handler: Muse.Tools.ExecuteSql,
+    input_schema: %{
+      type: "object",
+      properties: %{
+        query: %{type: "string", description: "SQL SELECT query to execute (required)"},
+        repo: %{type: "string", description: "Optional Ecto repo module name (e.g. 'MyApp.Repo'). Defaults to first available repo."}
+      },
+      required: ["query"]
+    },
+    kind: :shell,
+    risk: :high,
+    permission: :shell,
+    allowed_roles: [:coding, :testing],
+    allowed_muses: [:coding, :testing],
+    requires_approval: true,
+    output_limit: 50_000
+  )
+
+  @get_ecto_schemas_spec Spec.new!(
+    name: "get_ecto_schemas",
+    description:
+      "List all Ecto schema modules with their file paths. Scans compiled modules for __changeset__/0 export and cross-references source locations. Detects Ash/Spark resources that are also Ecto schemas.",
+    handler: Muse.Tools.GetEctoSchemas,
+    input_schema: %{
+      type: "object",
+      properties: %{}
+    },
+    kind: :read,
+    risk: :low,
+    permission: :read,
+    allowed_roles: [:planning, :coding],
+    allowed_muses: [:planning, :coding],
+    requires_approval: false,
+    output_limit: 20_000
+  )
+
+  @get_ash_resources_spec Spec.new!(
+    name: "get_ash_resources",
+    description:
+      "List all Ash domains and their associated resources. Uses Ash.Info.domains_and_resources/1 to discover domains and resources in the workspace project.",
+    handler: Muse.Tools.GetAshResources,
+    input_schema: %{
+      type: "object",
+      properties: %{}
+    },
+    kind: :read,
+    risk: :low,
+    permission: :read,
+    allowed_roles: [:planning, :coding],
+    allowed_muses: [:planning, :coding],
+    requires_approval: false,
+    output_limit: 20_000
+  )
+
+  @search_hex_docs_spec Spec.new!(
+    name: "search_hex_docs",
+    description:
+      "Search hexdocs.pm documentation filtered to the project's exact dependency versions. Queries the hexdocs.pm search API and filters results to match locked dependency versions.",
+    handler: Muse.Tools.SearchHexDocs,
+    input_schema: %{
+      type: "object",
+      properties: %{
+        query: %{type: "string", description: "Search terms for hexdocs.pm (required)"},
+        packages: %{type: "array", items: %{type: "string"}, description: "Optional list of packages to limit search to"}
+      },
+      required: ["query"]
+    },
+    kind: :network,
+    risk: :low,
+    permission: :network,
+    allowed_roles: [:planning, :coding],
+    allowed_muses: [:planning, :coding],
+    requires_approval: true,
+    output_limit: 50_000
+  )
+
+  @get_logs_spec Spec.new!(
+    name: "get_logs",
+    description:
+      "Retrieve application logs from the circular log buffer with filtering support. Supports tail count, regex grep, and log level filters. Logs from Muse's own tool calls are excluded.",
+    handler: Muse.Tools.GetLogs,
+    input_schema: %{
+      type: "object",
+      properties: %{
+        tail: %{type: "integer", description: "Number of recent entries to return (0 returns all, capped at 200)"},
+        grep: %{type: "string", description: "Optional regex pattern to filter messages"},
+        level: %{type: "string", enum: ["emergency", "alert", "critical", "error", "warning", "notice", "info", "debug"], description: "Optional log level filter"}
+      },
+      required: ["tail"]
+    },
+    kind: :read,
+    risk: :low,
+    permission: :read,
+    allowed_roles: [:planning, :coding, :testing],
+    allowed_muses: [:planning, :coding, :testing],
+    requires_approval: false,
+    output_limit: 50_000
+  )
+
   # -- Internal index -----------------------------------------------------------
 
   @ordered_names [
@@ -724,7 +827,12 @@ defmodule Muse.Tool.Registry do
     "rollback_checkpoint",
     "test_runner",
     "spawn_sub_agents",
-    "create_file"
+    "create_file",
+    "execute_sql",
+    "get_ecto_schemas",
+    "get_ash_resources",
+    "search_hex_docs",
+    "get_logs"
   ]
 
   @specs_by_name %{
@@ -747,7 +855,12 @@ defmodule Muse.Tool.Registry do
     "rollback_checkpoint" => @rollback_checkpoint_spec,
     "test_runner" => @test_runner_spec,
     "spawn_sub_agents" => @spawn_sub_agents_spec,
-    "create_file" => @create_file_spec
+    "create_file" => @create_file_spec,
+    "execute_sql" => @execute_sql_spec,
+    "get_ecto_schemas" => @get_ecto_schemas_spec,
+    "get_ash_resources" => @get_ash_resources_spec,
+    "search_hex_docs" => @search_hex_docs_spec,
+    "get_logs" => @get_logs_spec
   }
 
   # -- Public API ---------------------------------------------------------------

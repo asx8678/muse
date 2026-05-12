@@ -28,6 +28,8 @@ defmodule MuseWeb.UserSocket do
   alias MuseWeb.{ExternalSocketAuth, ExternalSocketConfig}
 
   channel("session:*", MuseWeb.SessionChannel)
+  channel("watch:*", Muse.Weft.Channels.WatchChannel)
+  channel("terminal:*", Muse.Weft.Channels.TerminalChannel)
 
   @impl true
   def connect(params, socket, _connect_info) do
