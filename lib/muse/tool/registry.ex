@@ -22,6 +22,9 @@ defmodule Muse.Tool.Registry do
     * `ask_user_question` — ask the user a question
     * `list_muses` — list available Muse profiles
     * `list_skills` — list available skills
+    * `query_matrix` — search the project matrix for relevant files
+    * `get_project_soul` — return project-level architecture summary
+    * `load_workspace_files` — load files into the in-memory VFS
 
   ## Registered proposal tools
 
@@ -35,6 +38,10 @@ defmodule Muse.Tool.Registry do
   ## Registered test tool
 
     * `test_runner` — run predefined safe test command presets (Testing Muse only)
+
+  ## Registered sub-agent tool
+
+    * `spawn_sub_agents` — spawn worker agents for parallel tasks (Coding Muse only)
 
   ## Blocked tool names
 
@@ -386,6 +393,84 @@ defmodule Muse.Tool.Registry do
                               output_limit: 10_000
                             )
 
+  @query_matrix_spec Spec.new!(
+                       name: "query_matrix",
+                       description:
+                         "Search the project matrix to find relevant files by topic, module name, or functionality. Returns a ranked list with summaries and relevance scores.",
+                       handler: Muse.Tools.QueryMatrix,
+                       input_schema: %{
+                         type: "object",
+                         properties: %{
+                           query: %{
+                             type: "string",
+                             description: "Search terms for finding relevant files (required)"
+                           },
+                           max_results: %{
+                             type: "integer",
+                             description:
+                               "Maximum number of results to return (default: 10, max: 50)"
+                           }
+                         },
+                         required: ["query"]
+                       },
+                       kind: :read,
+                       risk: :low,
+                       permission: :read,
+                       allowed_roles: [:planning, :coding],
+                       allowed_muses: [:planning, :coding],
+                       requires_approval: false,
+                       output_limit: 20_000
+                     )
+
+  @get_project_soul_spec Spec.new!(
+                           name: "get_project_soul",
+                           description:
+                             "Return the project-level architecture summary (~500 words) including purpose, key modules, namespaces, and file types. Useful for understanding the project before querying specific files.",
+                           handler: Muse.Tools.GetProjectSoul,
+                           input_schema: %{
+                             type: "object",
+                             properties: %{}
+                           },
+                           kind: :read,
+                           risk: :low,
+                           permission: :read,
+                           allowed_roles: [:planning, :coding],
+                           allowed_muses: [:planning, :coding],
+                           requires_approval: false,
+                           output_limit: 10_000
+                         )
+
+  @load_workspace_files_spec Spec.new!(
+                               name: "load_workspace_files",
+                               description:
+                                 "Load specific files into the in-memory VFS for editing. Returns file content and metadata. Idempotent — loading a file already in VFS returns cached content.",
+                               handler: Muse.Tools.LoadWorkspaceFiles,
+                               input_schema: %{
+                                 type: "object",
+                                 properties: %{
+                                   files: %{
+                                     type: "array",
+                                     items: %{type: "string"},
+                                     description:
+                                       "List of relative file paths to load into VFS (required)"
+                                   },
+                                   purpose: %{
+                                     type: "string",
+                                     description:
+                                       "Why these files are needed (optional, for observability)"
+                                   }
+                                 },
+                                 required: ["files"]
+                               },
+                               kind: :read,
+                               risk: :low,
+                               permission: :read,
+                               allowed_roles: [:planning, :coding],
+                               allowed_muses: [:planning, :coding],
+                               requires_approval: false,
+                               output_limit: 100_000
+                             )
+
   @test_runner_spec Spec.new!(
                       name: "test_runner",
                       description:
@@ -416,6 +501,133 @@ defmodule Muse.Tool.Registry do
                       output_limit: 50_000
                     )
 
+  @execute_in_shadow_spec Spec.new!(
+                            name: "execute_in_shadow",
+                            description:
+                              "Run a command in an isolated shadow workspace with VFS overlay. The shadow is an ephemeral directory that symlinks the project and overlays modified VFS files. The original project is never modified. Use this to run commands safely with in-memory changes before flushing to disk.",
+                            handler: Muse.Tools.ExecuteInShadow,
+                            input_schema: %{
+                              type: "object",
+                              properties: %{
+                                command: %{
+                                  type: "string",
+                                  description:
+                                    "Shell command to execute in the shadow workspace (required)"
+                                },
+                                timeout_seconds: %{
+                                  type: "integer",
+                                  description:
+                                    "Maximum execution time in seconds (default: 60, max: 600)"
+                                },
+                                files_to_include: %{
+                                  type: "array",
+                                  items: %{type: "string"},
+                                  description:
+                                    "Optional: specific workspace-relative file paths to overlay from VFS. If omitted, all modified VFS files are overlaid."
+                                }
+                              },
+                              required: ["command"]
+                            },
+                            kind: :shell,
+                            risk: :medium,
+                            permission: :test,
+                            allowed_roles: [:coding, :testing],
+                            allowed_muses: [:coding, :testing],
+                            requires_approval: false,
+                            output_limit: 50_000
+                          )
+
+  @test_in_shadow_spec Spec.new!(
+                         name: "test_in_shadow",
+                         description:
+                           "Run tests in an isolated shadow workspace with VFS overlay. Auto-detects the test framework (Elixir/mix test, JavaScript/npm test, Python/pytest) from project files and runs the appropriate command. VFS-modified files are overlaid so in-memory changes are tested without touching the real project.",
+                         handler: Muse.Tools.TestInShadow,
+                         input_schema: %{
+                           type: "object",
+                           properties: %{
+                             files_to_include: %{
+                               type: "array",
+                               items: %{type: "string"},
+                               description:
+                                 "Optional: specific workspace-relative file paths to overlay from VFS. If omitted, all modified VFS files are overlaid."
+                             },
+                             timeout_seconds: %{
+                               type: "integer",
+                               description:
+                                 "Maximum execution time in seconds (default: 120, max: 600)"
+                             },
+                             framework: %{
+                               type: "string",
+                               description:
+                                 "Force a specific test framework: elixir, javascript, or python (auto-detected if omitted)"
+                             }
+                           }
+                         },
+                         kind: :shell,
+                         risk: :medium,
+                         permission: :test,
+                         allowed_roles: [:coding, :testing],
+                         allowed_muses: [:coding, :testing],
+                         requires_approval: false,
+                         output_limit: 50_000
+                       )
+
+  @spawn_sub_agents_spec Spec.new!(
+                           name: "spawn_sub_agents",
+                           description:
+                             "Spawn worker agents (coder, reviewer, scout) to perform tasks in parallel. Returns immediately with worker IDs; results arrive asynchronously. Each session has its own isolated worker pool.",
+                           handler: Muse.Tools.SpawnSubAgents,
+                           input_schema: %{
+                             type: "object",
+                             properties: %{
+                               workers: %{
+                                 type: "array",
+                                 description: "List of worker specifications to spawn (required)",
+                                 items: %{
+                                   type: "object",
+                                   properties: %{
+                                     type: %{
+                                       type: "string",
+                                       description:
+                                         "Worker type: coder, reviewer, or scout (required)",
+                                       enum: ["coder", "reviewer", "scout"]
+                                     },
+                                     task_id: %{
+                                       type: "string",
+                                       description: "Unique identifier for this worker (required)"
+                                     },
+                                     instructions: %{
+                                       type: "string",
+                                       description:
+                                         "Detailed task description for the worker (required)"
+                                     },
+                                     files: %{
+                                       type: "array",
+                                       items: %{type: "string"},
+                                       description:
+                                         "List of workspace-relative file paths the worker should access"
+                                     },
+                                     max_duration_ms: %{
+                                       type: "integer",
+                                       description:
+                                         "Per-worker timeout in milliseconds (default: 300000)"
+                                     }
+                                   },
+                                   required: ["type", "task_id", "instructions"]
+                                 }
+                               }
+                             },
+                             required: ["workers"]
+                           },
+                           kind: :shell,
+                           risk: :medium,
+                           permission: :shell,
+                           allowed_roles: [:coding],
+                           allowed_muses: [:coding],
+                           requires_approval: false,
+                           output_limit: 10_000
+                         )
+
   # -- Internal index -----------------------------------------------------------
 
   @ordered_names [
@@ -427,10 +639,16 @@ defmodule Muse.Tool.Registry do
     "ask_user_question",
     "list_muses",
     "list_skills",
+    "query_matrix",
+    "get_project_soul",
+    "load_workspace_files",
     "patch_propose",
     "patch_apply",
     "rollback_checkpoint",
-    "test_runner"
+    "test_runner",
+    "execute_in_shadow",
+    "test_in_shadow",
+    "spawn_sub_agents"
   ]
 
   @specs_by_name %{
@@ -442,10 +660,16 @@ defmodule Muse.Tool.Registry do
     "ask_user_question" => @ask_user_question_spec,
     "list_muses" => @list_muses_spec,
     "list_skills" => @list_skills_spec,
+    "query_matrix" => @query_matrix_spec,
+    "get_project_soul" => @get_project_soul_spec,
+    "load_workspace_files" => @load_workspace_files_spec,
     "patch_propose" => @patch_propose_spec,
     "patch_apply" => @patch_apply_spec,
     "rollback_checkpoint" => @rollback_checkpoint_spec,
-    "test_runner" => @test_runner_spec
+    "test_runner" => @test_runner_spec,
+    "execute_in_shadow" => @execute_in_shadow_spec,
+    "test_in_shadow" => @test_in_shadow_spec,
+    "spawn_sub_agents" => @spawn_sub_agents_spec
   }
 
   # -- Public API ---------------------------------------------------------------
@@ -456,7 +680,7 @@ defmodule Muse.Tool.Registry do
   ## Examples
 
       iex> length(Muse.Tool.Registry.all())
-      12
+      18
 
       iex> hd(Muse.Tool.Registry.all()).name
       "list_files"
@@ -521,12 +745,14 @@ defmodule Muse.Tool.Registry do
       iex> specs = Muse.Tool.Registry.specs_for_muse(:planning)
       iex> Enum.map(specs, & &1.name)
       ["list_files", "read_file", "repo_search", "git_status",
-       "git_diff_readonly", "ask_user_question", "list_muses", "list_skills"]
+       "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
+       "query_matrix", "get_project_soul", "load_workspace_files"]
 
       iex> specs = Muse.Tool.Registry.specs_for_muse(:coding)
       iex> Enum.map(specs, & &1.name)
       ["list_files", "read_file", "repo_search", "git_status",
-       "git_diff_readonly", "patch_propose", "patch_apply"]
+       "git_diff_readonly", "query_matrix", "get_project_soul", "load_workspace_files",
+       "patch_propose", "patch_apply"]
 
   """
   @spec specs_for_muse(atom()) :: [Spec.t()]
@@ -550,7 +776,7 @@ defmodule Muse.Tool.Registry do
 
       iex> schemas = Muse.Tool.Registry.provider_schemas(:planning)
       iex> length(schemas)
-      8
+      11
       iex> hd(schemas)[:name]
       "list_files"
 
@@ -673,7 +899,9 @@ defmodule Muse.Tool.Registry do
       iex> Muse.Tool.Registry.tool_names()
       ["list_files", "read_file", "repo_search", "git_status",
        "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
-       "patch_propose", "patch_apply", "rollback_checkpoint", "test_runner"]
+       "query_matrix", "get_project_soul", "load_workspace_files",
+       "patch_propose", "patch_apply", "rollback_checkpoint", "test_runner",
+       "execute_in_shadow", "test_in_shadow", "spawn_sub_agents"]
 
   """
   @spec tool_names() :: [String.t()]

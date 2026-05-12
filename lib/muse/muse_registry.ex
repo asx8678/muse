@@ -42,7 +42,10 @@ defmodule Muse.MuseRegistry do
       "git_diff_readonly",
       "ask_user_question",
       "list_muses",
-      "list_skills"
+      "list_skills",
+      "query_matrix",
+      "get_project_soul",
+      "load_workspace_files"
     ],
     permissions: %{
       read: true,
@@ -73,9 +76,15 @@ defmodule Muse.MuseRegistry do
       "repo_search",
       "git_status",
       "git_diff_readonly",
+      "query_matrix",
+      "get_project_soul",
+      "load_workspace_files",
       "patch_propose",
       "patch_apply",
-      "test_runner"
+      "test_runner",
+      "execute_in_shadow",
+      "test_in_shadow",
+      "spawn_sub_agents"
     ],
     permissions: %{
       read: true,
@@ -138,7 +147,10 @@ defmodule Muse.MuseRegistry do
       "read_file",
       "repo_search",
       "git_status",
-      "test_runner"
+      "git_diff_readonly",
+      "test_runner",
+      "execute_in_shadow",
+      "test_in_shadow"
     ],
     permissions: %{
       read: true,

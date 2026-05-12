@@ -58,6 +58,7 @@ defmodule Muse.SessionServer do
     Prompt.Redactor,
     Session,
     State,
+    SubAgentPool,
     Turn,
     Plan,
     SessionStore
@@ -259,6 +260,33 @@ defmodule Muse.SessionServer do
   @spec status(pid()) :: map()
   def status(pid) do
     GenServer.call(pid, :status)
+  end
+
+  @doc """
+  Returns the current agent mode (:planning, :coding, or :reviewing).
+
+  The mode determines which tools are available and whether write
+  access is permitted.
+  """
+  @spec get_mode(pid()) :: :planning | :coding | :reviewing
+  def get_mode(pid) do
+    GenServer.call(pid, :get_mode)
+  end
+
+  @doc """
+  Sets the current agent mode.
+
+  Valid modes: `:planning` (matrix query tools, read-only),
+  `:coding` (VFS edit tools, write access), `:reviewing`
+  (VFS read + test tools).
+  """
+  @spec set_mode(pid(), :planning | :coding | :reviewing) :: :ok | {:error, :invalid_mode}
+  def set_mode(pid, mode) when mode in [:planning, :coding, :reviewing] do
+    GenServer.call(pid, {:set_mode, mode})
+  end
+
+  def set_mode(_pid, _mode) do
+    {:error, :invalid_mode}
   end
 
   @doc """
@@ -526,6 +554,7 @@ defmodule Muse.SessionServer do
     initial = %{
       session_id: session_id,
       status: :idle,
+      mode: :planning,
       seq: 0,
       # Events stored newest-first for O(1) prepend. Use events_chronological/1
       # or read via append_session_events for oldest-first view.
@@ -564,7 +593,11 @@ defmodule Muse.SessionServer do
       # correct ordering alongside conductor overhead events.
       live_emitted_events: [],
       # Telemetry: session lifetime tracking
-      session_start_time: session_start_time
+      session_start_time: session_start_time,
+      # SubAgentPool: per-session pool for parallel worker agents
+      sub_agent_pool: nil,
+      # Worker results: collected from async sub-agent completions
+      worker_results: []
     }
 
     # Attempt to restore plan from persisted snapshot (non-fatal on failure).
@@ -598,6 +631,23 @@ defmodule Muse.SessionServer do
 
     # Emit session lifecycle telemetry (non-fatal — never crash init)
     Telemetry.emit_session_lifecycle_telemetry(session_id, workspace, loaded?)
+
+    # Start per-session SubAgentPool for parallel worker agents.
+    # Non-fatal: if the pool fails to start, the session still functions
+    # but spawn_sub_agents tool will return errors.
+    state =
+      case start_sub_agent_pool(session_id) do
+        {:ok, pool_pid} ->
+          %{state | sub_agent_pool: pool_pid}
+
+        {:error, reason} ->
+          Logger.warning("SubAgentPool failed to start",
+            session_id: session_id,
+            reason: inspect(reason)
+          )
+
+          state
+      end
 
     {:ok, state}
   end
@@ -647,6 +697,7 @@ defmodule Muse.SessionServer do
     reply = %{
       session_id: state.session_id,
       status: state.status,
+      mode: state.mode,
       active_muse: state.active_muse,
       active_plan_id: state.active_plan_id,
       plan: state.plan,
@@ -670,6 +721,17 @@ defmodule Muse.SessionServer do
     }
 
     {:reply, reply, state}
+  end
+
+  @impl true
+  def handle_call(:get_mode, _from, state) do
+    {:reply, state.mode, state}
+  end
+
+  @impl true
+  def handle_call({:set_mode, mode}, _from, state)
+      when mode in [:planning, :coding, :reviewing] do
+    {:reply, :ok, %{state | mode: mode}}
   end
 
   @impl true
@@ -1260,6 +1322,65 @@ defmodule Muse.SessionServer do
   end
 
   # Ignore any other messages
+  # ── Sub-agent worker result handling ─────────────────────────────────
+
+  # Worker completed successfully: store a summary of the result.
+  @impl true
+  def handle_info({:worker_completed, pid, type, result}, state) do
+    Logger.debug("SubAgent worker completed",
+      session_id: state.session_id,
+      worker_pid: inspect(pid),
+      worker_type: type
+    )
+
+    summary = summarize_worker_result(type, result)
+
+    worker_entry = %{
+      pid: pid,
+      type: type,
+      status: :completed,
+      summary: summary,
+      completed_at: DateTime.utc_now()
+    }
+
+    state = %{state | worker_results: [worker_entry | state.worker_results]}
+    {:noreply, state}
+  end
+
+  # Worker failed: store the failure reason.
+  @impl true
+  def handle_info({:worker_failed, pid, type, reason}, state) do
+    Logger.warning("SubAgent worker failed",
+      session_id: state.session_id,
+      worker_pid: inspect(pid),
+      worker_type: type,
+      reason: inspect(reason)
+    )
+
+    worker_entry = %{
+      pid: pid,
+      type: type,
+      status: :failed,
+      reason: safe_worker_reason(reason),
+      failed_at: DateTime.utc_now()
+    }
+
+    state = %{state | worker_results: [worker_entry | state.worker_results]}
+    {:noreply, state}
+  end
+
+  # Worker started: informational — no state change needed.
+  @impl true
+  def handle_info({:worker_started, _pid, _type, _task_id}, state) do
+    {:noreply, state}
+  end
+
+  # Worker log: informational — no state change needed.
+  @impl true
+  def handle_info({:worker_log, _pid, _type, _message}, state) do
+    {:noreply, state}
+  end
+
   @impl true
   def handle_info(_msg, state) do
     {:noreply, state}
@@ -2839,8 +2960,57 @@ defmodule Muse.SessionServer do
     "turn_#{hex}"
   end
 
+  # ── SubAgentPool helpers ──────────────────────────────────────────────
+
+  defp start_sub_agent_pool(session_id) do
+    pool_name = :"muse_sub_agent_pool_#{session_id}"
+    SubAgentPool.start_link(name: pool_name, max_workers: 10)
+  end
+
+  defp summarize_worker_result(type, result) when is_map(result) do
+    message = Map.get(result, :message, "")
+    files = Map.get(result, :files_checked_out, Map.get(result, :files_searched, []))
+    reviews = Map.get(result, :reviews, [])
+
+    cond do
+      type == :coder ->
+        "Coder: #{message} (files: #{inspect(files)})"
+
+      type == :scout ->
+        "Scout: #{message}"
+
+      type == :reviewer ->
+        "Reviewer: #{message} (#{length(reviews)} files reviewed)"
+
+      true ->
+        inspect(result, limit: 5, printable_limit: 200)
+    end
+  end
+
+  defp summarize_worker_result(_type, result) do
+    inspect(result, limit: 5, printable_limit: 200)
+  end
+
+  defp safe_worker_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp safe_worker_reason(reason) when is_binary(reason), do: reason
+
+  defp safe_worker_reason(reason) do
+    inspect(reason, limit: 5, printable_limit: 200)
+  end
+
   @impl true
   def terminate(reason, state) do
+    # Stop the per-session SubAgentPool (terminates all workers).
+    # Non-fatal: best-effort cleanup.
+    if state[:sub_agent_pool] && is_pid(state.sub_agent_pool) do
+      try do
+        SubAgentPool.terminate_all(state.sub_agent_pool)
+        GenServer.stop(state.sub_agent_pool, :shutdown, 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
     Telemetry.emit_session_ended_telemetry(reason, state)
     :ok
   end
