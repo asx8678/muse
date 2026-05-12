@@ -100,6 +100,48 @@ defmodule Muse.Weft.Test.FakeWsTransport do
     end
   end
 
+  @doc """
+  Send a PhoenixV2 message through the fake transport.
+
+  Encodes the struct to JSON (simulating a real client sending over
+  the wire) and pushes the event/payload to the channel socket.
+  Returns a reference for matching with `wait_for_reply/2` or
+  `recv_phoenix_msg/1`.
+  """
+  @spec send_phoenix_msg(Phoenix.Socket.t(), Muse.Weft.PhoenixV2.t()) :: reference()
+  def send_phoenix_msg(channel_socket, %Muse.Weft.PhoenixV2{} = msg) do
+    Phoenix.ChannelTest.push(channel_socket, msg.event, msg.payload)
+  end
+
+  @doc """
+  Receive the next Phoenix V2 message from the test mailbox.
+
+  Matches `%Phoenix.Socket.Message{}` structs pushed by the channel
+  and converts them to `PhoenixV2` structs. Returns
+  `{:ok, phoenix_v2_msg}` when a message is found or
+  `{:error, :timeout}` after `timeout` ms.
+
+  `PhoenixV2.join_ref` is populated from the socket message when
+  available.
+  """
+  @spec recv_phoenix_msg(non_neg_integer()) ::
+          {:ok, Muse.Weft.PhoenixV2.t()} | {:error, :timeout}
+  def recv_phoenix_msg(timeout \\ 500) do
+    receive do
+      %Phoenix.Socket.Message{topic: topic, event: event, payload: payload, ref: ref} ->
+        {:ok,
+         %Muse.Weft.PhoenixV2{
+           topic: topic,
+           event: event,
+           payload: payload,
+           ref: ref,
+           join_ref: nil
+         }}
+    after
+      timeout -> {:error, :timeout}
+    end
+  end
+
   # -- Private ------------------------------------------------------------------
 
   # Resolve the Phoenix Channel module from a topic prefix.
