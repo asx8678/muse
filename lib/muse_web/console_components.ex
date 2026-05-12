@@ -672,25 +672,27 @@ defmodule MuseWeb.ConsoleComponents do
     <section class="chat-panel" aria-label="Muse conversation" role="region">
       <div class="muse-bg muse-bg--main" aria-hidden="true"></div>
       <.chat_tab_bar tabs={@chat_tabs} active_tab={@active_chat_tab} />
-      <div class="chat-scroll" id="chat-scroll" role={if(@active_chat_tab == :process, do: "log", else: "tabpanel")} aria-live={if(@active_chat_tab == :process, do: "polite", else: nil)} phx-hook={if(@active_chat_tab == :process, do: "ChatAutoScroll")}>
-        <%= if @active_chat_tab == :process do %>
-          <%= if @messages == [] do %>
-            <div class="chat-empty">
-              <h1>muse</h1>
-              <p>Ask muse to inspect, explain, fix, or generate code in this workspace.</p>
-              <div class="prompt-chips" role="group" aria-label="Suggested prompts">
-                <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Explain this project" aria-label="Use prompt: Explain this project">Explain this project</button>
-                <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Check recent backend errors" aria-label="Use prompt: Check recent backend errors">Check recent backend errors</button>
-                <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Review changed files" aria-label="Use prompt: Review changed files">Review changed files</button>
-                <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Help me connect the Muse runtime" aria-label="Use prompt: Help me connect the Muse runtime">Help me connect the Muse runtime</button>
+      <div class="chat-scroll" id="chat-scroll" role="log" aria-live="polite" phx-hook="ChatAutoScroll">
+        <div class={if(@active_chat_tab == :process, do: "chat-tab-content-process", else: "chat-tab-content-detail")}>
+          <%= if @active_chat_tab == :process do %>
+            <%= if @messages == [] do %>
+              <div class="chat-empty">
+                <h1>muse</h1>
+                <p>Ask muse to inspect, explain, fix, or generate code in this workspace.</p>
+                <div class="prompt-chips" role="group" aria-label="Suggested prompts">
+                  <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Explain this project" aria-label="Use prompt: Explain this project">Explain this project</button>
+                  <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Check recent backend errors" aria-label="Use prompt: Check recent backend errors">Check recent backend errors</button>
+                  <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Review changed files" aria-label="Use prompt: Review changed files">Review changed files</button>
+                  <button type="button" class="prompt-chip" phx-click="use_prompt" phx-value-prompt="Help me connect the Muse runtime" aria-label="Use prompt: Help me connect the Muse runtime">Help me connect the Muse runtime</button>
+                </div>
               </div>
-            </div>
+            <% else %>
+              <.chat_messages messages={@messages} />
+            <% end %>
           <% else %>
-            <.chat_messages messages={@messages} />
+            <%= render_chat_tab_content(@chat_tabs, @active_chat_tab) %>
           <% end %>
-        <% else %>
-          <%= render_chat_tab_content(@chat_tabs, @active_chat_tab) %>
-        <% end %>
+        </div>
       </div>
       <.chat_composer input={@input} submitting?={@submitting?} active_turn_id={@active_turn_id} />
     </section>
