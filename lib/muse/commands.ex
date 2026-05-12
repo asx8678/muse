@@ -96,6 +96,12 @@ defmodule Muse.Commands do
                            -String.length(prefix)
                          end)
 
+  # @-commands — workspace and context switching (Phase 4)
+  @at_commands [
+    {"@workspace", :workspace_switch, "Switch active workspace profile"}
+  ]
+  @sorted_at_commands Enum.sort_by(@at_commands, fn {prefix, _, _} -> -String.length(prefix) end)
+
   @spec parse(String.t()) ::
           {:command, atom()}
           | {:command, atom(), String.t()}
@@ -107,6 +113,7 @@ defmodule Muse.Commands do
     case String.trim(text) do
       "" -> :empty
       "/" <> _ = cmd -> parse_slash(cmd)
+      "@" <> _ = cmd -> parse_at(cmd)
       other -> {:message, other}
     end
   end
@@ -121,6 +128,19 @@ defmodule Muse.Commands do
 
       nil ->
         parse_legacy_alias(cmd)
+    end
+  end
+
+  defp parse_at(cmd) do
+    case Enum.find(@sorted_at_commands, fn {prefix, _action, _desc} ->
+           cmd == prefix or String.starts_with?(cmd, prefix <> " ")
+         end) do
+      {prefix, action, _desc} ->
+        args = extract_args(cmd, prefix)
+        if args != "", do: {:command, action, args}, else: {:command, action}
+
+      nil ->
+        {:unknown, cmd}
     end
   end
 
@@ -149,13 +169,21 @@ defmodule Muse.Commands do
 
   @spec help_text() :: String.t()
   def help_text do
-    lines =
+    slash_lines =
       for {cmd, _action, desc} <- @slash_commands do
         pad = String.duplicate(" ", max(1, 24 - String.length(cmd)))
         "  #{cmd}#{pad}— #{desc}"
       end
 
-    (["Available commands:", "" | lines] ++ ["", "You can also type any message to send to Muse."])
+    at_lines =
+      for {cmd, _action, desc} <- @at_commands do
+        pad = String.duplicate(" ", max(1, 24 - String.length(cmd)))
+        "  #{cmd}#{pad}— #{desc}"
+      end
+
+    (["Available commands:", "" | slash_lines] ++
+       ["", "Workspace commands:", "" | at_lines] ++
+       ["", "You can also type any message to send to Muse."])
     |> Enum.join("\n")
   end
 
@@ -165,12 +193,31 @@ defmodule Muse.Commands do
   end
 
   @doc """
+  Returns the list of @-commands (workspace/context switching).
+  """
+  @spec at_commands() :: [{String.t(), String.t()}]
+  def at_commands do
+    for {cmd, _action, desc} <- @at_commands, do: {cmd, desc}
+  end
+
+  @doc """
   Returns the list of slash commands as JSON-encodable maps.
   Used by the client for autocomplete suggestions.
   """
   @spec slash_commands_json() :: [%{command: String.t(), description: String.t()}]
   def slash_commands_json do
     for {cmd, _action, desc} <- @slash_commands do
+      %{command: cmd, description: desc}
+    end
+  end
+
+  @doc """
+  Returns the list of @-commands as JSON-encodable maps.
+  Used by the client for autocomplete suggestions.
+  """
+  @spec at_commands_json() :: [%{command: String.t(), description: String.t()}]
+  def at_commands_json do
+    for {cmd, _action, desc} <- @at_commands do
       %{command: cmd, description: desc}
     end
   end

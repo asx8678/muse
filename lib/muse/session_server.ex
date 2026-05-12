@@ -629,6 +629,15 @@ defmodule Muse.SessionServer do
     # sessions emit session_loaded rather than session_created.
     loaded? = snapshot_exists? or memory_exists?
 
+    # Enforce session retention policy on new session creation (non-fatal).
+    # Only evict when this is genuinely a new session, not a restored one.
+    unless loaded? do
+      case SessionStore.apply_retention(store_base_dir) do
+        {:ok, _evicted} -> :ok
+        {:error, _reason} -> :ok
+      end
+    end
+
     # Emit session lifecycle telemetry (non-fatal — never crash init)
     Telemetry.emit_session_lifecycle_telemetry(session_id, workspace, loaded?)
 
