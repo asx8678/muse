@@ -3110,6 +3110,33 @@ textarea:focus-visible {
   }
 }
 
+/* ─── Responsive: 480px composer reflow (WCAG 1.4.10 / 1.4.4) ─────── */
+
+@media (max-width: 480px) {
+  .chat-composer {
+    padding: 6px 8px;
+  }
+
+  .chat-composer-form {
+    gap: 4px;
+    padding: 2px;
+  }
+
+  /* Allow flex items to shrink below content size at narrow widths */
+  .chat-composer-form > * {
+    min-width: 0;
+  }
+
+  .chat-input {
+    padding: 8px 10px;
+    font-size: 16px; /* Prevent iOS zoom on focus */
+  }
+
+  .chat-send-button {
+    padding: 8px 12px;
+  }
+}
+
 /* ─── Responsive: 320px narrow viewport / 200% zoom ──────────────── */
 
 @media (max-width: 360px) {
@@ -3155,6 +3182,15 @@ textarea:focus-visible {
     font-size: 16px; /* Prevent iOS zoom on focus */
   }
 
+  .chat-send-button {
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  .chat-panel {
+    overflow-x: hidden;
+  }
+
   .chat-scroll {
     padding: 6px 8px;
   }
@@ -3183,6 +3219,15 @@ textarea:focus-visible {
 
   .status-bar {
     overflow-x: hidden;
+  }
+
+  /* Prevent horizontal scroll on main layout at 320px */
+  .main-layout {
+    overflow-x: hidden;
+  }
+
+  .chat-composer-form > * {
+    min-width: 0;
   }
 
   /* Sidebar overlay narrower on tiny screens */
