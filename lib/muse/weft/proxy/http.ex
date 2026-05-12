@@ -102,14 +102,20 @@ defmodule Muse.Weft.Proxy.Http do
         {:error, :upstream_timeout} ->
           conn
           |> put_resp_content_type("application/json")
-          |> send_resp(504, Jason.encode!(%{"error" => "upstream_timeout", "url" => "<redacted>"}))
+          |> send_resp(
+            504,
+            Jason.encode!(%{"error" => "upstream_timeout", "url" => "<redacted>"})
+          )
           |> halt()
 
         {:error, :tls_error, detail} ->
           conn
           |> put_resp_header("x-weft-error", to_string(detail))
           |> put_resp_content_type("application/json")
-          |> send_resp(502, Jason.encode!(%{"error" => "tls_error", "detail" => to_string(detail)}))
+          |> send_resp(
+            502,
+            Jason.encode!(%{"error" => "tls_error", "detail" => to_string(detail)})
+          )
           |> halt()
 
         {:error, :proxy_error} ->
@@ -141,7 +147,8 @@ defmodule Muse.Weft.Proxy.Http do
 
   defp validate_url(url) when is_binary(url) do
     case URI.parse(url) do
-      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and host not in [nil, ""] ->
+      %URI{scheme: scheme, host: host}
+      when scheme in ["http", "https"] and host not in [nil, ""] ->
         {:ok, url}
 
       _ ->

@@ -600,8 +600,20 @@ defmodule Muse.ApplicationTest do
       originals =
         Enum.map(original_keys, fn k -> {k, Elixir.Application.get_env(:muse, k)} end)
 
+      # Force ProfileLoader.merged_env() to return {:error, _} so
+      # resolve_runtime_opts/0 falls back to System.get_env(), giving
+      # with_system_env/2 control over MUSE_PROVIDER in tests.
+      original_profile = System.get_env("MUSE_PROFILE")
+      System.put_env("MUSE_PROFILE", "__test_nonexistent__")
+
       on_exit(fn ->
         Muse.Diagnostics.LoggerHandler.remove()
+
+        if original_profile do
+          System.put_env("MUSE_PROFILE", original_profile)
+        else
+          System.delete_env("MUSE_PROFILE")
+        end
 
         Enum.each(originals, fn {k, v} ->
           case v do

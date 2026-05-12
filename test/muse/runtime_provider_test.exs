@@ -4,6 +4,28 @@ defmodule Muse.RuntimeProviderTest do
   alias Muse.RuntimeProvider
   alias Muse.LLM.ProviderConfig
 
+  # -- Setup -------------------------------------------------------------------
+
+  # Force ProfileLoader.merged_env() to return {:error, _} so that
+  # resolve_runtime_opts/0 falls back to System.get_env().  This gives
+  # with_system_env/2 full control over env vars in tests, preventing the
+  # ~/.muse/config.json profile (e.g. provider: "fake") from overriding
+  # test-scoped env settings.
+  setup do
+    original_profile = System.get_env("MUSE_PROFILE")
+    System.put_env("MUSE_PROFILE", "__test_nonexistent__")
+
+    on_exit(fn ->
+      if original_profile do
+        System.put_env("MUSE_PROFILE", original_profile)
+      else
+        System.delete_env("MUSE_PROFILE")
+      end
+    end)
+
+    :ok
+  end
+
   # -- Helpers ------------------------------------------------------------------
 
   defp with_app_env(key, value, fun) do

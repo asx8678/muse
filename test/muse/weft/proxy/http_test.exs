@@ -32,7 +32,9 @@ defmodule Muse.Weft.Proxy.HttpTest do
     test "missing url returns 400" do
       conn =
         conn(:post, "/proxy?token=test-token-16chars-ok", "")
-        |> Http.call(http_request_fn: fn _opts -> {:ok, Req.Response.new(status: 200, body: "ok")} end)
+        |> Http.call(
+          http_request_fn: fn _opts -> {:ok, Req.Response.new(status: 200, body: "ok")} end
+        )
 
       assert conn.status == 400
       assert Jason.decode!(conn.resp_body) == %{"error" => "missing_url"}
@@ -41,7 +43,9 @@ defmodule Muse.Weft.Proxy.HttpTest do
     test "invalid URL scheme returns 400" do
       conn =
         conn(:post, "/proxy?url=file:///etc/passwd&token=test-token-16chars-ok", "")
-        |> Http.call(http_request_fn: fn _opts -> {:ok, Req.Response.new(status: 200, body: "ok")} end)
+        |> Http.call(
+          http_request_fn: fn _opts -> {:ok, Req.Response.new(status: 200, body: "ok")} end
+        )
 
       assert conn.status == 400
       assert Jason.decode!(conn.resp_body) == %{"error" => "invalid_url"}
@@ -50,7 +54,9 @@ defmodule Muse.Weft.Proxy.HttpTest do
     test "missing auth token returns 401" do
       conn =
         conn(:post, "/proxy?url=http://example.com", "")
-        |> Http.call(http_request_fn: fn _opts -> {:ok, Req.Response.new(status: 200, body: "ok")} end)
+        |> Http.call(
+          http_request_fn: fn _opts -> {:ok, Req.Response.new(status: 200, body: "ok")} end
+        )
 
       assert conn.status == 401
       assert Jason.decode!(conn.resp_body) == %{"error" => "unauthorized"}
@@ -72,7 +78,11 @@ defmodule Muse.Weft.Proxy.HttpTest do
       end
 
       conn =
-        conn(:post, "/proxy?url=http://example.com/api&token=test-token-16chars-ok", ~s<{"key":"value"}>)
+        conn(
+          :post,
+          "/proxy?url=http://example.com/api&token=test-token-16chars-ok",
+          ~s<{"key":"value"}>
+        )
         |> put_req_header("content-type", "application/json")
         |> Http.call(http_request_fn: http_request_fn)
 
@@ -86,10 +96,10 @@ defmodule Muse.Weft.Proxy.HttpTest do
       conn =
         conn(:post, "/proxy?url=http://example.com&token=test-token-16chars-ok", "")
         |> Http.call(
-             http_request_fn: fn _opts ->
-               {:ok, Req.Response.new(status: 400, body: "bad params")}
-             end
-           )
+          http_request_fn: fn _opts ->
+            {:ok, Req.Response.new(status: 400, body: "bad params")}
+          end
+        )
 
       assert conn.status == 400
       assert conn.resp_body == "bad params"
@@ -99,12 +109,13 @@ defmodule Muse.Weft.Proxy.HttpTest do
       conn =
         conn(:post, "/proxy?url=http://example.com&token=test-token-16chars-ok", "")
         |> Http.call(
-             http_request_fn: fn _opts ->
-               {:error, %Req.TransportError{reason: :timeout}}
-             end
-           )
+          http_request_fn: fn _opts ->
+            {:error, %Req.TransportError{reason: :timeout}}
+          end
+        )
 
       assert conn.status == 504
+
       assert Jason.decode!(conn.resp_body) == %{
                "error" => "upstream_timeout",
                "url" => "<redacted>"
@@ -115,10 +126,10 @@ defmodule Muse.Weft.Proxy.HttpTest do
       conn =
         conn(:post, "/proxy?url=http://example.com&token=test-token-16chars-ok", "")
         |> Http.call(
-             http_request_fn: fn _opts ->
-               {:error, %Req.TransportError{reason: :nxdomain}}
-             end
-           )
+          http_request_fn: fn _opts ->
+            {:error, %Req.TransportError{reason: :nxdomain}}
+          end
+        )
 
       assert conn.status == 502
       assert Jason.decode!(conn.resp_body) == %{"error" => "tls_error", "detail" => "nxdomain"}
@@ -129,10 +140,10 @@ defmodule Muse.Weft.Proxy.HttpTest do
       conn =
         conn(:post, "/proxy?url=http://example.com&token=test-token-16chars-ok", "")
         |> Http.call(
-             http_request_fn: fn _opts ->
-               {:error, %Req.TransportError{reason: :bad_certificate}}
-             end
-           )
+          http_request_fn: fn _opts ->
+            {:error, %Req.TransportError{reason: :bad_certificate}}
+          end
+        )
 
       assert conn.status == 502
 
@@ -158,7 +169,9 @@ defmodule Muse.Weft.Proxy.HttpTest do
 
       conn =
         conn(:post, "/proxy?url=http://example.com&token=test-token-16chars-ok", "")
-        |> Http.call(http_request_fn: fn _opts -> {:ok, Req.Response.new(status: 200, body: "ok")} end)
+        |> Http.call(
+          http_request_fn: fn _opts -> {:ok, Req.Response.new(status: 200, body: "ok")} end
+        )
 
       assert conn.status == 503
       assert Jason.decode!(conn.resp_body) == %{"error" => "proxy_disabled"}

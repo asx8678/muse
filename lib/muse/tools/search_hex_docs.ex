@@ -103,12 +103,12 @@ defmodule Muse.Tools.SearchHexDocs do
 
   def parse_mix_lock(_), do: %{}
 
-
   defp extract_deps(lock_map) do
     lock_map
     |> Enum.flat_map(fn
       # Mix.lock v2 format (8-tuple with outer checksum)
-      {name, {:hex, _lib_name, version, _inner_checksum, _build_tools, _deps, _repo, _outer_checksum}} ->
+      {name,
+       {:hex, _lib_name, version, _inner_checksum, _build_tools, _deps, _repo, _outer_checksum}} ->
         [{to_string(name), version}]
 
       # Mix.lock v1 format (7-tuple)
@@ -174,7 +174,9 @@ defmodule Muse.Tools.SearchHexDocs do
     filtered = maybe_filter_packages(deps, packages_filter)
 
     case filtered do
-      [] -> nil
+      [] ->
+        nil
+
       _ ->
         entries =
           filtered
