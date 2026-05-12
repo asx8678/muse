@@ -367,7 +367,7 @@ defmodule MuseWeb.HomeLiveDurableUxTest do
       assert html =~ "diagnostic" or html =~ "issue"
     end
 
-    test "diagnostics popup opens and shows diagnostic detail" do
+    test "diagnostics open details creates a chat tab" do
       Muse.Diagnostics.emit(:error, "Error diagnostic for popup test", %{})
 
       {:ok, view, html} = live(build_conn(), "/")
@@ -375,15 +375,16 @@ defmodule MuseWeb.HomeLiveDurableUxTest do
       # The context panel diagnostics card should have an "open details" button
       assert html =~ "open_diagnostics"
 
-      # Click to open the diagnostics drawer using the context card button
+      # Click to open the diagnostic as a chat tab using the context card button
       view
       |> element(".mini-card-btn[phx-click='open_diagnostics']")
       |> render_click()
 
       html = render(view)
 
-      # The diagnostics drawer should show the diagnostic
-      assert html =~ "Error diagnostic for popup test"
+      # The diagnostic should appear as a chat tab (not a drawer)
+      refute html =~ ~s(id="diagnostics-drawer")
+      assert html =~ "ERROR: Error diagnostic for popup test"
     end
   end
 

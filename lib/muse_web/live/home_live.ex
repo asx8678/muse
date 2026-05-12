@@ -6,7 +6,6 @@ defmodule MuseWeb.HomeLive do
       app_header: 1,
       chat_panel: 1,
       context_panel: 1,
-      diagnostics_popup: 1,
       toast_container: 1,
       patch_proposal_panel: 1
     ]
@@ -59,9 +58,6 @@ defmodule MuseWeb.HomeLive do
     self_healing_issues = BackendBridge.safe_self_healing_issues()
     diagnostic_issue_statuses = compute_issue_statuses(self_healing_issues)
 
-    # Diagnostics drawer always closed on initial render, even if diagnostics exist
-    diagnostics_open? = false
-
     if connected?(socket) do
       Muse.State.subscribe()
       BackendBridge.safe_subscribe_diagnostics()
@@ -82,7 +78,6 @@ defmodule MuseWeb.HomeLive do
         workspace: workspace,
         reload_status: reload_status,
         diagnostics: diagnostics,
-        diagnostics_open?: diagnostics_open?,
         sidebar_state: :expanded,
         self_healing_issues: self_healing_issues,
         diagnostic_issue_statuses: diagnostic_issue_statuses,
@@ -599,7 +594,10 @@ defmodule MuseWeb.HomeLive do
   def handle_event("close_chat_tab", %{"tab" => tab_id}, socket) do
     id = String.to_integer(tab_id)
     tabs = Enum.reject(socket.assigns.chat_tabs, &(&1.id == id))
-    active = if socket.assigns.active_chat_tab == id, do: :process, else: socket.assigns.active_chat_tab
+
+    active =
+      if socket.assigns.active_chat_tab == id, do: :process, else: socket.assigns.active_chat_tab
+
     {:noreply, assign(socket, chat_tabs: tabs, active_chat_tab: active)}
   end
 
@@ -614,9 +612,7 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_event("open_diagnostics", _params, socket) do
-    # Open the diagnostics drawer and the latest diagnostic as a chat tab
-    socket = assign(socket, diagnostics_open?: true)
-
+    # Open the latest diagnostic as a chat tab (drawer removed)
     case List.first(socket.assigns.diagnostics) do
       nil ->
         {:noreply, socket}
@@ -625,7 +621,8 @@ defmodule MuseWeb.HomeLive do
         tab = %{
           id: diagnostic.id,
           type: :diagnostic,
-          title: "#{String.upcase(to_string(diagnostic.level))}: #{String.slice(diagnostic.message, 0, 40)}#{if String.length(diagnostic.message) > 40, do: "...", else: ""}",
+          title:
+            "#{String.upcase(to_string(diagnostic.level))}: #{String.slice(diagnostic.message, 0, 40)}#{if String.length(diagnostic.message) > 40, do: "...", else: ""}",
           data: diagnostic
         }
 
@@ -637,11 +634,6 @@ defmodule MuseWeb.HomeLive do
 
         {:noreply, assign(socket, chat_tabs: tabs, active_chat_tab: tab.id)}
     end
-  end
-
-  @impl true
-  def handle_event("collapse_diagnostics", _params, socket) do
-    {:noreply, assign(socket, diagnostics_open?: false)}
   end
 
   @impl true
@@ -767,7 +759,11 @@ defmodule MuseWeb.HomeLive do
   end
 
   @impl true
-  def handle_event("diagnostic_agent_action", %{"diagnostic_id" => id_str, "action" => action}, socket) do
+  def handle_event(
+        "diagnostic_agent_action",
+        %{"diagnostic_id" => id_str, "action" => action},
+        socket
+      ) do
     case MuseWeb.safe_to_integer(id_str) do
       {:ok, id} ->
         case Enum.find(socket.assigns.diagnostics, &(&1.id == id)) do
@@ -1001,6 +997,7 @@ defmodule MuseWeb.HomeLive do
   def handle_info({:muse_diagnostics_cleared}, socket) do
     # Remove diagnostic-type chat tabs since their source data is gone
     chat_tabs = Enum.reject(socket.assigns.chat_tabs, &(&1.type == :diagnostic))
+
     active_chat_tab =
       if Enum.any?(chat_tabs, &(&1.id == socket.assigns.active_chat_tab)),
         do: socket.assigns.active_chat_tab,
@@ -1009,7 +1006,6 @@ defmodule MuseWeb.HomeLive do
     {:noreply,
      assign(socket,
        diagnostics: [],
-       diagnostics_open?: false,
        chat_tabs: chat_tabs,
        active_chat_tab: active_chat_tab
      )}
@@ -1060,7 +1056,7 @@ defmodule MuseWeb.HomeLive do
   def handle_info({:self_healing_issue_updated, issue}, socket) do
     self_healing_issues =
       Enum.map(socket.assigns.self_healing_issues, fn existing ->
-      if existing.diagnostic_id == issue.diagnostic_id, do: issue, else: existing
+        if existing.diagnostic_id == issue.diagnostic_id, do: issue, else: existing
       end)
 
     statuses =
@@ -1107,13 +1103,12 @@ defmodule MuseWeb.HomeLive do
     <div id="muse-shell" class="app-shell" phx-hook="KeyboardShortcuts">
       <a href="#main-content" class="skip-link">Skip to main content</a>
       <div id="clipboard-handler" phx-hook="ClipboardHandler" style="display:none" aria-hidden="true"></div>
-      <.app_header workspace={@workspace} reload_status={@reload_status} state={@state} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} sidebar_state={@sidebar_state} />
+      <.app_header workspace={@workspace} reload_status={@reload_status} state={@state} diagnostics={@diagnostics} sidebar_state={@sidebar_state} />
       <div :if={@sidebar_state == :expanded} class="mobile-sidebar-backdrop" phx-click="set_sidebar_state" phx-value-state="hidden" aria-hidden="true"></div>
       <main id="main-content" tabindex="-1" class={"main-layout sidebar-#{@sidebar_state}"}>
-        <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} beam_stats={@beam_stats} logs={@logs} sidebar_state={@sidebar_state} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
+        <.context_panel workspace={@workspace} reload_status={@reload_status} diagnostics={@diagnostics} beam_stats={@beam_stats} logs={@logs} sidebar_state={@sidebar_state} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
         <.chat_panel messages={@chat_messages} input={@input} submitting?={@submitting?} active_turn_id={@active_turn_id} chat_tabs={@chat_tabs} active_chat_tab={@active_chat_tab} />
       </main>
-      <.diagnostics_popup diagnostics={@diagnostics} diagnostics_open?={@diagnostics_open?} diagnostic_issue_statuses={@diagnostic_issue_statuses} self_healing_issues={@self_healing_issues} />
       <.patch_proposal_panel patch_proposal={@patch_proposal} />
       <.toast_container toasts={@toasts} />
     </div>

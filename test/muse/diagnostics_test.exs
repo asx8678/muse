@@ -65,18 +65,23 @@ defmodule Muse.DiagnosticsTest do
   end
 
   test "emit/3 stores diagnostics newest first" do
-    warning = Diagnostics.emit(:warning, "first warning")
-    error = Diagnostics.emit(:error, "second error")
+    Diagnostics.emit(:warning, "first warning")
+    Diagnostics.emit(:error, "second error")
 
-    assert Diagnostics.list() == [error, warning]
+    [error, warning] = Diagnostics.list()
+    assert error.level == :error and error.message == "second error"
+    assert warning.level == :warning and warning.message == "first warning"
   end
 
   test "emit/3 broadcasts {:muse_diagnostic, diagnostic}" do
     :ok = Diagnostics.subscribe()
 
-    diagnostic = Diagnostics.emit(:warning, "broadcast warning", %{test: true})
+    :ok = Diagnostics.emit(:warning, "broadcast warning", %{test: true})
 
-    assert_received {:muse_diagnostic, ^diagnostic}
+    assert_receive {:muse_diagnostic, diagnostic}, 500
+    assert diagnostic.level == :warning
+    assert diagnostic.message == "broadcast warning"
+    assert diagnostic.metadata == %{test: true}
   end
 
   test "clear/0 empties diagnostics and broadcasts" do
@@ -93,9 +98,11 @@ defmodule Muse.DiagnosticsTest do
     start_diagnostics(max: 2)
 
     Diagnostics.emit(:warning, "one")
-    second = Diagnostics.emit(:error, "two")
-    third = Diagnostics.emit(:critical, "three")
+    Diagnostics.emit(:error, "two")
+    Diagnostics.emit(:critical, "three")
 
-    assert Diagnostics.list() == [third, second]
+    [third, second] = Diagnostics.list()
+    assert third.level == :critical and third.message == "three"
+    assert second.level == :error and second.message == "two"
   end
 end

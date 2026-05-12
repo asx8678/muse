@@ -24,10 +24,11 @@ defmodule Muse.Diagnostics do
   @spec list() :: [Diagnostic.t()]
   def list, do: GenServer.call(__MODULE__, :list)
 
-  @spec emit(Diagnostic.level() | :warn, term(), term()) :: Diagnostic.t()
+  @spec emit(Diagnostic.level() | :warn, term(), term()) :: :ok
   def emit(level, message, metadata \\ %{}) do
     diagnostic = Diagnostic.new(level, message, metadata)
-    GenServer.call(__MODULE__, {:emit, diagnostic})
+    GenServer.cast(__MODULE__, {:emit, diagnostic})
+    :ok
   end
 
   @spec clear() :: :ok
@@ -64,16 +65,16 @@ defmodule Muse.Diagnostics do
   end
 
   @impl true
-  def handle_call({:emit, %Diagnostic{} = diagnostic}, _from, state) do
-    diagnostics = [diagnostic | state.diagnostics] |> Enum.take(state.max)
-    broadcast({:muse_diagnostic, diagnostic})
-    {:reply, diagnostic, %{state | diagnostics: diagnostics}}
-  end
-
-  @impl true
   def handle_call(:clear, _from, state) do
     broadcast({:muse_diagnostics_cleared})
     {:reply, :ok, %{state | diagnostics: []}}
+  end
+
+  @impl true
+  def handle_cast({:emit, %Diagnostic{} = diagnostic}, state) do
+    diagnostics = [diagnostic | state.diagnostics] |> Enum.take(state.max)
+    broadcast({:muse_diagnostic, diagnostic})
+    {:noreply, %{state | diagnostics: diagnostics}}
   end
 
   # -- Helpers -----------------------------------------------------------------

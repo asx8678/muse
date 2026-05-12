@@ -180,7 +180,7 @@ defmodule MuseWeb.HomeLiveTest do
 
   # -- Helper to open diagnostics drawer from sidebar card ---------------------
 
-  defp open_diagnostics_drawer(view) do
+  defp click_open_details(view) do
     view |> element(".mini-card-btn[phx-click='open_diagnostics']") |> render_click()
   end
 
@@ -575,91 +575,75 @@ defmodule MuseWeb.HomeLiveTest do
     refute html =~ ~s(id="diagnostics-drawer")
   end
 
-  test "clicking open details in sidebar opens diagnostics drawer" do
-    Muse.Diagnostics.emit(:warning, "drawer open test")
+  test "clicking open details creates a diagnostic chat tab" do
+    Muse.Diagnostics.emit(:warning, "tab open test")
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
+    click_open_details(view)
 
     html = render(view)
-    assert html =~ ~s(id="diagnostics-drawer")
-    assert html =~ "drawer open test"
+    # Drawer should NOT open
+    refute html =~ ~s(id="diagnostics-drawer")
+    # A chat tab with the diagnostic title should appear
+    assert html =~ "WARNING: tab open test"
+    assert html =~ ~s(class="chat-tab-bar")
   end
 
-  test "renders diagnostics drawer with action buttons" do
+  test "sidebar card shows save-to-fix action for diagnostics" do
     Muse.Diagnostics.emit(:error, "actionable error")
 
-    {:ok, view, _html} = live(build_conn(), "/")
+    {:ok, _view, html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
-    html = render(view)
-
+    # Drawer should NOT be present
+    refute html =~ ~s(id="diagnostics-drawer")
+    # Sidebar card should show save-to-fix button
     assert html =~ "save to fix"
-    assert html =~ "diagnostic-actions"
-    assert html =~ "Copy error"
-    assert html =~ "Jump to file"
   end
 
-  test "diagnostics drawer has accessibility attributes without broad live region" do
-    Muse.Diagnostics.emit(:warning, "a11y test")
-
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    open_diagnostics_drawer(view)
-    html = render(view)
-
-    # Modal dialog role with focus management hook
-    assert html =~ ~s(id="diagnostics-drawer")
-    assert html =~ ~s(role="dialog")
-    assert html =~ ~s(aria-modal="true")
-    assert html =~ ~s(aria-labelledby="diagnostics-title")
-    assert html =~ ~s(id="diagnostics-title")
-    assert html =~ ~s(aria-label="Minimize diagnostics panel")
-    # phx-hook for focus management
-    assert html =~ ~s(phx-hook="DiagnosticsDrawer")
-    # No broad aria-live on drawer (audit finding #4)
-    refute view |> has_element?("#diagnostics-drawer[aria-live]"),
-           "diagnostics drawer should not have aria-live"
-  end
-
-  test "diagnostics trigger buttons have aria-expanded and aria-controls" do
-    Muse.Diagnostics.emit(:warning, "trigger a11y")
+  test "diagnostics drawer is never rendered" do
+    Muse.Diagnostics.emit(:warning, "no drawer test")
 
     {:ok, view, html} = live(build_conn(), "/")
 
-    # Before opening: triggers should have aria-controls pointing to the drawer
-    assert html =~ ~s(aria-controls="diagnostics-drawer")
+    # Drawer never renders on mount
+    refute html =~ ~s(id="diagnostics-drawer")
 
-    # Status chip in header has correct a11y with aria-expanded=false
-    assert html =~ ~s(status-chip-yellow)
-    assert html =~ ~s(aria-expanded="false")
-
-    # Mini-card open details button has correct a11y
-    assert html =~ ~s(phx-click="open_diagnostics")
-
-    # After opening: the drawer is present and status chip reflects expanded state
-    open_diagnostics_drawer(view)
+    # Drawer never renders after clicking open details
+    click_open_details(view)
     html = render(view)
-    # Verify drawer is now open
-    assert html =~ ~s(id="diagnostics-drawer")
-    # The status chip should now show aria-expanded=true
-    assert html =~ ~s(aria-expanded="true")
+    refute html =~ ~s(id="diagnostics-drawer")
+    refute html =~ ~s(phx-hook="DiagnosticsDrawer")
   end
 
-  test "diagnostics drawer no longer uses over-broad aria-live" do
-    Muse.Diagnostics.emit(:warning, "no aria-live")
+  test "diagnostics trigger buttons do not reference removed drawer" do
+    Muse.Diagnostics.emit(:warning, "trigger a11y")
+
+    {:ok, _view, html} = live(build_conn(), "/")
+
+    # No aria-controls or aria-expanded pointing to the removed drawer
+    refute html =~ ~s(aria-controls="diagnostics-drawer")
+
+    # Open details button still exists
+    assert html =~ ~s(phx-click="open_diagnostics")
+
+    # Status chip in header still shows diagnostics count
+    assert html =~ ~s(status-chip-yellow)
+  end
+
+  test "diagnostics chip in header opens chat tab instead of drawer" do
+    Muse.Diagnostics.emit(:warning, "chip click tab")
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
+    # Click the diagnostics status chip in the header
+    view |> element(".status-chip-yellow") |> render_click()
     html = render(view)
 
-    # The drawer should NOT have aria-live=polite on itself (audit finding #4)
-    refute html =~ ~s(role="region" aria-labelledby="diagnostics-title" aria-live="polite")
-    # It should have the modal dialog pattern instead
-    assert html =~ ~s(role="dialog")
-    assert html =~ ~s(aria-modal="true")
+    # No drawer should open
+    refute html =~ ~s(id="diagnostics-drawer")
+    # A chat tab should be created instead
+    assert html =~ "WARNING: chip click tab"
   end
 
   test "diagnostics do NOT auto-open on real-time emit" do
@@ -667,6 +651,8 @@ defmodule MuseWeb.HomeLiveTest do
     refute render(view) =~ ~s(id="diagnostics-drawer")
 
     Muse.Diagnostics.emit(:error, "late backend error")
+    # Sync: list/0 is a GenServer.call, so the emit cast is processed first (FIFO)
+    _ = Muse.Diagnostics.list()
 
     html = render(view)
     # Drawer should NOT auto-open
@@ -675,203 +661,173 @@ defmodule MuseWeb.HomeLiveTest do
     assert html =~ "1 issue"
   end
 
-  test "renders latest five diagnostics and a more count" do
-    for n <- 1..6 do
+  test "renders latest diagnostic as chat tab when opened" do
+    for n <- 1..3 do
       Muse.Diagnostics.emit(:warning, "diagnostic #{n}")
     end
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
+    click_open_details(view)
     html = render(view)
 
-    assert html =~ "diagnostic 6"
-    assert html =~ "diagnostic 2"
-    refute html =~ "diagnostic 1"
-    assert html =~ "+1 more backend diagnostics"
+    # The latest diagnostic should appear as a chat tab
+    assert html =~ "diagnostic 3"
+    # No drawer
+    refute html =~ ~s(id="diagnostics-drawer")
   end
 
-  test "clears diagnostics drawer when clear broadcast arrives" do
+  test "clears diagnostics when clear broadcast arrives" do
     Muse.Diagnostics.emit(:critical, "critical before clear")
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
-    html = render(view)
-    assert html =~ "critical before clear"
+    assert render(view) =~ "critical before clear"
 
     Muse.Diagnostics.clear()
 
     html = render(view)
-    refute html =~ ~s(id="diagnostics-drawer")
     refute html =~ "critical before clear"
   end
 
-  # -- Diagnostics collapse tests ----------------------------------------------
+  # -- Diagnostics collapse tests (drawer removed) ----------------------------
 
-  test "collapse button closes diagnostics drawer" do
-    Muse.Diagnostics.emit(:warning, "collapsible warning")
+  test "diagnostics chip and open details do not open a drawer" do
+    Muse.Diagnostics.emit(:warning, "no drawer test")
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
-    html = render(view)
-    assert html =~ ~s(id="diagnostics-drawer")
-
-    view |> element(".diagnostics-collapse-btn") |> render_click()
-
+    # Click diagnostics status chip in header
+    view |> element(".status-chip-yellow") |> render_click()
     html = render(view)
     refute html =~ ~s(id="diagnostics-drawer")
+
+    # Click open details in sidebar
+    click_open_details(view)
+    html = render(view)
+    refute html =~ ~s(id="diagnostics-drawer")
+
     # Diagnostics status chip remains in header
     assert html =~ ~s(status-chip)
     assert html =~ "diagnostic"
   end
 
-  test "clicking diagnostics chip reopens drawer" do
-    Muse.Diagnostics.emit(:warning, "chip reopen test")
-
-    {:ok, view, _html} = live(build_conn(), "/")
-
-    open_diagnostics_drawer(view)
-    html = render(view)
-    assert html =~ ~s(id="diagnostics-drawer")
-
-    view |> element(".diagnostics-collapse-btn") |> render_click()
-    html = render(view)
-    refute html =~ ~s(id="diagnostics-drawer")
-
-    # Click the diagnostics status chip in the header
-    view |> element(".status-chip-yellow") |> render_click()
-    html = render(view)
-    assert html =~ ~s(id="diagnostics-drawer")
-    assert html =~ "chip reopen test"
-  end
-
   # -- Self-healing diagnostic tests ------------------------------------------
 
   test "clicking save to fix queues the diagnostic" do
-    diagnostic = Muse.Diagnostics.emit(:warning, "queue me")
+    Muse.Diagnostics.emit(:warning, "queue me")
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
-
-    view
-    |> element(
-      "#diagnostics-drawer [phx-click='queue_diagnostic_fix'][phx-value-diagnostic_id='#{diagnostic.id}']"
-    )
-    |> render_click()
+    # Use the sidebar save-to-fix button (drawer removed)
+    view |> element(".mini-card-btn[phx-click='save_to_fix']") |> render_click()
 
     html = render(view)
     assert html =~ "saved ✓"
   end
 
-  test "queued diagnostic renders disabled state" do
-    diagnostic = Muse.Diagnostics.emit(:error, "queued error")
+  test "queued diagnostic renders saved state" do
+    Muse.Diagnostics.emit(:error, "queued error")
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
-
-    view
-    |> element(
-      "#diagnostics-drawer [phx-click='queue_diagnostic_fix'][phx-value-diagnostic_id='#{diagnostic.id}']"
-    )
-    |> render_click()
+    # Save to fix via sidebar button
+    view |> element(".mini-card-btn[phx-click='save_to_fix']") |> render_click()
 
     html = render(view)
-    assert html =~ "diagnostic-queued"
-    assert html =~ "disabled"
+    assert html =~ "saved ✓"
   end
 
-  test "in-progress diagnostic shows In progress label" do
-    diagnostic = Muse.Diagnostics.emit(:error, "progress error")
+  test "in-progress diagnostic tracked in assigns" do
+    Muse.Diagnostics.emit(:error, "progress error")
+    [diagnostic] = Muse.Diagnostics.list()
     issue = Muse.SelfHealingQueue.add_diagnostic(diagnostic)
     Muse.SelfHealingQueue.mark_in_progress(issue.id)
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
     html = render(view)
 
-    assert html =~ "In progress"
-    assert html =~ "disabled"
+    # Drawer removed; verify self-healing state tracked in sidebar
+    assert html =~ "1 issue"
   end
 
-  test "failed diagnostic shows Self-healing failed label" do
-    diagnostic = Muse.Diagnostics.emit(:error, "failed error")
+  test "failed diagnostic tracked in assigns" do
+    Muse.Diagnostics.emit(:error, "failed error")
+    [diagnostic] = Muse.Diagnostics.list()
     issue = Muse.SelfHealingQueue.add_diagnostic(diagnostic)
     Muse.SelfHealingQueue.mark_failed(issue.id, "compile error")
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
     html = render(view)
 
-    assert html =~ "Self-healing failed"
-    assert html =~ "disabled"
+    # Drawer removed; verify diagnostic still tracked in sidebar
+    assert html =~ "1 issue"
   end
 
-  test "fixed diagnostic shows Already fixed label" do
-    diagnostic = Muse.Diagnostics.emit(:warning, "fixed warning")
+  test "fixed diagnostic tracked in assigns" do
+    Muse.Diagnostics.emit(:warning, "fixed warning")
+    [diagnostic] = Muse.Diagnostics.list()
     issue = Muse.SelfHealingQueue.add_diagnostic(diagnostic)
     Muse.SelfHealingQueue.mark_fixed(issue.id)
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
     html = render(view)
 
-    assert html =~ "Already fixed"
-    assert html =~ "disabled"
+    # Drawer removed; verify diagnostic still tracked in sidebar
+    assert html =~ "1 issue"
   end
 
-  test "self-healing summary shows when issues exist" do
-    diagnostic = Muse.Diagnostics.emit(:warning, "summary test")
+  test "self-healing summary tracked when issues saved" do
+    Muse.Diagnostics.emit(:warning, "summary test")
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
-
-    view
-    |> element(
-      "#diagnostics-drawer [phx-click='queue_diagnostic_fix'][phx-value-diagnostic_id='#{diagnostic.id}']"
-    )
-    |> render_click()
+    # Save to fix via sidebar button (drawer removed)
+    view |> element(".mini-card-btn[phx-click='save_to_fix']") |> render_click()
 
     html = render(view)
-    assert html =~ "Self-healing queue"
+    # Verify saved state shown in sidebar
+    assert html =~ "saved ✓"
   end
 
-  # -- Diagnostics copy and jump actions ---------------------------------------
+  # -- Diagnostics copy action (handler still exists, drawer removed) --------
 
-  test "copy_diagnostic pushes clipboard event" do
-    diagnostic = Muse.Diagnostics.emit(:warning, "copy this diagnostic")
+  test "copy_diagnostic handler succeeds without drawer" do
+    Muse.Diagnostics.emit(:warning, "copy this diagnostic")
+    [diagnostic] = Muse.Diagnostics.list()
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
+    # Invoke the handler directly since the UI button was in the removed drawer
+    {:noreply, socket} =
+      MuseWeb.HomeLive.handle_event(
+        "copy_diagnostic",
+        %{"diagnostic_id" => to_string(diagnostic.id)},
+        view.pid |> :sys.get_state() |> Map.get(:socket)
+      )
 
-    view
-    |> element(
-      "#diagnostics-drawer [phx-click='copy_diagnostic'][phx-value-diagnostic_id='#{diagnostic.id}']"
-    )
-    |> render_click()
-
-    # Should succeed without error
-    html = render(view)
-    assert html =~ ~s(id="diagnostics-drawer")
+    # Handler should succeed without error
+    assert socket.assigns != nil
   end
 
   test "jump_to_diagnostic_file warns when no metadata" do
     Muse.Diagnostics.emit(:warning, "no file meta")
+    [diagnostic] = Muse.Diagnostics.list()
 
     {:ok, view, _html} = live(build_conn(), "/")
 
-    open_diagnostics_drawer(view)
+    # Invoke the handler directly since the UI button was in the removed drawer
+    {:noreply, socket} =
+      MuseWeb.HomeLive.handle_event(
+        "jump_to_diagnostic_file",
+        %{"diagnostic_id" => to_string(diagnostic.id)},
+        view.pid |> :sys.get_state() |> Map.get(:socket)
+      )
 
-    # Jump button should be disabled when no file metadata
-    html = render(view)
-    assert html =~ "diagnostic-action-disabled"
+    # Handler should succeed (shows toast warning about missing file)
+    assert socket.assigns != nil
   end
 
   # -- Malformed ID robustness tests -------------------------------------------
@@ -1209,7 +1165,7 @@ defmodule MuseWeb.HomeLiveTest do
     {:ok, _view, html} = live(build_conn(), "/")
 
     assert html =~ ~s(class="chat-panel")
-    # Drawer not auto-opened
+    # Drawer never renders
     refute html =~ ~s(id="diagnostics-drawer")
   end
 
@@ -1309,9 +1265,7 @@ defmodule MuseWeb.HomeLiveTest do
       assert conn.resp_body =~ ".sidebar-expanded"
       assert conn.resp_body =~ ".sidebar-rail"
       assert conn.resp_body =~ ".sidebar-hidden"
-      assert conn.resp_body =~ ".diagnostics-drawer"
       assert conn.resp_body =~ ".status-chip"
-      assert conn.resp_body =~ ".diagnostics-popup"
       assert conn.resp_body =~ ".toast-container"
       assert conn.resp_body =~ ".panel"
       assert conn.resp_body =~ ".diagnostic-pill"

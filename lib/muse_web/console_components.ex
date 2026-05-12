@@ -597,7 +597,6 @@ defmodule MuseWeb.ConsoleComponents do
   attr(:reload_status, :map, required: true)
   attr(:state, :map, required: true)
   attr(:diagnostics, :list, required: true)
-  attr(:diagnostics_open?, :boolean, required: true)
   attr(:sidebar_state, :atom, default: :expanded)
 
   def app_header(assigns) do
@@ -620,8 +619,6 @@ defmodule MuseWeb.ConsoleComponents do
             dot={true}
             value={"#{length(@diagnostics)} issue#{if length(@diagnostics) != 1, do: "s", else: ""}"}
             click="open_diagnostics"
-            aria_expanded={if(@diagnostics_open?, do: "true", else: "false")}
-            aria_controls="diagnostics-drawer"
           />
         <% end %>
         <%= if @sidebar_state == :hidden do %>
@@ -831,7 +828,6 @@ defmodule MuseWeb.ConsoleComponents do
   attr(:workspace, :string, required: true)
   attr(:reload_status, :map, required: true)
   attr(:diagnostics, :list, required: true)
-  attr(:diagnostics_open?, :boolean, default: false)
   attr(:beam_stats, :map, default: %{})
   attr(:logs, :list, default: [])
   attr(:sidebar_state, :atom, default: :expanded)
@@ -945,7 +941,7 @@ defmodule MuseWeb.ConsoleComponents do
         </div>
         <div class="diagnostic-latest"><%= diagnostic_summary(List.first(@diagnostics)) %></div>
         <div class="diagnostic-card-actions">
-          <button type="button" class="mini-card-btn" phx-click="open_diagnostics" aria-expanded="false" aria-controls="diagnostics-drawer">open details</button>
+          <button type="button" class="mini-card-btn" phx-click="open_diagnostics">open details</button>
           <%= if Enum.any?(@diagnostic_issue_statuses, fn {_id, status} -> status == :saved end) do %>
             <button type="button" class="mini-card-btn" disabled>saved ✓</button>
           <% else %>
@@ -984,7 +980,6 @@ defmodule MuseWeb.ConsoleComponents do
   attr(:reload_status, :map, required: true)
   attr(:workspace, :string, required: true)
   attr(:diagnostics, :list, required: true)
-  attr(:diagnostics_open?, :boolean, required: true)
   attr(:agent_runtime, :map, default: nil)
 
   def status_bar(assigns) do
@@ -1016,15 +1011,13 @@ defmodule MuseWeb.ConsoleComponents do
         <span class="status-item-label">Events</span>
         <span class="status-item-value"><%= length(@state.events) %></span>
       </div>
-      <%= if @diagnostics != [] and not @diagnostics_open? do %>
+      <%= if @diagnostics != [] do %>
         <button
           type="button"
           id="diagnostics-badge"
           class="diagnostic-pill"
           phx-click="open_diagnostics"
           aria-label="Open diagnostics panel"
-          aria-expanded="false"
-          aria-controls="diagnostics-drawer"
         >
           ⚠ <%= length(@diagnostics) %> diagnostic<%= if length(@diagnostics) != 1, do: "s", else: "" %>
         </button>
@@ -1034,13 +1027,12 @@ defmodule MuseWeb.ConsoleComponents do
   end
 
   attr(:diagnostics, :list, required: true)
-  attr(:diagnostics_open?, :boolean, required: true)
   attr(:diagnostic_issue_statuses, :map, required: true)
   attr(:self_healing_issues, :list, required: true)
 
   def diagnostics_popup(assigns) do
     ~H"""
-    <%= if @diagnostics != [] and @diagnostics_open? do %>
+    <%= if false do %>
       <aside id="diagnostics-drawer" class="diagnostics-drawer" role="dialog" aria-modal="true" aria-labelledby="diagnostics-title" phx-hook="DiagnosticsDrawer">
         <div class="diagnostic-title-bar">
           <span id="diagnostics-title" class="diagnostic-title">Diagnostics</span>

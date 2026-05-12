@@ -108,12 +108,25 @@ defmodule Muse.Backend do
   end
 
   def safe_subscribe_diagnostics do
-    _ = Muse.Diagnostics.subscribe()
-    :ok
+    case Muse.Diagnostics.subscribe() do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("[Muse] Failed to subscribe to diagnostics: #{inspect(reason)}")
+        :ok
+    end
   rescue
-    _ -> :ok
+    e ->
+      require Logger
+      Logger.warning("[Muse] Exception subscribing to diagnostics: #{Exception.message(e)}")
+      :ok
   catch
-    :exit, _ -> :ok
+    :exit, reason ->
+      require Logger
+      Logger.warning("[Muse] Exit subscribing to diagnostics: #{inspect(reason)}")
+      :ok
   end
 
   def safe_emit_simulated_error do

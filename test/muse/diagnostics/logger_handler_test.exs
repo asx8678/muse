@@ -114,7 +114,7 @@ defmodule Muse.Diagnostics.LoggerHandlerTest do
                  %{}
                )
 
-      assert_received {:muse_diagnostic, diagnostic}
+      assert_receive {:muse_diagnostic, diagnostic}, 500
       assert diagnostic.level == :warning
       assert diagnostic.message == "direct warning"
       assert diagnostic.metadata == %{line: 10}
