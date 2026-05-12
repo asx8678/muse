@@ -330,6 +330,9 @@ defmodule Muse.Conductor.ToolLoop do
 
     case result do
       {:ok, response} ->
+        # Seamlessly extract any textual fallback tool calls into the structured list
+        response = Muse.LLM.FallbackParser.parse(response)
+
         if response_has_tool_calls?(response) do
           {:tool_calls, [], event_specs, response}
         else
