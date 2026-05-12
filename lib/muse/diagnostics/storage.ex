@@ -95,7 +95,9 @@ defmodule Muse.Diagnostics.Storage do
           metadata: d.metadata
         }
       end)
-      |> then(fn entries -> %{saved_at: format_timestamp(DateTime.utc_now()), diagnostics: entries} end)
+      |> then(fn entries ->
+        %{saved_at: format_timestamp(DateTime.utc_now()), diagnostics: entries}
+      end)
 
     Jason.encode(payload, pretty: true)
   rescue

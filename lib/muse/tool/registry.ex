@@ -12,6 +12,10 @@ defmodule Muse.Tool.Registry do
     * `known_tool?/1` — check if a name is a registered tool (not a blocked name)
     * `blocked_tool?/1` — check if a name is a known dangerous/blocked tool
 
+  ## Registered write tools
+
+    * `create_file` — create a new text file in the workspace (Coding Muse only)
+
   ## Registered read-only tools
 
     * `list_files` — list workspace files
@@ -501,6 +505,34 @@ defmodule Muse.Tool.Registry do
                       output_limit: 50_000
                     )
 
+  @create_file_spec Spec.new!(
+                      name: "create_file",
+                      description:
+                        "Create a new text file in the workspace. Binary content is blocked. Parent directories are created automatically. Respects secret and ignored path rules. Content size is capped at 500KB.",
+                      handler: Muse.Tools.CreateFile,
+                      input_schema: %{
+                        type: "object",
+                        properties: %{
+                          path: %{
+                            type: "string",
+                            description: "Relative file path within the workspace (required)"
+                          },
+                          content: %{
+                            type: "string",
+                            description: "Text content to write to the file (required)"
+                          }
+                        },
+                        required: ["path", "content"]
+                      },
+                      kind: :write,
+                      risk: :medium,
+                      permission: :write,
+                      allowed_roles: [:coding],
+                      allowed_muses: [:coding],
+                      requires_approval: true,
+                      output_limit: 5_000
+                    )
+
   @spawn_sub_agents_spec Spec.new!(
                            name: "spawn_sub_agents",
                            description:
@@ -575,7 +607,8 @@ defmodule Muse.Tool.Registry do
     "patch_apply",
     "rollback_checkpoint",
     "test_runner",
-    "spawn_sub_agents"
+    "spawn_sub_agents",
+    "create_file"
   ]
 
   @specs_by_name %{
@@ -594,7 +627,8 @@ defmodule Muse.Tool.Registry do
     "patch_apply" => @patch_apply_spec,
     "rollback_checkpoint" => @rollback_checkpoint_spec,
     "test_runner" => @test_runner_spec,
-    "spawn_sub_agents" => @spawn_sub_agents_spec
+    "spawn_sub_agents" => @spawn_sub_agents_spec,
+    "create_file" => @create_file_spec
   }
 
   # -- Public API ---------------------------------------------------------------
@@ -605,7 +639,7 @@ defmodule Muse.Tool.Registry do
   ## Examples
 
       iex> length(Muse.Tool.Registry.all())
-      16
+      17
 
       iex> hd(Muse.Tool.Registry.all()).name
       "list_files"
@@ -677,7 +711,7 @@ defmodule Muse.Tool.Registry do
       iex> Enum.map(specs, & &1.name)
       ["list_files", "read_file", "repo_search", "git_status",
        "git_diff_readonly", "query_matrix", "get_project_soul", "load_workspace_files",
-       "patch_propose", "patch_apply"]
+       "patch_propose", "patch_apply", "create_file"]
 
   """
   @spec specs_for_muse(atom()) :: [Spec.t()]
@@ -826,7 +860,7 @@ defmodule Muse.Tool.Registry do
        "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
        "query_matrix", "get_project_soul", "load_workspace_files",
        "patch_propose", "patch_apply", "rollback_checkpoint", "test_runner",
-       "spawn_sub_agents"]
+       "spawn_sub_agents", "create_file"]
 
   """
   @spec tool_names() :: [String.t()]

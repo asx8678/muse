@@ -208,7 +208,7 @@ defmodule Muse.BeamStats do
           # Keep samples for up to 1 hour (newest at the end)
           retained =
             (samples ++ [{now, total_runtime}])
-            |> Enum.drop_while(fn {t, _} -> (now - t) > 3_600_000 end)
+            |> Enum.drop_while(fn {t, _} -> now - t > 3_600_000 end)
             |> Enum.take(1000)
 
           :persistent_term.put(@cpu_sample_key, retained)
@@ -228,8 +228,12 @@ defmodule Muse.BeamStats do
       schedulers = safe_schedulers_count()
 
       case :persistent_term.get(@cpu_sample_key, nil) do
-        nil -> nil
-        samples when is_list(samples) and length(samples) < 2 -> nil
+        nil ->
+          nil
+
+        samples when is_list(samples) and length(samples) < 2 ->
+          nil
+
         samples when is_list(samples) ->
           {oldest_time, oldest_runtime} = hd(samples)
           wall_delta = max(now - oldest_time, 1)
@@ -253,5 +257,4 @@ defmodule Muse.BeamStats do
       _, _ -> 1
     end
   end
-
 end

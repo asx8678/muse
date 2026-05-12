@@ -5,12 +5,14 @@ defmodule Muse.LLM.FallbackParser do
   Qwen, GLM, Kimi, etc.) and injects them as structured
   `Muse.LLM.ToolCall` structs into the response.
 
-  Handles four common fallback formats:
+  Handles five common fallback formats:
 
   1. XML Tool Call with JSON payload (DeepSeek/GLM)
-  2. Pseudo-JSON (Gemini/OpenRouter specific)
+  2. Pseudo-JSON without parens (Gemini/OpenRouter, ◈name{...})
   3. ReAct style (Qwen/older models)
   4. Raw Markdown JSON blocks
+  5. Invocations with parens (◈name(...)) — supports JSON objects,
+     keyword args (key="val"), and loose key:value pairs inside parens
   """
 
   alias Muse.LLM.Response
@@ -25,7 +27,8 @@ defmodule Muse.LLM.FallbackParser do
         extract_xml_json(content),
         extract_markdown_json(content),
         extract_react(content),
-        extract_pseudo_json(content)
+        extract_pseudo_json(content),
+        extract_invocations(content)
       ])
       |> Enum.uniq_by(&{&1.name, &1.arguments})
 
@@ -98,6 +101,52 @@ defmodule Muse.LLM.FallbackParser do
             end
         end
     end
+  end
+
+  # --- Format 5: Invocations (<tool_call>name(...)) ---
+  # Handles three inner formats:
+  #   ◈name({"key":"val"})     — JSON object
+  #   ◈name(key="val")          — keyword args (double/single/bare quotes)
+  #   ◈name(key:val)            — loose key:value (same as pseudo-JSON)
+  defp extract_invocations(content) do
+    ~r/<tool_call>\s*([A-Za-z0-9_]+)\s*\((.+?)\)/s
+    |> Regex.scan(content)
+    |> Enum.flat_map(fn [_, name, inner] ->
+      args = inner |> String.trim() |> parse_paren_content()
+      if map_size(args) > 0, do: [make_tool(name, args)], else: []
+    end)
+  end
+
+  defp parse_paren_content(inner) do
+    cond do
+      String.starts_with?(inner, "{") ->
+        case Jason.decode(inner) do
+          {:ok, args} when is_map(args) -> args
+          _ -> %{}
+        end
+
+      String.contains?(inner, "=") ->
+        parse_keyword_args(inner)
+
+      true ->
+        parse_loose_args(inner)
+    end
+  end
+
+  defp parse_keyword_args(inner) do
+    inner
+    |> String.split(",", trim: true)
+    |> Enum.reduce(%{}, fn pair, acc ->
+      case String.split(pair, "=", parts: 2) do
+        [k, v] ->
+          clean_k = k |> String.trim()
+          clean_v = v |> String.trim() |> String.trim("\"") |> String.trim("'")
+          Map.put(acc, clean_k, clean_v)
+
+        _ ->
+          acc
+      end
+    end)
   end
 
   # --- Format 2: Pseudo-JSON ---

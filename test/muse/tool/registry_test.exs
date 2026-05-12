@@ -4,8 +4,8 @@ defmodule Muse.Tool.RegistryTest do
   alias Muse.Tool.Registry
 
   describe "all/0" do
-    test "returns all 16 registered tool specs" do
-      assert length(Registry.all()) == 16
+    test "returns all 17 registered tool specs" do
+      assert length(Registry.all()) == 17
     end
 
     test "keeps registered specs within the no-approval safe tool surface" do
@@ -14,7 +14,8 @@ defmodule Muse.Tool.RegistryTest do
         "patch_apply",
         "rollback_checkpoint",
         "test_runner",
-        "spawn_sub_agents"
+        "spawn_sub_agents",
+        "create_file"
       ]
 
       for spec <- Registry.all(),
@@ -44,7 +45,8 @@ defmodule Muse.Tool.RegistryTest do
                "patch_apply",
                "rollback_checkpoint",
                "test_runner",
-               "spawn_sub_agents"
+               "spawn_sub_agents",
+               "create_file"
              ]
     end
   end
@@ -222,7 +224,7 @@ defmodule Muse.Tool.RegistryTest do
   describe "tool_names/0" do
     test "returns all registered tool names" do
       names = Registry.tool_names()
-      assert length(names) == 16
+      assert length(names) == 17
       assert "read_file" in names
       assert "query_matrix" in names
       assert "get_project_soul" in names
@@ -287,6 +289,48 @@ defmodule Muse.Tool.RegistryTest do
       specs = Registry.specs_for_muse(:reviewing)
       names = Enum.map(specs, & &1.name)
       refute "test_runner" in names
+    end
+  end
+
+  describe "create_file registration" do
+    test "create_file is a registered tool" do
+      assert Registry.known_tool?("create_file")
+      spec = Registry.get("create_file")
+      assert spec.name == "create_file"
+      assert spec.handler == Muse.Tools.CreateFile
+      assert spec.kind == :write
+      assert spec.risk == :medium
+      assert spec.permission == :write
+      assert spec.allowed_muses == [:coding]
+      assert spec.requires_approval == true
+    end
+
+    test "create_file is not blocked" do
+      refute Registry.blocked_tool?("create_file")
+    end
+
+    test "planning muse cannot use create_file" do
+      specs = Registry.specs_for_muse(:planning)
+      names = Enum.map(specs, & &1.name)
+      refute "create_file" in names
+    end
+
+    test "coding muse can use create_file" do
+      specs = Registry.specs_for_muse(:coding)
+      names = Enum.map(specs, & &1.name)
+      assert "create_file" in names
+    end
+
+    test "reviewing muse cannot use create_file" do
+      specs = Registry.specs_for_muse(:reviewing)
+      names = Enum.map(specs, & &1.name)
+      refute "create_file" in names
+    end
+
+    test "testing muse cannot use create_file" do
+      specs = Registry.specs_for_muse(:testing)
+      names = Enum.map(specs, & &1.name)
+      refute "create_file" in names
     end
   end
 end
