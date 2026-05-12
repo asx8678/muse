@@ -17,8 +17,11 @@ defmodule Muse.Execution.ProcessGroup do
       `kill -TERM -<pgid>`, followed by `kill -KILL -<pgid>` after a
       short grace period. Children that stay in the parent's process
       group are killed along with the leader.
-    * **Windows** — no process-group cleanup. Only the port is closed.
-      Children may survive. The caller receives a diagnostic note so
+    * **Windows** — no process-group cleanup. Windows job object support
+      (`CreateJobObject` + `AssignProcessToJobObject` with
+      `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) would require a Rust NIF —
+      not currently implemented. Only the port is closed. Child processes
+      may survive a timeout. The caller receives a diagnostic note so
       operators know the limitation applies.
 
   ## Safety
@@ -277,6 +280,10 @@ defmodule Muse.Execution.ProcessGroup do
 
   # -- Windows fallback ---------------------------------------------------------
 
+  # Windows job object support (CreateJobObject + AssignProcessToJobObject
+  # with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) would require a Rust NIF —
+  # not currently implemented. Only the port is closed; child processes
+  # may survive timeout.
   defp terminate_windows(port) do
     os_pid = get_os_pid(port)
 

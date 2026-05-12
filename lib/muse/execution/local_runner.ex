@@ -8,9 +8,10 @@ defmodule Muse.Execution.LocalRunner do
     * Timeout — terminates the **full process group** on timeout
       (Unix) or falls back to port closure only (Windows).
       On Unix, the spawned process becomes a process group leader
-      (PGID == PID). Children inherit the PGID by default. On
-      timeout, SIGTERM is sent to the whole group, followed by SIGKILL
-      after a grace period. This prevents orphaned child processes.
+      (PGID == PID) by default under the Erlang port driver.
+      Children inherit the PGID by default. On timeout, SIGTERM is sent
+      to the whole group, followed by SIGKILL after a grace period.
+      This prevents orphaned child processes.
     * Output capping — caps output at `max_output_bytes`.
     * Secret redaction — redacts secrets via `Muse.Prompt.Redactor`.
     * Safe env — allowlisted base env via `Muse.Execution.Env`;
@@ -36,6 +37,14 @@ defmodule Muse.Execution.LocalRunner do
   result includes a `:timeout_cleanup` metadata key documenting the
   limitation.
 
+  ## AppImage environment cleanup
+
+  When Muse runs inside an AppImage, the AppImage runtime injects
+  environment variables (APPDIR, LD_LIBRARY_PATH, GTK_*, QT_PLUGIN_PATH,
+  etc.) that bundle library, plugin, and PATH entries pointing into the
+  AppImage mount directory. Before executing a child tool, `LocalRunner`
+  strips these injected variables via `Muse.Weft.AppImage.clean_env/1`.
+
   ## Safety properties
 
     * `System.find_executable/1` for bare executable names.
@@ -58,6 +67,7 @@ defmodule Muse.Execution.LocalRunner do
   @behaviour Muse.Execution.Runner
 
   alias Muse.Execution.{Command, Env, ProcessGroup, Result}
+  alias Muse.Weft.AppImage
 
   @timeout_force_after_ms 100
 
@@ -214,6 +224,11 @@ defmodule Muse.Execution.LocalRunner do
     # merges user-provided overrides, then strips denylisted keys.
     # Child processes never receive provider API keys or unrelated secrets.
     env = Env.port_env(command.env, inherit?: true)
+
+    # If running inside an AppImage, strip AppImage-injected env vars
+    # that would leak bundled library/plugin paths to child tools.
+    env = if AppImage.detect?(), do: AppImage.clean_env(env), else: env
+
     [{:env, env} | opts]
   end
 
