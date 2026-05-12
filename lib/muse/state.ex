@@ -4,7 +4,16 @@ defmodule Muse.State do
   every new event on `Muse.PubSub`.
 
   The topic string is an implementation detail — consumers call `subscribe/0`
-  and receive `{:muse_event, %Muse.Event{}}` messages.
+  or `subscribe/1` and receive `{:muse_event, %Muse.Event{}}` messages.
+
+  ## Session-scoped topics
+
+  Events can be broadcast on both a global topic (`"muse:events"`) for
+  backward compatibility and a session-scoped topic
+  (`"muse:events:<session_id>"`) so individual LiveView tabs only receive
+  events for their own session.  Call `subscribe/1` with a session ID to
+  listen on a scoped topic; `subscribe/0` subscribes to the `"default"`
+  session topic.
 
   ## Bounded storage
 
@@ -36,18 +45,28 @@ defmodule Muse.State do
   @spec max_events() :: non_neg_integer()
   def max_events, do: GenServer.call(__MODULE__, :max_events)
 
-  @spec append(Muse.Event.t()) :: :ok
-  def append(event), do: GenServer.call(__MODULE__, {:append, event})
+  @spec append(Muse.Event.t(), String.t()) :: :ok
+  def append(event, session_id \\ "default") do
+    GenServer.call(__MODULE__, {:append, event, session_id})
+  end
 
   @spec clear() :: :ok
   def clear, do: GenServer.call(__MODULE__, :clear)
 
   @spec subscribe() :: :ok | {:error, term()}
-  def subscribe do
-    case Phoenix.PubSub.subscribe(Muse.PubSub, @topic) do
+  def subscribe, do: subscribe("default")
+
+  @spec subscribe(String.t()) :: :ok | {:error, term()}
+  def subscribe(session_id) do
+    case Phoenix.PubSub.subscribe(Muse.PubSub, "muse:events:#{session_id}") do
       :ok -> :ok
       {:error, _} = err -> err
     end
+  end
+
+  @spec unsubscribe(String.t()) :: :ok | {:error, term()}
+  def unsubscribe(session_id) do
+    Phoenix.PubSub.unsubscribe(Muse.PubSub, "muse:events:#{session_id}")
   end
 
   # -- GenServer callbacks -----------------------------------------------------
@@ -74,16 +93,25 @@ defmodule Muse.State do
   end
 
   @impl true
-  def handle_call({:append, event}, _from, state) do
+  def handle_call({:append, event, session_id}, _from, state) do
     # Prepend for O(1), then trim to max_events (drops oldest when over cap)
     updated = [event | state.events] |> Enum.take(state.max_events)
+    # Broadcast on global topic for backward compat with existing consumers
     Phoenix.PubSub.broadcast(Muse.PubSub, @topic, {:muse_event, event})
+    # Broadcast on session-scoped topic so tab-scoped LiveViews receive events
+    Phoenix.PubSub.broadcast(
+      Muse.PubSub,
+      "muse:events:#{session_id}",
+      {:muse_event, event}
+    )
+
     {:reply, :ok, %{state | events: updated}}
   end
 
   @impl true
   def handle_call(:clear, _from, state) do
     Phoenix.PubSub.broadcast(Muse.PubSub, @topic, {:muse_events_cleared})
+    Phoenix.PubSub.broadcast(Muse.PubSub, "muse:events:default", {:muse_events_cleared})
     {:reply, :ok, %{state | events: []}}
   end
 end

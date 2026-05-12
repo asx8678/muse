@@ -386,6 +386,27 @@ defmodule Muse.SessionRouter do
 
   # -- Session lifecycle --------------------------------------------------------
 
+  @doc """
+  Gracefully stops a session identified by `session_id`.
+
+  The `SessionServer` process and all its children are terminated under
+  the `DynamicSupervisor`, ensuring proper OTP cleanup.  The Registry
+  entry is removed automatically when the process exits.
+
+  Returns `:ok` on success, `{:error, :not_found}` if no session exists
+  with the given id, or `{:error, reason}` if termination fails.
+  """
+  @spec stop_session(String.t()) :: :ok | {:error, :not_found | term()}
+  def stop_session(session_id) do
+    with {:ok, pid} <- lookup_session(session_id) do
+      case DynamicSupervisor.terminate_child(Muse.SessionSupervisor, pid) do
+        :ok -> :ok
+        {:error, :not_found} -> {:error, :not_found}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
   @doc false
   @spec find_or_start_session(term()) :: {:ok, pid()} | {:error, term()}
   def find_or_start_session(session_id) do

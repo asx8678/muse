@@ -64,6 +64,20 @@ defmodule Muse.SessionRouterTest do
     Muse.SessionServer.registry_key(session_id, base_dir)
   end
 
+  defp wait_for_registry_cleanup(key, retries \\ 20) do
+    case Registry.lookup(Muse.SessionRegistry, key) do
+      [] ->
+        :ok
+
+      _ when retries > 0 ->
+        Process.sleep(5)
+        wait_for_registry_cleanup(key, retries - 1)
+
+      _ ->
+        :ok
+    end
+  end
+
   defp persist_awaiting_plan(session_id) do
     plan =
       Muse.Plan.new(
@@ -100,6 +114,45 @@ defmodule Muse.SessionRouterTest do
   end
 
   # -- Tests --------------------------------------------------------------------
+
+  describe "stop_session/1" do
+    test "terminates an existing session and removes it from the registry" do
+      assert {:ok, pid} = Muse.SessionRouter.find_or_start_session("stop-me")
+      assert is_pid(pid)
+      assert Process.alive?(pid)
+
+      # Session is registered in the Registry
+      key = registry_key("stop-me")
+      assert [{^pid, _}] = Registry.lookup(Muse.SessionRegistry, key)
+
+      # Stop the session
+      assert :ok = Muse.SessionRouter.stop_session("stop-me")
+
+      # Process is terminated (Registry cleanup is async, so wait briefly)
+      refute Process.alive?(pid)
+
+      # Wait for Registry to clean up the exited process
+      wait_for_registry_cleanup(key)
+      assert [] = Registry.lookup(Muse.SessionRegistry, key)
+    end
+
+    test "returns error for non-existent session" do
+      assert {:error, :not_found} = Muse.SessionRouter.stop_session("nonexistent-session")
+    end
+
+    test "stopped session can be restarted with find_or_start_session" do
+      assert {:ok, pid1} = Muse.SessionRouter.find_or_start_session("restart-me")
+      key = registry_key("restart-me")
+      assert :ok = Muse.SessionRouter.stop_session("restart-me")
+      wait_for_registry_cleanup(key)
+      refute Process.alive?(pid1)
+
+      # Starting again should create a new session process
+      assert {:ok, pid2} = Muse.SessionRouter.find_or_start_session("restart-me")
+      assert is_pid(pid2)
+      assert Process.alive?(pid2)
+    end
+  end
 
   describe "find_or_start_session/1" do
     test "creates a new session for unknown id" do

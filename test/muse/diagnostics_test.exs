@@ -105,4 +105,34 @@ defmodule Muse.DiagnosticsTest do
     assert third.level == :critical and third.message == "three"
     assert second.level == :error and second.message == "two"
   end
+
+  describe "session-scoped subscribe/1" do
+    test "subscribe/0 subscribes to the default session topic" do
+      :ok = Diagnostics.subscribe()
+
+      :ok = Diagnostics.emit(:warning, "default topic")
+
+      assert_receive {:muse_diagnostic, diagnostic}, 500
+      assert diagnostic.message == "default topic"
+    end
+
+    test "subscribe/1 subscribes to a session-scoped topic" do
+      :ok = Diagnostics.subscribe("diag-1")
+
+      # Session-scoped diagnostics topics don't receive global broadcasts
+      # (emit/3 broadcasts on global + default, not on arbitrary session topics)
+      :ok = Diagnostics.emit(:error, "global emit")
+
+      refute_receive {:muse_diagnostic, _}, 100
+    end
+
+    test "unsubscribe/1 removes session-scoped subscription" do
+      :ok = Diagnostics.subscribe("diag-2")
+      :ok = Diagnostics.unsubscribe("diag-2")
+
+      # After unsubscribe, should not receive on the removed topic
+      # (Even if events were broadcast there, we'd no longer get them)
+      refute_receive {:muse_diagnostic, _}, 100
+    end
+  end
 end

@@ -144,6 +144,14 @@ defmodule Muse.SessionServer do
   end
 
   @doc false
+  @spec current_runtime_context(String.t()) ::
+          %{store_base_dir: String.t(), workspace: String.t(), session_id: String.t()}
+  def current_runtime_context(session_id) when is_binary(session_id) do
+    context = current_runtime_context()
+    Map.put(context, :session_id, session_id)
+  end
+
+  @doc false
   @spec current_store_base_dir() :: String.t()
   def current_store_base_dir, do: current_runtime_context().store_base_dir
 

@@ -151,6 +151,8 @@ defmodule MuseWeb.HomeLive do
           case RuntimeProvider.resolve_opts() do
             {:ok, opts} ->
               try do
+                opts = resolve_session_opts(socket, opts)
+
                 case Muse.start_submit(:web, msg, opts) do
                   {:ok, turn_id} ->
                     # After successful submit, refresh local assigns from State.
@@ -593,6 +595,17 @@ defmodule MuseWeb.HomeLive do
   @impl true
   def handle_event("close_chat_tab", %{"tab" => tab_id}, socket) do
     id = String.to_integer(tab_id)
+
+    # Gracefully stop the per-tab session for diagnostic tabs
+    closed_tab = Enum.find(socket.assigns.chat_tabs, &(&1.id == id))
+
+    if closed_tab && closed_tab.type == :diagnostic && closed_tab[:session_id] do
+      Muse.SessionRouter.stop_session(closed_tab.session_id)
+      # Unsubscribe from session-scoped PubSub topics to avoid leaking subscriptions
+      Muse.State.unsubscribe(closed_tab.session_id)
+      Muse.Diagnostics.unsubscribe(closed_tab.session_id)
+    end
+
     tabs = Enum.reject(socket.assigns.chat_tabs, &(&1.id == id))
 
     active =
@@ -618,13 +631,21 @@ defmodule MuseWeb.HomeLive do
         {:noreply, socket}
 
       diagnostic ->
+        diag_session = "diag-#{diagnostic.id}"
+
         tab = %{
           id: diagnostic.id,
           type: :diagnostic,
+          session_id: diag_session,
           title:
             "#{String.upcase(to_string(diagnostic.level))}: #{String.slice(diagnostic.message, 0, 40)}#{if String.length(diagnostic.message) > 40, do: "...", else: ""}",
           data: diagnostic
         }
+
+        # Subscribe to session-scoped topics so this tab only receives
+        # events for its own diagnostic session
+        Muse.State.subscribe(diag_session)
+        Muse.Diagnostics.subscribe(diag_session)
 
         # Replace existing tab with same id or add new
         tabs =
@@ -995,6 +1016,11 @@ defmodule MuseWeb.HomeLive do
 
   @impl true
   def handle_info({:muse_diagnostics_cleared}, socket) do
+    # Stop per-tab sessions for diagnostic tabs before removing them
+    socket.assigns.chat_tabs
+    |> Enum.filter(&(&1.type == :diagnostic and &1[:session_id]))
+    |> Enum.each(&Muse.SessionRouter.stop_session(&1.session_id))
+
     # Remove diagnostic-type chat tabs since their source data is gone
     chat_tabs = Enum.reject(socket.assigns.chat_tabs, &(&1.type == :diagnostic))
 
@@ -1161,6 +1187,32 @@ defmodule MuseWeb.HomeLive do
   end
 
   defp cap_diagnostics(_diagnostics), do: []
+
+  # -- Session helpers -------------------------------------------------------
+
+  # When the active chat tab is a diagnostic tab with its own session_id,
+  # inject :session_id into opts so the submit routes to the per-tab session.
+  # Otherwise, opts passes through unchanged (uses the "default" session).
+  defp resolve_session_opts(socket, opts) do
+    case active_tab_session_id(socket) do
+      nil -> opts
+      session_id -> Keyword.put(opts, :session_id, session_id)
+    end
+  end
+
+  defp active_tab_session_id(socket) do
+    active_tab_id = socket.assigns.active_chat_tab
+
+    # The :process tab and non-diagnostic tabs use the default session
+    if active_tab_id == :process do
+      nil
+    else
+      case Enum.find(socket.assigns.chat_tabs, &(&1.id == active_tab_id)) do
+        %{type: :diagnostic, session_id: session_id} -> session_id
+        _ -> nil
+      end
+    end
+  end
 
   defp diagnostic_file(%{metadata: meta}) when is_map(meta) do
     Map.get(meta, :file) || Map.get(meta, "file")

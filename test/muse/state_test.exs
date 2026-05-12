@@ -127,4 +127,66 @@ defmodule Muse.StateTest do
       refute_received {:muse_event, _}
     end
   end
+
+  describe "session-scoped subscribe/1 + append/2" do
+    test "subscribe/0 subscribes to the default session topic" do
+      :ok = State.subscribe()
+      event = Event.new(:test, :default_topic, nil)
+      :ok = State.append(event)
+
+      assert_received {:muse_event, ^event}
+    end
+
+    test "subscribe/1 subscribes to a session-scoped topic" do
+      :ok = State.subscribe("diag-42")
+      event = Event.new(:test, :scoped, nil)
+      :ok = State.append(event, "diag-42")
+
+      assert_received {:muse_event, ^event}
+    end
+
+    test "session-scoped subscriber does NOT receive default session events" do
+      :ok = State.subscribe("diag-99")
+      event = Event.new(:test, :default_only, nil)
+      :ok = State.append(event)
+
+      refute_received {:muse_event, _}
+    end
+
+    test "append/2 broadcasts on session-scoped topic" do
+      :ok = State.subscribe("diag-7")
+      event = Event.new(:test, :session_broadcast, nil)
+      :ok = State.append(event, "diag-7")
+
+      # Receive the event from the session-scoped topic
+      assert_received {:muse_event, ^event}
+    end
+
+    test "append/2 broadcasts on global topic for backward compat" do
+      # Subscribe directly to the global topic
+      Phoenix.PubSub.subscribe(Muse.PubSub, "muse:events")
+      event = Event.new(:test, :global_broadcast, nil)
+      :ok = State.append(event, "diag-7")
+
+      # Global topic subscribers still receive events regardless of session_id
+      assert_received {:muse_event, ^event}
+    end
+
+    test "append/1 with default session_id broadcasts on default topic" do
+      :ok = State.subscribe()
+      event = Event.new(:test, :default_append, nil)
+      :ok = State.append(event)
+
+      assert_received {:muse_event, ^event}
+    end
+
+    test "unsubscribe/1 removes session-scoped subscription" do
+      :ok = State.subscribe("diag-55")
+      :ok = State.unsubscribe("diag-55")
+      event = Event.new(:test, :after_unsub, nil)
+      :ok = State.append(event, "diag-55")
+
+      refute_received {:muse_event, _}
+    end
+  end
 end

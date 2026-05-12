@@ -5,6 +5,12 @@ defmodule Muse.Diagnostics do
   `Muse.Diagnostics` stores the latest backend warnings/errors and broadcasts
   each new diagnostic to connected LiveViews.  The list is newest-first so the
   UI can render the freshest issue at the top with no additional sorting.
+
+  ## Session-scoped topics
+
+  Call `subscribe/1` with a session ID to listen on a scoped topic
+  (`"muse:diagnostics:<session_id>"`).  `subscribe/0` subscribes to the
+  `"default"` session topic.  Use `unsubscribe/1` to leave a scoped topic.
   """
 
   use GenServer
@@ -35,14 +41,22 @@ defmodule Muse.Diagnostics do
   def clear, do: GenServer.call(__MODULE__, :clear)
 
   @spec subscribe() :: :ok | {:error, term()}
-  def subscribe do
+  def subscribe, do: subscribe("default")
+
+  @spec subscribe(String.t()) :: :ok | {:error, term()}
+  def subscribe(session_id) do
     case Process.whereis(Muse.PubSub) do
       nil ->
         {:error, :pubsub_unavailable}
 
       _pid ->
-        Phoenix.PubSub.subscribe(Muse.PubSub, @topic)
+        Phoenix.PubSub.subscribe(Muse.PubSub, "muse:diagnostics:#{session_id}")
     end
+  end
+
+  @spec unsubscribe(String.t()) :: :ok | {:error, term()}
+  def unsubscribe(session_id) do
+    Phoenix.PubSub.unsubscribe(Muse.PubSub, "muse:diagnostics:#{session_id}")
   end
 
   # -- GenServer callbacks -----------------------------------------------------
@@ -88,7 +102,10 @@ defmodule Muse.Diagnostics do
         :ok
 
       _pid ->
+        # Global topic for backward compat
         Phoenix.PubSub.broadcast(Muse.PubSub, @topic, message)
+        # Default session-scoped topic so subscribe/0 callers receive messages
+        Phoenix.PubSub.broadcast(Muse.PubSub, "muse:diagnostics:default", message)
         :ok
     end
   rescue

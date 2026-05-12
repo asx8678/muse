@@ -62,7 +62,8 @@ defmodule Muse do
           | {:error, term()}
   def submit(source, text, opts \\ [])
       when is_atom(source) and is_binary(text) and is_list(opts) do
-    SessionRouter.submit(source, text, opts)
+    {session_id, remaining_opts} = Keyword.pop(opts, :session_id, "default")
+    SessionRouter.submit(session_id, source, text, remaining_opts)
   end
 
   @doc """
@@ -91,6 +92,7 @@ defmodule Muse do
           {:ok, String.t()} | {:error, :turn_in_progress} | {:error, term()}
   def start_submit(source, text, opts \\ [])
       when is_atom(source) and is_binary(text) and is_list(opts) do
-    SessionRouter.submit_async(source, text, opts)
+    {session_id, remaining_opts} = Keyword.pop(opts, :session_id, "default")
+    SessionRouter.submit_async(session_id, source, text, remaining_opts)
   end
 end
