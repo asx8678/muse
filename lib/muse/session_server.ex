@@ -1725,10 +1725,10 @@ defmodule Muse.SessionServer do
           "#{safe_error_summary(reason)} — #{error.hint}"
 
         _ ->
-          Muse.LLM.ProviderError.render_compact(error)
+          Muse.LLM.ProviderError.render(error)
       end
 
-    "Error: provider error occurred — #{details}"
+    details
   rescue
     _ ->
       "Error: provider error occurred — #{safe_error_summary(reason)}"

@@ -299,4 +299,57 @@ defmodule Muse.LLM.ProviderErrorTest do
       assert retryable == [:rate_limit, :timeout, :connection, :server]
     end
   end
+
+  describe "classify/1 — retries exhausted" do
+    test "classifies {:retries_exhausted, :timeout, N} with retry context" do
+      error = ProviderError.classify({:retries_exhausted, :timeout, 2})
+
+      assert error.category == :timeout
+      assert error.title =~ "timed out"
+      assert error.title =~ "retries exhausted"
+      assert error.message =~ "2 retry attempt(s) failed"
+      assert is_binary(error.hint)
+    end
+
+    test "classifies {:retries_exhausted, {:http_error, 429, _}, N} as rate_limit" do
+      error = ProviderError.classify({:retries_exhausted, {:http_error, 429, "limited"}, 3})
+
+      assert error.category == :rate_limit
+      assert error.title =~ "Rate limited"
+      assert error.title =~ "retries exhausted"
+      assert error.message =~ "3 retry attempt(s) failed"
+    end
+
+    test "classifies {:retries_exhausted, {:connection_error, _}, N} as connection" do
+      error = ProviderError.classify({:retries_exhausted, {:connection_error, "refused"}, 1})
+
+      assert error.category == :connection
+      assert error.title =~ "Connection error"
+      assert error.title =~ "retries exhausted"
+    end
+
+    test "classifies {:retries_exhausted, {:http_error, 503, _}, N} as server" do
+      error = ProviderError.classify({:retries_exhausted, {:http_error, 503, "overloaded"}, 2})
+
+      assert error.category == :server
+      assert error.title =~ "Server error"
+      assert error.title =~ "retries exhausted"
+    end
+
+    test "render includes hint for retries exhausted" do
+      error = ProviderError.classify({:retries_exhausted, :timeout, 2})
+      rendered = ProviderError.render(error)
+
+      assert rendered =~ "💡"
+      assert rendered =~ "retries exhausted"
+    end
+
+    test "never includes secrets in retries exhausted output" do
+      error =
+        ProviderError.classify({:retries_exhausted, {:http_error, 429, "sk-secret-key-12345"}, 2})
+
+      refute ProviderError.render(error) =~ "sk-secret-key-12345"
+      refute ProviderError.render_compact(error) =~ "sk-secret-key-12345"
+    end
+  end
 end

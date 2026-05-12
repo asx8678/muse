@@ -38,7 +38,17 @@ defmodule Muse.Conductor do
   }
 
   alias Muse.Conductor.{LLMEventAdapter, PatchHandling, PlanHandling, StreamCollector, ToolLoop}
-  alias Muse.LLM.{FakeProvider, ModelRouter, ProviderConfig, ProviderRouter, Response, Message}
+
+  alias Muse.LLM.{
+    FakeProvider,
+    ModelRouter,
+    ProviderConfig,
+    ProviderRouter,
+    Response,
+    Message,
+    Retry
+  }
+
   alias Muse.Prompt.{Assembler, ModelPreparer, Redactor}
   alias Muse.Config, as: LLMConfig
 
@@ -373,6 +383,10 @@ defmodule Muse.Conductor do
     # 5. Call provider
     provider_module = resolve_provider_module(opts, request)
 
+    # Surface max_retries from provider_config for retry integration
+    stream_opts =
+      Keyword.put_new(opts, :max_retries, provider_config.max_retries || 0)
+
     # Build conductor overhead event specs (always emitted)
     conductor_specs = [
       muse_selected_spec(muse),
@@ -381,7 +395,7 @@ defmodule Muse.Conductor do
       provider_request_started_spec(request, bundle)
     ]
 
-    case stream_provider(provider_module, request, session, turn, opts) do
+    case stream_provider(provider_module, request, session, turn, stream_opts) do
       {:ok, response, provider_event_specs} ->
         session = accumulate_token_usage(session, response, request.model)
 
@@ -392,7 +406,8 @@ defmodule Muse.Conductor do
               provider_module: provider_module,
               tool_runner: Keyword.get(opts, :tool_runner, Muse.Tool.Runner),
               limits: Keyword.get(opts, :limits, nil),
-              emit_event_fn: Keyword.get(opts, :emit_event_fn)
+              emit_event_fn: Keyword.get(opts, :emit_event_fn),
+              max_retries: Keyword.get(stream_opts, :max_retries, 0)
             ]
             |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
@@ -612,6 +627,70 @@ defmodule Muse.Conductor do
   # -- Provider streaming -------------------------------------------------------
 
   defp stream_provider(provider_module, request, session, turn, opts) do
+    max_retries = Keyword.get(opts, :max_retries, 0)
+
+    if max_retries > 0 do
+      stream_provider_with_retry(provider_module, request, session, turn, opts, max_retries)
+    else
+      do_stream_provider(provider_module, request, session, turn, opts)
+    end
+  end
+
+  # Retryable stream provider — wraps the streaming call with bounded exponential
+  # backoff for transient errors (rate limits, timeouts, connection errors, 5xx).
+  # Non-retryable errors (auth, invalid model, invalid request) propagate immediately.
+  #
+  # Safety:
+  #   • Bounded by max_retries — no infinite retries
+  #   • Each attempt creates a fresh StreamCollector and emit_fn
+  #   • Error messages are classified via ProviderError and never contain secrets
+  #   • Retry telemetry emitted for observability
+  defp stream_provider_with_retry(provider_module, request, session, turn, opts, max_retries) do
+    retry_opts = [
+      max_retries: max_retries,
+      on_retry: fn attempt, error ->
+        :telemetry.execute(
+          [:muse, :provider, :retry],
+          %{attempt: attempt},
+          %{
+            session_id: session.id,
+            turn_id: turn.id,
+            category: error.category,
+            provider: request.provider
+          }
+        )
+      end
+    ]
+
+    result =
+      Retry.with_retry(
+        fn ->
+          case do_stream_provider(provider_module, request, session, turn, opts) do
+            {:ok, response, event_specs} -> {:ok, {response, event_specs}}
+            {:error, reason, event_specs} -> {:error, {reason, event_specs}}
+          end
+        end,
+        retry_opts
+      )
+
+    case result do
+      {:ok, {response, event_specs}} ->
+        {:ok, response, event_specs}
+
+      {:error, {reason, event_specs}} ->
+        # All retries exhausted — annotate the error for user-facing messages
+        annotated_reason =
+          if Retry.retryable?(reason) do
+            {:retries_exhausted, reason, max_retries}
+          else
+            reason
+          end
+
+        {:error, annotated_reason, event_specs}
+    end
+  end
+
+  defp do_stream_provider(provider_module, request, session, turn, opts) do
     emit_event_fn = Keyword.get(opts, :emit_event_fn)
     provider_start_time = System.monotonic_time(:millisecond)
 

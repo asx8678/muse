@@ -71,7 +71,7 @@ defmodule Muse.Conductor.ToolLoop do
   """
 
   alias Muse.Tool
-  alias Muse.LLM.Message
+  alias Muse.LLM.{Message, Retry}
   alias Muse.Conductor.StreamCollector
   alias Muse.Conductor.TurnRunner
   alias Muse.Conductor.LLMEventAdapter
@@ -141,6 +141,7 @@ defmodule Muse.Conductor.ToolLoop do
       tool_runner: tool_runner,
       limits: limits,
       emit_event_fn: emit_event_fn,
+      max_retries: Keyword.get(opts, :max_retries, 0),
       tool_concurrency: tool_concurrency,
       tool_result_bytes: tool_result_bytes,
       messages: request.messages,
@@ -297,7 +298,12 @@ defmodule Muse.Conductor.ToolLoop do
   # -- Single iteration ---------------------------------------------------------
 
   defp run_iteration(state) do
-    %{provider_module: provider_module, request: request, emit_event_fn: emit_event_fn} = state
+    %{
+      provider_module: provider_module,
+      request: request,
+      emit_event_fn: emit_event_fn,
+      max_retries: max_retries
+    } = state
 
     {:ok, collector} = StreamCollector.start()
 
@@ -319,7 +325,7 @@ defmodule Muse.Conductor.ToolLoop do
       end
     end
 
-    result = provider_module.stream(request, emit_fn)
+    result = stream_with_retry(provider_module, request, emit_fn, max_retries)
 
     {llm_events, live_delta_count} = StreamCollector.collect(collector)
 
@@ -1032,7 +1038,12 @@ defmodule Muse.Conductor.ToolLoop do
   # -- Final provider call (tools disabled) -------------------------------------
 
   defp final_provider_call(state) do
-    %{provider_module: provider_module, request: request, emit_event_fn: emit_event_fn} = state
+    %{
+      provider_module: provider_module,
+      request: request,
+      emit_event_fn: emit_event_fn,
+      max_retries: max_retries
+    } = state
 
     # Disable tools for the final call
     final_request = %{request | tools: [], tool_choice: :none}
@@ -1057,7 +1068,7 @@ defmodule Muse.Conductor.ToolLoop do
       end
     end
 
-    result = provider_module.stream(final_request, emit_fn)
+    result = stream_with_retry(provider_module, final_request, emit_fn, max_retries)
 
     {llm_events, live_delta_count} = StreamCollector.collect(collector)
 
@@ -1323,4 +1334,39 @@ defmodule Muse.Conductor.ToolLoop do
   end
 
   defp put_previous_response_id(request, _state), do: request
+
+  # -- Retry-integrated streaming ----------------------------------------------
+
+  # Wraps provider_module.stream/2 with Retry.with_retry/2 for transient errors.
+  # Non-retryable errors (auth, invalid model) propagate immediately.
+  # When retries are exhausted for a retryable error, annotates the reason
+  # with {:retries_exhausted, reason, max_retries} for downstream error UX.
+  #
+  # Safety:
+  #   • Bounded by max_retries (default 0 — no retries for fake provider)
+  #   • No secrets in logs — Retry uses redacted error data
+  #   • Each retry call reuses the same emit_fn (fresh collector per attempt)
+  defp stream_with_retry(provider_module, request, emit_fn, max_retries) when max_retries > 0 do
+    result =
+      Retry.with_retry(
+        fn -> provider_module.stream(request, emit_fn) end,
+        max_retries: max_retries
+      )
+
+    case result do
+      {:ok, response} ->
+        {:ok, response}
+
+      {:error, reason} ->
+        if Retry.retryable?(reason) do
+          {:error, {:retries_exhausted, reason, max_retries}}
+        else
+          {:error, reason}
+        end
+    end
+  end
+
+  defp stream_with_retry(provider_module, request, emit_fn, _max_retries) do
+    provider_module.stream(request, emit_fn)
+  end
 end

@@ -261,8 +261,46 @@ defmodule Muse.Application do
       )
     end
 
+    # Check for invalid base URL scheme (common copy-paste error)
+    if is_binary(config.base_url) and
+         not (String.starts_with?(config.base_url, "http://") or
+                String.starts_with?(config.base_url, "https://")) do
+      maybe_emit_diagnostic(
+        :error,
+        "Base URL must start with http:// or https://. Current: #{safe_url_hint(config.base_url)}"
+      )
+    end
+
+    # Check for truncated/placeholder API keys
+    if config.auth == :api_key and config.env_key do
+      case System.get_env(config.env_key) do
+        # already warned above
+        nil ->
+          :ok
+
+        key when is_binary(key) ->
+          if String.length(key) < 8 or key =~ ~r/^(sk-)?(your|test|placeholder|xxx)/i do
+            maybe_emit_diagnostic(
+              :warning,
+              "API key in #{config.env_key} appears to be a placeholder. " <>
+                "Provider calls will fail with authentication errors. Use /auth status to verify."
+            )
+          end
+
+        _ ->
+          :ok
+      end
+    end
+
     :ok
   end
+
+  defp safe_url_hint(url) when is_binary(url) do
+    # Show only the first 30 chars to avoid leaking URL params
+    String.slice(url, 0, 30) <> if byte_size(url) > 30, do: "...", else: ""
+  end
+
+  defp safe_url_hint(_), do: "(invalid)"
 
   defp maybe_emit_diagnostic(level, message) do
     # Only emit if Diagnostics GenServer is running (not in test base_children mode).

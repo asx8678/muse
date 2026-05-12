@@ -340,6 +340,18 @@ defmodule Muse.LLM.ProviderError do
     end
   end
 
+  # Retries exhausted — wraps the original error with retry context
+  # Must come BEFORE the catch-all do_classify(_reason) clause.
+  defp do_classify({:retries_exhausted, reason, max_retries})
+       when is_integer(max_retries) and max_retries >= 0 do
+    {category, _title, message, _hint, retryable, http_status} = do_classify(reason)
+    title_suffix = " (retries exhausted)"
+    msg_suffix = " All #{max_retries} retry attempt(s) failed."
+
+    {category, classify_title_for_retries(category) <> title_suffix, message <> msg_suffix,
+     retry_exhausted_hint(category), retryable, http_status}
+  end
+
   defp do_classify(_reason) do
     {:unknown, "Provider error", "An unexpected error occurred.",
      "Check /auth status and /provider status for configuration issues.", false, nil}
@@ -354,6 +366,36 @@ defmodule Muse.LLM.ProviderError do
         classified
     end
   end
+
+  defp retry_exhausted_hint(:rate_limit),
+    do:
+      "Rate limit persists after retries. Wait a few minutes before trying again or increase your rate limit."
+
+  defp retry_exhausted_hint(:timeout),
+    do:
+      "Timeout persists after retries. Try increasing MUSE_LLM_TIMEOUT_MS or check network stability."
+
+  defp retry_exhausted_hint(:connection),
+    do:
+      "Connection failures persist after retries. Check network and provider endpoint availability."
+
+  defp retry_exhausted_hint(:server),
+    do:
+      "Server errors persist after retries. The provider may be experiencing an outage — try again later."
+
+  defp retry_exhausted_hint(_),
+    do: "All retries failed. Check /auth status and /provider status for configuration issues."
+
+  defp classify_title_for_retries(:rate_limit), do: "Rate limited"
+  defp classify_title_for_retries(:timeout), do: "Request timed out"
+  defp classify_title_for_retries(:connection), do: "Connection error"
+  defp classify_title_for_retries(:server), do: "Server error"
+  defp classify_title_for_retries(:auth), do: "Authentication failed"
+  defp classify_title_for_retries(:invalid_model), do: "Invalid model"
+  defp classify_title_for_retries(:invalid_request), do: "Invalid request"
+  defp classify_title_for_retries(:quota), do: "Payment required"
+  defp classify_title_for_retries(:context_length), do: "Context length exceeded"
+  defp classify_title_for_retries(_), do: "Provider error"
 
   # -- Redaction ---------------------------------------------------------------
 
