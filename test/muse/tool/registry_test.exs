@@ -4,13 +4,21 @@ defmodule Muse.Tool.RegistryTest do
   alias Muse.Tool.Registry
 
   describe "all/0" do
-    test "returns all 12 registered tool specs" do
-      assert length(Registry.all()) == 12
+    test "returns all 16 registered tool specs" do
+      assert length(Registry.all()) == 16
     end
 
     test "keeps registered specs within the no-approval safe tool surface" do
+      excluded = [
+        "patch_propose",
+        "patch_apply",
+        "rollback_checkpoint",
+        "test_runner",
+        "spawn_sub_agents"
+      ]
+
       for spec <- Registry.all(),
-          spec.name not in ["patch_propose", "patch_apply", "rollback_checkpoint", "test_runner"] do
+          spec.name not in excluded do
         refute spec.requires_approval
         assert spec.permission in [:read, :interactive]
         refute spec.permission in [:write, :shell, :network, :patch, :delete, :restore_checkpoint]
@@ -29,10 +37,14 @@ defmodule Muse.Tool.RegistryTest do
                "ask_user_question",
                "list_muses",
                "list_skills",
+               "query_matrix",
+               "get_project_soul",
+               "load_workspace_files",
                "patch_propose",
                "patch_apply",
                "rollback_checkpoint",
-               "test_runner"
+               "test_runner",
+               "spawn_sub_agents"
              ]
     end
   end
@@ -82,11 +94,18 @@ defmodule Muse.Tool.RegistryTest do
       assert "ask_user_question" in names
       assert "list_muses" in names
       assert "list_skills" in names
+      assert "query_matrix" in names
+      assert "get_project_soul" in names
+      assert "load_workspace_files" in names
     end
 
     test "does not include write tools for planning muse" do
       specs = Registry.specs_for_muse(:planning)
       names = Enum.map(specs, & &1.name)
+
+      assert "query_matrix" in names
+      assert "get_project_soul" in names
+      assert "load_workspace_files" in names
 
       refute "write_file" in names
       refute "shell_command" in names
@@ -99,7 +118,7 @@ defmodule Muse.Tool.RegistryTest do
     test "returns OpenAI-compatible schemas for planning muse" do
       schemas = Registry.provider_schemas(:planning)
 
-      assert length(schemas) == 8
+      assert length(schemas) == 11
 
       for schema <- schemas do
         assert schema["type"] == "function"
@@ -203,11 +222,15 @@ defmodule Muse.Tool.RegistryTest do
   describe "tool_names/0" do
     test "returns all registered tool names" do
       names = Registry.tool_names()
-      assert length(names) == 12
+      assert length(names) == 16
       assert "read_file" in names
+      assert "query_matrix" in names
+      assert "get_project_soul" in names
+      assert "load_workspace_files" in names
       assert "patch_apply" in names
       assert "rollback_checkpoint" in names
       assert "test_runner" in names
+      assert "spawn_sub_agents" in names
     end
   end
 

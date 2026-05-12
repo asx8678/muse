@@ -205,7 +205,10 @@ defmodule Muse.MuseRegistryTest do
                  "git_diff_readonly",
                  "ask_user_question",
                  "list_muses",
-                 "list_skills"
+                 "list_skills",
+                 "query_matrix",
+                 "get_project_soul",
+                 "load_workspace_files"
                ])
     end
 

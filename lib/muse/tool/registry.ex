@@ -501,77 +501,6 @@ defmodule Muse.Tool.Registry do
                       output_limit: 50_000
                     )
 
-  @execute_in_shadow_spec Spec.new!(
-                            name: "execute_in_shadow",
-                            description:
-                              "Run a command in an isolated shadow workspace with VFS overlay. The shadow is an ephemeral directory that symlinks the project and overlays modified VFS files. The original project is never modified. Use this to run commands safely with in-memory changes before flushing to disk.",
-                            handler: Muse.Tools.ExecuteInShadow,
-                            input_schema: %{
-                              type: "object",
-                              properties: %{
-                                command: %{
-                                  type: "string",
-                                  description:
-                                    "Shell command to execute in the shadow workspace (required)"
-                                },
-                                timeout_seconds: %{
-                                  type: "integer",
-                                  description:
-                                    "Maximum execution time in seconds (default: 60, max: 600)"
-                                },
-                                files_to_include: %{
-                                  type: "array",
-                                  items: %{type: "string"},
-                                  description:
-                                    "Optional: specific workspace-relative file paths to overlay from VFS. If omitted, all modified VFS files are overlaid."
-                                }
-                              },
-                              required: ["command"]
-                            },
-                            kind: :shell,
-                            risk: :medium,
-                            permission: :test,
-                            allowed_roles: [:coding, :testing],
-                            allowed_muses: [:coding, :testing],
-                            requires_approval: false,
-                            output_limit: 50_000
-                          )
-
-  @test_in_shadow_spec Spec.new!(
-                         name: "test_in_shadow",
-                         description:
-                           "Run tests in an isolated shadow workspace with VFS overlay. Auto-detects the test framework (Elixir/mix test, JavaScript/npm test, Python/pytest) from project files and runs the appropriate command. VFS-modified files are overlaid so in-memory changes are tested without touching the real project.",
-                         handler: Muse.Tools.TestInShadow,
-                         input_schema: %{
-                           type: "object",
-                           properties: %{
-                             files_to_include: %{
-                               type: "array",
-                               items: %{type: "string"},
-                               description:
-                                 "Optional: specific workspace-relative file paths to overlay from VFS. If omitted, all modified VFS files are overlaid."
-                             },
-                             timeout_seconds: %{
-                               type: "integer",
-                               description:
-                                 "Maximum execution time in seconds (default: 120, max: 600)"
-                             },
-                             framework: %{
-                               type: "string",
-                               description:
-                                 "Force a specific test framework: elixir, javascript, or python (auto-detected if omitted)"
-                             }
-                           }
-                         },
-                         kind: :shell,
-                         risk: :medium,
-                         permission: :test,
-                         allowed_roles: [:coding, :testing],
-                         allowed_muses: [:coding, :testing],
-                         requires_approval: false,
-                         output_limit: 50_000
-                       )
-
   @spawn_sub_agents_spec Spec.new!(
                            name: "spawn_sub_agents",
                            description:
@@ -646,8 +575,6 @@ defmodule Muse.Tool.Registry do
     "patch_apply",
     "rollback_checkpoint",
     "test_runner",
-    "execute_in_shadow",
-    "test_in_shadow",
     "spawn_sub_agents"
   ]
 
@@ -667,8 +594,6 @@ defmodule Muse.Tool.Registry do
     "patch_apply" => @patch_apply_spec,
     "rollback_checkpoint" => @rollback_checkpoint_spec,
     "test_runner" => @test_runner_spec,
-    "execute_in_shadow" => @execute_in_shadow_spec,
-    "test_in_shadow" => @test_in_shadow_spec,
     "spawn_sub_agents" => @spawn_sub_agents_spec
   }
 
@@ -680,7 +605,7 @@ defmodule Muse.Tool.Registry do
   ## Examples
 
       iex> length(Muse.Tool.Registry.all())
-      18
+      16
 
       iex> hd(Muse.Tool.Registry.all()).name
       "list_files"
@@ -901,7 +826,7 @@ defmodule Muse.Tool.Registry do
        "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
        "query_matrix", "get_project_soul", "load_workspace_files",
        "patch_propose", "patch_apply", "rollback_checkpoint", "test_runner",
-       "execute_in_shadow", "test_in_shadow", "spawn_sub_agents"]
+       "spawn_sub_agents"]
 
   """
   @spec tool_names() :: [String.t()]

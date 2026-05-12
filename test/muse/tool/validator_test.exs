@@ -382,7 +382,11 @@ defmodule Muse.Tool.ValidatorTest do
               Map.get(spec.input_schema, "properties") || Map.get(spec.input_schema, :properties) ||
                 %{}
 
-            prop = Map.get(props, to_string(key)) || Map.get(props, key) || %{}
+            # Try both string and atom keys (schemas may use either)
+            prop =
+              Map.get(props, to_string(key)) || Map.get(props, key) ||
+                Map.get(props, String.to_atom(key)) || %{}
+
             type = Map.get(prop, "type") || Map.get(prop, :type) || "string"
 
             value =

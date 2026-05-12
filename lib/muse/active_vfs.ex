@@ -241,6 +241,28 @@ defmodule Muse.ActiveVFS do
     GenServer.call(__MODULE__, {:lock_status, path})
   end
 
+  @doc """
+  Returns a list of all file paths currently tracked in the VFS.
+
+  Includes files loaded lazily from disk (version 0) as well as
+  files with committed modifications (version > 0).
+  """
+  @spec tracked_files() :: [file_path()]
+  def tracked_files do
+    GenServer.call(__MODULE__, :tracked_files)
+  end
+
+  @doc """
+  Returns a list of file paths that have been modified in the VFS
+  (version number > 0).
+
+  These are files whose in-memory content differs from what is on disk.
+  """
+  @spec modified_files() :: [file_path()]
+  def modified_files do
+    GenServer.call(__MODULE__, :modified_files)
+  end
+
   # ── GenServer callbacks ─────────────────────────────────────────────
 
   @impl true
@@ -424,6 +446,26 @@ defmodule Muse.ActiveVFS do
       :error ->
         {:reply, {:error, :not_found}, state}
     end
+  end
+
+  @impl true
+  def handle_call(:tracked_files, _from, state) do
+    {:reply, Map.keys(state.files), state}
+  end
+
+  @impl true
+  def handle_call(:modified_files, _from, state) do
+    modified =
+      state.files
+      |> Enum.filter(fn {_path, entry} ->
+        case entry.versions do
+          [%FileVersion{version_number: vn} | _] -> vn > 0
+          _ -> false
+        end
+      end)
+      |> Enum.map(fn {path, _entry} -> path end)
+
+    {:reply, modified, state}
   end
 
   @impl true
