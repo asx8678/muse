@@ -882,6 +882,10 @@ defmodule MuseWeb.ConsoleComponents do
               <span><%= format_bytes(@beam_stats[:total_memory] || 0) %></span>
             </div>
             <div class="mini-card-row">
+              <span class="mini-card-label">processes</span>
+              <span><%= @beam_stats[:process_count] || 0 %></span>
+            </div>
+            <div class="mini-card-row">
               <span class="mini-card-label">modules</span>
               <span><%= @beam_stats[:loaded_modules] || 0 %></span>
             </div>
