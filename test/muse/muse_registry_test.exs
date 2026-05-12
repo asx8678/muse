@@ -208,7 +208,10 @@ defmodule Muse.MuseRegistryTest do
                  "list_skills",
                  "query_matrix",
                  "get_project_soul",
-                 "load_workspace_files"
+                 "load_workspace_files",
+                 "eval_elixir",
+                 "get_source_location",
+                 "get_docs"
                ])
     end
 
@@ -344,6 +347,8 @@ defmodule Muse.MuseRegistryTest do
       assert "repo_search" in reviewing.tools
       assert "git_status" in reviewing.tools
       assert "git_diff_readonly" in reviewing.tools
+      assert "get_source_location" in reviewing.tools
+      assert "get_docs" in reviewing.tools
     end
 
     test "has no write/shell/test tools", %{reviewing: reviewing} do
@@ -408,6 +413,9 @@ defmodule Muse.MuseRegistryTest do
       assert "repo_search" in testing.tools
       assert "git_status" in testing.tools
       assert "test_runner" in testing.tools
+      assert "eval_elixir" in testing.tools
+      assert "get_source_location" in testing.tools
+      assert "get_docs" in testing.tools
     end
 
     test "has no write/patch tools", %{testing: testing} do
@@ -518,6 +526,8 @@ defmodule Muse.MuseRegistryTest do
       assert "repo_search" in restoration.tools
       assert "git_status" in restoration.tools
       assert "git_diff_readonly" in restoration.tools
+      assert "get_source_location" in restoration.tools
+      assert "get_docs" in restoration.tools
     end
 
     test "has no write/patch tools", %{restoration: restoration} do

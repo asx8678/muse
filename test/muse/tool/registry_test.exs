@@ -4,8 +4,8 @@ defmodule Muse.Tool.RegistryTest do
   alias Muse.Tool.Registry
 
   describe "all/0" do
-    test "returns all 17 registered tool specs" do
-      assert length(Registry.all()) == 17
+    test "returns all 20 registered tool specs" do
+      assert length(Registry.all()) == 20
     end
 
     test "keeps registered specs within the no-approval safe tool surface" do
@@ -13,6 +13,7 @@ defmodule Muse.Tool.RegistryTest do
         "patch_propose",
         "patch_apply",
         "rollback_checkpoint",
+        "eval_elixir",
         "test_runner",
         "spawn_sub_agents",
         "create_file"
@@ -41,6 +42,9 @@ defmodule Muse.Tool.RegistryTest do
                "query_matrix",
                "get_project_soul",
                "load_workspace_files",
+               "eval_elixir",
+               "get_source_location",
+               "get_docs",
                "patch_propose",
                "patch_apply",
                "rollback_checkpoint",
@@ -99,6 +103,9 @@ defmodule Muse.Tool.RegistryTest do
       assert "query_matrix" in names
       assert "get_project_soul" in names
       assert "load_workspace_files" in names
+      assert "eval_elixir" in names
+      assert "get_source_location" in names
+      assert "get_docs" in names
     end
 
     test "does not include write tools for planning muse" do
@@ -120,7 +127,7 @@ defmodule Muse.Tool.RegistryTest do
     test "returns OpenAI-compatible schemas for planning muse" do
       schemas = Registry.provider_schemas(:planning)
 
-      assert length(schemas) == 11
+      assert length(schemas) == 14
 
       for schema <- schemas do
         assert schema["type"] == "function"
@@ -224,11 +231,14 @@ defmodule Muse.Tool.RegistryTest do
   describe "tool_names/0" do
     test "returns all registered tool names" do
       names = Registry.tool_names()
-      assert length(names) == 17
+      assert length(names) == 20
       assert "read_file" in names
       assert "query_matrix" in names
       assert "get_project_soul" in names
       assert "load_workspace_files" in names
+      assert "eval_elixir" in names
+      assert "get_source_location" in names
+      assert "get_docs" in names
       assert "patch_apply" in names
       assert "rollback_checkpoint" in names
       assert "test_runner" in names
@@ -331,6 +341,162 @@ defmodule Muse.Tool.RegistryTest do
       specs = Registry.specs_for_muse(:testing)
       names = Enum.map(specs, & &1.name)
       refute "create_file" in names
+    end
+  end
+
+  describe "eval_elixir registration" do
+    test "eval_elixir is a registered tool" do
+      assert Registry.known_tool?("eval_elixir")
+      spec = Registry.get("eval_elixir")
+      assert spec.name == "eval_elixir"
+      assert spec.handler == Muse.Tools.EvalElixir
+      assert spec.kind == :shell
+      assert spec.risk == :high
+      assert spec.permission == :shell
+      assert spec.allowed_muses == [:planning, :coding, :testing]
+      assert spec.requires_approval == true
+    end
+
+    test "eval_elixir is not blocked" do
+      refute Registry.blocked_tool?("eval_elixir")
+    end
+
+    test "planning muse can use eval_elixir" do
+      specs = Registry.specs_for_muse(:planning)
+      names = Enum.map(specs, & &1.name)
+      assert "eval_elixir" in names
+    end
+
+    test "coding muse can use eval_elixir" do
+      specs = Registry.specs_for_muse(:coding)
+      names = Enum.map(specs, & &1.name)
+      assert "eval_elixir" in names
+    end
+
+    test "testing muse can use eval_elixir" do
+      specs = Registry.specs_for_muse(:testing)
+      names = Enum.map(specs, & &1.name)
+      assert "eval_elixir" in names
+    end
+
+    test "reviewing muse cannot use eval_elixir" do
+      specs = Registry.specs_for_muse(:reviewing)
+      names = Enum.map(specs, & &1.name)
+      refute "eval_elixir" in names
+    end
+
+    test "restoration muse cannot use eval_elixir" do
+      specs = Registry.specs_for_muse(:restoration)
+      names = Enum.map(specs, & &1.name)
+      refute "eval_elixir" in names
+    end
+  end
+
+  describe "get_source_location registration" do
+    test "get_source_location is a registered tool" do
+      assert Registry.known_tool?("get_source_location")
+      spec = Registry.get("get_source_location")
+      assert spec.name == "get_source_location"
+      assert spec.handler == Muse.Tools.GetSourceLocation
+      assert spec.kind == :read
+      assert spec.risk == :low
+      assert spec.permission == :read
+      assert spec.allowed_muses == [:planning, :coding, :testing, :reviewing, :restoration, :memory]
+      assert spec.requires_approval == false
+    end
+
+    test "get_source_location is not blocked" do
+      refute Registry.blocked_tool?("get_source_location")
+    end
+
+    test "planning muse can use get_source_location" do
+      specs = Registry.specs_for_muse(:planning)
+      names = Enum.map(specs, & &1.name)
+      assert "get_source_location" in names
+    end
+
+    test "coding muse can use get_source_location" do
+      specs = Registry.specs_for_muse(:coding)
+      names = Enum.map(specs, & &1.name)
+      assert "get_source_location" in names
+    end
+
+    test "reviewing muse can use get_source_location" do
+      specs = Registry.specs_for_muse(:reviewing)
+      names = Enum.map(specs, & &1.name)
+      assert "get_source_location" in names
+    end
+
+    test "restoration muse can use get_source_location" do
+      specs = Registry.specs_for_muse(:restoration)
+      names = Enum.map(specs, & &1.name)
+      assert "get_source_location" in names
+    end
+
+    test "testing muse can use get_source_location" do
+      specs = Registry.specs_for_muse(:testing)
+      names = Enum.map(specs, & &1.name)
+      assert "get_source_location" in names
+    end
+
+    test "memory muse cannot use get_source_location (no tools)" do
+      specs = Registry.specs_for_muse(:memory)
+      names = Enum.map(specs, & &1.name)
+      refute "get_source_location" in names
+    end
+  end
+
+  describe "get_docs registration" do
+    test "get_docs is a registered tool" do
+      assert Registry.known_tool?("get_docs")
+      spec = Registry.get("get_docs")
+      assert spec.name == "get_docs"
+      assert spec.handler == Muse.Tools.GetDocs
+      assert spec.kind == :read
+      assert spec.risk == :low
+      assert spec.permission == :read
+      assert spec.allowed_muses == [:planning, :coding, :testing, :reviewing, :restoration, :memory]
+      assert spec.requires_approval == false
+    end
+
+    test "get_docs is not blocked" do
+      refute Registry.blocked_tool?("get_docs")
+    end
+
+    test "planning muse can use get_docs" do
+      specs = Registry.specs_for_muse(:planning)
+      names = Enum.map(specs, & &1.name)
+      assert "get_docs" in names
+    end
+
+    test "coding muse can use get_docs" do
+      specs = Registry.specs_for_muse(:coding)
+      names = Enum.map(specs, & &1.name)
+      assert "get_docs" in names
+    end
+
+    test "reviewing muse can use get_docs" do
+      specs = Registry.specs_for_muse(:reviewing)
+      names = Enum.map(specs, & &1.name)
+      assert "get_docs" in names
+    end
+
+    test "restoration muse can use get_docs" do
+      specs = Registry.specs_for_muse(:restoration)
+      names = Enum.map(specs, & &1.name)
+      assert "get_docs" in names
+    end
+
+    test "testing muse can use get_docs" do
+      specs = Registry.specs_for_muse(:testing)
+      names = Enum.map(specs, & &1.name)
+      assert "get_docs" in names
+    end
+
+    test "memory muse cannot use get_docs (no tools)" do
+      specs = Registry.specs_for_muse(:memory)
+      names = Enum.map(specs, & &1.name)
+      refute "get_docs" in names
     end
   end
 end

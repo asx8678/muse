@@ -589,6 +589,68 @@ defmodule Muse.Tool.Registry do
                            output_limit: 10_000
                          )
 
+  @eval_elixir_spec Spec.new!(
+    name: "eval_elixir",
+    description: "Execute Elixir code in the project's runtime context with IEx.Helpers available. Returns evaluated result and captured IO. Use for quick experiments, checking module structure, or inspecting runtime state. Requires approval due to shell execution risk.",
+    handler: Muse.Tools.EvalElixir,
+    input_schema: %{
+      type: "object",
+      properties: %{
+        code: %{type: "string", description: "Elixir code to evaluate (required)"},
+        arguments: %{type: "array", items: %{}, description: "Optional list of values available as the `args` variable in the evaluated code"},
+        timeout: %{type: "integer", description: "Max execution time in milliseconds (default: 30000, max: 300000)"}
+      },
+      required: ["code"]
+    },
+    kind: :shell,
+    risk: :high,
+    permission: :shell,
+    allowed_roles: [:planning, :coding, :testing],
+    allowed_muses: [:planning, :coding, :testing],
+    requires_approval: true,
+    output_limit: 50_000
+  )
+
+  @get_source_location_spec Spec.new!(
+    name: "get_source_location",
+    description: "Resolve a Module, Module.function, or Module.function/arity reference to its source file path and line number via BEAM bytecode introspection. Supports dep:PackageName prefix for dependency roots.",
+    handler: Muse.Tools.GetSourceLocation,
+    input_schema: %{
+      type: "object",
+      properties: %{
+        reference: %{type: "string", description: "Module, Module.function, or Module.function/arity reference (e.g. Enum, Enum.map, Enum.map/2). Supports dep:PackageName prefix."}
+      },
+      required: ["reference"]
+    },
+    kind: :read,
+    risk: :low,
+    permission: :read,
+    allowed_roles: [:planning, :coding, :testing, :reviewing, :restoration, :memory],
+    allowed_muses: [:planning, :coding, :testing, :reviewing, :restoration, :memory],
+    requires_approval: false,
+    output_limit: 50_000
+  )
+
+  @get_docs_spec Spec.new!(
+    name: "get_docs",
+    description: "Fetch formatted Markdown documentation for a Module, Module.function/arity, or callback (c:Module.callback/arity). Works for Elixir and Erlang modules loaded in the runtime.",
+    handler: Muse.Tools.GetDocs,
+    input_schema: %{
+      type: "object",
+      properties: %{
+        reference: %{type: "string", description: "Module, Module.function, Module.function/arity, or c:Module.callback/arity (e.g. Enum, Enum.map/2, c:GenServer.handle_call/3)"}
+      },
+      required: ["reference"]
+    },
+    kind: :read,
+    risk: :low,
+    permission: :read,
+    allowed_roles: [:planning, :coding, :testing, :reviewing, :restoration, :memory],
+    allowed_muses: [:planning, :coding, :testing, :reviewing, :restoration, :memory],
+    requires_approval: false,
+    output_limit: 100_000
+  )
+
   # -- Internal index -----------------------------------------------------------
 
   @ordered_names [
@@ -603,6 +665,9 @@ defmodule Muse.Tool.Registry do
     "query_matrix",
     "get_project_soul",
     "load_workspace_files",
+    "eval_elixir",
+    "get_source_location",
+    "get_docs",
     "patch_propose",
     "patch_apply",
     "rollback_checkpoint",
@@ -623,6 +688,9 @@ defmodule Muse.Tool.Registry do
     "query_matrix" => @query_matrix_spec,
     "get_project_soul" => @get_project_soul_spec,
     "load_workspace_files" => @load_workspace_files_spec,
+    "eval_elixir" => @eval_elixir_spec,
+    "get_source_location" => @get_source_location_spec,
+    "get_docs" => @get_docs_spec,
     "patch_propose" => @patch_propose_spec,
     "patch_apply" => @patch_apply_spec,
     "rollback_checkpoint" => @rollback_checkpoint_spec,
@@ -639,7 +707,7 @@ defmodule Muse.Tool.Registry do
   ## Examples
 
       iex> length(Muse.Tool.Registry.all())
-      17
+      20
 
       iex> hd(Muse.Tool.Registry.all()).name
       "list_files"
@@ -705,13 +773,15 @@ defmodule Muse.Tool.Registry do
       iex> Enum.map(specs, & &1.name)
       ["list_files", "read_file", "repo_search", "git_status",
        "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
-       "query_matrix", "get_project_soul", "load_workspace_files"]
+       "query_matrix", "get_project_soul", "load_workspace_files",
+       "eval_elixir", "get_source_location", "get_docs"]
 
       iex> specs = Muse.Tool.Registry.specs_for_muse(:coding)
       iex> Enum.map(specs, & &1.name)
       ["list_files", "read_file", "repo_search", "git_status",
        "git_diff_readonly", "query_matrix", "get_project_soul", "load_workspace_files",
-       "patch_propose", "patch_apply", "create_file"]
+       "eval_elixir", "get_source_location", "get_docs",
+       "patch_propose", "patch_apply", "spawn_sub_agents", "create_file"]
 
   """
   @spec specs_for_muse(atom()) :: [Spec.t()]
@@ -735,7 +805,7 @@ defmodule Muse.Tool.Registry do
 
       iex> schemas = Muse.Tool.Registry.provider_schemas(:planning)
       iex> length(schemas)
-      11
+      14
       iex> hd(schemas)[:name]
       "list_files"
 
@@ -859,6 +929,7 @@ defmodule Muse.Tool.Registry do
       ["list_files", "read_file", "repo_search", "git_status",
        "git_diff_readonly", "ask_user_question", "list_muses", "list_skills",
        "query_matrix", "get_project_soul", "load_workspace_files",
+       "eval_elixir", "get_source_location", "get_docs",
        "patch_propose", "patch_apply", "rollback_checkpoint", "test_runner",
        "spawn_sub_agents", "create_file"]
 

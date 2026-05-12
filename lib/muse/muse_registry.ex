@@ -45,7 +45,10 @@ defmodule Muse.MuseRegistry do
       "list_skills",
       "query_matrix",
       "get_project_soul",
-      "load_workspace_files"
+      "load_workspace_files",
+      "eval_elixir",
+      "get_source_location",
+      "get_docs"
     ],
     permissions: %{
       read: true,
@@ -79,6 +82,9 @@ defmodule Muse.MuseRegistry do
       "query_matrix",
       "get_project_soul",
       "load_workspace_files",
+      "eval_elixir",
+      "get_source_location",
+      "get_docs",
       "patch_propose",
       "patch_apply",
       "test_runner",
@@ -118,7 +124,9 @@ defmodule Muse.MuseRegistry do
       "read_file",
       "repo_search",
       "git_status",
-      "git_diff_readonly"
+      "git_diff_readonly",
+      "get_source_location",
+      "get_docs"
     ],
     permissions: %{
       read: true,
@@ -149,6 +157,9 @@ defmodule Muse.MuseRegistry do
       "repo_search",
       "git_status",
       "git_diff_readonly",
+      "eval_elixir",
+      "get_source_location",
+      "get_docs",
       "test_runner",
       "execute_in_shadow",
       "test_in_shadow"
@@ -209,7 +220,9 @@ defmodule Muse.MuseRegistry do
       "read_file",
       "repo_search",
       "git_status",
-      "git_diff_readonly"
+      "git_diff_readonly",
+      "get_source_location",
+      "get_docs"
     ],
     permissions: %{
       read: true,
