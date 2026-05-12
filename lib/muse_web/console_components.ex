@@ -705,7 +705,7 @@ defmodule MuseWeb.ConsoleComponents do
       <button type="button" class={"chat-tab chat-tab-pinned #{if @active_tab == :process, do: "chat-tab-active"}"} phx-click="switch_chat_tab" phx-value-tab="process">
         <span class="chat-tab-icon">💬</span>
         <span class="chat-tab-label">Process</span>
-        <span class="chat-tab-pin" title="Always pinned">📌</span>
+        <span class="chat-tab-pin" title="Always open">🔒</span>
       </button>
       <%= for tab <- @tabs do %>
         <button type="button" class={"chat-tab #{if @active_tab == tab.id, do: "chat-tab-active"}"} phx-click="switch_chat_tab" phx-value-tab={tab.id}>
