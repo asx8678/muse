@@ -1573,4 +1573,493 @@ defmodule Muse.SessionStoreTest do
       assert memory["user_goal"] == "Build feature"
     end
   end
+
+  # ── Phase 4: retention_config/0 and apply_retention/1 ────────────────
+
+  describe "retention_config/0" do
+    test "returns empty opts when no env vars or app config set" do
+      # Clear any env vars that might leak from the test environment
+      original_count = System.get_env("MUSE_SESSION_MAX_COUNT")
+      original_days = System.get_env("MUSE_SESSION_MAX_AGE_DAYS")
+
+      try do
+        System.delete_env("MUSE_SESSION_MAX_COUNT")
+        System.delete_env("MUSE_SESSION_MAX_AGE_DAYS")
+
+        config = SessionStore.retention_config()
+        assert config == []
+      after
+        if original_count, do: System.put_env("MUSE_SESSION_MAX_COUNT", original_count)
+        if original_days, do: System.put_env("MUSE_SESSION_MAX_AGE_DAYS", original_days)
+      end
+    end
+
+    test "reads MUSE_SESSION_MAX_COUNT from env var" do
+      original = System.get_env("MUSE_SESSION_MAX_COUNT")
+
+      try do
+        System.put_env("MUSE_SESSION_MAX_COUNT", "5")
+        config = SessionStore.retention_config()
+        assert Keyword.get(config, :max_sessions) == 5
+      after
+        if original,
+          do: System.put_env("MUSE_SESSION_MAX_COUNT", original),
+          else: System.delete_env("MUSE_SESSION_MAX_COUNT")
+      end
+    end
+
+    test "reads MUSE_SESSION_MAX_AGE_DAYS from env var" do
+      original = System.get_env("MUSE_SESSION_MAX_AGE_DAYS")
+
+      try do
+        System.put_env("MUSE_SESSION_MAX_AGE_DAYS", "7")
+        config = SessionStore.retention_config()
+        assert Keyword.get(config, :ttl_seconds) == 7 * 86_400
+      after
+        if original,
+          do: System.put_env("MUSE_SESSION_MAX_AGE_DAYS", original),
+          else: System.delete_env("MUSE_SESSION_MAX_AGE_DAYS")
+      end
+    end
+
+    test "ignores non-positive env values" do
+      orig_count = System.get_env("MUSE_SESSION_MAX_COUNT")
+      orig_days = System.get_env("MUSE_SESSION_MAX_AGE_DAYS")
+
+      try do
+        System.put_env("MUSE_SESSION_MAX_COUNT", "0")
+        System.put_env("MUSE_SESSION_MAX_AGE_DAYS", "-1")
+
+        config = SessionStore.retention_config()
+        assert config == []
+      after
+        if orig_count,
+          do: System.put_env("MUSE_SESSION_MAX_COUNT", orig_count),
+          else: System.delete_env("MUSE_SESSION_MAX_COUNT")
+
+        if orig_days,
+          do: System.put_env("MUSE_SESSION_MAX_AGE_DAYS", orig_days),
+          else: System.delete_env("MUSE_SESSION_MAX_AGE_DAYS")
+      end
+    end
+
+    test "ignores non-numeric env values" do
+      orig_count = System.get_env("MUSE_SESSION_MAX_COUNT")
+      orig_days = System.get_env("MUSE_SESSION_MAX_AGE_DAYS")
+
+      try do
+        System.put_env("MUSE_SESSION_MAX_COUNT", "abc")
+        System.put_env("MUSE_SESSION_MAX_AGE_DAYS", "not-a-number")
+
+        config = SessionStore.retention_config()
+        assert config == []
+      after
+        if orig_count,
+          do: System.put_env("MUSE_SESSION_MAX_COUNT", orig_count),
+          else: System.delete_env("MUSE_SESSION_MAX_COUNT")
+
+        if orig_days,
+          do: System.put_env("MUSE_SESSION_MAX_AGE_DAYS", orig_days),
+          else: System.delete_env("MUSE_SESSION_MAX_AGE_DAYS")
+      end
+    end
+
+    test "env var takes precedence over app config" do
+      orig_count = System.get_env("MUSE_SESSION_MAX_COUNT")
+      orig_app = Application.get_env(:muse, :session_max_count)
+
+      try do
+        Application.put_env(:muse, :session_max_count, 99)
+        System.put_env("MUSE_SESSION_MAX_COUNT", "3")
+
+        config = SessionStore.retention_config()
+        assert Keyword.get(config, :max_sessions) == 3
+      after
+        if orig_count,
+          do: System.put_env("MUSE_SESSION_MAX_COUNT", orig_count),
+          else: System.delete_env("MUSE_SESSION_MAX_COUNT")
+
+        if orig_app,
+          do: Application.put_env(:muse, :session_max_count, orig_app),
+          else: Application.delete_env(:muse, :session_max_count)
+      end
+    end
+  end
+
+  describe "apply_retention/1" do
+    test "evicts sessions using retention_config from env var" do
+      base_dir = tmp_dir!()
+      orig = System.get_env("MUSE_SESSION_MAX_COUNT")
+
+      try do
+        System.put_env("MUSE_SESSION_MAX_COUNT", "2")
+
+        for i <- 1..4 do
+          SessionStore.save_session(base_dir, "ret-#{i}", %{"idx" => i})
+          if i < 4, do: Process.sleep(10)
+        end
+
+        assert {:ok, evicted} = SessionStore.apply_retention(base_dir)
+        assert length(evicted) == 2
+
+        assert {:ok, remaining} = SessionStore.list_sessions(base_dir)
+        assert length(remaining) == 2
+      after
+        File.rm_rf!(base_dir)
+
+        if orig,
+          do: System.put_env("MUSE_SESSION_MAX_COUNT", orig),
+          else: System.delete_env("MUSE_SESSION_MAX_COUNT")
+      end
+    end
+
+    test "no eviction when retention config is empty" do
+      base_dir = tmp_dir!()
+      orig_count = System.get_env("MUSE_SESSION_MAX_COUNT")
+      orig_days = System.get_env("MUSE_SESSION_MAX_AGE_DAYS")
+
+      try do
+        System.delete_env("MUSE_SESSION_MAX_COUNT")
+        System.delete_env("MUSE_SESSION_MAX_AGE_DAYS")
+
+        SessionStore.save_session(base_dir, "no-evict", %{"v" => 1})
+        assert {:ok, []} = SessionStore.apply_retention(base_dir)
+      after
+        File.rm_rf!(base_dir)
+
+        if orig_count,
+          do: System.put_env("MUSE_SESSION_MAX_COUNT", orig_count),
+          else: System.delete_env("MUSE_SESSION_MAX_COUNT")
+
+        if orig_days,
+          do: System.put_env("MUSE_SESSION_MAX_AGE_DAYS", orig_days),
+          else: System.delete_env("MUSE_SESSION_MAX_AGE_DAYS")
+      end
+    end
+  end
+
+  # ── Phase 4: Export/import full round-trip with memory ────────────────
+
+  describe "export/import full round-trip with memory" do
+    test "export then import preserves all session data including memory",
+         %{base_dir: base_dir, session_id: session_id} do
+      # Create a full session with memory
+      SessionStore.save_session(base_dir, session_id, %{
+        "status" => "idle",
+        "objective" => "Round-trip"
+      })
+
+      SessionStore.append_event(base_dir, session_id, %{
+        "type" => "user_message",
+        "text" => "hello"
+      })
+
+      SessionStore.append_event(base_dir, session_id, %{
+        "type" => "plan_created",
+        "plan_id" => "p1"
+      })
+
+      SessionStore.append_message(base_dir, session_id, %{"role" => "user", "content" => "hello"})
+
+      SessionStore.append_patch(base_dir, session_id, %{
+        "patch_id" => "p1",
+        "status" => "approved"
+      })
+
+      SessionStore.save_memory(base_dir, session_id, %{
+        "user_goal" => "Round-trip test",
+        "project_facts" => ["Elixir"]
+      })
+
+      # Export
+      assert {:ok, export} = SessionStore.export_session(base_dir, session_id)
+
+      # Import into a new base dir to verify full reconstruction
+      new_base = tmp_dir!()
+
+      on_exit(fn -> File.rm_rf!(new_base) end)
+
+      assert {:ok, ^session_id} = SessionStore.import_session(new_base, export)
+
+      # Verify all data round-tripped
+      assert {:ok, snapshot} = SessionStore.load_session(new_base, session_id)
+      assert snapshot["status"] == "idle"
+      assert snapshot["objective"] == "Round-trip"
+
+      assert {:ok, events, %{skipped: 0}} = SessionStore.load_events(new_base, session_id)
+      assert length(events) == 2
+
+      assert {:ok, messages, %{skipped: 0}} = SessionStore.load_messages(new_base, session_id)
+      assert length(messages) == 1
+
+      assert {:ok, patches, %{skipped: 0}} = SessionStore.load_patches(new_base, session_id)
+      assert length(patches) == 1
+
+      assert {:ok, memory} = SessionStore.load_memory(new_base, session_id)
+      assert memory["user_goal"] == "Round-trip test"
+      assert memory["project_facts"] == ["Elixir"]
+    end
+
+    test "export then import without memory works correctly",
+         %{base_dir: base_dir, session_id: session_id} do
+      SessionStore.save_session(base_dir, session_id, %{"status" => "idle"})
+      SessionStore.append_event(base_dir, session_id, %{"type" => "test"})
+
+      assert {:ok, export} = SessionStore.export_session(base_dir, session_id)
+      refute Map.has_key?(export, "memory")
+
+      new_base = tmp_dir!()
+
+      on_exit(fn -> File.rm_rf!(new_base) end)
+
+      assert {:ok, ^session_id} = SessionStore.import_session(new_base, export)
+
+      assert {:ok, snapshot} = SessionStore.load_session(new_base, session_id)
+      assert snapshot["status"] == "idle"
+
+      assert {:ok, events, %{skipped: 0}} = SessionStore.load_events(new_base, session_id)
+      assert length(events) == 1
+
+      # Memory should not exist in the imported session
+      assert {:error, :enoent} = SessionStore.load_memory(new_base, session_id)
+    end
+
+    test "export does not include secrets in snapshot",
+         %{base_dir: base_dir, session_id: session_id} do
+      # Save session with sensitive key — gets redacted on save
+      SessionStore.save_session(base_dir, session_id, %{
+        "status" => "idle",
+        "api_key" => "sk-test-12345"
+      })
+
+      SessionStore.append_event(base_dir, session_id, %{"type" => "test"})
+
+      assert {:ok, export} = SessionStore.export_session(base_dir, session_id)
+
+      # The api_key in the export snapshot should be redacted
+      assert export["snapshot"]["api_key"] == "**REDACTED**"
+
+      # Raw secret should not appear anywhere in the export JSON
+      json = Jason.encode!(export)
+      refute String.contains?(json, "sk-test-12345")
+    end
+
+    test "export rejects session with unsafe memory on disk",
+         %{base_dir: base_dir, session_id: session_id} do
+      # Write memory file directly with a sensitive key to simulate legacy data
+      dir = SessionStore.session_dir(base_dir, session_id)
+      File.mkdir_p!(dir)
+
+      File.write!(
+        Path.join(dir, "session.json"),
+        Jason.encode!(%{"status" => "idle", "schema_version" => 1})
+      )
+
+      File.write!(Path.join(dir, "events.jsonl"), "")
+      File.write!(Path.join(dir, "messages.jsonl"), "")
+      File.write!(Path.join(dir, "patches.jsonl"), "")
+
+      unsafe_memory =
+        Jason.encode!(%{
+          "user_goal" => "Test",
+          "password" => "secret-value",
+          "schema_version" => 1
+        })
+
+      File.write!(Path.join(dir, "memory.json"), unsafe_memory)
+
+      # export_session should fail because memory validation rejects sensitive keys
+      assert {:error, {:unsafe_memory, _reasons}} =
+               SessionStore.export_session(base_dir, session_id)
+    end
+  end
+
+  # ── Phase 4: Workspace isolation with events and memory ────────────────
+
+  describe "workspace isolation — events and memory" do
+    test "events are isolated across workspaces" do
+      base_dir_a = tmp_dir!()
+      base_dir_b = tmp_dir!()
+
+      on_exit(fn ->
+        File.rm_rf!(base_dir_a)
+        File.rm_rf!(base_dir_b)
+      end)
+
+      SessionStore.save_session(base_dir_a, "shared", %{"ws" => "A"})
+      SessionStore.append_event(base_dir_a, "shared", %{"type" => "event_from_a"})
+
+      SessionStore.save_session(base_dir_b, "shared", %{"ws" => "B"})
+      SessionStore.append_event(base_dir_b, "shared", %{"type" => "event_from_b"})
+
+      assert {:ok, events_a, _} = SessionStore.load_events(base_dir_a, "shared")
+      assert {:ok, events_b, _} = SessionStore.load_events(base_dir_b, "shared")
+
+      assert length(events_a) == 1
+      assert length(events_b) == 1
+      assert hd(events_a)["type"] == "event_from_a"
+      assert hd(events_b)["type"] == "event_from_b"
+    end
+
+    test "messages are isolated across workspaces" do
+      base_dir_a = tmp_dir!()
+      base_dir_b = tmp_dir!()
+
+      on_exit(fn ->
+        File.rm_rf!(base_dir_a)
+        File.rm_rf!(base_dir_b)
+      end)
+
+      SessionStore.save_session(base_dir_a, "shared", %{"ws" => "A"})
+
+      SessionStore.append_message(base_dir_a, "shared", %{"role" => "user", "content" => "from A"})
+
+      SessionStore.save_session(base_dir_b, "shared", %{"ws" => "B"})
+
+      SessionStore.append_message(base_dir_b, "shared", %{"role" => "user", "content" => "from B"})
+
+      assert {:ok, msgs_a, _} = SessionStore.load_messages(base_dir_a, "shared")
+      assert {:ok, msgs_b, _} = SessionStore.load_messages(base_dir_b, "shared")
+
+      assert hd(msgs_a)["content"] == "from A"
+      assert hd(msgs_b)["content"] == "from B"
+    end
+
+    test "memory is isolated across workspaces" do
+      base_dir_a = tmp_dir!()
+      base_dir_b = tmp_dir!()
+
+      on_exit(fn ->
+        File.rm_rf!(base_dir_a)
+        File.rm_rf!(base_dir_b)
+      end)
+
+      SessionStore.save_session(base_dir_a, "shared", %{"ws" => "A"})
+      SessionStore.save_memory(base_dir_a, "shared", %{"user_goal" => "Goal A"})
+
+      SessionStore.save_session(base_dir_b, "shared", %{"ws" => "B"})
+      SessionStore.save_memory(base_dir_b, "shared", %{"user_goal" => "Goal B"})
+
+      assert {:ok, mem_a} = SessionStore.load_memory(base_dir_a, "shared")
+      assert {:ok, mem_b} = SessionStore.load_memory(base_dir_b, "shared")
+
+      assert mem_a["user_goal"] == "Goal A"
+      assert mem_b["user_goal"] == "Goal B"
+    end
+
+    test "patches are isolated across workspaces" do
+      base_dir_a = tmp_dir!()
+      base_dir_b = tmp_dir!()
+
+      on_exit(fn ->
+        File.rm_rf!(base_dir_a)
+        File.rm_rf!(base_dir_b)
+      end)
+
+      SessionStore.save_session(base_dir_a, "shared", %{"ws" => "A"})
+
+      SessionStore.append_patch(base_dir_a, "shared", %{
+        "patch_id" => "pA",
+        "status" => "approved"
+      })
+
+      SessionStore.save_session(base_dir_b, "shared", %{"ws" => "B"})
+
+      SessionStore.append_patch(base_dir_b, "shared", %{
+        "patch_id" => "pB",
+        "status" => "rejected"
+      })
+
+      assert {:ok, patches_a, _} = SessionStore.load_patches(base_dir_a, "shared")
+      assert {:ok, patches_b, _} = SessionStore.load_patches(base_dir_b, "shared")
+
+      assert length(patches_a) == 1
+      assert length(patches_b) == 1
+      assert hd(patches_a)["patch_id"] == "pA"
+      assert hd(patches_b)["patch_id"] == "pB"
+    end
+
+    test "deleting a session in one workspace does not affect the other" do
+      base_dir_a = tmp_dir!()
+      base_dir_b = tmp_dir!()
+
+      on_exit(fn ->
+        File.rm_rf!(base_dir_a)
+        File.rm_rf!(base_dir_b)
+      end)
+
+      SessionStore.save_session(base_dir_a, "shared", %{"ws" => "A"})
+      SessionStore.save_session(base_dir_b, "shared", %{"ws" => "B"})
+
+      assert :ok = SessionStore.delete_session(base_dir_a, "shared")
+
+      # Session A is gone
+      refute SessionStore.session_exists?(base_dir_a, "shared")
+      # Session B still exists
+      assert SessionStore.session_exists?(base_dir_b, "shared")
+      assert {:ok, %{"ws" => "B"}} = SessionStore.load_session(base_dir_b, "shared")
+    end
+  end
+
+  # ── Phase 4: Memory persistence survives restart ──────────────────────
+
+  describe "memory persistence survives restart" do
+    test "compacted memory round-trips through disk", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = %{
+        "user_goal" => "Build the feature",
+        "project_facts" => ["Elixir 1.17", "Phoenix 1.8"],
+        "decisions_made" => ["Use GenServer"],
+        "approved_plans" => ["Plan A: 5 tasks"],
+        "changes_completed" => ["lib/feature.ex created"],
+        "validation_results" => ["Tests passing"],
+        "open_issues" => [],
+        "useful_conventions" => ["Pattern matching"],
+        "compacted_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "source_session_id" => session_id
+      }
+
+      assert :ok = SessionStore.save_memory(base_dir, session_id, memory)
+      assert {:ok, loaded} = SessionStore.load_memory(base_dir, session_id)
+
+      assert loaded["user_goal"] == "Build the feature"
+      assert loaded["project_facts"] == ["Elixir 1.17", "Phoenix 1.8"]
+      assert loaded["decisions_made"] == ["Use GenServer"]
+      assert loaded["approved_plans"] == ["Plan A: 5 tasks"]
+      assert loaded["changes_completed"] == ["lib/feature.ex created"]
+      assert loaded["validation_results"] == ["Tests passing"]
+      assert loaded["useful_conventions"] == ["Pattern matching"]
+      assert loaded["source_session_id"] == session_id
+    end
+
+    test "validated memory survives save and load cycle", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = %{
+        "user_goal" => "Safe feature",
+        "project_facts" => ["Elixir project"],
+        "compacted_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+        "source_session_id" => session_id
+      }
+
+      assert :ok = SessionStore.save_memory(base_dir, session_id, memory, validate: true)
+      assert {:ok, loaded} = SessionStore.load_memory(base_dir, session_id, validate: true)
+      assert loaded["user_goal"] == "Safe feature"
+    end
+
+    test "memory cleared via delete_memory is not recoverable", %{
+      base_dir: base_dir,
+      session_id: session_id
+    } do
+      memory = %{"user_goal" => "Temporary"}
+      assert :ok = SessionStore.save_memory(base_dir, session_id, memory)
+      assert {:ok, _} = SessionStore.load_memory(base_dir, session_id)
+
+      assert :ok = SessionStore.delete_memory(base_dir, session_id)
+      assert {:error, :enoent} = SessionStore.load_memory(base_dir, session_id)
+    end
+  end
 end

@@ -55,6 +55,16 @@ defmodule Muse.SessionStore do
   when the total count exceeds a configurable maximum, and/or by removing sessions
   older than a configurable TTL. Eviction is based on session directory mtime.
 
+  `apply_retention/1` reads retention settings from environment variables
+  and/or application config and delegates to `evict_sessions/2`:
+
+    * `MUSE_SESSION_MAX_COUNT` — maximum sessions to retain (env var)
+    * `MUSE_SESSION_MAX_AGE_DAYS` — maximum session age in days (env var)
+    * `config :muse, :session_max_count` — application config equivalent
+    * `config :muse, :session_max_age_days` — application config equivalent
+
+  Environment variables take precedence over application config.
+
   ## Export/Import (v0.2.0+)
 
   `export_session/2` bundles a session snapshot, events, messages, patches,
@@ -500,6 +510,61 @@ defmodule Muse.SessionStore do
   end
 
   # ── Retention policy ────────────────────────────────────────────────────
+
+  @doc """
+  Reads session retention configuration from environment variables
+  and/or application config.
+
+  ## Environment Variables
+
+    * `MUSE_SESSION_MAX_COUNT` — maximum number of sessions to retain
+    * `MUSE_SESSION_MAX_AGE_DAYS` — maximum age in days for a session directory
+
+  ## Application Config
+
+    * `config :muse, :session_max_count` — same as `MUSE_SESSION_MAX_COUNT`
+    * `config :muse, :session_max_age_days` — same as `MUSE_SESSION_MAX_AGE_DAYS`
+
+  Environment variables take precedence over application config.
+  Invalid values are silently ignored (treated as unlimited).
+
+  Returns a keyword list with `:max_sessions` and `:ttl_seconds` keys.
+  """
+  @spec retention_config() :: keyword()
+  def retention_config do
+    max_sessions =
+      parse_positive_int(System.get_env("MUSE_SESSION_MAX_COUNT")) ||
+        parse_positive_int(Application.get_env(:muse, :session_max_count))
+
+    max_age_days =
+      parse_positive_int(System.get_env("MUSE_SESSION_MAX_AGE_DAYS")) ||
+        parse_positive_int(Application.get_env(:muse, :session_max_age_days))
+
+    opts = []
+
+    opts =
+      if max_sessions, do: Keyword.put(opts, :max_sessions, max_sessions), else: opts
+
+    opts =
+      if max_age_days,
+        do: Keyword.put(opts, :ttl_seconds, max_age_days * 86_400),
+        else: opts
+
+    opts
+  end
+
+  @doc """
+  Applies the configured session retention policy to the given base directory.
+
+  Reads retention settings from `retention_config/0` and delegates to
+  `evict_sessions/2`. Call this after session creation or periodically.
+
+  Returns `{:ok, evicted_ids}` or `{:error, reason}`.
+  """
+  @spec apply_retention(String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def apply_retention(base_dir \\ @default_base_dir) do
+    evict_sessions(base_dir, retention_config())
+  end
 
   @doc """
   Enforces a session retention policy by evicting the oldest sessions.
@@ -1096,6 +1161,20 @@ defmodule Muse.SessionStore do
     "Session IDs must be non-empty strings (max #{@max_session_id_length} bytes) " <>
       "without path separators (/, \\), NUL bytes, or reserved names (. ..)."
   end
+
+  # ── Private: Retention config parsing ─────────────────────────────────
+
+  defp parse_positive_int(nil), do: nil
+  defp parse_positive_int(value) when is_integer(value) and value > 0, do: value
+
+  defp parse_positive_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when is_integer(int) and int > 0 -> int
+      _ -> nil
+    end
+  end
+
+  defp parse_positive_int(_), do: nil
 
   # ── Private: Sensitive key redaction ──────────────────────────────────
 
