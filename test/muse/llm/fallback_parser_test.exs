@@ -360,6 +360,120 @@ defmodule Muse.LLM.FallbackParserTest do
     end
   end
 
+  describe "parse/1 — Format 6: Space-separated arguments (<tool_call>name arg1 arg2)" do
+    test "extracts single path argument" do
+      content = "<tool_call>read_file /path/to/file.ex"
+
+      response = Response.new(content: content)
+      parsed = FallbackParser.parse(response)
+
+      assert length(parsed.tool_calls) == 1
+      [tc] = parsed.tool_calls
+      assert tc.name == "read_file"
+      assert tc.arguments == %{"path" => "/path/to/file.ex"}
+    end
+
+    test "extracts number then path (e.g. line count + path)" do
+      content = "<tool_call>read_file 6 /path/to/file.ex"
+
+      response = Response.new(content: content)
+      parsed = FallbackParser.parse(response)
+
+      assert length(parsed.tool_calls) == 1
+      [tc] = parsed.tool_calls
+      assert tc.name == "read_file"
+      assert tc.arguments == %{"path" => "/path/to/file.ex", "max_lines" => "6"}
+    end
+
+    test "extracts path then number" do
+      content = "<tool_call>read_file /path/to/file.ex 10"
+
+      response = Response.new(content: content)
+      parsed = FallbackParser.parse(response)
+
+      assert length(parsed.tool_calls) == 1
+      [tc] = parsed.tool_calls
+      assert tc.name == "read_file"
+      assert tc.arguments == %{"path" => "/path/to/file.ex", "max_lines" => "10"}
+    end
+
+    test "joins multiple non-numeric parts as a single path" do
+      content = "<tool_call>read_file lib/muse/llm/fallback_parser.ex"
+
+      response = Response.new(content: content)
+      parsed = FallbackParser.parse(response)
+
+      assert length(parsed.tool_calls) == 1
+      [tc] = parsed.tool_calls
+      assert tc.name == "read_file"
+      assert tc.arguments == %{"path" => "lib/muse/llm/fallback_parser.ex"}
+    end
+
+    test "skips content that starts with parens (handled by Format 5)" do
+      content = ~s|<tool_call>read_file({"path": "lib/foo.ex"})|
+
+      response = Response.new(content: content)
+      parsed = FallbackParser.parse(response)
+
+      # Format 5 extracts this; Format 6 must not produce a duplicate
+      read_file_calls = Enum.filter(parsed.tool_calls, &(&1.name == "read_file"))
+      assert length(read_file_calls) == 1
+    end
+
+    test "skips content that starts with braces (handled by Format 2)" do
+      content = "<tool_call>read_file{path:lib/foo.ex}"
+
+      response = Response.new(content: content)
+      parsed = FallbackParser.parse(response)
+
+      # Format 2 extracts this; Format 6 must not produce a duplicate
+      read_file_calls = Enum.filter(parsed.tool_calls, &(&1.name == "read_file"))
+      assert length(read_file_calls) == 1
+    end
+
+    test "handles keyword args with equals sign" do
+      content = "<tool_call>read_file path=/tmp/foo.ex max_lines=50"
+
+      response = Response.new(content: content)
+      parsed = FallbackParser.parse(response)
+
+      assert length(parsed.tool_calls) >= 1
+
+      tc =
+        Enum.find(
+          parsed.tool_calls,
+          &(&1.name == "read_file" and Map.has_key?(&1.arguments, "path"))
+        )
+
+      assert tc.arguments == %{"path" => "/tmp/foo.ex", "max_lines" => "50"}
+    end
+
+    test "extracts multiple space-separated tool calls" do
+      content = """
+      I need to check two files.
+      <tool_call>read_file lib/muse.ex
+      <tool_call>list_files lib/muse_web
+      """
+
+      response = Response.new(content: content)
+      parsed = FallbackParser.parse(response)
+
+      names = Enum.map(parsed.tool_calls, & &1.name)
+      assert "read_file" in names
+      assert "list_files" in names
+    end
+
+    test "ignores bare <tool_call>name with no arguments" do
+      content = "<tool_call>some_tool_name"
+
+      response = Response.new(content: content)
+      parsed = FallbackParser.parse(response)
+
+      # No extractor should produce a tool call from a bare name with no args
+      assert Enum.all?(parsed.tool_calls, &(map_size(&1.arguments) > 0))
+    end
+  end
+
   describe "parse/1 — deduplication and existing tool calls" do
     test "appends textual tool calls to existing structured tool calls" do
       existing = ToolCall.new("existing_tool", %{"a" => "1"}, id: "call_123")

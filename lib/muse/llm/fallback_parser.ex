@@ -5,7 +5,7 @@ defmodule Muse.LLM.FallbackParser do
   Qwen, GLM, Kimi, etc.) and injects them as structured
   `Muse.LLM.ToolCall` structs into the response.
 
-  Handles five common fallback formats:
+  Handles six common fallback formats:
 
   1. XML Tool Call with JSON payload (DeepSeek/GLM)
   2. Pseudo-JSON without parens (Gemini/OpenRouter, ◈name{...})
@@ -13,6 +13,8 @@ defmodule Muse.LLM.FallbackParser do
   4. Raw Markdown JSON blocks
   5. Invocations with parens (◈name(...)) — supports JSON objects,
      keyword args (key="val"), and loose key:value pairs inside parens
+  6. Space-separated arguments (◈name arg1 arg2) — maps positional
+     args intelligently: single path, number+path, or multiple parts
   """
 
   alias Muse.LLM.Response
@@ -28,7 +30,8 @@ defmodule Muse.LLM.FallbackParser do
         extract_markdown_json(content),
         extract_react(content),
         extract_pseudo_json(content),
-        extract_invocations(content)
+        extract_invocations(content),
+        extract_space_separated(content)
       ])
       |> Enum.uniq_by(&{&1.name, &1.arguments})
 
@@ -147,6 +150,77 @@ defmodule Muse.LLM.FallbackParser do
           acc
       end
     end)
+  end
+
+  # Space-separated key=value pairs (no commas), e.g. "path=/tmp/foo max_lines=50"
+  defp parse_space_keyword_args(inner) do
+    inner
+    |> String.split(~r/\s+/, trim: true)
+    |> Enum.reduce(%{}, fn token, acc ->
+      case String.split(token, "=", parts: 2) do
+        [k, v] ->
+          clean_k = k |> String.trim()
+          clean_v = v |> String.trim() |> String.trim("\"") |> String.trim("'")
+          Map.put(acc, clean_k, clean_v)
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  # --- Format 6: Space-separated arguments (◈name arg1 arg2) ---
+
+  defp extract_space_separated(content) do
+    # Match ◈name followed by non-empty content on the same line
+    # that is NOT wrapped in (...) or {...}
+    ~r/<tool_call>\s*([A-Za-z0-9_]+)\s+([^\n<]+)/
+    |> Regex.scan(content)
+    |> Enum.flat_map(fn [_, name, rest] ->
+      trimmed = String.trim(rest)
+
+      # Skip if this looks like it has parens/braces (handled by other extractors)
+      cond do
+        String.starts_with?(trimmed, "(") or String.starts_with?(trimmed, "{") ->
+          []
+
+        String.contains?(trimmed, "=") ->
+          # keyword args like key=val (space-separated, not comma-separated)
+          args = parse_space_keyword_args(trimmed)
+          if map_size(args) > 0, do: [make_tool(name, args)], else: []
+
+        true ->
+          # Space-separated arguments
+          parts = String.split(trimmed, ~r/\s+/, trim: true)
+          args = build_positional_args(name, parts)
+          if map_size(args) > 0, do: [make_tool(name, args)], else: []
+      end
+    end)
+  end
+
+  defp build_positional_args(_name, parts) do
+    non_numeric = Enum.reject(parts, &String.match?(&1, ~r/^\d+$/))
+    numeric = Enum.filter(parts, &String.match?(&1, ~r/^\d+$/))
+
+    cond do
+      # One non-numeric part plus a number (e.g. "6 /path/to/file.ex" or "/path 6")
+      length(non_numeric) == 1 and length(parts) > 1 ->
+        path = hd(non_numeric)
+        num = hd(numeric)
+        %{"path" => path, "max_lines" => num}
+
+      # Single non-numeric argument (likely a path)
+      length(non_numeric) == 1 ->
+        %{"path" => hd(non_numeric)}
+
+      # Multiple non-numeric parts — join them as a path
+      length(non_numeric) > 1 ->
+        %{"path" => Enum.join(non_numeric, " ")}
+
+      # Only numeric parts — not enough to form meaningful args
+      true ->
+        %{}
+    end
   end
 
   # --- Format 2: Pseudo-JSON ---
