@@ -442,21 +442,28 @@ defmodule Muse.Conductor.ToolLoop do
     if calls == [] do
       {[], [], total, [], cache}
     else
-      # Three-way partition:
-      #   1. Already in cache from previous iterations -> dedup result
-      #   2. First occurrence in this iteration -> execute
-      #   3. Duplicate within this iteration (already seen in slot 2) -> will
-      #      either dedup (if first execution succeeded & cached) or execute fresh
-      {cached_from_prev, remaining} =
-        Enum.split_with(calls, fn tc ->
-          Map.has_key?(cache, cache_key(tc))
-        end)
+      # Use the pure planner to classify every call in one pass.
+      # This replaces the manual split_with + dedup_within_iteration dance
+      # and makes the three-way partition (prev cache / canonical execute /
+      # within-iteration dup) explicit and testable.
+      plan = Dedup.plan_read_only_execution(calls, cache)
 
-      # Find duplicates within remaining calls (first occurrence executes, rest
-      # are candidates for dedup — but they'll only get dedup results if the
-      # first execution's result is in the cache after execution)
-      {unique_in_iter, dup_in_iter} =
-        dedup_within_iteration(remaining)
+      {prev_plan, remaining_plan} =
+        Enum.split_with(plan, &(&1.disposition == :prev_cache))
+
+      cached_from_prev = Enum.map(prev_plan, & &1.call)
+
+      unique_in_iter =
+        for p <- remaining_plan, p.disposition == :execute, do: p.call
+
+      dup_in_iter =
+        for p <- remaining_plan, match?({:dup, _}, p.disposition), do: p.call
+
+      # The planner guarantees:
+      # - cached_from_prev = calls whose key was in the incoming cache
+      # - unique_in_iter   = first occurrence of each new key this iteration (to execute)
+      # - dup_in_iter      = later occurrences of keys being executed this iteration
+      #   (will become dedup or second-execution after we see the canonical result)
 
       # Return cached results for previous-cache hits
       prev_cached_results = build_dedup_results(cached_from_prev, cache)
@@ -500,14 +507,12 @@ defmodule Muse.Conductor.ToolLoop do
         end
 
       {result_list, spec_list} =
-        merge_all_results_in_order(
-          calls,
-          cached_from_prev,
+        assemble_from_plan(
+          plan,
           prev_cached_results,
           unique_in_iter,
           fresh_results,
           fresh_specs,
-          dup_in_iter,
           iter_dup_dedup_results,
           dup_in_iter_uncached,
           dup_fresh_results,
@@ -537,12 +542,6 @@ defmodule Muse.Conductor.ToolLoop do
 
       {result_list, spec_list, actual_total, all_proposals, merged_cache}
     end
-  end
-
-  # Deduplicate within a single iteration: first occurrence is kept as unique,
-  # subsequent duplicates are returned separately.
-  defp dedup_within_iteration(calls) do
-    Dedup.dedup_within_iteration(calls)
   end
 
   # Build dedup results (with lifecycle events) for cached tool calls.
@@ -591,22 +590,23 @@ defmodule Muse.Conductor.ToolLoop do
     end)
   end
 
-  # Merge all results (prev-cached, executed, within-iteration dups, and
-  # uncached-dup-fresh) maintaining original call order.
-  defp merge_all_results_in_order(
-         all_calls,
-         _prev_cached_calls,
+  # Assemble final ordered results + event specs from the plan + execution outcomes.
+  #
+  # This replaces the previous 11-argument merge_all_results_in_order/11.
+  # Because the plan already carries the original order and the disposition for
+  # every call (computed once, purely), the assembly logic is driven by the
+  # disposition instead of by "which parallel list did this id belong to".
+  defp assemble_from_plan(
+         plan,
          prev_cached_results,
          executed_calls,
          exec_results,
          exec_specs,
-         _iter_dup_calls,
          iter_dup_results,
          dup_uncached_calls,
          dup_fresh_results,
          dup_fresh_specs
        ) do
-    # Build maps from call id -> {result, specs}
     prev_map =
       prev_cached_results
       |> Enum.map(fn {id, result, specs} -> {id, {result, specs}} end)
@@ -629,30 +629,32 @@ defmodule Muse.Conductor.ToolLoop do
       |> Enum.map(fn {result, tc} -> {tc.id || "tc_unknown", {result, []}} end)
       |> Map.new()
 
-    # Walk original calls in order
     {result_list, spec_list} =
-      Enum.reduce(all_calls, {[], []}, fn tc, {res, specs} ->
-        id = tc.id || "tc_unknown"
+      Enum.reduce(plan, {[], []}, fn p, {res, specs} ->
+        id = p.id
 
-        cond do
-          Map.has_key?(prev_map, id) ->
+        case p.disposition do
+          :prev_cache ->
             {result, c_specs} = Map.fetch!(prev_map, id)
             {[result | res], specs ++ c_specs}
 
-          Map.has_key?(iter_dup_map, id) ->
-            {result, c_specs} = Map.fetch!(iter_dup_map, id)
-            {[result | res], specs ++ c_specs}
-
-          Map.has_key?(exec_map, id) ->
+          :execute ->
             {result, _} = Map.fetch!(exec_map, id)
             {[result | res], specs}
 
-          Map.has_key?(dup_fresh_map, id) ->
-            {result, _} = Map.fetch!(dup_fresh_map, id)
-            {[result | res], specs}
+          {:dup, _canon_id} ->
+            cond do
+              Map.has_key?(iter_dup_map, id) ->
+                {result, c_specs} = Map.fetch!(iter_dup_map, id)
+                {[result | res], specs ++ c_specs}
 
-          true ->
-            {res, specs}
+              Map.has_key?(dup_fresh_map, id) ->
+                {result, _} = Map.fetch!(dup_fresh_map, id)
+                {[result | res], specs}
+
+              true ->
+                {res, specs}
+            end
         end
       end)
 
@@ -1138,6 +1140,10 @@ defmodule Muse.Conductor.ToolLoop do
   @doc false
   @spec cache_key(map()) :: {String.t(), String.t()}
   def cache_key(tc), do: Dedup.cache_key(tc)
+
+  @doc false
+  def plan_read_only_execution(calls, incoming_cache),
+    do: Dedup.plan_read_only_execution(calls, incoming_cache)
 
   defp cache_key_hash(key), do: Dedup.cache_key_hash(key)
 

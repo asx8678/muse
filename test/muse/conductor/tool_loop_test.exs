@@ -650,6 +650,47 @@ defmodule Muse.Conductor.ToolLoopTest do
       assert ToolLoop.cache_key(tc1) == ToolLoop.cache_key(tc2)
       refute ToolLoop.cache_key(tc1) == ToolLoop.cache_key(tc3)
     end
+
+    test "plan_read_only_execution classifies prev-cache, canonical execute, and within-iter dups" do
+      # Incoming cache from previous iteration has one key
+      prev_cache = %{
+        ToolLoop.cache_key(%{name: "read_file", arguments: %{"path" => "cached.txt"}}) => %{
+          success: true
+        }
+      }
+
+      calls = [
+        %{name: "read_file", arguments: %{"path" => "cached.txt"}, id: "c1"},
+        %{name: "list_files", arguments: %{"path" => "."}, id: "c2"},
+        %{name: "list_files", arguments: %{"path" => "."}, id: "c3"},
+        %{name: "read_file", arguments: %{"path" => "new.txt"}, id: "c4"},
+        %{name: "read_file", arguments: %{"path" => "new.txt"}, id: "c5"}
+      ]
+
+      plan = ToolLoop.plan_read_only_execution(calls, prev_cache)
+
+      assert length(plan) == 5
+
+      # c1 hits prev cache
+      assert Enum.at(plan, 0).disposition == :prev_cache
+      assert Enum.at(plan, 0).id == "c1"
+
+      # c2 is first time for "list_files:." → execute (canonical)
+      assert Enum.at(plan, 1).disposition == :execute
+      assert Enum.at(plan, 1).id == "c2"
+
+      # c3 is dup of c2 within this iteration
+      assert Enum.at(plan, 2).disposition == {:dup, "c2"}
+      assert Enum.at(plan, 2).id == "c3"
+
+      # c4 is new key → execute (canonical)
+      assert Enum.at(plan, 3).disposition == :execute
+      assert Enum.at(plan, 3).id == "c4"
+
+      # c5 is dup of c4
+      assert Enum.at(plan, 4).disposition == {:dup, "c4"}
+      assert Enum.at(plan, 4).id == "c5"
+    end
   end
 
   # -- T1-18: Bounded concurrency ----------------------------------------------

@@ -64,4 +64,71 @@ defmodule Muse.Conductor.ToolLoop.Dedup do
   end
 
   defp args_fingerprint(args), do: args_fingerprint(%{"raw" => inspect(args)})
+
+  # -- Planning for cross-iteration + within-iteration dedup --------------------
+
+  @typedoc """
+  Disposition of a single tool call during read-only dedup planning.
+
+  - `:prev_cache` — key was in the cache from a previous tool-loop iteration.
+  - `:execute` — first time we have seen this key in the current provider response;
+    this call will be executed (it becomes the canonical for the key).
+  - `{:dup, canonical_id}` — later occurrence of a key whose canonical is being
+    executed in this iteration. After the canonical finishes we will decide
+    whether this can be served from the fresh result or must also be executed.
+  """
+  @type disposition :: :prev_cache | :execute | {:dup, String.t()}
+
+  @typedoc "A planned item for one original tool call."
+  @type planned :: %{
+          call: map(),
+          key: {String.t(), String.t()},
+          id: String.t(),
+          disposition: disposition()
+        }
+
+  @doc """
+  Produce a plan for executing (or deduplicating) a list of tool calls given an
+  incoming cache from previous iterations.
+
+  This is a pure function that makes the complex dedup decisions in
+  `execute_read_only_tools` explicit and testable.
+
+  Returns a list of `planned` items in the same order as the input `calls`.
+  For every key that is not in `incoming_cache`, the *first* call with that key
+  in the input list receives `disposition: :execute`; subsequent ones receive
+  `{:dup, canonical_id}` where `canonical_id` is the tool_call_id of the first.
+  """
+  @spec plan_read_only_execution([map()], map()) :: [planned()]
+  def plan_read_only_execution(calls, incoming_cache)
+      when is_list(calls) and is_map(incoming_cache) do
+    {planned_rev, _seen} =
+      Enum.reduce(calls, {[], %{}}, fn tc, {acc, seen} ->
+        key = cache_key(tc)
+        id = tc.id || "tc_unknown"
+
+        disposition =
+          cond do
+            Map.has_key?(incoming_cache, key) ->
+              :prev_cache
+
+            Map.has_key?(seen, key) ->
+              {:dup, Map.fetch!(seen, key)}
+
+            true ->
+              :execute
+          end
+
+        new_seen =
+          case disposition do
+            :execute -> Map.put(seen, key, id)
+            _ -> seen
+          end
+
+        item = %{call: tc, key: key, id: id, disposition: disposition}
+        {[item | acc], new_seen}
+      end)
+
+    Enum.reverse(planned_rev)
+  end
 end
