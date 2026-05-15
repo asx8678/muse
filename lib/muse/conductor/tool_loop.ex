@@ -506,16 +506,42 @@ defmodule Muse.Conductor.ToolLoop do
           )
         end
 
+      # Build ready-to-use lookup maps here (where we have the raw outputs).
+      # This lets assemble_from_plan be a simple, pure reduce over the plan.
+      prev_map =
+        prev_cached_results
+        |> Enum.map(fn {id, result, specs} -> {id, {result, specs}} end)
+        |> Map.new()
+
+      exec_map =
+        fresh_results
+        |> Enum.zip(unique_in_iter)
+        |> Enum.map(fn {result, tc} -> {tc.id || "tc_unknown", {result, []}} end)
+        |> Map.new()
+
+      # Merge the two sources of outcomes for within-iteration dups.
+      # (synthetic dedup events for those that hit the fresh cache, and real
+      # execution results for those whose canonical failed).
+      dup_dedup_map =
+        iter_dup_dedup_results
+        |> Enum.map(fn {id, result, specs} -> {id, {result, specs}} end)
+        |> Map.new()
+
+      dup_fresh_map =
+        dup_fresh_results
+        |> Enum.zip(dup_in_iter_uncached)
+        |> Enum.map(fn {result, tc} -> {tc.id || "tc_unknown", {result, []}} end)
+        |> Map.new()
+
+      dup_outcome_map = Map.merge(dup_dedup_map, dup_fresh_map)
+
       {result_list, spec_list} =
         assemble_from_plan(
           plan,
-          prev_cached_results,
-          unique_in_iter,
-          fresh_results,
+          prev_map,
+          exec_map,
+          dup_outcome_map,
           fresh_specs,
-          iter_dup_dedup_results,
-          dup_in_iter_uncached,
-          dup_fresh_results,
           dup_fresh_specs
         )
 
@@ -584,45 +610,20 @@ defmodule Muse.Conductor.ToolLoop do
     end)
   end
 
-  # Assemble final ordered results + event specs from the plan + execution outcomes.
+  # Assemble final ordered results + event specs by walking the plan once.
   #
-  # This replaces the previous 11-argument merge_all_results_in_order/11.
-  # Because the plan already carries the original order and the disposition for
-  # every call (computed once, purely), the assembly logic is driven by the
-  # disposition instead of by "which parallel list did this id belong to".
+  # The plan (produced by Dedup.plan_read_only_execution) defines the original
+  # order and the disposition of every call. The maps provide the outcomes.
+  # This is much easier to follow than the old 11-argument merge that had to
+  # reverse-engineer which list each call came from.
   defp assemble_from_plan(
          plan,
-         prev_cached_results,
-         executed_calls,
-         exec_results,
+         prev_map,
+         exec_map,
+         dup_outcome_map,
          exec_specs,
-         iter_dup_results,
-         dup_uncached_calls,
-         dup_fresh_results,
          dup_fresh_specs
        ) do
-    prev_map =
-      prev_cached_results
-      |> Enum.map(fn {id, result, specs} -> {id, {result, specs}} end)
-      |> Map.new()
-
-    iter_dup_map =
-      iter_dup_results
-      |> Enum.map(fn {id, result, specs} -> {id, {result, specs}} end)
-      |> Map.new()
-
-    exec_map =
-      exec_results
-      |> Enum.zip(executed_calls)
-      |> Enum.map(fn {result, tc} -> {tc.id || "tc_unknown", {result, []}} end)
-      |> Map.new()
-
-    dup_fresh_map =
-      dup_fresh_results
-      |> Enum.zip(dup_uncached_calls)
-      |> Enum.map(fn {result, tc} -> {tc.id || "tc_unknown", {result, []}} end)
-      |> Map.new()
-
     {result_list, spec_list} =
       Enum.reduce(plan, {[], []}, fn p, {res, specs} ->
         id = p.id
@@ -637,18 +638,8 @@ defmodule Muse.Conductor.ToolLoop do
             {[result | res], specs}
 
           {:dup, _canon_id} ->
-            cond do
-              Map.has_key?(iter_dup_map, id) ->
-                {result, c_specs} = Map.fetch!(iter_dup_map, id)
-                {[result | res], specs ++ c_specs}
-
-              Map.has_key?(dup_fresh_map, id) ->
-                {result, _} = Map.fetch!(dup_fresh_map, id)
-                {[result | res], specs}
-
-              true ->
-                {res, specs}
-            end
+            {result, c_specs} = Map.fetch!(dup_outcome_map, id)
+            {[result | res], specs ++ c_specs}
         end
       end)
 
