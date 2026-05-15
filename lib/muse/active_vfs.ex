@@ -281,8 +281,16 @@ defmodule Muse.ActiveVFS do
         case lock_file(path, agent_id, state) do
           {:ok, new_state} ->
             entry = Map.fetch!(new_state.files, path)
-            latest = hd(entry.versions)
-            {:reply, {:ok, latest}, new_state}
+
+            case entry.versions do
+              [latest | _] ->
+                {:reply, {:ok, latest}, new_state}
+
+              [] ->
+                # Defensive: load_from_disk always creates v0, but guard against
+                # future refactors or corrupted in-memory state.
+                {:reply, {:error, :no_versions}, state}
+            end
 
           {:error, reason} ->
             {:reply, {:error, reason}, state}

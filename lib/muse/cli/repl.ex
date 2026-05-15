@@ -151,9 +151,19 @@ defmodule Muse.CLI.Repl do
     try do
       Muse.State.events()
     rescue
-      _ -> []
+      e ->
+        Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :safe_state_events, e)
+        []
     catch
-      :exit, _ -> []
+      :exit, reason ->
+        Muse.Diagnostics.SilentRescue.log_rescued_catch(
+          __MODULE__,
+          :safe_state_events,
+          :exit,
+          reason
+        )
+
+        []
     end
   end
 
@@ -161,9 +171,19 @@ defmodule Muse.CLI.Repl do
     try do
       Muse.LogBuffer.list()
     rescue
-      _ -> []
+      e ->
+        Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :safe_log_buffer_list, e)
+        []
     catch
-      :exit, _ -> []
+      :exit, reason ->
+        Muse.Diagnostics.SilentRescue.log_rescued_catch(
+          __MODULE__,
+          :safe_log_buffer_list,
+          :exit,
+          reason
+        )
+
+        []
     end
   end
 
@@ -174,9 +194,19 @@ defmodule Muse.CLI.Repl do
         {:error, _} -> nil
       end
     rescue
-      _ -> nil
+      e ->
+        Muse.Diagnostics.SilentRescue.log_rescued(__MODULE__, :safe_session_status, e)
+        nil
     catch
-      :exit, _ -> nil
+      :exit, reason ->
+        Muse.Diagnostics.SilentRescue.log_rescued_catch(
+          __MODULE__,
+          :safe_session_status,
+          :exit,
+          reason
+        )
+
+        nil
     end
   end
 

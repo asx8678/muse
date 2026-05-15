@@ -199,8 +199,6 @@ defmodule Muse.Conductor do
 
   # -- Handoff API --------------------------------------------------------------
 
-  # -- Handoff API --------------------------------------------------------------
-
   @doc """
   Check if the current Muse can hand off to the target Muse.
 
