@@ -495,7 +495,7 @@ defmodule Muse.Conductor.ToolLoop do
           (tc.id || "tc_unknown") in deduped_ids
         end)
 
-      {dup_fresh_results, dup_fresh_specs, dup_fresh_total, dup_fresh_proposals, dup_fresh_cache} =
+      {dup_fresh_results, dup_fresh_specs, _dup_fresh_total, dup_fresh_proposals, dup_fresh_cache} =
         if dup_in_iter_uncached == [] do
           {[], [], fresh_total, [], %{}}
         else
@@ -522,23 +522,17 @@ defmodule Muse.Conductor.ToolLoop do
       # Merge caches
       merged_cache = Map.merge(cache, Map.merge(fresh_cache, dup_fresh_cache))
 
-      # Collect patch proposals from successful patch_propose calls
-      proposals =
-        unique_in_iter
-        |> Enum.zip(fresh_results)
-        |> Enum.flat_map(fn {tc, result} ->
-          if tc.name == "patch_propose" and result.success do
-            [extract_patch_proposal("patch_propose", normalize_tool_args(tc.arguments), result)]
-          else
-            []
-          end
-        end)
-        |> Enum.reject(&is_nil/1)
+      # Proposals for patch_propose (and similar) are collected inside the
+      # execution functions (fresh_proposals + dup_fresh_proposals). The
+      # previous redundant zip over unique_in_iter was dead code for
+      # patch_propose because it is a :patch tool and never reaches the
+      # read-only dedup path.
+      all_proposals = fresh_proposals ++ dup_fresh_proposals
 
-      # proposals comes from unique_in_iter (reversed from original) → reversed in reduce,
-      # so Enum.reverse restores original chronological order matching fresh_proposals
-      all_proposals = Enum.reverse(proposals) ++ fresh_proposals ++ dup_fresh_proposals
-      actual_total = dup_fresh_total
+      # Number of read-only tools we actually executed the runner for
+      # (canonicals + within-iter dups that missed the fresh cache).
+      executed_in_ro = length(unique_in_iter) + length(dup_in_iter_uncached)
+      actual_total = total + executed_in_ro
 
       {result_list, spec_list, actual_total, all_proposals, merged_cache}
     end
