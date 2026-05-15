@@ -443,94 +443,79 @@ defmodule Muse.Conductor.ToolLoop do
       {[], [], total, [], cache}
     else
       # Use the pure planner to classify every call in one pass.
-      # This replaces the manual split_with + dedup_within_iteration dance
-      # and makes the three-way partition (prev cache / canonical execute /
-      # within-iteration dup) explicit and testable.
+      # We stay in "plan space" as much as possible instead of immediately
+      # dropping down to flat lists of calls.
       plan = Dedup.plan_read_only_execution(calls, cache)
 
-      {prev_plan, remaining_plan} =
-        Enum.split_with(plan, &(&1.disposition == :prev_cache))
+      prev_items = Enum.filter(plan, &(&1.disposition == :prev_cache))
+      execute_items = Enum.filter(plan, &(&1.disposition == :execute))
+      dup_items = Enum.filter(plan, &match?({:dup, _}, &1.disposition))
 
-      cached_from_prev = Enum.map(prev_plan, & &1.call)
+      prev_calls = Enum.map(prev_items, & &1.call)
 
-      unique_in_iter =
-        for p <- remaining_plan, p.disposition == :execute, do: p.call
+      # Previous-iteration cache hits → synthetic dedup events
+      prev_cached_results = build_dedup_results(prev_calls, cache)
 
-      dup_in_iter =
-        for p <- remaining_plan, match?({:dup, _}, p.disposition), do: p.call
+      execute_calls = Enum.map(execute_items, & &1.call)
 
-      # The planner guarantees:
-      # - cached_from_prev = calls whose key was in the incoming cache
-      # - unique_in_iter   = first occurrence of each new key this iteration (to execute)
-      # - dup_in_iter      = later occurrences of keys being executed this iteration
-      #   (will become dedup or second-execution after we see the canonical result)
-
-      # Return cached results for previous-cache hits
-      prev_cached_results = build_dedup_results(cached_from_prev, cache)
-
-      # Execute unique uncached read-only tools with bounded concurrency
+      # First execution round: all the "first time we see this key this iteration"
       {fresh_results, fresh_specs, fresh_total, fresh_proposals, fresh_cache} =
-        if unique_in_iter == [] do
+        if execute_calls == [] do
           {[], [], total, [], %{}}
         else
-          execute_concurrent_tools(unique_in_iter, tool_runner, session, turn, muse,
+          execute_concurrent_tools(execute_calls, tool_runner, session, turn, muse,
             total: total,
             max_total: max_total,
             concurrency: concurrency
           )
         end
 
-      # Now build dedup results for within-iteration duplicates using
-      # merged cache. Only calls whose first execution produced a
-      # cacheable (successful) result will get dedup; the rest are
-      # executed fresh.
-      merged_with_fresh = Map.merge(cache, fresh_cache)
-      iter_dup_dedup_results = build_dedup_results(dup_in_iter, merged_with_fresh)
+      # Now resolve the within-iteration dups against everything we have so far.
+      merged_for_dups = Map.merge(cache, fresh_cache)
+      dup_calls = Enum.map(dup_items, & &1.call)
 
-      # Calls that didn't get dedup results (cache miss) need fresh execution
-      deduped_ids = Enum.map(iter_dup_dedup_results, fn {id, _, _} -> id end)
+      # Which dups can be served from the merged cache? (their canonical succeeded)
+      dup_dedup_results = build_dedup_results(dup_calls, merged_for_dups)
+      deduped_dup_ids = dup_dedup_results |> Enum.map(fn {id, _, _} -> id end) |> MapSet.new()
 
-      dup_in_iter_uncached =
-        Enum.reject(dup_in_iter, fn tc ->
-          (tc.id || "tc_unknown") in deduped_ids
-        end)
+      dups_needing_exec =
+        Enum.filter(dup_items, fn p -> not MapSet.member?(deduped_dup_ids, p.id) end)
 
+      dups_needing_exec_calls = Enum.map(dups_needing_exec, & &1.call)
+
+      # Second execution round (usually small or empty): dups whose canonical failed
       {dup_fresh_results, dup_fresh_specs, _dup_fresh_total, dup_fresh_proposals, dup_fresh_cache} =
-        if dup_in_iter_uncached == [] do
+        if dups_needing_exec_calls == [] do
           {[], [], fresh_total, [], %{}}
         else
-          execute_concurrent_tools(dup_in_iter_uncached, tool_runner, session, turn, muse,
+          execute_concurrent_tools(dups_needing_exec_calls, tool_runner, session, turn, muse,
             total: fresh_total,
             max_total: max_total,
             concurrency: concurrency
           )
         end
 
-      # Build ready-to-use lookup maps here (where we have the raw outputs).
-      # This lets assemble_from_plan be a simple, pure reduce over the plan.
+      # Build the three outcome maps the assembler needs.
       prev_map =
         prev_cached_results
-        |> Enum.map(fn {id, result, specs} -> {id, {result, specs}} end)
+        |> Enum.map(fn {id, r, s} -> {id, {r, s}} end)
         |> Map.new()
 
       exec_map =
         fresh_results
-        |> Enum.zip(unique_in_iter)
-        |> Enum.map(fn {result, tc} -> {tc.id || "tc_unknown", {result, []}} end)
+        |> Enum.zip(execute_calls)
+        |> Enum.map(fn {r, tc} -> {tc.id || "tc_unknown", {r, []}} end)
         |> Map.new()
 
-      # Merge the two sources of outcomes for within-iteration dups.
-      # (synthetic dedup events for those that hit the fresh cache, and real
-      # execution results for those whose canonical failed).
       dup_dedup_map =
-        iter_dup_dedup_results
-        |> Enum.map(fn {id, result, specs} -> {id, {result, specs}} end)
+        dup_dedup_results
+        |> Enum.map(fn {id, r, s} -> {id, {r, s}} end)
         |> Map.new()
 
       dup_fresh_map =
         dup_fresh_results
-        |> Enum.zip(dup_in_iter_uncached)
-        |> Enum.map(fn {result, tc} -> {tc.id || "tc_unknown", {result, []}} end)
+        |> Enum.zip(dups_needing_exec_calls)
+        |> Enum.map(fn {r, tc} -> {tc.id || "tc_unknown", {r, []}} end)
         |> Map.new()
 
       dup_outcome_map = Map.merge(dup_dedup_map, dup_fresh_map)
@@ -548,16 +533,11 @@ defmodule Muse.Conductor.ToolLoop do
       # Merge caches
       merged_cache = Map.merge(cache, Map.merge(fresh_cache, dup_fresh_cache))
 
-      # Proposals for patch_propose (and similar) are collected inside the
-      # execution functions (fresh_proposals + dup_fresh_proposals). The
-      # previous redundant zip over unique_in_iter was dead code for
-      # patch_propose because it is a :patch tool and never reaches the
-      # read-only dedup path.
+      # Proposals come only from actual executions (handled inside execute_concurrent_tools).
       all_proposals = fresh_proposals ++ dup_fresh_proposals
 
-      # Number of read-only tools we actually executed the runner for
-      # (canonicals + within-iter dups that missed the fresh cache).
-      executed_in_ro = length(unique_in_iter) + length(dup_in_iter_uncached)
+      # Count of read-only tool invocations we actually made to the runner.
+      executed_in_ro = length(execute_calls) + length(dups_needing_exec_calls)
       actual_total = total + executed_in_ro
 
       {result_list, spec_list, actual_total, all_proposals, merged_cache}
