@@ -11,13 +11,15 @@ defmodule Muse.BeamStatsTest do
       assert Map.has_key?(snap, :memory)
       assert Map.has_key?(snap, :total_memory)
       assert Map.has_key?(snap, :process_count)
-      assert Map.has_key?(snap, :process_limit)
-      assert Map.has_key?(snap, :port_count)
-      assert Map.has_key?(snap, :port_limit)
-      assert Map.has_key?(snap, :scheduler_count)
-      assert Map.has_key?(snap, :schedulers_online)
+      assert Map.has_key?(snap, :run_queue)
       assert Map.has_key?(snap, :otp_release)
       assert Map.has_key?(snap, :system_version)
+      assert Map.has_key?(snap, :atoms)
+      assert Map.has_key?(snap, :atom_limit)
+      assert Map.has_key?(snap, :ets_count)
+      assert Map.has_key?(snap, :loaded_modules)
+      assert Map.has_key?(snap, :uptime_ms)
+      assert Map.has_key?(snap, :logical_processors)
     end
 
     test "memory map contains standard erlang.memory keys" do
@@ -42,22 +44,9 @@ defmodule Muse.BeamStatsTest do
       assert snap.process_count > 0
     end
 
-    test "process_limit is a positive integer >= process_count" do
-      snap = BeamStats.snapshot()
-      assert is_integer(snap.process_limit)
-      assert snap.process_limit >= snap.process_count
-    end
-
-    test "scheduler_count is a positive integer" do
-      snap = BeamStats.snapshot()
-      assert is_integer(snap.scheduler_count)
-      assert snap.scheduler_count > 0
-    end
-
-    test "schedulers_online <= scheduler_count" do
-      snap = BeamStats.snapshot()
-      assert snap.schedulers_online <= snap.scheduler_count
-    end
+    # Note: :process_limit, :scheduler_count, :schedulers_online, :port_count, :port_limit
+    # were removed from BeamStats.snapshot/0 for cross-platform reliability and to avoid
+    # privileged or expensive system_info calls. The tests below were retired.
 
     test "otp_release is a string" do
       snap = BeamStats.snapshot()

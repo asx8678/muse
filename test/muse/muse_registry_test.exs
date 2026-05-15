@@ -211,7 +211,12 @@ defmodule Muse.MuseRegistryTest do
                  "load_workspace_files",
                  "eval_elixir",
                  "get_source_location",
-                 "get_docs"
+                 "get_docs",
+                 # Additional read-only tools added for Sibyl's Vision / Sage's Wisdom (PR recent)
+                 "get_ash_resources",
+                 "get_ecto_schemas",
+                 "get_logs",
+                 "search_hex_docs"
                ])
     end
 
