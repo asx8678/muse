@@ -71,8 +71,34 @@ defmodule Muse.Auth.CodexCache do
   """
   @spec resolve(keyword()) :: {:ok, Credential.t()} | {:error, atom() | String.t()}
   def resolve(opts \\ []) when is_list(opts) do
-    path = resolve_path(opts)
+    if opts[:path] || opts[:home] do
+      # Explicit path requested — return the first error verbatim (tests rely on
+      # :file_too_large, :invalid_json, :no_token, etc. being surfaced).
+      path = resolve_path(opts)
+      read_and_extract(path)
+    else
+      # Default discovery: try classic ~/.codex then Muse ConfigDir location.
+      # Swallow "not present" style errors and only surface the last one.
+      case try_paths(default_probe_paths()) do
+        {:error, :enoent} -> {:error, :no_token}
+        other -> other
+      end
+    end
+  end
 
+  defp try_paths([]), do: {:error, :no_token}
+
+  defp try_paths([path | rest]) do
+    case read_and_extract(path) do
+      {:ok, credential} -> {:ok, credential}
+      # Only continue probing on "file absent / no token" situations.
+      # Real parse/size errors from a probed file should still be returned.
+      {:error, reason} when reason in [:enoent, :no_token] -> try_paths(rest)
+      {:error, other} -> {:error, other}
+    end
+  end
+
+  defp read_and_extract(path) do
     with {:ok, contents} <- read_safely(path),
          {:ok, decoded} <- decode_safely(contents),
          {:ok, token} <- extract_token(decoded),
@@ -101,6 +127,17 @@ defmodule Muse.Auth.CodexCache do
       opts[:home] -> Path.join(opts[:home], @default_filename)
       true -> Path.join(System.user_home!(), @default_filename)
     end
+  end
+
+  # Returns the ordered list of locations to probe when no explicit path is
+  # supplied. Classic ~/.codex first (for people who use the Codex CLI), then
+  # the Muse-managed location (~/Documents/.muse/auth.json or equivalent).
+  defp default_probe_paths do
+    codex = Path.join(System.user_home!(), @default_filename)
+    muse = Muse.ConfigDir.oauth_path()
+
+    [codex, muse]
+    |> Enum.uniq_by(&Path.absname/1)
   end
 
   # ---------------------------------------------------------------------------
@@ -208,10 +245,15 @@ defmodule Muse.Auth.CodexCache do
   defp safe_path_label(path) do
     basename = Path.basename(path)
 
-    if String.contains?(path, ".codex/auth.json") do
-      "~/.codex/auth.json"
-    else
-      basename
+    cond do
+      String.contains?(path, ".codex/auth.json") ->
+        "~/.codex/auth.json"
+
+      String.contains?(path, "auth.json") and String.contains?(path, ".muse") ->
+        "~/.muse/auth.json (or Documents/.muse)"
+
+      true ->
+        basename
     end
   end
 end

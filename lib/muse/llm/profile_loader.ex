@@ -1,7 +1,8 @@
 defmodule Muse.LLM.ProfileLoader do
   @moduledoc """
-  Loads LLM provider profiles from `~/.muse/config.json` and secrets from
-  `~/.muse/secrets.json`.
+  Loads LLM provider profiles from the effective Muse config directory
+  (discovered by `Muse.ConfigDir`: MUSE_CONFIG_DIR > ~/Documents/.muse > ~/.muse)
+  and secrets from the corresponding `secrets.json`.
 
   Profiles are generic names (e.g. `default`, `fast`, `creative`) that group
   provider settings so you don't need a sea of `MUSE_*` environment variables.
@@ -10,7 +11,8 @@ defmodule Muse.LLM.ProfileLoader do
 
   ## File format
 
-  `~/.muse/config.json`:
+  `config.json` (inside the resolved Muse config dir, e.g.
+  `~/Documents/.muse/config.json` or `~/.muse/config.json`):
 
       {
         "profiles": {
@@ -33,7 +35,7 @@ defmodule Muse.LLM.ProfileLoader do
         }
       }
 
-  `~/.muse/secrets.json`:
+  `secrets.json` (sibling to config.json):
 
       {
         "my_openai_key": "sk-...",
@@ -49,9 +51,10 @@ defmodule Muse.LLM.ProfileLoader do
 
   ## Security
 
-  `~/.muse/secrets.json` contains credentials. After creation its permissions
-  are set to `600` (owner read/write only). If the file is ever found with
-  broader permissions, a warning is emitted on every load.
+  The `secrets.json` file (next to `config.json`) contains credentials. After
+  creation its permissions are set to `600` (owner read/write only). If the
+  file is ever found with broader permissions, a warning is emitted on every
+  load.
 
   ## Active profile
 
@@ -66,15 +69,22 @@ defmodule Muse.LLM.ProfileLoader do
   created with empty or sensible default structures.
   """
 
-  @default_config_path "~/.muse/config.json"
-  @default_secrets_path "~/.muse/secrets.json"
+  # NOTE: Default paths are resolved dynamically via Muse.ConfigDir so that
+  # MUSE_CONFIG_DIR, ~/Documents/.muse, and ~/.muse are all honored with the
+  # correct precedence. Never read the old @default_*_path attributes directly.
 
   # ---------------------------------------------------------------------------
   # Public API — initialization
   # ---------------------------------------------------------------------------
 
   @doc """
-  Ensures the `~/.muse/` directory and both configuration files exist.
+  Ensures the effective Muse config directory (resolved via `Muse.ConfigDir`)
+  and both configuration files exist.
+
+  The directory is chosen with the following precedence:
+    1. `MUSE_CONFIG_DIR` env var
+    2. `~/Documents/.muse`
+    3. `~/.muse`
 
   Missing files are created with empty or sensible default structures.
   `secrets.json` is created with permissions `600`.
@@ -83,7 +93,7 @@ defmodule Muse.LLM.ProfileLoader do
   """
   @spec ensure_initialized() :: :ok
   def ensure_initialized do
-    ensure_initialized(@default_config_path, @default_secrets_path)
+    ensure_initialized(Muse.ConfigDir.config_path(), Muse.ConfigDir.secrets_path())
   end
 
   @spec ensure_initialized(String.t(), String.t()) :: :ok
@@ -121,7 +131,7 @@ defmodule Muse.LLM.ProfileLoader do
   """
   @spec load() :: {:ok, map()} | {:error, term()}
   def load do
-    load(@default_config_path)
+    load(Muse.ConfigDir.config_path())
   end
 
   @spec load(String.t()) :: {:ok, map()} | {:error, term()}
@@ -153,7 +163,7 @@ defmodule Muse.LLM.ProfileLoader do
   """
   @spec load_secrets() :: {:ok, map()} | {:error, term()}
   def load_secrets do
-    load_secrets(@default_secrets_path)
+    load_secrets(Muse.ConfigDir.secrets_path())
   end
 
   @spec load_secrets(String.t()) :: {:ok, map()} | {:error, term()}
@@ -197,32 +207,37 @@ defmodule Muse.LLM.ProfileLoader do
   @doc """
   Returns the active profile with env-var and secrets references resolved.
 
-  Uses `current_profile_name/0` to determine which profile to load and
-  the default config/secrets paths (`~/.muse/config.json` and
-  `~/.muse/secrets.json`).
+  Uses `current_profile_name/0` and the effective config directory
+  discovered by `Muse.ConfigDir` (MUSE_CONFIG_DIR > ~/Documents/.muse > ~/.muse).
 
   Returns `{:ok, profile_map}` or `{:error, reason}`.
   """
   @spec get_profile() :: {:ok, map()} | {:error, term()}
   def get_profile do
-    get_profile(current_profile_name(), @default_config_path, @default_secrets_path)
+    get_profile(
+      current_profile_name(),
+      Muse.ConfigDir.config_path(),
+      Muse.ConfigDir.secrets_path()
+    )
   end
 
   @doc """
   Returns a single profile by name with `${ENV_VAR}` and secrets references
   resolved.
 
-  Accepts an optional `config_path` (defaults to `~/.muse/config.json`) and
-  an optional `secrets_path` (defaults to `~/.muse/secrets.json`).
+  Accepts optional explicit `config_path` / `secrets_path`. When omitted,
+  the effective directory from `Muse.ConfigDir` is used.
 
   Returns `{:ok, profile_map}` or `{:error, reason}`.
   """
+  @spec get_profile(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def get_profile(name, config_path) when is_binary(config_path) do
+    secrets_path = Path.join(Path.dirname(config_path), "secrets.json")
+    get_profile(name, config_path, secrets_path)
+  end
+
   @spec get_profile(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def get_profile(
-        name,
-        config_path \\ @default_config_path,
-        secrets_path \\ @default_secrets_path
-      ) do
+  def get_profile(name, config_path, secrets_path) do
     with {:ok, profiles} <- load(config_path),
          {:ok, secrets} <- load_secrets(secrets_path) do
       case Map.fetch(profiles, name) do
@@ -243,24 +258,31 @@ defmodule Muse.LLM.ProfileLoader do
   """
   @spec apply_profile() :: :ok | {:error, term()}
   def apply_profile do
-    apply_profile(current_profile_name(), @default_config_path, @default_secrets_path)
+    apply_profile(
+      current_profile_name(),
+      Muse.ConfigDir.config_path(),
+      Muse.ConfigDir.secrets_path()
+    )
   end
 
   @doc """
   Applies a profile by setting the standard `MUSE_*` environment variables
   that the rest of the app already reads.
 
-  Accepts optional `config_path` and `secrets_path`.
+  Accepts optional explicit paths. When omitted, uses the directory
+  discovered by `Muse.ConfigDir`.
 
   Returns `:ok` on success.  This is a side-effecting operation; use it at
   application startup or before initiating a session.
   """
+  @spec apply_profile(String.t(), String.t()) :: :ok | {:error, term()}
+  def apply_profile(name, config_path) when is_binary(config_path) do
+    secrets_path = Path.join(Path.dirname(config_path), "secrets.json")
+    apply_profile(name, config_path, secrets_path)
+  end
+
   @spec apply_profile(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
-  def apply_profile(
-        name,
-        config_path \\ @default_config_path,
-        secrets_path \\ @default_secrets_path
-      ) do
+  def apply_profile(name, config_path, secrets_path) do
     with {:ok, profile} <- get_profile(name, config_path, secrets_path) do
       profile
       |> to_env_map()
@@ -303,14 +325,19 @@ defmodule Muse.LLM.ProfileLoader do
   Returns a merged environment map containing `System.get_env/0` plus the
   active profile's overrides.
 
-  Uses `current_profile_name/0` and the default config/secrets paths.
+  Uses `current_profile_name/0` and the effective directory from
+  `Muse.ConfigDir` (MUSE_CONFIG_DIR > ~/Documents/.muse > ~/.muse).
 
   Useful for pure callers that want to pass a complete env map to
   `Muse.Config.llm_provider_config/1` without mutating the OS environment.
   """
   @spec merged_env() :: {:ok, map()} | {:error, term()}
   def merged_env do
-    merged_env(current_profile_name(), @default_config_path, @default_secrets_path)
+    merged_env(
+      current_profile_name(),
+      Muse.ConfigDir.config_path(),
+      Muse.ConfigDir.secrets_path()
+    )
   end
 
   @doc """
@@ -322,8 +349,14 @@ defmodule Muse.LLM.ProfileLoader do
   Useful for pure callers that want to pass a complete env map to
   `Muse.Config.llm_provider_config/1` without mutating the OS environment.
   """
+  @spec merged_env(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def merged_env(name, config_path) when is_binary(config_path) do
+    secrets_path = Path.join(Path.dirname(config_path), "secrets.json")
+    merged_env(name, config_path, secrets_path)
+  end
+
   @spec merged_env(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def merged_env(name, config_path \\ @default_config_path, secrets_path \\ @default_secrets_path) do
+  def merged_env(name, config_path, secrets_path) do
     with {:ok, profile} <- get_profile(name, config_path, secrets_path) do
       {:ok, Map.merge(System.get_env(), to_env_map(profile))}
     end

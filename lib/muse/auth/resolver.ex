@@ -43,6 +43,7 @@ defmodule Muse.Auth.Resolver do
   """
 
   alias Muse.Auth.{ApiKey, BearerCommand, CodexCache, Credential}
+  alias Muse.ConfigDir
   alias Muse.EventPayloadRedactor
   alias Muse.LLM.{ProviderConfig, Request}
 
@@ -86,8 +87,7 @@ defmodule Muse.Auth.Resolver do
         resolve_codex_cache(context)
 
       :openai_oauth ->
-        {:error,
-         {:unsupported_auth_mode, :openai_oauth, "OpenAI OAuth auth is not supported yet"}}
+        resolve_openai_oauth(context)
 
       {:unsupported, mode} ->
         {:error, {:unsupported_auth_mode, safe_auth_mode(mode)}}
@@ -144,6 +144,28 @@ defmodule Muse.Auth.Resolver do
     context
     |> codex_cache_opts()
     |> CodexCache.resolve()
+  end
+
+  # OpenAI OAuth (ChatGPT login tokens etc.) are stored in the Muse-managed
+  # location (~/.muse/auth.json or ~/Documents/.muse/auth.json) in the same
+  # JSON shape that CodexCache understands. We reuse CodexCache with an
+  # explicit path so that the Muse config dir takes precedence for this mode.
+  defp resolve_openai_oauth(context) do
+    # Allow explicit override via :oauth_path or :path for tests / advanced use
+    explicit = first_present(context, [:oauth_path, :path])
+
+    opts =
+      if explicit do
+        [path: explicit]
+      else
+        [path: ConfigDir.oauth_path()]
+      end
+
+    case CodexCache.resolve(opts) do
+      {:ok, cred} -> {:ok, %{cred | source: :openai_oauth}}
+      {:error, :enoent} -> {:error, :no_token}
+      {:error, other} -> {:error, other}
+    end
   end
 
   # Default/no-mode behaviour intentionally resolves no credential. Optional

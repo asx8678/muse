@@ -222,13 +222,13 @@ defmodule Muse.Auth.Status do
 
   defp oauth_lines(config, source) do
     [
-      "Auth status: #{provider_display(config)} openai_oauth unknown (not resolved).",
+      "Auth status: #{provider_display(config)} openai_oauth (reads from Muse config dir auth.json).",
       "Provider: #{provider_display(config)}",
       "Config source: #{source}",
       "Auth mode: openai_oauth",
-      "Status: unknown",
-      "Credential source: oauth (not resolved)",
-      "Warnings: OAuth material is not resolved by /auth status. Inject :auth_status for precomputed credential state."
+      "Expected location: ~/.muse/auth.json or ~/Documents/.muse/auth.json (Codex JSON shape)",
+      "Credential source: oauth (resolved at request time via ConfigDir)",
+      "Note: /auth status does not perform network or token refresh; actual resolution happens on first LLM call."
     ]
   end
 

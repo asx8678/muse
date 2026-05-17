@@ -125,10 +125,11 @@ defmodule Muse.Auth.ResolverTest do
       File.rm(path)
     end
 
-    test "openai_oauth returns clear unsupported error" do
-      assert {:error,
-              {:unsupported_auth_mode, :openai_oauth, "OpenAI OAuth auth is not supported yet"}} =
-               Resolver.resolve(%{auth: :openai_oauth})
+    test "openai_oauth attempts to resolve from Muse ConfigDir auth.json (fails cleanly when absent)" do
+      # With the new implementation, :openai_oauth now tries the Muse-managed
+      # auth.json location. When nothing is present it returns :no_token (the
+      # same shape other credential resolvers use for "file missing").
+      assert {:error, :no_token} = Resolver.resolve(%{auth: :openai_oauth})
     end
 
     test "unsupported auth mode errors without leaking raw token-like values" do

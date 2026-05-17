@@ -44,6 +44,20 @@ Muse defaults to the offline fake provider and needs no API key:
 MUSE_PROVIDER=fake mix muse
 ```
 
+### Personal configuration directory (profiles + OAuth)
+
+Muse discovers your model/provider profiles, secrets, and OAuth tokens from the
+first of these locations that contains a `config.json`:
+
+1. `MUSE_CONFIG_DIR` environment variable (highest priority)
+2. `~/Documents/.muse` (macOS / iCloud-friendly, recommended for many users)
+3. `~/.muse` (classic location)
+
+Place your `config.json`, `secrets.json`, and optionally `auth.json` (for
+OpenAI OAuth / Codex-style bearer tokens) in one of those directories.
+`ensure_initialized` and profile loading will create and use the preferred
+location automatically.
+
 Available providers:
 
 | Provider | Env Var | Description |
