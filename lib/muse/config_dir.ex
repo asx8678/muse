@@ -39,7 +39,10 @@ defmodule Muse.ConfigDir do
     home = Path.expand("~/.muse")
 
     [explicit, docs, home]
-    |> Enum.reject(&is_nil/1)
+    |> Enum.reject(fn
+      nil -> true
+      path -> String.trim(path) == ""
+    end)
     |> Enum.map(&Path.expand/1)
     |> Enum.uniq_by(&Path.absname/1)
   end
@@ -89,8 +92,10 @@ defmodule Muse.ConfigDir do
   """
   @spec preferred_init_dir() :: Path.t()
   def preferred_init_dir do
-    # First non-nil candidate after expanding (MUSE_CONFIG_DIR wins if set)
-    candidates() |> hd() |> Path.expand()
+    case candidates() do
+      [] -> Path.expand("~/.muse")
+      [first | _] -> Path.expand(first)
+    end
   end
 
   @doc """
@@ -110,11 +115,11 @@ defmodule Muse.ConfigDir do
   Does not create `config.json` / `secrets.json` — that is the
   responsibility of `ProfileLoader.ensure_initialized/0`.
   """
-  @spec ensure_dir_exists() :: :ok | {:error, term()}
-  def ensure_dir_exists do
-    dir = preferred_init_dir()
+  @spec ensure_dir_exists(Path.t() | nil) :: :ok | {:error, term()}
+  def ensure_dir_exists(dir \\ nil) do
+    target_dir = dir || preferred_init_dir()
 
-    case File.mkdir_p(dir) do
+    case File.mkdir_p(target_dir) do
       :ok -> :ok
       {:error, reason} -> {:error, reason}
     end

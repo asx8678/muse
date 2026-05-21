@@ -21,7 +21,7 @@ defmodule Muse.Auth.Resolver do
     * `:bearer_command` — resolves via `Muse.Auth.BearerCommand` or an injected
       `:auth_runner`
     * `:codex_cache` — resolves via `Muse.Auth.CodexCache`
-    * `:openai_oauth` — currently unsupported and returns a clear error
+    * `:openai_oauth` — resolves via Codex OAuth credentials from `ConfigDir.oauth_path()`
 
   Codex cache resolution is never attempted silently. It is only used when
   `auth: :codex_cache` is explicit, or when callers opt into fallback behaviour

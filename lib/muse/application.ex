@@ -21,7 +21,10 @@ defmodule Muse.Application do
   @impl true
   def start(_type, _args) do
     if start_runtime_children?() do
-      :ok = Muse.LLM.ProfileLoader.ensure_initialized()
+      case Muse.LLM.ProfileLoader.ensure_initialized() do
+        {:ok, _paths} -> :ok
+        {:error, reason} -> IO.warn("Muse initialization failed: #{inspect(reason)}")
+      end
 
       case Muse.LLM.ProfileLoader.apply_profile() do
         :ok -> :ok

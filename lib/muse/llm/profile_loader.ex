@@ -91,32 +91,23 @@ defmodule Muse.LLM.ProfileLoader do
 
   Returns `:ok`.
   """
-  @spec ensure_initialized() :: :ok
+  @spec ensure_initialized() :: {:ok, {Path.t(), Path.t()}} | {:error, term()}
   def ensure_initialized do
     ensure_initialized(Muse.ConfigDir.config_path(), Muse.ConfigDir.secrets_path())
   end
 
-  @spec ensure_initialized(String.t(), String.t()) :: :ok
+  @spec ensure_initialized(String.t(), String.t()) ::
+          {:ok, {Path.t(), Path.t()}} | {:error, term()}
   def ensure_initialized(config_path, secrets_path) do
     config_path = Path.expand(config_path)
     secrets_path = Path.expand(secrets_path)
     dir = Path.dirname(config_path)
 
-    unless File.dir?(dir) do
-      File.mkdir_p!(dir)
+    with :ok <- Muse.ConfigDir.ensure_dir_exists(dir),
+         :ok <- init_config_file(config_path),
+         :ok <- init_secrets_file(secrets_path) do
+      {:ok, {config_path, secrets_path}}
     end
-
-    unless File.exists?(config_path) do
-      init_config_file(config_path)
-    end
-
-    unless File.exists?(secrets_path) do
-      init_secrets_file(secrets_path)
-      # Best-effort chmod 600; ignore failures on Windows or restricted FS
-      _ = File.chmod(secrets_path, 0o600)
-    end
-
-    :ok
   end
 
   # ---------------------------------------------------------------------------
@@ -367,22 +358,41 @@ defmodule Muse.LLM.ProfileLoader do
   # ---------------------------------------------------------------------------
 
   defp init_config_file(path) do
-    default = %{
-      "profiles" => %{
-        "default" => %{
-          "provider" => "fake",
-          "model" => "fake-planning-model",
-          "tools_enabled" => true,
-          "structured_outputs_enabled" => true
+    if File.exists?(path) do
+      :ok
+    else
+      default = %{
+        "profiles" => %{
+          "default" => %{
+            "provider" => "fake",
+            "model" => "fake-planning-model",
+            "tools_enabled" => true,
+            "structured_outputs_enabled" => true
+          }
         }
       }
-    }
 
-    File.write!(path, Jason.encode!(default, pretty: true))
+      case File.write(path, Jason.encode!(default, pretty: true)) do
+        :ok -> :ok
+        {:error, reason} -> {:error, reason}
+      end
+    end
   end
 
   defp init_secrets_file(path) do
-    File.write!(path, Jason.encode!(%{}, pretty: true))
+    if File.exists?(path) do
+      :ok
+    else
+      case File.write(path, Jason.encode!(%{}, pretty: true)) do
+        :ok ->
+          # Best-effort chmod 600; ignore failures on Windows or restricted FS
+          _ = File.chmod(path, 0o600)
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
   end
 
   defp read_file(path) do

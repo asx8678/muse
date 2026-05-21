@@ -135,7 +135,8 @@ defmodule Muse.LLM.ProfileLoaderTest do
       refute File.exists?(config_path)
       refute File.exists?(secrets_path)
 
-      assert :ok = ProfileLoader.ensure_initialized(config_path, secrets_path)
+      assert {:ok, {^config_path, ^secrets_path}} =
+               ProfileLoader.ensure_initialized(config_path, secrets_path)
 
       assert File.exists?(config_path)
       assert File.exists?(secrets_path)
@@ -151,7 +152,8 @@ defmodule Muse.LLM.ProfileLoaderTest do
       config_path = write_temp_file!(dir, "config.json", @valid_config)
       secrets_path = write_temp_file!(dir, "secrets.json", @valid_secrets)
 
-      assert :ok = ProfileLoader.ensure_initialized(config_path, secrets_path)
+      assert {:ok, {^config_path, ^secrets_path}} =
+               ProfileLoader.ensure_initialized(config_path, secrets_path)
 
       assert {:ok, config} = ProfileLoader.load(config_path)
       assert map_size(config) == 3
@@ -165,9 +167,31 @@ defmodule Muse.LLM.ProfileLoaderTest do
       config_path = Path.join(nested_dir, "config.json")
       secrets_path = Path.join(nested_dir, "secrets.json")
 
-      assert :ok = ProfileLoader.ensure_initialized(config_path, secrets_path)
+      assert {:ok, {^config_path, ^secrets_path}} =
+               ProfileLoader.ensure_initialized(config_path, secrets_path)
+
       assert File.exists?(config_path)
       assert File.exists?(secrets_path)
+    end
+
+    test "returns error tuple if directory cannot be created (e.g. permission denied)", %{
+      tmp_dir: dir
+    } do
+      unwritable_dir = Path.join(dir, "unwritable")
+      File.mkdir_p!(unwritable_dir)
+
+      # Make it read-only/no-access
+      File.chmod!(unwritable_dir, 0o000)
+
+      on_exit(fn ->
+        # Restore permissions so we can clean up
+        File.chmod!(unwritable_dir, 0o755)
+      end)
+
+      nested_config = Path.join([unwritable_dir, "nested", "config.json"])
+      nested_secrets = Path.join([unwritable_dir, "nested", "secrets.json"])
+
+      assert {:error, _reason} = ProfileLoader.ensure_initialized(nested_config, nested_secrets)
     end
   end
 
